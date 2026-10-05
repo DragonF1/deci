@@ -73,7 +73,7 @@ struct DeciApp: App {
                 updateManager: updateManager
             )
         }
-        FluidMenuBarExtra("Deci", image: launchIconImage, isInserted: $showMenuBarExtra) {
+        FluidMenuBarExtra("Deci", image: launchIconImage) {
             menuBarContent
         }
     }
@@ -105,6 +105,10 @@ struct DeciApp: App {
         CrashGuard.install()
         // Destroy any orphaned aggregate devices from previous crashes
         OrphanedTapCleanup.destroyOrphanedDevices()
+
+        // Ensure macOS ControlCenter never marks the status item as hidden/removed
+        UserDefaults.standard.set(1, forKey: "NSStatusItem VisibleCC Item-0")
+        UserDefaults.standard.set(1, forKey: "NSStatusItem Visible Item-0")
 
         let settings = SettingsManager()
         let profileManager = AutoEQProfileManager()

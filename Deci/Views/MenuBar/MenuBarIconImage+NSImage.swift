@@ -11,29 +11,33 @@ extension MenuBarIconImage {
     static let canvasSize = NSSize(width: 22, height: 18)
 
     func nsImage(accessibilityDescription: String = "Deci") -> NSImage? {
-        let source: NSImage?
         switch self {
-        case .systemSymbol(let name):
-            source = NSImage(systemSymbolName: name, accessibilityDescription: accessibilityDescription)
         case .asset(let name):
-            source = NSImage(named: name)
+            let image = NSImage(named: name) ?? Bundle.main.image(forResource: name)
+            if let asset = image {
+                asset.isTemplate = true
+                asset.accessibilityDescription = accessibilityDescription
+                return asset
+            }
+            return nil
+            
+        case .systemSymbol(let name):
+            guard let source = NSImage(systemSymbolName: name, accessibilityDescription: accessibilityDescription) else { return nil }
+            let canvas = Self.canvasSize
+            let scale = min(1, canvas.width / source.size.width, canvas.height / source.size.height)
+            let drawRect = NSRect(
+                x: (canvas.width - source.size.width * scale) / 2,
+                y: (canvas.height - source.size.height * scale) / 2,
+                width: source.size.width * scale,
+                height: source.size.height * scale
+            )
+            let image = NSImage(size: canvas, flipped: false) { _ in
+                source.draw(in: drawRect)
+                return true
+            }
+            image.isTemplate = true
+            image.accessibilityDescription = accessibilityDescription
+            return image
         }
-        guard let source else { return nil }
-
-        let canvas = Self.canvasSize
-        let scale = min(1, canvas.width / source.size.width, canvas.height / source.size.height)
-        let drawRect = NSRect(
-            x: (canvas.width - source.size.width * scale) / 2,
-            y: (canvas.height - source.size.height * scale) / 2,
-            width: source.size.width * scale,
-            height: source.size.height * scale
-        )
-        let image = NSImage(size: canvas, flipped: false) { _ in
-            source.draw(in: drawRect)
-            return true
-        }
-        image.isTemplate = true
-        image.accessibilityDescription = accessibilityDescription
-        return image
     }
 }

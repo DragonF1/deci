@@ -113,7 +113,22 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
         button.image = image
     }
 
+    private func ensureStatusItemVisible() {
+        UserDefaults.standard.set(1, forKey: "NSStatusItem VisibleCC Item-0")
+        UserDefaults.standard.set(1, forKey: "NSStatusItem Visible Item-0")
+        for window in NSApp.windows {
+            if window.className.contains("FluidMenuBarExtraWindow") {
+                if let fluidStatusItem = window.value(forKey: "statusItem") as? NSObject,
+                   let statusItem = fluidStatusItem.value(forKey: "statusItem") as? NSStatusItem {
+                    statusItem.behavior = []
+                    statusItem.isVisible = true
+                }
+            }
+        }
+    }
+
     private func attemptInitialApply(retriesLeft: Int) {
+        ensureStatusItemVisible()
         if resolveButton() != nil {
             apply()
             return
@@ -177,6 +192,22 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
 
     private func resolveButton() -> NSStatusBarButton? {
         if let cached = cachedButton { return cached }
+
+        for window in NSApp.windows {
+            if window.className.contains("FluidMenuBarExtraWindow") {
+                if let fluidStatusItem = window.value(forKey: "statusItem") as? NSObject,
+                   let statusItem = fluidStatusItem.value(forKey: "statusItem") as? NSStatusItem {
+                    statusItem.behavior = []
+                    statusItem.isVisible = true
+                    if let btn = statusItem.button {
+                        btn.wantsLayer = true
+                        cachedButton = btn
+                        return btn
+                    }
+                }
+            }
+        }
+
         for window in NSApp.windows {
             guard let contentView = window.contentView else { continue }
             if let button = findStatusBarButton(in: contentView, matching: "Deci")

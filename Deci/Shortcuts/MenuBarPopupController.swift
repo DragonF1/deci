@@ -91,15 +91,27 @@ final class MenuBarPopupController: MenuBarPopupControlling {
     func findStatusItem() -> NSStatusItem? {
         let concreteName = Self.concreteStatusItemClassName
 
-        return NSApp.windows
-            .filter { $0.className.contains("NSStatusBarWindow") }
+        if let item = NSApp.windows
+            .filter({ $0.className.contains("NSStatusBarWindow") })
             .compactMap(Self.extractStatusItem(from:))
             // Multi-display setups with "Displays have separate Spaces" enabled produce
             // one NSStatusBarWindow per display; the inactive ones return an
             // `NSStatusItemReplicant` (a subclass of NSStatusItem). Skip replicants —
             // we only want the canonical item that owns the real button.
-            .filter { $0.className == concreteName }
-            .first { $0.button?.accessibilityTitle() == accessibilityTitle }
+            .filter({ $0.className == concreteName })
+            .first(where: { $0.button?.accessibilityTitle() == accessibilityTitle }) {
+            return item
+        }
+
+        // Direct fallback via FluidMenuBarExtraWindow
+        for window in NSApp.windows {
+            if window.className.contains("FluidMenuBarExtraWindow"),
+               let fluidStatusItem = window.value(forKey: "statusItem") as? NSObject,
+               let item = fluidStatusItem.value(forKey: "statusItem") as? NSStatusItem {
+                return item
+            }
+        }
+        return nil
     }
 
     /// Pulls the `statusItem` private key off an `NSStatusBarWindow`.
