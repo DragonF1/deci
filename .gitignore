@@ -12,6 +12,7 @@ CLAUDE.md
 build/
 DerivedData/
 tools/
+DeciHost/DeciHost
 *.xcodeproj/xcuserdata/
 **/*.xcworkspace/xcuserdata/
 Makefile

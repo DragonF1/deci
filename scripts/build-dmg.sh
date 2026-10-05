@@ -26,6 +26,10 @@ xcodebuild -exportArchive \
     -exportPath "$BUILD_DIR" \
     -exportOptionsPlist "$PROJECT_DIR/ExportOptions.plist"
 
+echo "==> Bundling DeciHost native messaging host..."
+swiftc -O "$PROJECT_DIR/DeciHost/main.swift" -o "$BUILD_DIR/Deci.app/Contents/MacOS/DeciHost"
+chmod +x "$BUILD_DIR/Deci.app/Contents/MacOS/DeciHost"
+
 echo "==> Creating DMG..."
 # create-dmg auto-generates professional layout with:
 # - App icon composited onto disk icon

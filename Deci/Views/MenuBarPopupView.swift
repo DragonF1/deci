@@ -148,6 +148,7 @@ struct MenuBarPopupView: View {
             updateSortedInputDevices()
             pairedDevices = audioEngine.bluetoothDeviceMonitor.pairedDevices
             isBluetoothOn = audioEngine.bluetoothDeviceMonitor.isBluetoothOn
+            ChromeExtensionManager.shared.requestTabs()
             // popupVisibility.isVisible is driven by the filtered NSWindow key
             // notifications below, not by .onAppear — SwiftUI mounts this view
             // before the popup is actually shown, and setting isVisible here
@@ -204,6 +205,7 @@ struct MenuBarPopupView: View {
             isPopupVisible = true
             popupVisibility.isVisible = true
             audioEngine.bluetoothDeviceMonitor.refresh()
+            ChromeExtensionManager.shared.requestTabs()
             syncNavOrder()
             hasKeyboardEngaged = false
             selectedRow = nil
@@ -737,7 +739,7 @@ struct MenuBarPopupView: View {
             PermissionBannerView(permission: permission)
         } else if isEditingDevicePriority {
             appEditModeContent
-        } else if audioEngine.displayableApps.isEmpty {
+        } else if audioEngine.displayableApps.isEmpty && ChromeExtensionManager.shared.chromeTabs.isEmpty {
             emptyStateView
         } else {
             appsContent(scrollProxy: scrollProxy)
@@ -824,6 +826,7 @@ struct MenuBarPopupView: View {
 
     private func appsContent(scrollProxy: ScrollViewProxy) -> some View {
         let presets = audioEngine.settingsManager.getUserPresets()
+        let chromeTabs = ChromeExtensionManager.shared.chromeTabs
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(audioEngine.displayableApps) { displayableApp in
                 switch displayableApp {
@@ -832,6 +835,19 @@ struct MenuBarPopupView: View {
 
                 case .pinnedInactive(let info):
                     inactiveAppRow(info: info, displayableApp: displayableApp, userPresets: presets, scrollProxy: scrollProxy)
+                }
+            }
+
+            if !chromeTabs.isEmpty {
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                    SectionHeader(title: "Chrome Tabs")
+                        .padding(.horizontal, DesignTokens.Spacing.sm)
+                        .padding(.top, audioEngine.displayableApps.isEmpty ? 0 : DesignTokens.Spacing.sm)
+                        .padding(.bottom, 2)
+
+                    ForEach(chromeTabs) { tab in
+                        ChromeTabRow(tab: tab, now: Date())
+                    }
                 }
             }
         }

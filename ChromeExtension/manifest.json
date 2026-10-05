@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Deci Audio Companion",
+  "version": "1.0",
+  "description": "Companion extension for controlling individual tab volumes from Deci in the macOS menu bar.",
+  "permissions": [
+    "tabCapture",
+    "nativeMessaging",
+    "tabs",
+    "activeTab",
+    "offscreen",
+    "scripting",
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
