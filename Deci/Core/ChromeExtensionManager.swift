@@ -9,10 +9,11 @@ final class ChromeExtensionManager {
     var chromeTabs: [ChromeTab] = []
     
     private init() {
-        DistributedNotificationCenter.default().addObserver(
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(
             forName: NSNotification.Name("com.abraham.Deci.FromChrome"),
             object: nil,
-            queue: .main
+            queue: nil
         ) { [weak self] notification in
             let message = notification.object as? String
             Task { @MainActor in
@@ -20,10 +21,10 @@ final class ChromeExtensionManager {
             }
         }
         
-        DistributedNotificationCenter.default().addObserver(
+        center.addObserver(
             forName: NSNotification.Name("com.example.AdvancedAudioControl.FromChrome"),
             object: nil,
-            queue: .main
+            queue: nil
         ) { [weak self] notification in
             let message = notification.object as? String
             Task { @MainActor in
@@ -170,13 +171,18 @@ final class ChromeExtensionManager {
         do {
             let data = try JSONSerialization.data(withJSONObject: message, options: [])
             if let messageString = String(data: data, encoding: .utf8) {
-                DistributedNotificationCenter.default().post(
-                    name: NSNotification.Name("com.abraham.Deci.ToChrome"),
-                    object: messageString
+                let center = DistributedNotificationCenter.default()
+                center.postNotificationName(
+                    NSNotification.Name("com.abraham.Deci.ToChrome"),
+                    object: messageString,
+                    userInfo: nil,
+                    deliverImmediately: true
                 )
-                DistributedNotificationCenter.default().post(
-                    name: NSNotification.Name("com.example.AdvancedAudioControl.ToChrome"),
-                    object: messageString
+                center.postNotificationName(
+                    NSNotification.Name("com.example.AdvancedAudioControl.ToChrome"),
+                    object: messageString,
+                    userInfo: nil,
+                    deliverImmediately: true
                 )
             }
         } catch {

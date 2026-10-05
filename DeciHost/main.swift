@@ -13,7 +13,8 @@ class NativeMessagingHost {
                 self,
                 selector: #selector(handleAppNotification(_:)),
                 name: NSNotification.Name(name),
-                object: nil
+                object: nil,
+                suspensionBehavior: .deliverImmediately
             )
         }
         
@@ -31,13 +32,17 @@ class NativeMessagingHost {
                 
                 if let messageString = String(data: messageData, encoding: .utf8) {
                     DispatchQueue.main.async {
-                        notificationCenter.post(
-                            name: NSNotification.Name("com.abraham.Deci.FromChrome"),
-                            object: messageString
+                        notificationCenter.postNotificationName(
+                            NSNotification.Name("com.abraham.Deci.FromChrome"),
+                            object: messageString,
+                            userInfo: nil,
+                            deliverImmediately: true
                         )
-                        notificationCenter.post(
-                            name: NSNotification.Name("com.example.AdvancedAudioControl.FromChrome"),
-                            object: messageString
+                        notificationCenter.postNotificationName(
+                            NSNotification.Name("com.example.AdvancedAudioControl.FromChrome"),
+                            object: messageString,
+                            userInfo: nil,
+                            deliverImmediately: true
                         )
                     }
                 }

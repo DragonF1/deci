@@ -1,8 +1,23 @@
 {
   "manifest_version": 3,
   "name": "Deci Audio Companion",
-  "version": "1.0",
-  "description": "Companion extension for controlling individual tab volumes from Deci in the macOS menu bar.",
+  "version": "1.1",
+  "description": "Companion extension for controlling individual tab volumes and playback from Deci in the macOS menu bar.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Deci Audio Companion",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "permissions": [
     "tabCapture",
     "nativeMessaging",

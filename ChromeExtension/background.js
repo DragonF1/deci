@@ -158,6 +158,8 @@ function togglePlayback() {
   }
 }
 
+const knownAudioTabs = new Set();
+
 function sendTabList() {
   if (!port) {
     // A tab event may have just revived a suspended service worker; use it
@@ -165,13 +167,19 @@ function sendTabList() {
     connectToNativeHost();
     return;
   }
-  chrome.tabs.query({ audible: true }, (tabs) => {
-    if (!port) return;
+  chrome.tabs.query({}, (tabs) => {
+    if (!port || !tabs) return;
+    tabs.forEach((t) => {
+      if (t.audible) {
+        knownAudioTabs.add(t.id);
+      }
+    });
+    const audioTabs = tabs.filter((t) => t.audible || knownAudioTabs.has(t.id));
     port.postMessage({
       type: 'TAB_LIST',
-      tabs: tabs.map((t) => ({
+      tabs: audioTabs.map((t) => ({
         id: t.id,
-        title: t.title,
+        title: t.title || '',
         favIconUrl: t.favIconUrl || '',
         volume: tabVolumes.get(t.id) ?? 1.0
       }))
@@ -182,10 +190,14 @@ function sendTabList() {
 function connectToNativeHost() {
   if (port) return;
   try {
-    port = chrome.runtime.connectNative('com.example.advancedaudiocontrol');
+    port = chrome.runtime.connectNative('com.abraham.deci');
   } catch (err) {
-    console.error('Native host unavailable:', err);
-    return;
+    try {
+      port = chrome.runtime.connectNative('com.example.advancedaudiocontrol');
+    } catch (err2) {
+      console.error('Native host unavailable:', err2);
+      return;
+    }
   }
   chrome.alarms.clear('reconnect');
 
@@ -258,6 +270,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   tabVolumes.delete(tabId);
+  knownAudioTabs.delete(tabId);
   sendTabList();
 });
 chrome.alarms.onAlarm.addListener((alarm) => {

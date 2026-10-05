@@ -1,5 +1,6 @@
 // FineTune/Views/MenuBarPopupView.swift
 import AudioToolbox
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -59,6 +60,11 @@ struct MenuBarPopupView: View {
 
     /// Whether Bluetooth hardware is powered on
     @State private var isBluetoothOn = false
+
+    /// Chrome extension manager for individual tab audio and transport controls
+    @State private var chromeManager = ChromeExtensionManager.shared
+    @State private var popupNow = Date()
+    @State private var chromeTickCount = 0
 
     /// Whether edit mode is active (affects both device priority and app visibility)
     @State private var isEditingDevicePriority = false
@@ -227,6 +233,17 @@ struct MenuBarPopupView: View {
             // the app. Only treat app-level deactivation as a real dismiss so
             // in-popup pickers don't collapse edit mode.
             exitEditModeSaving()
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { date in
+            popupNow = date
+            guard isPopupVisible else { return }
+            chromeTickCount += 1
+            if chromeTickCount % 2 == 0 {
+                chromeManager.requestTabs()
+                for tab in chromeManager.chromeTabs {
+                    chromeManager.requestMediaState(tabId: tab.id)
+                }
+            }
         }
         // Single focus anchor on the body root. `.onKeyPress` only fires when
         // the modifier-owning view (or a focused descendant) has focus, so the
@@ -739,7 +756,7 @@ struct MenuBarPopupView: View {
             PermissionBannerView(permission: permission)
         } else if isEditingDevicePriority {
             appEditModeContent
-        } else if audioEngine.displayableApps.isEmpty && ChromeExtensionManager.shared.chromeTabs.isEmpty {
+        } else if audioEngine.displayableApps.isEmpty && chromeManager.chromeTabs.isEmpty {
             emptyStateView
         } else {
             appsContent(scrollProxy: scrollProxy)
@@ -826,7 +843,7 @@ struct MenuBarPopupView: View {
 
     private func appsContent(scrollProxy: ScrollViewProxy) -> some View {
         let presets = audioEngine.settingsManager.getUserPresets()
-        let chromeTabs = ChromeExtensionManager.shared.chromeTabs
+        let chromeTabs = chromeManager.chromeTabs
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(audioEngine.displayableApps) { displayableApp in
                 switch displayableApp {
@@ -846,7 +863,7 @@ struct MenuBarPopupView: View {
                         .padding(.bottom, 2)
 
                     ForEach(chromeTabs) { tab in
-                        ChromeTabRow(tab: tab, now: Date())
+                        ChromeTabRow(tab: tab, now: popupNow)
                     }
                 }
             }
