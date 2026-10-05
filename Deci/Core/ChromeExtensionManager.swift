@@ -3,33 +3,34 @@ import Observation
 
 @Observable
 @MainActor
-final class ChromeExtensionManager {
+final class ChromeExtensionManager: NSObject {
     static let shared = ChromeExtensionManager()
     
     var chromeTabs: [ChromeTab] = []
     
-    private init() {
+    private override init() {
+        super.init()
         let center = DistributedNotificationCenter.default()
         center.addObserver(
-            forName: NSNotification.Name("com.abraham.Deci.FromChrome"),
+            self,
+            selector: #selector(handleChromeNotification(_:)),
+            name: NSNotification.Name("com.abraham.Deci.FromChrome"),
             object: nil,
-            queue: nil
-        ) { [weak self] notification in
-            let message = notification.object as? String
-            Task { @MainActor in
-                self?.handleChromeMessageString(message)
-            }
-        }
-        
+            suspensionBehavior: .deliverImmediately
+        )
         center.addObserver(
-            forName: NSNotification.Name("com.example.AdvancedAudioControl.FromChrome"),
+            self,
+            selector: #selector(handleChromeNotification(_:)),
+            name: NSNotification.Name("com.example.AdvancedAudioControl.FromChrome"),
             object: nil,
-            queue: nil
-        ) { [weak self] notification in
-            let message = notification.object as? String
-            Task { @MainActor in
-                self?.handleChromeMessageString(message)
-            }
+            suspensionBehavior: .deliverImmediately
+        )
+    }
+    
+    @objc nonisolated private func handleChromeNotification(_ notification: Notification) {
+        let message = notification.object as? String
+        Task { @MainActor in
+            self.handleChromeMessageString(message)
         }
     }
     
@@ -42,6 +43,7 @@ final class ChromeExtensionManager {
                   let type = json["type"] as? String else { return }
                   
             if type == "TAB_LIST", let tabs = json["tabs"] as? [[String: Any]] {
+                NSLog("Deci ChromeExtensionManager: TAB_LIST with %ld raw tabs", tabs.count)
                 var newTabs: [ChromeTab] = []
                 for tab in tabs.prefix(Self.maxTabs) {
                     guard let id = tab["id"] as? Int else { continue }
@@ -152,6 +154,7 @@ final class ChromeExtensionManager {
     }
 
     func requestTabs() {
+        NSLog("Deci ChromeExtensionManager: requestTabs() called")
         sendMessage(["type": "GET_TABS"])
     }
 

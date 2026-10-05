@@ -112,6 +112,9 @@ struct DeciApp: App {
         let engine = AudioEngine(permission: permission, settingsManager: settings, autoEQProfileManager: profileManager)
         _audioEngine = State(initialValue: engine)
 
+        // Initialize Chrome extension manager for tab audio control
+        _ = ChromeExtensionManager.shared
+
         // Media keys / HUD services — instantiated at app scope so the tap
         // and HUD panel outlive popup open/close cycles.
         let accessibilityService = AccessibilityPermissionService()
