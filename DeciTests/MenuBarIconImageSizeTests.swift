@@ -49,7 +49,7 @@ struct MenuBarIconImageSizeTests {
         for image in [MenuBarIconImage.systemSymbol("speaker.fill"), .asset("MenuBarIcon")] {
             let rendered = try #require(image.nsImage())
             #expect(rendered.isTemplate, "\(image) lost template rendering")
-            #expect(rendered.accessibilityDescription == "FineTune", "\(image) lost accessibility description")
+            #expect(rendered.accessibilityDescription == "Deci", "\(image) lost accessibility description")
         }
     }
 }

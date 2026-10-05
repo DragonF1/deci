@@ -172,7 +172,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
     func showPerAppNotControlledHUD(displayName: String?, bundleID: String?, icon: NSImage?) {
         let title = displayName?.nilIfEmpty
             ?? bundleID?.nilIfEmpty
-            ?? "FineTune isn't controlling this app yet"
+            ?? "Deci isn't controlling this app yet"
         presentPerApp(
             icon: icon,
             title: title,
@@ -368,7 +368,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         case .mute(let isMuted):
             description = isMuted ? "\(title), muted" : "\(title), unmuted"
         case .notControlled:
-            description = "\(title), not controlled by FineTune"
+            description = "\(title), not controlled by Deci"
         }
         NSAccessibility.post(
             element: panel,
@@ -454,7 +454,7 @@ private struct PerAppHUD: View {
     private static let barHeight: CGFloat = 4
 
     private var subtitleText: String? {
-        if case .notControlled = content { return "Not controlled by FineTune" }
+        if case .notControlled = content { return "Not controlled by Deci" }
         return nil
     }
 
@@ -498,7 +498,7 @@ private struct PerAppHUD: View {
         case .mute(let isMuted):
             return isMuted ? "\(title), muted" : "\(title), unmuted"
         case .notControlled:
-            return "\(title), not controlled by FineTune"
+            return "\(title), not controlled by Deci"
         }
     }
 

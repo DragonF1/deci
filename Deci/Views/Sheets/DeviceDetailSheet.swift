@@ -140,7 +140,7 @@ struct DeviceDetailSheet: View {
         HStack(spacing: DesignTokens.Spacing.xs) {
             autoBadge
 
-            Text("Use FineTune's software volume")
+            Text("Use Deci's software volume")
                 .font(DesignTokens.Typography.pickerText)
                 .foregroundStyle(DesignTokens.Colors.textPrimary)
 
@@ -167,7 +167,7 @@ struct DeviceDetailSheet: View {
     // MARK: - Callout
 
     private var calloutText: some View {
-        Text("Turn on only if the volume slider doesn't work. FineTune remembers this for each device.")
+        Text("Turn on only if the volume slider doesn't work. Deci remembers this for each device.")
             .font(DesignTokens.Typography.caption)
             .foregroundStyle(DesignTokens.Colors.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
