@@ -1,6 +1,6 @@
 # URL Schemes
 
-Control Advanced Audio Control from Terminal, shell scripts, [Shortcuts](https://support.apple.com/guide/shortcuts-mac), [Raycast](https://raycast.com), or any app that can open URLs. This makes it easy to automate volume changes, build keyboard shortcuts, or integrate Advanced Audio Control into your workflow.
+Control Deci from Terminal, shell scripts, [Shortcuts](https://support.apple.com/guide/shortcuts-mac), [Raycast](https://raycast.com), or any app that can open URLs. This makes it easy to automate volume changes, build keyboard shortcuts, or integrate Deci into your workflow.
 
 ## Actions
 
@@ -59,7 +59,7 @@ These commands work in Terminal, shell scripts, Automator, Raycast script comman
 
 ## Finding Bundle IDs
 
-App names shown in Advanced Audio Control map to bundle IDs. Common ones:
+App names shown in Deci map to bundle IDs. Common ones:
 
 | App | Bundle ID |
 |-----|-----------|
@@ -81,4 +81,4 @@ osascript -e 'id of app "App Name"'
 
 ## Finding Device UIDs
 
-In Advanced Audio Control, click the pencil icon to enter edit mode, tap the **info button** on a device row to open the device inspector, then click the copy button next to the UID to put it on the clipboard.
+In Deci, click the pencil icon to enter edit mode, tap the **info button** on a device row to open the device inspector, then click the copy button next to the UID to put it on the clipboard.

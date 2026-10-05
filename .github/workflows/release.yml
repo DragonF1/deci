@@ -73,11 +73,11 @@ jobs:
           echo "Setting version to $VERSION"
 
           # Update MARKETING_VERSION (e.g., 1.1.0)
-          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $VERSION/g" AdvancedAudioControl.xcodeproj/project.pbxproj
+          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = $VERSION/g" Deci.xcodeproj/project.pbxproj
 
           # Update CURRENT_PROJECT_VERSION (build number) using run number for uniqueness
           BUILD_NUMBER=${{ github.run_number }}
-          sed -i '' "s/CURRENT_PROJECT_VERSION = [^;]*/CURRENT_PROJECT_VERSION = $BUILD_NUMBER/g" AdvancedAudioControl.xcodeproj/project.pbxproj
+          sed -i '' "s/CURRENT_PROJECT_VERSION = [^;]*/CURRENT_PROJECT_VERSION = $BUILD_NUMBER/g" Deci.xcodeproj/project.pbxproj
 
           echo "Version: $VERSION, Build: $BUILD_NUMBER"
 
@@ -85,7 +85,7 @@ jobs:
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcodebuild -project AdvancedAudioControl.xcodeproj \
+          xcodebuild -project Deci.xcodeproj \
             -scheme FineTune \
             -configuration Release \
             -archivePath build/FineTune.xcarchive \

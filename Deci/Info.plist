@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Deci</string>
+	<key>CFBundleName</key>
+	<string>Deci</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Deci needs access to control volume levels for individual applications.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Deci needs microphone access to capture audio from apps using input-capable devices.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Deci uses Bluetooth to connect paired audio devices from the menu bar.</string>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>deci</string>
+				<string>advancedaudiocontrol</string>
+				<string>finetune</string>
+			</array>
+			<key>CFBundleURLName</key>
+			<string>com.abraham.Deci</string>
+		</dict>
+	</array>
+</dict>
+</plist>

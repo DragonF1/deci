@@ -26,8 +26,8 @@ jobs:
       - name: Build
         run: |
           xcodebuild build \
-            -project AdvancedAudioControl.xcodeproj \
-            -scheme AdvancedAudioControl \
+            -project Deci.xcodeproj \
+            -scheme Deci \
             -configuration Debug \
             CODE_SIGN_IDENTITY=- \
             CODE_SIGNING_REQUIRED=NO
@@ -35,10 +35,10 @@ jobs:
       - name: Test
         run: |
           xcodebuild test \
-            -project AdvancedAudioControl.xcodeproj \
-            -scheme AdvancedAudioControl \
+            -project Deci.xcodeproj \
+            -scheme Deci \
             -configuration Debug \
-            -skip-testing:AdvancedAudioControlUITests \
+            -skip-testing:DeciUITests \
             CODE_SIGN_IDENTITY=- \
             CODE_SIGNING_REQUIRED=NO \
             -resultBundlePath build/TestResults.xcresult

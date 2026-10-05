@@ -1,4 +1,4 @@
-# Advanced Audio Control
+# Deci
 
 Advanced per-app volume mixer, multi-device audio router, parametric EQ, and audio enhancer for macOS.
 
@@ -43,13 +43,13 @@ Control the volume of every app independently, boost quiet ones up to 4x, route 
 ## Building from Source
 
 ```bash
-open AdvancedAudioControl.xcodeproj
+open Deci.xcodeproj
 ```
 
 Or using `xcodebuild`:
 
 ```bash
-xcodebuild -project AdvancedAudioControl.xcodeproj -scheme AdvancedAudioControl -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
+xcodebuild -project Deci.xcodeproj -scheme Deci -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
 ```
 
 ## License
