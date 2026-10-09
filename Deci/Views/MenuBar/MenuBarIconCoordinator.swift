@@ -109,6 +109,7 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
         guard let button = resolveButton() else { return }
         let state = computeState()
         guard let image = state.image.nsImage() else { return }
+        image.isTemplate = true
         addFadeTransition(to: button)
         button.image = image
     }

@@ -11,6 +11,13 @@ final class UpdateManager: NSObject, ObservableObject {
     @Published var canCheckForUpdates = false
 
     override init() {
+        if UserDefaults.standard.object(forKey: "SUEnableAutomaticChecks") == nil {
+            UserDefaults.standard.set(true, forKey: "SUEnableAutomaticChecks")
+        }
+        if UserDefaults.standard.object(forKey: "SUAutomaticallyUpdate") == nil {
+            UserDefaults.standard.set(true, forKey: "SUAutomaticallyUpdate")
+        }
+        
         // Create the updater controller without auto-starting (prevents popup on launch)
         updaterController = SPUStandardUpdaterController(
             startingUpdater: false,

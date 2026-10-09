@@ -39,3 +39,6 @@ scripts/spikes/
 
 # Brainstorming session artifacts
 .superpowers/
+
+# Swift package checkouts (xcodebuild -clonedSourcePackagesDirPath SourcePackages)
+SourcePackages/

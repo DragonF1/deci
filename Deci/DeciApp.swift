@@ -178,6 +178,7 @@ struct DeciApp: App {
         DispatchQueue.main.async { [coordinator] in coordinator.start() }
         _iconCoordinator = State(initialValue: coordinator)
 
+
         // Render the scene's first frame with the user's chosen style instead of a generic
         // placeholder, so non-speaker styles don't briefly flash a speaker icon at launch.
         let launchVolumeMonitor = engine.deviceVolumeMonitor
