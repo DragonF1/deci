@@ -32,6 +32,8 @@ protocol ProcessTapControlling: AnyObject, Sendable {
     var tapSourceDeviceUID: String? { get }
     func refreshTapSource(_ preferredDeviceUID: String?) async throws
     func recreateForOutputRateChange() async throws
+    /// Rebuilds the tap around a new process list (a helper appeared) on the same devices.
+    func updateProcesses(_ newApp: AudioApp) async throws
 }
 
 extension ProcessTapControlling {
@@ -61,6 +63,10 @@ extension ProcessTapControlling {
     }
 
     func recreateForOutputRateChange() async throws {
+        // Default no-op for mocks that don't override
+    }
+
+    func updateProcesses(_ newApp: AudioApp) async throws {
         // Default no-op for mocks that don't override
     }
 }

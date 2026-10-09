@@ -29,6 +29,21 @@ final class AudioEngine {
     /// Closure to check if a device is alive. Overridable for testing.
     private let isAliveCheck: (AudioDeviceID) -> Bool
 
+    /// Closure to check if a process is still running (signal 0). Overridable for testing.
+    private let isProcessAliveCheck: @MainActor (pid_t) -> Bool
+
+    /// Closure to check if a HAL process object still exists. Overridable for testing.
+    private let processObjectExistsCheck: @MainActor (AudioObjectID) -> Bool
+
+    /// How long an app may be absent from the process list before its tap is considered for cleanup.
+    private let staleTapGrace: Duration
+
+    /// How often a retained tap (process still alive but silent) is re-checked after the grace.
+    private let staleTapPollInterval: Duration
+
+    /// Quiet period before a changed process list rebuilds a tap (coalesces bursts of helper spawns).
+    private let processRebuildDebounce: Duration
+
     /// One-shot HAL listeners for devices that were present but not alive during priority resolution.
     /// Keyed by AudioDeviceID. Each entry holds the device UID, listener block, and a timeout task.
     private var aliveWatchers: [AudioDeviceID: (uid: String, block: AudioObjectPropertyListenerBlock, timeout: Task<Void, Never>)] = [:]
@@ -47,6 +62,8 @@ final class AudioEngine {
     private var lastAutoSwitchOverrideTime: Date?
     private var pendingCleanup: [pid_t: Task<Void, Never>] = [:]  // Grace period for stale tap cleanup
     private var staleCleanupTask: Task<Void, Never>?  // Debounced cleanup scheduling
+    private var processRebuilds: [pid_t: ProcessRebuildState] = [:]  // Per-pid helper-process rebuilds
+    private var failedProcessLists: [pid_t: Set<AudioObjectID>] = [:]  // Last list whose rebuild failed, not retried
     private var healthMonitorTask: Task<Void, Never>?  // Periodic tap health monitor
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "AudioEngine")
@@ -180,6 +197,11 @@ final class AudioEngine {
         deviceVolumeMonitor: (any DeviceVolumeProviding)? = nil,
         tapFactory: (@MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling)? = nil,
         isAlive: ((AudioDeviceID) -> Bool)? = nil,
+        isProcessAlive: (@MainActor (pid_t) -> Bool)? = nil,
+        processObjectExists: (@MainActor (AudioObjectID) -> Bool)? = nil,
+        staleTapGrace: Duration = .seconds(30),
+        staleTapPollInterval: Duration = .seconds(30),
+        processRebuildDebounce: Duration = .milliseconds(100),
         startMonitorsAutomatically: Bool = true
     ) {
         self.permission = permission
@@ -189,6 +211,16 @@ final class AudioEngine {
         self.autoEQProfileManager = autoEQProfileManager
         self.volumeState = VolumeState(settingsManager: manager)
         self.isAliveCheck = isAlive ?? { $0.isDeviceAlive() }
+        self.isProcessAliveCheck = isProcessAlive ?? { pid in
+            // EPERM means the process exists but belongs to another user.
+            kill(pid, 0) == 0 || errno == EPERM
+        }
+        self.processObjectExistsCheck = processObjectExists ?? { objectID in
+            ((try? AudioObjectID.readProcessList()) ?? []).contains(objectID)
+        }
+        self.staleTapGrace = staleTapGrace
+        self.staleTapPollInterval = staleTapPollInterval
+        self.processRebuildDebounce = processRebuildDebounce
 
         // If a custom deviceProvider is given, use it directly.
         // Otherwise create a real AudioDeviceMonitor (needed by DeviceVolumeMonitor and default tap factory).
@@ -351,6 +383,7 @@ final class AudioEngine {
 
         processMonitor.onAppsChanged = { [weak self] apps in
             self?.applyPersistedSettings()
+            self?.syncTapProcesses(apps)
             self?.scheduleStaleCleanup()
         }
 
@@ -467,6 +500,7 @@ final class AudioEngine {
     func ignoreApp(_ app: AudioApp) {
         appListCoordinator.recordIgnore(app)
 
+        cancelProcessRebuild(for: app.id)
         if let tap = taps.removeValue(forKey: app.id) {
             tap.invalidate()
         }
@@ -587,6 +621,7 @@ final class AudioEngine {
         stopHealthMonitor()
         processMonitor.stop()
         deviceMonitor.stop()
+        cancelAllProcessRebuilds()
         for tap in taps.values {
             tap.invalidate()
         }
@@ -1312,10 +1347,13 @@ final class AudioEngine {
             appDeviceRouting[pid] = targetUID
         }
 
+        // Walk the taps, not the monitor's list: a paused app drops out of the list but keeps
+        // its tap while the process lives, and that tap must follow the default too or the
+        // app would resume on the old device (appliedPIDs blocks any later re-route).
         var tapsToSwitch: [(app: AudioApp, tap: any ProcessTapControlling)] = []
-        for app in apps {
-            guard followsDefault.contains(app.id), let tap = taps[app.id] else { continue }
-            tapsToSwitch.append((app, tap))
+        for pid in taps.keys.sorted() {
+            guard followsDefault.contains(pid), let tap = taps[pid] else { continue }
+            tapsToSwitch.append((tap.app, tap))
         }
         guard !tapsToSwitch.isEmpty else { return }
 
@@ -1836,26 +1874,17 @@ final class AudioEngine {
         for pid in stalePIDs {
             guard pendingCleanup[pid] == nil else { continue }  // Already pending
 
-            pendingCleanup[pid] = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled else { return }
-
-                // Double-check still stale
-                let currentPIDs = Set(self.apps.map { $0.id })
-                guard !currentPIDs.contains(pid) else {
-                    self.pendingCleanup.removeValue(forKey: pid)
-                    return
+            let grace = staleTapGrace
+            let poll = staleTapPollInterval
+            pendingCleanup[pid] = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: grace)
+                // After the grace, a process that is still running keeps its tap (a paused app
+                // drops out of the monitor's list but resumes later) and is re-checked every
+                // poll interval. `self?` keeps the engine unretained while the task sleeps.
+                while !Task.isCancelled {
+                    guard self?.staleCleanupShouldKeepPolling(pid) == true else { return }
+                    try? await Task.sleep(for: poll)
                 }
-
-                // Now safe to cleanup
-                if let tap = self.taps.removeValue(forKey: pid) {
-                    tap.invalidate()
-                    self.logger.debug("Cleaned up stale tap for PID \(pid)")
-                }
-                self.appDeviceRouting.removeValue(forKey: pid)
-                self.followsDefault.remove(pid)
-                self.appliedPIDs.remove(pid)  // Allow re-initialization if app resumes
-                self.pendingCleanup.removeValue(forKey: pid)
             }
         }
 
@@ -1873,6 +1902,158 @@ final class AudioEngine {
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
             self.cleanupStaleTaps()
+        }
+    }
+
+    /// One step of a stale-cleanup task, after the grace. Returns true while the tap should be
+    /// kept and re-checked later; false once the task is finished (reappeared or torn down).
+    private func staleCleanupShouldKeepPolling(_ pid: pid_t) -> Bool {
+        // The app is back in the monitor's list: nothing to clean up.
+        if apps.contains(where: { $0.id == pid }) {
+            pendingCleanup.removeValue(forKey: pid)
+            return false
+        }
+
+        // Absent from the list but the process still runs (paused): keep the tap, routing
+        // and volume state, so resuming plays through the tap instead of unprocessed.
+        if taps[pid] != nil, isProcessAliveCheck(pid) {
+            logger.debug("PID \(pid) absent but still running, keeping tap")
+            return true
+        }
+
+        // The process is gone: safe to cleanup
+        cancelProcessRebuild(for: pid)
+        if let tap = taps.removeValue(forKey: pid) {
+            tap.invalidate()
+            logger.debug("Cleaned up stale tap for PID \(pid)")
+        }
+        appDeviceRouting.removeValue(forKey: pid)
+        followsDefault.remove(pid)
+        appliedPIDs.remove(pid)  // Allow re-initialization if app resumes
+        pendingCleanup.removeValue(forKey: pid)
+        return false
+    }
+
+    // MARK: - Helper Process Sync
+
+    /// Per-pid state of a process-list rebuild: the debounce, the in-flight rebuild, and
+    /// whether a further change arrived while it ran (one coalesced rerun).
+    private final class ProcessRebuildState {
+        var debounce: Task<Void, Never>?
+        var rebuild: Task<Void, Never>?
+        var rerunNeeded = false
+    }
+
+    /// A tap is built around the app's process objects at creation. When the app later adds a
+    /// process object (a new Chrome tab helper), the tap must be rebuilt around the grown list
+    /// or that helper's audio plays unprocessed. A shrink alone never rebuilds: a dropped
+    /// object is just a helper that went quiet, and its tap input is harmless.
+    private func syncTapProcesses(_ apps: [AudioApp]) {
+        for app in apps {
+            guard let tap = taps[app.id], processListGrew(from: tap.app, to: app) else { continue }
+            scheduleProcessRebuild(for: app.id)
+        }
+    }
+
+    private func processListGrew(from tapApp: AudioApp, to current: AudioApp) -> Bool {
+        !Set(current.processObjectIDs).isSubset(of: Set(tapApp.processObjectIDs))
+    }
+
+    private func scheduleProcessRebuild(for pid: pid_t) {
+        let state = processRebuilds[pid] ?? ProcessRebuildState()
+        processRebuilds[pid] = state
+
+        // A rebuild is running: remember to look at the latest state once when it ends.
+        if state.rebuild != nil {
+            state.rerunNeeded = true
+            return
+        }
+
+        let delay = processRebuildDebounce
+        state.debounce?.cancel()
+        state.debounce = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.runProcessRebuild(for: pid)
+        }
+    }
+
+    /// Debounce fired: decide from the monitor's latest state, not from what scheduled it.
+    private func runProcessRebuild(for pid: pid_t) {
+        guard let state = processRebuilds[pid] else { return }
+        state.debounce = nil
+        state.rerunNeeded = false
+
+        guard let tap = taps[pid],
+              let current = apps.first(where: { $0.id == pid }),
+              current.bundleID == tap.app.bundleID,  // pid reuse by another app is not a helper
+              processListGrew(from: tap.app, to: current) else {
+            processRebuilds.removeValue(forKey: pid)
+            return
+        }
+
+        // Keep old objects that still exist (a paused helper is absent from the monitor's list
+        // but may resume), drop the ones that exited, add everything the monitor lists now.
+        let currentIDs = Set(current.processObjectIDs)
+        var ids = tap.app.processObjectIDs.filter { currentIDs.contains($0) || processObjectExistsCheck($0) }
+        for id in current.processObjectIDs where !ids.contains(id) {
+            ids.append(id)
+        }
+        // The same list already failed to rebuild: retrying it on every audio change anywhere
+        // would dip this app's audio over and over. A different list is tried again.
+        let attemptedIDs = Set(ids)
+        guard failedProcessLists[pid] != attemptedIDs else {
+            processRebuilds.removeValue(forKey: pid)
+            return
+        }
+        let newApp = AudioApp(
+            id: current.id,
+            processObjectIDs: ids,
+            name: current.name,
+            icon: current.icon,
+            bundleID: current.bundleID,
+            isHelperBacked: current.isHelperBacked
+        )
+
+        logger.info("[PROC] \(current.name, privacy: .public) (PID \(pid)) process list \(tap.app.processObjectIDs.count) → \(ids.count), rebuilding tap")
+        state.rebuild = Task { @MainActor [weak self] in
+            do {
+                try await tap.updateProcesses(newApp)
+                self?.failedProcessLists.removeValue(forKey: pid)
+            } catch is CancellationError {
+                // Torn down or superseded while rebuilding; nothing to recover.
+            } catch {
+                self?.logger.error("[PROC] Rebuild failed for PID \(pid): \(error.localizedDescription)")
+                self?.failedProcessLists[pid] = attemptedIDs
+            }
+            self?.finishProcessRebuild(for: pid, state: state)
+        }
+    }
+
+    private func finishProcessRebuild(for pid: pid_t, state: ProcessRebuildState) {
+        // Cancelled (tap torn down) while running: the state was already discarded.
+        guard processRebuilds[pid] === state else { return }
+        state.rebuild = nil
+        if state.rerunNeeded {
+            scheduleProcessRebuild(for: pid)
+        } else {
+            processRebuilds.removeValue(forKey: pid)
+        }
+    }
+
+    /// Cancels a pending or running rebuild for `pid`. Call wherever its tap is torn down.
+    private func cancelProcessRebuild(for pid: pid_t) {
+        failedProcessLists.removeValue(forKey: pid)
+        guard let state = processRebuilds.removeValue(forKey: pid) else { return }
+        state.rerunNeeded = false
+        state.debounce?.cancel()
+        state.rebuild?.cancel()
+    }
+
+    private func cancelAllProcessRebuilds() {
+        failedProcessLists.removeAll()
+        for pid in Array(processRebuilds.keys) {
+            cancelProcessRebuild(for: pid)
         }
     }
 
@@ -1943,6 +2124,7 @@ final class AudioEngine {
     /// to prevent orphaned IO procs from accumulating (issue #176).
     private func recreateTap(for pid: pid_t) async {
         guard let oldTap = taps.removeValue(forKey: pid) else { return }
+        cancelProcessRebuild(for: pid)
         let deviceUIDs = oldTap.currentDeviceUIDs
         await oldTap.invalidateAsync()
 
@@ -1983,15 +2165,25 @@ final class AudioEngine {
     /// Recreates the aggregate at the device's new rate for every tap on a BT output that changed
     /// sample rate (A2DP↔SCO), so each tap's IOProc re-rates to match. Falls back to a full tap
     /// recreate if the in-controller recreation throws.
-    private func handleBTDeviceSampleRateChanged(uid: String, newRate: Double) async {
+    func handleBTDeviceSampleRateChanged(uid: String, newRate: Double) async {
         logger.info("[RATE] BT output \(uid, privacy: .public) → \(newRate, format: .fixed(precision: 0)) Hz — recreating affected taps (clean dip)")
         let affected = taps.filter { $0.value.currentDeviceUIDs.contains(uid) }
         for (pid, tap) in affected {
             do {
                 logger.info("[RATE] Recreating tap for PID \(pid)")
                 try await tap.recreateForOutputRateChange()
+                // The tap may have been torn down or replaced while this awaited.
+                guard taps[pid] === tap else { continue }
+                // The rebuilt aggregate starts at default output state; put volume, mute and
+                // device state back or the app plays at full volume until the next change.
+                applyTapOutputState(to: tap, for: pid, deviceUIDs: tap.currentDeviceUIDs)
+            } catch is CancellationError {
+                // Superseded or torn down mid-rebuild; a full recreate would fight the newer owner.
+                logger.info("[RATE] Recreate cancelled for PID \(pid), skipping full recreate")
             } catch {
-                logger.error("[RATE] Recreate failed for PID \(pid): \(error.localizedDescription) — falling back to full recreate")
+                logger.error("[RATE] Recreate failed for PID \(pid): \(error.localizedDescription), falling back to full recreate")
+                // Only replace the tap that failed, never a newer replacement.
+                guard taps[pid] === tap else { continue }
                 await recreateTap(for: pid)
             }
         }

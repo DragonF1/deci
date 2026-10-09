@@ -46,7 +46,8 @@ final class RecordingProcessTapController: ProcessTapControlling {
         }
     }
 
-    let app: AudioApp
+    /// Settable so tests can model a controller that was rebuilt around a new process list.
+    var app: AudioApp
     private(set) var events: [Event] = []
 
     // Mutable surface — recorded as plain property writes (not events).
@@ -58,6 +59,24 @@ final class RecordingProcessTapController: ProcessTapControlling {
     private(set) var currentDeviceUIDs: [String]
     var currentDeviceUID: String? { currentDeviceUIDs.first }
     var tapSourceDeviceUID: String? = nil
+
+    // Process-list rebuilds (syncTapProcesses). Recorded outside `events` so the
+    // ordering assertions in the initial-state suite stay about activation only.
+    /// Object-ID list of every `updateProcesses` call, in call order.
+    private(set) var updateProcessesCalls: [[AudioObjectID]] = []
+    /// When non-zero, `updateProcesses` suspends this long (models a slow crossfade).
+    var updateProcessesDelay: Duration = .zero
+    /// When set, `updateProcesses` throws it after recording the call.
+    var updateProcessesError: (any Error)?
+    /// How many `updateProcesses` calls ended because their task was cancelled mid-rebuild.
+    private(set) var updateProcessesCancelCount = 0
+
+    // Sample-rate recreate (BT A2DP/SCO path).
+    private(set) var recreateForOutputRateChangeCallCount = 0
+    /// When set, `recreateForOutputRateChange` throws it after recording the call.
+    var recreateForOutputRateChangeError: (any Error)?
+    /// Models a rebuilt aggregate coming up with default output state (unity, unmuted).
+    var recreateResetsOutputState = false
 
     init(app: AudioApp, deviceUIDs: [String]) {
         self.app = app
@@ -104,6 +123,37 @@ final class RecordingProcessTapController: ProcessTapControlling {
     func isHealthCheckEligible(minActiveSeconds: Double) -> Bool { false }
 
     func refreshTapSource(_ preferredDeviceUID: String?) async throws {}
+
+    func updateProcesses(_ newApp: AudioApp) async throws {
+        updateProcessesCalls.append(newApp.processObjectIDs)
+        // Like the real controller, adopt the new list before the (slow) rebuild, and roll it
+        // back when the rebuild fails (the running tap still has the old list).
+        let previousApp = app
+        app = newApp
+        if updateProcessesDelay > .zero {
+            do {
+                try await Task.sleep(for: updateProcessesDelay)
+            } catch {
+                updateProcessesCancelCount += 1
+                throw error
+            }
+        }
+        if let updateProcessesError {
+            app = previousApp
+            throw updateProcessesError
+        }
+    }
+
+    func recreateForOutputRateChange() async throws {
+        recreateForOutputRateChangeCallCount += 1
+        if let recreateForOutputRateChangeError { throw recreateForOutputRateChangeError }
+        if recreateResetsOutputState {
+            volume = 1.0
+            isMuted = false
+            currentDeviceVolume = 1.0
+            isDeviceMuted = false
+        }
+    }
 }
 
 // MARK: - Process monitor stub

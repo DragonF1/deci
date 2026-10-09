@@ -23,7 +23,9 @@ import os
 
 @MainActor
 final class ProcessTapController: ProcessTapControlling {
-    let app: AudioApp
+    /// The process objects this tap captures. Replaced by `updateProcesses` when the app
+    /// gains helper processes after the tap was built.
+    private(set) var app: AudioApp
     private let logger: Logger
     // Note: This queue is passed to AudioDeviceCreateIOProcIDWithBlock but the actual
     // audio callback runs on CoreAudio's real-time HAL I/O thread, not this queue.
@@ -46,7 +48,8 @@ final class ProcessTapController: ProcessTapControlling {
     // The audio callback reads these values; the main thread writes them.
     // No lock is needed because single-word aligned loads/stores are atomic.
 
-    /// Target gain set by AudioEngine (volume × boost). Range 0.0-4.0 (1.0 = unity, 4.0 = +12dB).
+    /// Gain the audio callback applies (volume × boost). Range 0.0-4.0 (1.0 = unity, 4.0 = +12dB).
+    /// Mirrors `switchRamp.target` except while a destructive switch ramps it (see `volume`).
     private nonisolated(unsafe) var _volume: Float = 1.0
     /// Current ramped volume for primary tap (smoothly approaches _volume)
     private nonisolated(unsafe) var _primaryCurrentVolume: Float = 1.0
@@ -113,6 +116,10 @@ final class ProcessTapController: ProcessTapControlling {
     nonisolated private static let outputGateSilenceThreshold: Float = 0.0001
 
     // MARK: - Non-RT State (modified only from main thread)
+
+    /// Target volume plus the generation token of the active destructive switch.
+    /// Main-actor only; it publishes into the RT variables (`_volume`).
+    private var switchRamp = SwitchVolumeRamp()
 
     /// VU meter smoothing factor. 0.3 gives ~30ms attack/decay at typical 30fps UI refresh.
     /// Lower = smoother but slower response; higher = jittery but more responsive.
@@ -196,9 +203,16 @@ final class ProcessTapController: ProcessTapControlling {
         set { _isDeviceMuted = newValue }
     }
 
+    /// The gain AudioEngine wants (volume × boost). Reads and writes go through `switchRamp`
+    /// so a write during a destructive switch is kept as the new target instead of being
+    /// overwritten by (or lost to) the switch's own ramp of `_volume`.
     var volume: Float {
-        get { _volume }
-        set { _volume = newValue }
+        get { switchRamp.target }
+        set {
+            if let published = switchRamp.setTarget(newValue) {
+                _volume = published
+            }
+        }
     }
 
     var isMuted: Bool {
@@ -426,6 +440,8 @@ final class ProcessTapController: ProcessTapControlling {
     /// brief clean dip rather than a crackle. The switch can't be fully gapless: the BT link itself
     /// renegotiates across the profile change.
     func recreateForOutputRateChange() async throws {
+        // A crossfade promoting a secondary built at the old rate after this rebuild would undo it.
+        try await waitForSwitchesToSettle(includingDestructive: false)
         guard activated, let primaryUID = currentDeviceUIDs.first else { return }
         guard primaryResources.tapDescription != nil else { throw CrossfadeError.noTapDescription }
         logger.info("[RATE] \(self.app.name): recreating aggregate at new rate")
@@ -576,6 +592,15 @@ final class ProcessTapController: ProcessTapControlling {
         return (mixdownTap, mixdownTapID)
     }
 
+    /// Sizes the output gate's ramp and silence-hold windows (counted in samples) for the
+    /// aggregate's current rate. Call whenever that rate changes, not only on activate:
+    /// windows sized at 48 kHz are three times too long at 16 kHz (Bluetooth SCO).
+    private func applyOutputGateWindows(sampleRate: Double) {
+        let windows = OutputGateWindows(sampleRate: sampleRate)
+        _outputGateRampSamples = windows.rampSamples
+        _outputGateSilenceHoldSamples = windows.silenceHoldSamples
+    }
+
     func activate(initial: TapInitialState) throws {
         guard !activated else { return }
 
@@ -686,8 +711,7 @@ final class ProcessTapController: ProcessTapControlling {
         _outputGateRawPhase = 0
         _outputGateProgress = 0
         _outputGateSilentSamples = 0
-        _outputGateRampSamples = Float(sampleRate) * 0.040
-        _outputGateSilenceHoldSamples = Int32(sampleRate * 0.200)
+        applyOutputGateWindows(sampleRate: sampleRate)
 
         err = AudioDeviceStart(primaryResources.aggregateDeviceID, primaryResources.deviceProcID)
         guard err == noErr else {
@@ -736,14 +760,25 @@ final class ProcessTapController: ProcessTapControlling {
             guard primaryResources.tapDescription != nil else {
                 throw CrossfadeError.noTapDescription
             }
-            try await performDestructiveDeviceSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs, sourceAlreadySilent: true)
+            do {
+                // A crossfade still running would promote its secondary over this rebuild.
+                try await waitForSwitchesToSettle(includingDestructive: false)
+                guard activated else { return }
+                try await performDestructiveDeviceSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs, sourceAlreadySilent: true)
+            } catch is CancellationError {
+                // Superseded or invalidated mid-switch: the newer owner decides the device set.
+                logger.info("[UPDATE] Destructive switch cancelled")
+                return
+            }
         } else {
             crossfadeTask?.cancel()
-            crossfadeTask = Task {
+            let task = Task {
                 try await performCrossfadeSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs)
             }
+            crossfadeTask = task
+            defer { if crossfadeTask == task { crossfadeTask = nil } }
             do {
-                try await crossfadeTask!.value
+                try await task.value
             } catch is CancellationError {
                 logger.info("[UPDATE] Crossfade cancelled by invalidate()")
                 return
@@ -752,13 +787,18 @@ final class ProcessTapController: ProcessTapControlling {
                 guard primaryResources.tapDescription != nil else {
                     throw CrossfadeError.noTapDescription
                 }
-                try await performDestructiveDeviceSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs)
+                do {
+                    try await performDestructiveDeviceSwitch(to: primaryDeviceUID, allDeviceUIDs: newDeviceUIDs)
+                } catch is CancellationError {
+                    logger.info("[UPDATE] Fallback destructive switch cancelled")
+                    return
+                }
             }
-            crossfadeTask = nil
         }
 
-        targetDeviceUIDs = newDeviceUIDs
-        currentDeviceUIDs = newDeviceUIDs
+        // Device UIDs are recorded by the switch itself (crossfade promotion or
+        // performDeviceSwitch), in the same main-actor step that swaps the aggregate. Writing
+        // them here, after the await, could overwrite a newer switch's devices.
 
         let endTime = CFAbsoluteTimeGetCurrent()
         logger.info("[UPDATE] === END === Total time: \((endTime - startTime) * 1000)ms")
@@ -777,11 +817,13 @@ final class ProcessTapController: ProcessTapControlling {
         logger.info("[REFRESH] Tap source changing for \(self.app.name): \(oldPreferred ?? "mixdown") → \(preferredDeviceUID ?? "mixdown")")
 
         crossfadeTask?.cancel()
-        crossfadeTask = Task {
+        let task = Task {
             try await performCrossfadeSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
         }
+        crossfadeTask = task
+        defer { if crossfadeTask == task { crossfadeTask = nil } }
         do {
-            try await crossfadeTask!.value
+            try await task.value
         } catch is CancellationError {
             logger.info("[REFRESH] Tap source refresh cancelled")
             return
@@ -790,11 +832,94 @@ final class ProcessTapController: ProcessTapControlling {
             guard primaryResources.tapDescription != nil else {
                 throw CrossfadeError.noTapDescription
             }
-            try await performDestructiveDeviceSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
+            do {
+                try await performDestructiveDeviceSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
+            } catch is CancellationError {
+                logger.info("[REFRESH] Fallback destructive switch cancelled")
+                return
+            }
         }
-        crossfadeTask = nil
 
         logger.info("[REFRESH] Tap source refresh complete for \(self.app.name)")
+    }
+
+    /// Rebuilds the tap around a new process list. The tap captures the process objects it was
+    /// created with, so a helper that appears later (a new browser tab process) is not captured
+    /// until the tap is rebuilt. Crossfades to the same devices (gapless), falling back to a
+    /// destructive switch, exactly like `refreshTapSource`.
+    func updateProcesses(_ newApp: AudioApp) async throws {
+        guard activated else {
+            app = newApp
+            return
+        }
+        guard Set(newApp.processObjectIDs) != Set(app.processObjectIDs) else { return }
+
+        // A crossfade or destructive switch is already running: let it finish first so the two
+        // do not tear down each other's taps, and so the device set read below is final.
+        try await waitForSwitchesToSettle(includingDestructive: true)
+
+        guard activated else {
+            app = newApp
+            return
+        }
+        guard Set(newApp.processObjectIDs) != Set(app.processObjectIDs),
+              let primaryUID = currentDeviceUIDs.first else { return }
+
+        let previousApp = app
+        app = newApp  // The new tap must be created around the new list.
+        let allUIDs = currentDeviceUIDs
+        logger.info("[PROCESSES] \(newApp.name): \(previousApp.processObjectIDs.count) → \(newApp.processObjectIDs.count) process object(s), rebuilding tap")
+
+        let task = Task {
+            try await performCrossfadeSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
+        }
+        crossfadeTask = task
+        defer { if crossfadeTask == task { crossfadeTask = nil } }
+        do {
+            try await task.value
+        } catch is CancellationError {
+            logger.info("[PROCESSES] Rebuild cancelled")
+            return
+        } catch {
+            logger.warning("[PROCESSES] Crossfade failed, using destructive switch: \(error.localizedDescription)")
+            guard primaryResources.tapDescription != nil else {
+                app = previousApp
+                throw CrossfadeError.noTapDescription
+            }
+            do {
+                try await performDestructiveDeviceSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
+            } catch is CancellationError {
+                logger.info("[PROCESSES] Fallback destructive switch cancelled")
+                return
+            } catch {
+                // The running tap still has the old process list; report that, so a later
+                // change is compared against what is really captured and tried again.
+                app = previousApp
+                throw error
+            }
+        }
+
+        logger.info("[PROCESSES] Tap rebuilt for \(self.app.name)")
+    }
+
+    /// Waits until no crossfade (and, if asked, no destructive switch) is running. Switches
+    /// must not overlap: a crossfade promotes its secondary over whatever the primary is by
+    /// then, so a rebuild that lands mid-crossfade is silently undone. Each awaited switch's
+    /// outcome belongs to its own caller. Re-checks after every wait, since a new switch may
+    /// have started meanwhile.
+    private func waitForSwitchesToSettle(includingDestructive: Bool) async throws {
+        var waited: Task<Void, Error>?
+        while true {
+            if let inFlight = crossfadeTask, inFlight != waited {
+                waited = inFlight
+                _ = try? await inFlight.value
+            } else if includingDestructive, switchRamp.isRamping {
+                try await Task.sleep(for: .milliseconds(20))
+            } else {
+                break
+            }
+        }
+        try Task.checkCancellation()
     }
 
     /// Tears down the tap and releases all CoreAudio resources.
@@ -854,6 +979,13 @@ final class ProcessTapController: ProcessTapControlling {
         crossfadeState.complete()
         _primaryCallbackID = 0
         _secondaryCallbackID = 0
+
+        // Retire any destructive switch in flight (its token goes stale, so it can no longer
+        // touch volume) and leave the RT variables at rest: a re-activated controller must not
+        // start silent or at a half-ramped volume.
+        _forceSilence = false
+        _volume = switchRamp.cancelAll()
+        OSMemoryBarrier()
 
         return true
     }
@@ -954,6 +1086,10 @@ final class ProcessTapController: ProcessTapControlling {
 
         destroyPrimaryTap()
         promoteSecondaryToPrimary()
+        // Record the devices in the same step that swaps the aggregate, so anyone resuming
+        // after this crossfade reads the device set that is really playing.
+        targetDeviceUIDs = deviceUIDs
+        currentDeviceUIDs = deviceUIDs
 
         crossfadeState.complete()
         crossfadeCompleted = true
@@ -1086,6 +1222,8 @@ final class ProcessTapController: ProcessTapControlling {
         if let deviceSampleRate = try? primaryResources.aggregateDeviceID.readNominalSampleRate() {
             let rampTimeSeconds: Float = 0.030
             rampCoefficient = 1 - exp(-1 / (Float(deviceSampleRate) * rampTimeSeconds))
+            // The new device may run at another rate than the one activate sized the gate for.
+            applyOutputGateWindows(sampleRate: deviceSampleRate)
         }
 
         // Adopt secondary EQ processors as primary.
@@ -1137,17 +1275,29 @@ final class ProcessTapController: ProcessTapControlling {
     ///   pre-switch silence wait and uses a shorter post-switch settle time.
     private func performDestructiveDeviceSwitch(to primaryDeviceUID: String, allDeviceUIDs: [String]? = nil, sourceAlreadySilent: Bool = false) async throws {
         let deviceUIDs = allDeviceUIDs ?? [primaryDeviceUID]
-        let originalVolume = _volume
+
+        // This switch owns _volume and _forceSilence until it ends. A newer switch or an
+        // invalidate makes the token stale, and a stale switch must not touch either again.
+        let token = switchRamp.begin()
 
         _forceSilence = true
         OSMemoryBarrier()
-        // LIFE-011: Ensure _forceSilence is always cleared, even if switch throws
-        defer { _forceSilence = false; OSMemoryBarrier() }
+        // LIFE-011: Ensure _forceSilence is always cleared, even if switch throws. Restore from
+        // the live target (not a snapshot taken at the start, which could be a mid-ramp value
+        // of an overlapping switch), and only if this switch is still the current one.
+        defer {
+            if let restored = switchRamp.finish(token) {
+                _forceSilence = false
+                _volume = restored
+                OSMemoryBarrier()
+            }
+        }
         logger.info("[SWITCH-DESTROY] Enabled _forceSilence=true (sourceAlreadySilent=\(sourceAlreadySilent))")
 
         if !sourceAlreadySilent {
             // Wait for current audio to drain before tearing down the old device
             try await Task.sleep(for: .milliseconds(100))
+            try ensureCurrent(token)
         }
 
         try performDeviceSwitch(to: deviceUIDs)
@@ -1158,15 +1308,29 @@ final class ProcessTapController: ProcessTapControlling {
         // Post-switch settle: shorter when source was already silent (no old audio to drain)
         let settleMs = sourceAlreadySilent ? 80 : 150
         try await Task.sleep(for: .milliseconds(settleMs))
+        try ensureCurrent(token)
 
         _forceSilence = false
 
-        for i in 1...10 {
-            _volume = originalVolume * Float(i) / 10.0
+        // Ramp up toward the live target; the last step lands exactly on it.
+        let steps = 10
+        for i in 1...steps {
+            _volume = switchRamp.stepVolume(step: i, of: steps)
             try await Task.sleep(for: .milliseconds(20))
+            try ensureCurrent(token)
         }
 
         logger.info("[SWITCH-DESTROY] Complete")
+    }
+
+    /// Throws CancellationError unless the tap is still active and `token` is the newest
+    /// destructive switch. Called after every await in the switch so a superseded or
+    /// invalidated switch stops before touching volume or silence.
+    private func ensureCurrent(_ token: SwitchVolumeRamp.Token) throws {
+        guard activated, switchRamp.isCurrent(token) else {
+            logger.info("[SWITCH-DESTROY] Superseded or invalidated, abandoning switch")
+            throw CancellationError()
+        }
     }
 
     private func performDeviceSwitch(to outputUIDs: [String]) throws {
@@ -1209,6 +1373,9 @@ final class ProcessTapController: ProcessTapControlling {
             throw CrossfadeError.deviceNotReady
         }
 
+        // If the new proc fails to create or start, hand the primary role back to the old proc,
+        // or it keeps running as "stale" and outputs silence forever.
+        let previousCallbackID = _primaryCallbackID
         nextCallbackID += 1
         _primaryCallbackID = nextCallbackID
         let switchCallbackID = nextCallbackID
@@ -1225,6 +1392,7 @@ final class ProcessTapController: ProcessTapControlling {
         }
         guard err == noErr else {
             newResources.destroy()
+            _primaryCallbackID = previousCallbackID
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -1233,6 +1401,7 @@ final class ProcessTapController: ProcessTapControlling {
         err = AudioDeviceStart(newResources.aggregateDeviceID, newResources.deviceProcID)
         guard err == noErr else {
             newResources.destroy()
+            _primaryCallbackID = previousCallbackID
             throw CrossfadeError.tapCreationFailed(err)
         }
 
@@ -1244,6 +1413,7 @@ final class ProcessTapController: ProcessTapControlling {
 
         if let deviceSampleRate = try? primaryResources.aggregateDeviceID.readNominalSampleRate() {
             rampCoefficient = 1 - exp(-1 / (Float(deviceSampleRate) * 0.030))
+            applyOutputGateWindows(sampleRate: deviceSampleRate)
             eqProcessor?.updateSampleRate(deviceSampleRate)
             autoEQProcessor?.updateSampleRate(deviceSampleRate)
             loudnessCompensator?.updateSampleRate(deviceSampleRate)
@@ -1553,8 +1723,10 @@ final class ProcessTapController: ProcessTapControlling {
         // Advance the gate before the _isMuted early-return: feeding synthetic silence
         // while muted lets _outputGateSilentSamples accumulate and re-arm the gate after
         // the silence hold, so unmute after a long mute still gets a fade-in.
-        // _forceSilence is left to the destructive-switch path, which always pairs with
-        // a fresh activate(initial:) and so resets gate state.
+        // A destructive switch does not call activate, and _forceSilence returns above before
+        // the gate advances, so the gate keeps its phase across the switch (the switch's volume
+        // ramp provides the fade-in). Only the window sizes change, and
+        // applyOutputGateWindows re-rates them whenever the aggregate's rate changes.
         let outputGateMultiplier: Float
         if isPrimary {
             let gateInputPeak: Float = _isMuted ? 0.0 : rawPeak
