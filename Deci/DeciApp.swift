@@ -100,6 +100,14 @@ struct DeciApp: App {
         }
     }
 
+    /// Tells the Chrome bridge which tabs to track. While tabs are on, also makes sure Chrome
+    /// can find DeciHost (a no-op when the manifest is already right, and skipped unless
+    /// Deci runs from an Applications folder with Chrome installed).
+    private static func applyChromeTracking(tabs: Bool, incognito: Bool) {
+        ChromeExtensionManager.shared.setTracking(tabs: tabs, incognito: incognito)
+        if tabs { ChromeExtensionInstaller.live().ensureHostManifestLoggingErrors() }
+    }
+
     init() {
         // Install crash handler to clean up aggregate devices on abnormal exit
         CrashGuard.install()
@@ -116,8 +124,15 @@ struct DeciApp: App {
         let engine = AudioEngine(permission: permission, settingsManager: settings, autoEQProfileManager: profileManager)
         _audioEngine = State(initialValue: engine)
 
-        // Initialize Chrome extension manager for tab audio control
-        _ = ChromeExtensionManager.shared
+        // Initialize Chrome extension manager for tab audio control, with the saved tracking
+        // switches. Every later change (Settings toggles, Reset All) arrives through the hook.
+        Self.applyChromeTracking(
+            tabs: settings.appSettings.chromeTabsEnabled,
+            incognito: settings.appSettings.chromeIncognitoEnabled
+        )
+        settings.onChromeTrackingChange = { tabs, incognito in
+            Self.applyChromeTracking(tabs: tabs, incognito: incognito)
+        }
 
         // Media keys / HUD services — instantiated at app scope so the tap
         // and HUD panel outlive popup open/close cycles.

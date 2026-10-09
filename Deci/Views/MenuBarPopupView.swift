@@ -154,7 +154,7 @@ struct MenuBarPopupView: View {
             updateSortedInputDevices()
             pairedDevices = audioEngine.bluetoothDeviceMonitor.pairedDevices
             isBluetoothOn = audioEngine.bluetoothDeviceMonitor.isBluetoothOn
-            ChromeExtensionManager.shared.requestTabs()
+            requestChromeTabs()
             // popupVisibility.isVisible is driven by the filtered NSWindow key
             // notifications below, not by .onAppear — SwiftUI mounts this view
             // before the popup is actually shown, and setting isVisible here
@@ -211,7 +211,7 @@ struct MenuBarPopupView: View {
             isPopupVisible = true
             popupVisibility.isVisible = true
             audioEngine.bluetoothDeviceMonitor.refresh()
-            ChromeExtensionManager.shared.requestTabs()
+            requestChromeTabs()
             syncNavOrder()
             hasKeyboardEngaged = false
             selectedRow = nil
@@ -241,7 +241,7 @@ struct MenuBarPopupView: View {
             if chromeTickCount % 10 == 0 {
                 // Re-checks the connection while the popup stays open, so a Chrome quit
                 // or host crash clears stale tabs instead of leaving dead controls.
-                chromeManager.requestTabs()
+                requestChromeTabs()
             }
             if chromeTickCount % 2 == 0 {
                 // The tab list itself is pushed by the extension on every change;
@@ -768,12 +768,19 @@ struct MenuBarPopupView: View {
             appsContent(scrollProxy: scrollProxy)
         }
 
-        if permission.status == .authorized && !isEditingDevicePriority {
+        if permission.status == .authorized && !isEditingDevicePriority && chromeManager.trackingTabs {
             chromeHints
         }
     }
 
     // MARK: - Chrome Extension Hints
+
+    /// Asks Chrome for its tabs. Nothing to ask while Chrome tabs are switched off in Settings
+    /// (Settings probes the connection itself).
+    private func requestChromeTabs() {
+        guard chromeManager.trackingTabs else { return }
+        chromeManager.requestTabs()
+    }
 
     private static let chromeBundleID = "com.google.Chrome"
 
@@ -791,7 +798,9 @@ struct MenuBarPopupView: View {
             && chromeManager.hasConnectedBefore
             && Self.isChromeRunning()
         let showDeviceAccess = chromeManager.needsDeviceAccess
-        let showIncognito = connection == .connected && !chromeManager.incognitoAllowed
+        let showIncognito = connection == .connected
+            && chromeManager.trackingIncognito
+            && !chromeManager.incognitoAllowed
 
         if showDisconnected || showDeviceAccess || showIncognito {
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {

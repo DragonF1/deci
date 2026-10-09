@@ -10,6 +10,7 @@
 		140F6FF7C7CD8F6C1D73121E /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = 75DA616DEB24648C4BDE9092 /* KeyboardShortcuts */; };
 		7980FFE92F261AA200AF5F85 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 79SPARK012F0600000008D52 /* Sparkle */; };
 		7988AE522F1CC55900E6D086 /* fineTuneIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 7988AE512F1CC55900E6D086 /* fineTuneIcon.icon */; };
+		7C1E4A5B2F8D0C3A9B6E7D01 /* ChromeExtension in Resources */ = {isa = PBXBuildFile; fileRef = 7C1E4A5B2F8D0C3A9B6E7D02 /* ChromeExtension */; };
 		79B1000B2F35000000000002 /* IOBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 79B1000A2F35000000000001 /* IOBluetooth.framework */; settings = {ATTRIBUTES = (Weak, ); }; };
 		79C80E5A2F12FF510021442B /* SnapshotTesting in Frameworks */ = {isa = PBXBuildFile; productRef = 79SNAP0012F0600000008D52A /* SnapshotTesting */; };
 		79FLUID0012F0600000008D52 /* FluidMenuBarExtra in Frameworks */ = {isa = PBXBuildFile; productRef = 79FLUID0022F0600000008D52 /* FluidMenuBarExtra */; };
@@ -34,6 +35,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		7C1E4A5B2F8D0C3A9B6E7D02 /* ChromeExtension */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ChromeExtension; sourceTree = "<group>"; };
 		7988AE512F1CC55900E6D086 /* fineTuneIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = fineTuneIcon.icon; sourceTree = "<group>"; };
 		79A607AF2F05C9E00008D52A /* Deci.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Deci.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		79A607BC2F05C9E10008D52A /* DeciTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DeciTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -106,6 +108,7 @@
 				79A607C92F05C9E10008D52A /* DeciUITests */,
 				79A607B02F05C9E00008D52A /* Products */,
 				7988AE512F1CC55900E6D086 /* fineTuneIcon.icon */,
+				7C1E4A5B2F8D0C3A9B6E7D02 /* ChromeExtension */,
 				795C94762F4FF3BC004F0492 /* Recovered References */,
 			);
 			sourceTree = "<group>";
@@ -250,6 +253,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7988AE522F1CC55900E6D086 /* fineTuneIcon.icon in Resources */,
+				7C1E4A5B2F8D0C3A9B6E7D01 /* ChromeExtension in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

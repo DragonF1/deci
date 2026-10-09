@@ -39,13 +39,22 @@
  *                                                 (mic permission missing), playing on default
  *                                    (app treats unknown or missing values as "default")
  *     } ],
- *     deviceAccess: boolean          true when the extension origin may read output
+ *     deviceAccess: boolean,         true when the extension origin may read output
  *                                    device labels (mic permission granted). Missing
  *                                    means an older extension: app treats it as true.
+ *     tracking: { tabs: boolean, incognito: boolean }
+ *                                    echo of the tracking switch the app last set on this
+ *                                    port (see SET_TRACKING and TRACKING below). tabs is []
+ *                                    when tracking.tabs is false; tabs with incognito: true
+ *                                    are left out when tracking.incognito is false. Missing
+ *                                    while the gate is closed (a new native port that has
+ *                                    not yet sent SET_TRACKING): tabs is [] then too, and
+ *                                    the app answers a missing echo with SET_TRACKING.
  *   }
  *   MEDIA_STATE { type: "MEDIA_STATE", tabId: int, paused: boolean,
  *                 currentTime: number, duration: number }
- *     (sent only when the page has a media element)
+ *     (sent only when the page has a media element, and never for a tab hidden by
+ *     the tracking switch or while the gate is closed)
  *
  * App to extension:
  *   GET_TABS {}                              reply with a TAB_LIST push
@@ -58,7 +67,36 @@
  *   OPEN_DEVICE_PERMISSION {}                open (or focus) permissions.html so the
  *                                            user can grant the one-time mic prompt
  *   TOGGLE_PLAYBACK { tabId }
- *   GET_MEDIA_STATE { tabId }                reply with one MEDIA_STATE
+ *   GET_MEDIA_STATE { tabId }                reply with one MEDIA_STATE (nothing for a
+ *                                            hidden tab or while the gate is closed, see
+ *                                            TRACKING)
+ *   SET_TRACKING { tabs, incognito }         booleans: what the extension may report.
+ *                                            Stored when the value changed, and it opens
+ *                                            the gate of the current port. A fresh
+ *                                            TAB_LIST follows when the value changed or
+ *                                            the gate just opened. One boolean alone
+ *                                            changes only that field; a message with no
+ *                                            boolean field is ignored.
+ *
+ * TRACKING. The app can switch off what the extension reports about tabs. A tab is
+ * HIDDEN when tracking.tabs is false, or when tracking.incognito is false and the tab is
+ * incognito. A hidden tab is left out of TAB_LIST and gets no MEDIA_STATE, so its title,
+ * URL and favicon never leave Chrome. TAB_LIST is still sent while everything is hidden
+ * (with tabs: []), so the app sees the tracking echo and the connection stays alive; the
+ * app resends SET_TRACKING when the echo differs from what it wants. Tracking changes only
+ * what is reported: capture, auto mode, page control, badges and per-tab volume, boost,
+ * EQ and device work exactly as before, and SET_TAB_* commands are still honored.
+ *
+ * PRIVACY GATE. The stored switch can be stale, so it never decides what a new connection
+ * hears. Every new native port (and every worker start) begins with the gate CLOSED: all
+ * tabs count as hidden, so TAB_LIST goes out with tabs: [] and without the tracking echo,
+ * and MEDIA_STATE posts nothing. The app treats the missing echo as a mismatch and answers
+ * with SET_TRACKING (it also sends SET_TRACKING before every GET_TABS). A valid
+ * SET_TRACKING opens the gate for the port it arrived on and pushes a fresh TAB_LIST with
+ * the real tabs and the echo. A reconnect makes a new port, which closes the gate again.
+ * The stored value, or the default { tabs: true, incognito: false } when nothing is stored,
+ * only fills in the field a one-boolean SET_TRACKING leaves out and tells whether a
+ * SET_TRACKING changed anything.
  *
  * AUTO MODE. Enabling Deci on one tab (toolbar click or command) turns on auto mode
  * for that tab's track: "normal" tabs or "incognito" tabs, the two never mix. Tabs
@@ -124,6 +162,11 @@
  *   chrome.storage.local    'autoTracks' -> { normal: boolean, incognito: boolean }
  *                           (default both false; set true by a successful capture start from
  *                           a click or the command, either one changed by the menu checkbox)
+ *   chrome.storage.local    'tracking' -> { tabs: boolean, incognito: boolean }
+ *                           (written by SET_TRACKING only when the value changed; default
+ *                           both true; read at worker start to merge a one-boolean
+ *                           SET_TRACKING; never decides what a new port is told, see
+ *                           PRIVACY GATE)
  *   chrome.storage.local    'deviceAccess' -> boolean (last known; default false)
  *   chrome.storage.session  'knownTabs' -> [tab ids that were audible this session]
  *   chrome.storage.session  'pageBlocked' -> [origins whose media turned unreadable in-page]
@@ -308,6 +351,70 @@ async function loadAutoTracks() {
 // controlOf for a real tab, with the live track flags.
 function tabControl(st, tab) {
   return controlOf(st, trackOf(tab), autoTracks);
+}
+
+// ---------------------------------------------------------------------------
+// Tracking switch (chrome.storage.local 'tracking'), warm in memory. It only
+// decides what the app is told about tabs, never how audio is handled.
+//
+// PRIVACY GATE. The stored value may be stale, so it never decides what a new
+// native port hears. trackingConfirmed is false at worker start and again for
+// every new native port (connect()); while it is false nothing counts as
+// reported and the TAB_LIST carries no echo. Only a valid SET_TRACKING from the
+// app opens it. Whatever reports tab data reads isReported() and `tracking`
+// with no await in between, so the filter and the echo always agree.
+// ---------------------------------------------------------------------------
+
+let tracking = { tabs: true, incognito: false };
+let trackingLoaded = false;
+// Invariant: trackingConfirmed implies trackingLoaded (setTracking sets both).
+let trackingConfirmed = false;
+
+// Missing or malformed values fall back to the defaults: tabs shown, incognito hidden.
+function normalizeTracking(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  return { tabs: r.tabs !== false, incognito: r.incognito === true };
+}
+
+// Reads the stored value for a SET_TRACKING that carries one boolean only, and
+// for the unchanged-write check. It never opens the gate.
+async function loadTracking() {
+  if (trackingLoaded) return;
+  // A failed read throws and leaves tracking unloaded; the next call reads again.
+  const stored = await chrome.storage.local.get('tracking');
+  if (trackingLoaded) return; // a SET_TRACKING landed while this read was pending
+  tracking = normalizeTracking(stored.tracking);
+  trackingLoaded = true;
+}
+
+// Whether the app may hear about this tab (see TRACKING in the header). Nothing
+// is reported until the app has confirmed the switch on the current port.
+function isReported(tab) {
+  return trackingConfirmed && !!tab && tracking.tabs && (!tab.incognito || tracking.incognito);
+}
+
+// SET_TRACKING: a boolean field replaces its value, anything else keeps it.
+// The value is stored only when it changed. A fresh TAB_LIST follows when it
+// changed or when this message opened the gate for the port it arrived on.
+async function setTracking(msg) {
+  const hasTabs = typeof msg.tabs === 'boolean';
+  const hasIncognito = typeof msg.incognito === 'boolean';
+  if (!hasTabs && !hasIncognito) return;
+  const fromPort = port; // the gate belongs to this port, not to whichever is current later
+  // A full message needs no stored value; a partial one starts from it.
+  if (!(hasTabs && hasIncognito)) await loadTracking();
+  const next = {
+    tabs: hasTabs ? msg.tabs : tracking.tabs,
+    incognito: hasIncognito ? msg.incognito : tracking.incognito
+  };
+  // Unchanged is only known once the stored value has been read.
+  const unchanged = trackingLoaded && next.tabs === tracking.tabs && next.incognito === tracking.incognito;
+  const opensGate = !trackingConfirmed && !!fromPort && port === fromPort;
+  tracking = next;
+  trackingLoaded = true;
+  if (opensGate) trackingConfirmed = true;
+  if (!unchanged) await chrome.storage.local.set({ tracking }).catch(logError('tracking write'));
+  if (!unchanged || opensGate) schedulePush();
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,6 +1146,8 @@ async function sendTabList() {
     chrome.extension.isAllowedIncognitoAccess(),
     getDeviceAccess()
   ]);
+  // The gate and `tracking` are read from here to the post with no await in
+  // between, so the filter and the echo always agree.
 
   const liveIds = new Set();
   let knownChanged = false;
@@ -1055,6 +1164,10 @@ async function sendTabList() {
     const control = tabControl(st, t);
     // A page-controlled tab is listed like a captured one.
     if (!t.audible && control === 'none' && !store.known.has(t.id)) continue;
+    // Hidden by the tracking switch, or the gate is still closed on this port.
+    // Bookkeeping above and all audio handling are unchanged; only the report
+    // leaves the tab out.
+    if (!isReported(t)) continue;
     const s = st || defaultState();
     list.push({
       id: t.id,
@@ -1091,6 +1204,9 @@ async function sendTabList() {
     tabs: list,
     deviceAccess: access === true
   };
+  // No echo while the gate is closed: the app reads that as a mismatch and
+  // answers with SET_TRACKING.
+  if (trackingConfirmed) message.tracking = { tabs: tracking.tabs, incognito: tracking.incognito };
   // Keep the message far below the native messaging limit: drop the largest
   // (data URL) favicons first if the list is unusually heavy.
   let size = JSON.stringify(message).length;
@@ -1178,9 +1294,14 @@ function togglePlayback() {
 
 async function sendMediaState(tabId) {
   try {
+    // A hidden tab (or any tab while the gate is closed) is not asked at all, and
+    // not answered if the switch flips or the port changes while the page script
+    // runs. An unknown tab has nothing to report.
+    const tab = await getTab(tabId);
+    if (!isReported(tab)) return;
     const results = await chrome.scripting.executeScript({ target: { tabId }, func: getMediaState });
     const state = results && results[0] && results[0].result;
-    if (state) postToNative({ type: 'MEDIA_STATE', tabId, ...state });
+    if (state && isReported(tab)) postToNative({ type: 'MEDIA_STATE', tabId, ...state });
   } catch (err) {
     console.warn(`Deci: media state for tab ${tabId} failed:`, errorText(err));
   }
@@ -1263,6 +1384,10 @@ function handleNativeMessage(msg) {
     openPermissionPageOnce().catch(logError('OPEN_DEVICE_PERMISSION'));
     return;
   }
+  if (type === 'SET_TRACKING') {
+    setTracking(msg).catch(logError('SET_TRACKING'));
+    return;
+  }
   if (!Number.isInteger(tabId)) return;
   switch (type) {
     case 'SET_TAB_VOLUME':
@@ -1337,6 +1462,8 @@ function connect() {
     return;
   }
   port = p;
+  // A new port starts with the privacy gate closed (see the tracking block).
+  trackingConfirmed = false;
   let gotMessage = false;
   // A connection that survives a few seconds counts as healthy.
   stableTimer = setTimeout(() => { retryDelay = RETRY_MIN_MS; }, STABLE_CONNECTION_MS);
@@ -1392,6 +1519,7 @@ chrome.alarms.get(RECONNECT_ALARM).then((alarm) => {
 }).catch(logError('alarm setup'));
 
 ready().catch(logError('startup state load'));
+loadTracking().catch(logError('tracking read'));
 syncAutoMenu();
 // Never throws (async); if the Permissions API is unusable here, the
 // offscreen document and permissions.html still report access.

@@ -19,6 +19,12 @@ final class ChromeExtensionManager: NSObject {
     /// installed the optional extension would be told it is "not connected" on every open.
     private(set) var hasConnectedBefore: Bool = false
 
+    /// Which tabs Deci wants. Set from the Chrome section in Settings; the extension is told
+    /// with SET_TRACKING and the stored `chromeTabs` never holds a hidden tab.
+    private(set) var tracking = ChromeTracking(tabs: true, incognito: false)
+    var trackingTabs: Bool { tracking.tabs }
+    var trackingIncognito: Bool { tracking.incognito }
+
     /// True when per-tab device choices exist that the extension cannot resolve yet
     /// because device names are unreadable.
     var needsDeviceAccess: Bool {
@@ -41,6 +47,10 @@ final class ChromeExtensionManager: NSObject {
     /// was built before the extension had applied it.
     private static let pendingWindow: TimeInterval = 1.5
     @ObservationIgnored private var pendingUntil: [Int: Date] = [:]
+    /// Handshake bookkeeping: the last `tracking` echo seen in a TAB_LIST (nil = none), and
+    /// whether the mismatch it showed was already answered with a SET_TRACKING.
+    @ObservationIgnored private var lastTrackingEcho: ChromeTracking?
+    @ObservationIgnored private var trackingMismatchAnswered = false
     @ObservationIgnored private let persistsConnection: Bool
     private static let hasConnectedKey = "chromeExtensionHasConnected"
     
@@ -89,12 +99,13 @@ final class ChromeExtensionManager: NSObject {
                 if parsed.deviceAccess {
                     devicePermissionRequested = false
                 }
+                answerTrackingEcho(parsed.tracking)
 
                 let now = Date()
                 let previous = chromeTabs
                 let newTabs = Self.merge(
                     existing: previous,
-                    incoming: parsed.tabs,
+                    incoming: Self.visibleTabs(parsed.tabs, tracking: tracking),
                     pendingUntil: pendingUntil,
                     now: now
                 )
@@ -131,10 +142,17 @@ final class ChromeExtensionManager: NSObject {
     }
     
     /// Parses a TAB_LIST message. Pure: no state, no side effects.
-    static func parseTabList(_ json: [String: Any]) -> (tabs: [ChromeTab], incognitoAllowed: Bool, deviceAccess: Bool) {
+    static func parseTabList(_ json: [String: Any]) -> (tabs: [ChromeTab], incognitoAllowed: Bool, deviceAccess: Bool, tracking: ChromeTracking?) {
         let incognitoAllowed = json["incognitoAllowed"] as? Bool ?? true
         // Missing means an older extension that routes nothing and never asks for access.
         let deviceAccess = json["deviceAccess"] as? Bool ?? true
+        // The extension's stored switches. Missing or incomplete means an older extension.
+        var echo: ChromeTracking?
+        if let raw = json["tracking"] as? [String: Any],
+           let tabs = raw["tabs"] as? Bool,
+           let incognito = raw["incognito"] as? Bool {
+            echo = ChromeTracking(tabs: tabs, incognito: incognito)
+        }
         let rawTabs = json["tabs"] as? [[String: Any]] ?? []
 
         var tabs: [ChromeTab] = []
@@ -168,7 +186,14 @@ final class ChromeExtensionManager: NSObject {
             tab.deviceStatus = ChromeTabDeviceStatus(wireValue: raw["deviceStatus"] as? String)
             tabs.append(tab)
         }
-        return (tabs, incognitoAllowed, deviceAccess)
+        return (tabs, incognitoAllowed, deviceAccess, echo)
+    }
+
+    /// The tabs the user wants to see: none when tabs are off, no incognito ones when
+    /// incognito is off. Pure.
+    static func visibleTabs(_ tabs: [ChromeTab], tracking: ChromeTracking) -> [ChromeTab] {
+        guard tracking.tabs else { return [] }
+        return tracking.incognito ? tabs : tabs.filter { !$0.isIncognito }
     }
 
     /// Merges a fresh TAB_LIST into the current tabs. Pure: callers pass the clock.
@@ -264,11 +289,56 @@ final class ChromeExtensionManager: NSObject {
     func flushMessages() {
         messageTimer?.invalidate()
         messageTimer = nil
+        // SET_TRACKING goes first: the TAB_LIST that answers a GET_TABS sent with it should
+        // already follow the new switches. The rest has no order.
         let messages = pendingMessages.values
         pendingMessages.removeAll()
-        for msg in messages {
+        let isTracking: ([String: Any]) -> Bool = { $0["type"] as? String == "SET_TRACKING" }
+        for msg in messages where isTracking(msg) {
             sendMessage(msg)
         }
+        for msg in messages where !isTracking(msg) {
+            sendMessage(msg)
+        }
+    }
+
+    /// Sets which tabs Deci tracks. Hides them at once and tells the extension to stop
+    /// sending them (it keeps each tab's sound settings). Always sends, so callers that
+    /// only mean "make sure" can call it freely.
+    func setTracking(tabs: Bool, incognito: Bool) {
+        tracking = ChromeTracking(tabs: tabs, incognito: incognito)
+        let visible = Self.visibleTabs(chromeTabs, tracking: tracking)
+        if visible != chromeTabs {
+            chromeTabs = visible
+        }
+        // A new wish deserves a fresh answer to the next mismatching TAB_LIST.
+        trackingMismatchAnswered = false
+        queueTracking()
+    }
+
+    private func queueTracking() {
+        queueMessage([
+            "type": "SET_TRACKING",
+            "tabs": tracking.tabs,
+            "incognito": tracking.incognito
+        ])
+    }
+
+    /// Compares the extension's reported switches with ours and repeats SET_TRACKING when
+    /// they differ (or an older build reports none), once per mismatch: again only after the
+    /// report changes, a match in between, a fresh `requestTabs()` or a new wish.
+    private func answerTrackingEcho(_ echo: ChromeTracking?) {
+        defer { lastTrackingEcho = echo }
+        if echo == tracking {
+            trackingMismatchAnswered = false
+            return
+        }
+        if echo != lastTrackingEcho {
+            trackingMismatchAnswered = false
+        }
+        guard !trackingMismatchAnswered else { return }
+        trackingMismatchAnswered = true
+        queueTracking()
     }
 
     private func markPending(_ tabId: Int) {
@@ -362,6 +432,10 @@ final class ChromeExtensionManager: NSObject {
                 MainActor.assumeIsolated { self?.evaluateConnection() }
             }
         }
+        // Restate the switches with every request: a change made while Chrome was closed
+        // never reached the extension, and this is what delivers it.
+        trackingMismatchAnswered = false
+        queueTracking()
         queueMessage(["type": "GET_TABS"])
     }
 
@@ -452,6 +526,13 @@ final class ChromeExtensionManager: NSObject {
             // serialization error ignored
         }
     }
+}
+
+/// Which Chrome tabs Deci tracks: the wire form of SET_TRACKING and of the `tracking`
+/// echo in TAB_LIST.
+struct ChromeTracking: Equatable {
+    var tabs: Bool
+    var incognito: Bool
 }
 
 /// Whether the extension is answering GET_TABS.

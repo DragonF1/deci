@@ -56,6 +56,10 @@ nonisolated struct AppSettings: Codable, Equatable {
     // Popup
     var popupSize: MenuBarPopupSize = .comfortable  // Overall menu bar popup size and density
 
+    // Chrome
+    var chromeTabsEnabled: Bool = true             // Show Chrome tabs and let the extension send them
+    var chromeIncognitoEnabled: Bool = false       // Same, for tabs in incognito windows (off by default)
+
     init() {}
 
     mutating func setUnifiedLoudnessEnabled(_ enabled: Bool) {
@@ -78,6 +82,8 @@ nonisolated struct AppSettings: Codable, Equatable {
         customShortcuts = try c.decodeIfPresent([String: ShortcutCodable].self, forKey: .customShortcuts) ?? [:]
         appearance = try c.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
         popupSize = try c.decodeIfPresent(MenuBarPopupSize.self, forKey: .popupSize) ?? .comfortable
+        chromeTabsEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeTabsEnabled) ?? true
+        chromeIncognitoEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeIncognitoEnabled) ?? false
     }
 }
 
@@ -799,13 +805,26 @@ final class SettingsManager {
         set { updateAppSettings(newValue) }
     }
 
+    /// Called with (tabs, incognito) whenever either Chrome switch changes, from the UI or a
+    /// reset. The one place the Chrome bridge hears about them; not called for other settings.
+    var onChromeTrackingChange: ((_ tabs: Bool, _ incognito: Bool) -> Void)?
+
     func updateAppSettings(_ newSettings: AppSettings) {
         // Handle launch at login separately via ServiceManagement
         if newSettings.launchAtLogin != settings.appSettings.launchAtLogin {
             setLaunchAtLogin(newSettings.launchAtLogin)
         }
+        let previous = settings.appSettings
         settings.appSettings = newSettings
         scheduleSave()
+        notifyChromeTrackingIfChanged(from: previous)
+    }
+
+    private func notifyChromeTrackingIfChanged(from previous: AppSettings) {
+        let current = settings.appSettings
+        guard previous.chromeTabsEnabled != current.chromeTabsEnabled
+            || previous.chromeIncognitoEnabled != current.chromeIncognitoEnabled else { return }
+        onChromeTrackingChange?(current.chromeTabsEnabled, current.chromeIncognitoEnabled)
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -840,6 +859,7 @@ final class SettingsManager {
         settings.pinnedAppInfo.removeAll()
         settings.ignoredApps.removeAll()
         settings.ignoredAppInfo.removeAll()
+        let previousAppSettings = settings.appSettings
         settings.appSettings = AppSettings()
         settings.systemSoundsFollowsDefault = true
         settings.lockedInputDeviceUID = nil
@@ -867,6 +887,7 @@ final class SettingsManager {
         try? SMAppService.mainApp.unregister()
 
         scheduleSave()
+        notifyChromeTrackingIfChanged(from: previousAppSettings)
         logger.info("Reset all settings to defaults")
     }
 

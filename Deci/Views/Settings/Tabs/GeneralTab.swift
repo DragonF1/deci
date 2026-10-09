@@ -7,12 +7,14 @@ struct GeneralTab: View {
     let onResetAll: () -> Void
 
     @State private var showResetConfirmation = false
+    private let chrome = ChromeExtensionManager.shared
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 generalSection
                 menuBarSection
+                chromeSection
                 dataSection
             }
             .padding(.horizontal, 20)
@@ -29,6 +31,13 @@ struct GeneralTab: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This cannot be undone.")
+        }
+        .onAppear {
+            // Settles the connection verdict the Chrome section needs.
+            if settings.appSettings.chromeTabsEnabled { chrome.requestTabs() }
+        }
+        .onChange(of: settings.appSettings.chromeTabsEnabled) { _, enabled in
+            if enabled { chrome.requestTabs() }
         }
     }
 
@@ -81,6 +90,54 @@ struct GeneralTab: View {
                 description: "Smaller fits more on screen; larger leaves more breathing room."
             ) {
                 PopupSizeTilePicker(selection: $settings.appSettings.popupSize)
+            }
+        }
+    }
+
+    // MARK: - Chrome
+
+    private var chromeSection: some View {
+        SettingsSection("Chrome") {
+            SettingsRow(
+                "Chrome tabs",
+                description: "Show Chrome tabs in Deci so you can set their volume."
+            ) {
+                Toggle("", isOn: $settings.appSettings.chromeTabsEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
+
+            if settings.appSettings.chromeTabsEnabled {
+                SettingsRowDivider()
+                SettingsRow(
+                    "Incognito tabs",
+                    description: "Also show tabs from incognito windows."
+                ) {
+                    Toggle("", isOn: $settings.appSettings.chromeIncognitoEnabled)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .labelsHidden()
+                }
+
+                if settings.appSettings.chromeIncognitoEnabled
+                    && chrome.connectionState == .connected
+                    && !chrome.incognitoAllowed {
+                    Text("Turn on Allow in Incognito for Deci in chrome://extensions.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
+                }
+
+                if chrome.connectionState == .disconnected {
+                    SettingsRowDivider()
+                    ChromeInstallStrip(chrome: chrome)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                }
             }
         }
     }
