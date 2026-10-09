@@ -15,6 +15,9 @@ struct AppRowControls: View {
     let deviceSelectionMode: DeviceSelectionMode
     let boost: BoostLevel
     let isEQExpanded: Bool
+    /// When false, everything except the mute button is dimmed and inert (Chrome tabs that
+    /// Deci has not captured yet can only be muted).
+    var isEnabled: Bool = true
     let onVolumeChange: (Float) -> Void
     let onMuteChange: (Bool) -> Void
     let onBoostChange: (BoostLevel) -> Void
@@ -92,6 +95,7 @@ struct AppRowControls: View {
             .frame(width: DesignTokens.Dimensions.sliderWidth)
             .opacity(showMutedIcon ? 0.5 : 1.0)
             .scrollWheelStep(sliderBinding, in: 0.0...1.0)
+            .gatedControl(isEnabled)
 
             // Editable volume percentage (shows slider position, not raw gain)
             EditablePercentage(
@@ -108,9 +112,11 @@ struct AppRowControls: View {
                 range: 0...100,
                 isRowFocused: isRowFocused
             )
+            .gatedControl(isEnabled)
 
             // Boost chevrons
             BoostChevrons(level: boost, onTap: { onBoostChange(boost.next) })
+                .gatedControl(isEnabled)
 
             DevicePicker(
                 devices: devices,
@@ -128,6 +134,7 @@ struct AppRowControls: View {
                 triggerWidth: 0,
                 triggerStyle: .iconOnly
             )
+            .gatedControl(isEnabled)
 
             // EQ button
             Button {
@@ -157,7 +164,18 @@ struct AppRowControls: View {
             .help(isEQExpanded ? "Close Equalizer" : "Equalizer")
             .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isEQExpanded)
             .animation(DesignTokens.Animation.hover, value: isEQButtonHovered)
+            .gatedControl(isEnabled)
         }
         .fixedSize()
+    }
+}
+
+private extension View {
+    /// Dims a control and blocks all interaction when `isEnabled` is false.
+    func gatedControl(_ isEnabled: Bool) -> some View {
+        self
+            .disabled(!isEnabled)
+            .allowsHitTesting(isEnabled)
+            .opacity(isEnabled ? 1.0 : 0.4)
     }
 }

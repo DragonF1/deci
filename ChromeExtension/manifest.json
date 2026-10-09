@@ -1,8 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Deci Audio Companion",
-  "version": "1.1",
+  "version": "1.4.1",
   "description": "Companion extension for controlling individual tab volumes and playback from Deci in the macOS menu bar.",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyeokCHuPWiXl/SuqfwqhinBhudwksxbfbBiwJ7NwZeazRu7g0RtaZToRJYVeu+9PCgmYdDV1Xpbj68He20ZY28TbKJjwiAweja9ZQhFdgPNLTc/sICjG8YfTQBCALabN6slk/MDHnLGMHoMVaSk5mN0yKi+yop2Red98MrdyOAv7KfXiFi94aI201DoLOBlEfmELKs/HHutfA/WWVuSc4SeMKnnfsQSD58J6aJYEfwI+x7wj9+mhA/4ZA7zH+aSin177Gqnt4+t6FobCdkAYopnNaXHj8clVajlBkUi+u7Ko9TkjWMgDm9UQR/PT6aTBPXGlHM3OW0RWSCtB/fTRTQIDAQAB",
+  "incognito": "spanning",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -10,7 +13,7 @@
     "128": "icons/icon128.png"
   },
   "action": {
-    "default_title": "Deci Audio Companion",
+    "default_title": "Deci: click to control this tab's audio",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -18,18 +21,37 @@
       "128": "icons/icon128.png"
     }
   },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+D",
+        "mac": "Alt+Shift+D"
+      },
+      "description": "Toggle Deci control for this tab"
+    }
+  },
   "permissions": [
     "tabCapture",
-    "nativeMessaging",
-    "tabs",
     "activeTab",
     "offscreen",
     "scripting",
+    "tabs",
     "alarms",
-    "storage"
+    "storage",
+    "nativeMessaging",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["page-audio.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "run_at": "document_start"
+    }
   ],
   "background": {
     "service_worker": "background.js"

@@ -238,9 +238,15 @@ struct MenuBarPopupView: View {
             popupNow = date
             guard isPopupVisible else { return }
             chromeTickCount += 1
-            if chromeTickCount % 2 == 0 {
+            if chromeTickCount % 10 == 0 {
+                // Re-checks the connection while the popup stays open, so a Chrome quit
+                // or host crash clears stale tabs instead of leaving dead controls.
                 chromeManager.requestTabs()
-                for tab in chromeManager.chromeTabs {
+            }
+            if chromeTickCount % 2 == 0 {
+                // The tab list itself is pushed by the extension on every change;
+                // only playback position needs polling. Silent, uncaptured tabs have no playback info worth polling for.
+                for tab in chromeManager.chromeTabs where tab.isAudible || tab.isCaptured {
                     chromeManager.requestMediaState(tabId: tab.id)
                 }
             }
@@ -761,6 +767,66 @@ struct MenuBarPopupView: View {
         } else {
             appsContent(scrollProxy: scrollProxy)
         }
+
+        if permission.status == .authorized && !isEditingDevicePriority {
+            chromeHints
+        }
+    }
+
+    // MARK: - Chrome Extension Hints
+
+    private static let chromeBundleID = "com.google.Chrome"
+
+    private static func isChromeRunning() -> Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: chromeBundleID).isEmpty
+    }
+
+    /// Quiet hints about the Chrome extension. Each one shows only while it can help;
+    /// nothing shows while the connection is still unknown.
+    @ViewBuilder
+    private var chromeHints: some View {
+        let connection = chromeManager.connectionState
+        // Chrome not running is a normal state, not a problem to report.
+        let showDisconnected = connection == .disconnected
+            && chromeManager.hasConnectedBefore
+            && Self.isChromeRunning()
+        let showDeviceAccess = chromeManager.needsDeviceAccess
+        let showIncognito = connection == .connected && !chromeManager.incognitoAllowed
+
+        if showDisconnected || showDeviceAccess || showIncognito {
+            VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                if showDisconnected {
+                    chromeHintText("Deci extension not connected. Open Chrome and make sure the Deci extension is on.")
+                }
+                if showDeviceAccess {
+                    HStack(spacing: DesignTokens.Spacing.sm) {
+                        chromeHintText("Chrome needs one-time access to list speakers.")
+                        Spacer(minLength: DesignTokens.Spacing.sm)
+                        Button("Allow") {
+                            chromeManager.openDevicePermission()
+                        }
+                        .buttonStyle(.plain)
+                        .font(DesignTokens.Typography.caption)
+                        .foregroundStyle(DesignTokens.Colors.textSecondary)
+                        .glassButtonStyle()
+                        .accessibilityLabel("Allow Chrome device access")
+                        .help("Open Chrome to allow reading speaker names")
+                    }
+                }
+                if showIncognito {
+                    chromeHintText("Incognito tabs hidden. In chrome://extensions open Deci details and turn on Allow in Incognito.")
+                }
+            }
+            .padding(.horizontal, DesignTokens.Spacing.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func chromeHintText(_ text: String) -> some View {
+        Text(text)
+            .font(DesignTokens.Typography.caption)
+            .foregroundStyle(DesignTokens.Colors.textTertiary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Edit mode content for apps: simplified rows with eye toggle + hidden section at bottom.
@@ -810,6 +876,27 @@ struct MenuBarPopupView: View {
                             }
                         )
                     }
+                }
+                
+                ForEach(chromeManager.chromeTabs) { tab in
+                    let icon: NSImage = {
+                        if let urlString = tab.favIconUrl, !urlString.isEmpty, let _ = URL(string: urlString) {
+                            // Can't easily use AsyncImage in NSImage, so fallback to generic chrome icon for edit mode
+                        }
+                        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
+                            return NSWorkspace.shared.icon(forFile: url.path)
+                        }
+                        return NSImage(systemSymbolName: "globe", accessibilityDescription: nil) ?? NSImage()
+                    }()
+                    
+                    AppEditRow(
+                        icon: icon,
+                        name: tab.title.isEmpty ? "Chrome Tab" : tab.title,
+                        isIgnored: false,
+                        isPinned: false,
+                        onToggleVisibility: nil,
+                        onTogglePin: nil
+                    )
                 }
             }
 
@@ -863,7 +950,22 @@ struct MenuBarPopupView: View {
                         .padding(.bottom, 2)
 
                     ForEach(chromeTabs) { tab in
-                        ChromeTabRow(tab: tab, now: popupNow)
+                        ChromeTabRow(
+                            tab: tab,
+                            now: popupNow,
+                            devices: audioEngine.outputDevices,
+                            defaultDeviceUID: audioEngine.deviceVolumeMonitor.defaultDeviceUID,
+                            userPresets: presets,
+                            onSavePreset: { name, settings in
+                                audioEngine.settingsManager.createUserPreset(name: name, settings: settings)
+                            },
+                            onDeleteUserPreset: { id in
+                                audioEngine.settingsManager.deleteUserPreset(id: id)
+                            },
+                            onRenameUserPreset: { id, newName in
+                                audioEngine.settingsManager.updateUserPreset(id: id, name: newName)
+                            }
+                        )
                     }
                 }
             }

@@ -8,8 +8,8 @@ struct AppEditRow: View {
     let name: String
     let isIgnored: Bool
     let isPinned: Bool
-    let onToggleVisibility: () -> Void
-    let onTogglePin: () -> Void
+    let onToggleVisibility: (() -> Void)?
+    let onTogglePin: (() -> Void)?
 
     @State private var isEyeHovered = false
     @State private var isPinHovered = false
@@ -31,7 +31,7 @@ struct AppEditRow: View {
                 .foregroundStyle(isIgnored ? DesignTokens.Colors.textSecondary : DesignTokens.Colors.textPrimary)
 
             // Pin toggle
-            if !isIgnored {
+            if !isIgnored, let onTogglePin = onTogglePin {
                 Button {
                     onTogglePin()
                 } label: {
@@ -53,24 +53,26 @@ struct AppEditRow: View {
             }
 
             // Eye toggle
-            Button {
-                onToggleVisibility()
-            } label: {
-                Image(systemName: isIgnored ? "eye.slash" : "eye")
-                    .font(.system(size: 13))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(eyeColor)
-                    .frame(
-                        minWidth: DesignTokens.Dimensions.minTouchTarget,
-                        minHeight: DesignTokens.Dimensions.minTouchTarget
-                    )
-                    .contentShape(Rectangle())
-                    .scaleEffect(isEyeHovered ? 1.1 : 1.0)
+            if let onToggleVisibility = onToggleVisibility {
+                Button {
+                    onToggleVisibility()
+                } label: {
+                    Image(systemName: isIgnored ? "eye.slash" : "eye")
+                        .font(.system(size: 13))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(eyeColor)
+                        .frame(
+                            minWidth: DesignTokens.Dimensions.minTouchTarget,
+                            minHeight: DesignTokens.Dimensions.minTouchTarget
+                        )
+                        .contentShape(Rectangle())
+                        .scaleEffect(isEyeHovered ? 1.1 : 1.0)
+                }
+                .buttonStyle(.plain)
+                .onHover { isEyeHovered = $0 }
+                .help(isIgnored ? "Stop ignoring" : "Ignore app")
+                .animation(DesignTokens.Animation.quick, value: isEyeHovered)
             }
-            .buttonStyle(.plain)
-            .onHover { isEyeHovered = $0 }
-            .help(isIgnored ? "Stop ignoring" : "Ignore app")
-            .animation(DesignTokens.Animation.quick, value: isEyeHovered)
         }
         .frame(height: DesignTokens.Dimensions.rowContentHeight)
         .hoverableRow()

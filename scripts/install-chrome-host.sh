@@ -24,21 +24,12 @@ cat <<EOF > "$MANIFEST_DIR/com.abraham.deci.json"
   "path": "$APP_HOST_BIN",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://apbkdiccnemkfipplanjdcnkidhhodjf/"
+    "chrome-extension://dhnhdhfcagmpfdoocppooomgljoldhjf/"
   ]
 }
 EOF
 
-cat <<EOF > "$MANIFEST_DIR/com.example.advancedaudiocontrol.json"
-{
-  "name": "com.example.advancedaudiocontrol",
-  "description": "Deci Audio Control Host (Legacy ID)",
-  "path": "$APP_HOST_BIN",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://apbkdiccnemkfipplanjdcnkidhhodjf/"
-  ]
-}
-EOF
+# The legacy host name is gone: Deci no longer answers to it.
+rm -f "$MANIFEST_DIR/com.example.advancedaudiocontrol.json"
 
 echo "==> Chrome Native Messaging Host installed successfully!"
