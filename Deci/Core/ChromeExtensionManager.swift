@@ -24,6 +24,9 @@ final class ChromeExtensionManager: NSObject {
     private(set) var tracking = ChromeTracking(tabs: true, incognito: false)
     var trackingTabs: Bool { tracking.tabs }
     var trackingIncognito: Bool { tracking.incognito }
+    /// Whether the extension clicks "Switch" when YouTube Music asks to listen on this device.
+    /// Restated with every request, so a change made while Chrome was closed still lands.
+    private(set) var ytMusicAutoSwitch = true
 
     /// True when per-tab device choices exist that the extension cannot resolve yet
     /// because device names are unreadable.
@@ -324,6 +327,19 @@ final class ChromeExtensionManager: NSObject {
         ])
     }
 
+    /// Sets the YouTube Music auto-switch and tells the extension.
+    func setYTMusicAutoSwitch(_ enabled: Bool) {
+        ytMusicAutoSwitch = enabled
+        queueOptions()
+    }
+
+    private func queueOptions() {
+        queueMessage([
+            "type": "SET_OPTIONS",
+            "ytmAutoSwitch": ytMusicAutoSwitch
+        ])
+    }
+
     /// Compares the extension's reported switches with ours and repeats SET_TRACKING when
     /// they differ (or an older build reports none), once per mismatch: again only after the
     /// report changes, a match in between, a fresh `requestTabs()` or a new wish.
@@ -436,6 +452,7 @@ final class ChromeExtensionManager: NSObject {
         // never reached the extension, and this is what delivers it.
         trackingMismatchAnswered = false
         queueTracking()
+        queueOptions()
         queueMessage(["type": "GET_TABS"])
     }
 

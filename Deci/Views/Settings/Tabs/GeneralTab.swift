@@ -139,6 +139,17 @@ struct GeneralTab: View {
                         .padding(.vertical, 12)
                 }
             }
+
+            SettingsRowDivider()
+            SettingsRow(
+                "Keep YouTube Music here",
+                description: "Click “Switch” when YouTube Music says your account is playing on another device."
+            ) {
+                Toggle("", isOn: $settings.appSettings.chromeYTMusicAutoSwitch)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
         }
     }
 

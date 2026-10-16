@@ -30,6 +30,16 @@ struct ChromeTrackingSettingsTests {
         let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
         #expect(decoded.chromeTabsEnabled == true)
         #expect(decoded.chromeIncognitoEnabled == false)
+        #expect(decoded.chromeYTMusicAutoSwitch == true)
+    }
+
+    @Test("YouTube Music auto-switch defaults to on and round-trips when off")
+    func ytMusicAutoSwitchRoundTrip() throws {
+        #expect(AppSettings().chromeYTMusicAutoSwitch == true)
+        var settings = AppSettings()
+        settings.chromeYTMusicAutoSwitch = false
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded.chromeYTMusicAutoSwitch == false)
     }
 
     @Test("Both switches round-trip through JSON when turned off")
@@ -112,5 +122,44 @@ struct ChromeTrackingHookTests {
         #expect(calls.values[0] == (true, false))
         #expect(manager.appSettings.chromeTabsEnabled == true)
         #expect(manager.appSettings.chromeIncognitoEnabled == false)
+    }
+}
+
+@Suite("SettingsManager: YouTube Music auto-switch hook")
+@MainActor
+struct ChromeYTMusicAutoSwitchHookTests {
+
+    private func makeManager() -> SettingsManager {
+        SettingsManager(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+    }
+
+    private final class Calls {
+        var values: [Bool] = []
+    }
+
+    @Test("Changing the setting reports the new value; other settings do not")
+    func reportsChanges() {
+        let manager = makeManager()
+        let calls = Calls()
+        manager.onChromeYTMusicAutoSwitchChange = { calls.values.append($0) }
+
+        manager.appSettings.chromeTabsEnabled = false
+        manager.appSettings.chromeYTMusicAutoSwitch = false
+        manager.appSettings.chromeYTMusicAutoSwitch = false
+
+        #expect(calls.values == [false])
+    }
+
+    @Test("Resetting all settings turns it back on and reports it")
+    func reportsReset() {
+        let manager = makeManager()
+        manager.appSettings.chromeYTMusicAutoSwitch = false
+        let calls = Calls()
+        manager.onChromeYTMusicAutoSwitchChange = { calls.values.append($0) }
+
+        manager.resetAllSettings()
+
+        #expect(calls.values == [true])
+        #expect(manager.appSettings.chromeYTMusicAutoSwitch == true)
     }
 }

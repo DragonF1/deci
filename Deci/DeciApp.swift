@@ -125,13 +125,17 @@ struct DeciApp: App {
         _audioEngine = State(initialValue: engine)
 
         // Initialize Chrome extension manager for tab audio control, with the saved tracking
-        // switches. Every later change (Settings toggles, Reset All) arrives through the hook.
+        // switches. Every later change (Settings toggles, Reset All) arrives through the hooks.
+        ChromeExtensionManager.shared.setYTMusicAutoSwitch(settings.appSettings.chromeYTMusicAutoSwitch)
         Self.applyChromeTracking(
             tabs: settings.appSettings.chromeTabsEnabled,
             incognito: settings.appSettings.chromeIncognitoEnabled
         )
         settings.onChromeTrackingChange = { tabs, incognito in
             Self.applyChromeTracking(tabs: tabs, incognito: incognito)
+        }
+        settings.onChromeYTMusicAutoSwitchChange = { enabled in
+            ChromeExtensionManager.shared.setYTMusicAutoSwitch(enabled)
         }
 
         // Media keys / HUD services — instantiated at app scope so the tap

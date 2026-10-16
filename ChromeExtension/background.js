@@ -77,6 +77,10 @@
  *                                            the gate just opened. One boolean alone
  *                                            changes only that field; a message with no
  *                                            boolean field is ignored.
+ *   SET_OPTIONS { ytmAutoSwitch }            boolean: ytm-switch.js clicks "Switch" on
+ *                                            YouTube Music's "Listen on this device?"
+ *                                            dialog. Stored when the value changed; the
+ *                                            app restates it with every GET_TABS.
  *
  * TRACKING. The app can switch off what the extension reports about tabs. A tab is
  * HIDDEN when tracking.tabs is false, or when tracking.incognito is false and the tab is
@@ -167,6 +171,9 @@
  *                           both true; read at worker start to merge a one-boolean
  *                           SET_TRACKING; never decides what a new port is told, see
  *                           PRIVACY GATE)
+ *   chrome.storage.local    'options' -> { ytmAutoSwitch: boolean }
+ *                           (written by SET_OPTIONS only when the value changed; read by
+ *                           ytm-switch.js, which treats a missing value as true)
  *   chrome.storage.local    'deviceAccess' -> boolean (last known; default false)
  *   chrome.storage.session  'knownTabs' -> [tab ids that were audible this session]
  *   chrome.storage.session  'pageBlocked' -> [origins whose media turned unreadable in-page]
@@ -415,6 +422,15 @@ async function setTracking(msg) {
   if (opensGate) trackingConfirmed = true;
   if (!unchanged) await chrome.storage.local.set({ tracking }).catch(logError('tracking write'));
   if (!unchanged || opensGate) schedulePush();
+}
+
+// SET_OPTIONS: stores the app's options for content scripts. Only a boolean
+// ytmAutoSwitch is taken; the write happens only when the value changed.
+async function setOptions(msg) {
+  if (typeof msg.ytmAutoSwitch !== 'boolean') return;
+  const { options } = await chrome.storage.local.get('options');
+  if (options && options.ytmAutoSwitch === msg.ytmAutoSwitch) return;
+  await chrome.storage.local.set({ options: { ...(options || {}), ytmAutoSwitch: msg.ytmAutoSwitch } });
 }
 
 // ---------------------------------------------------------------------------
@@ -1386,6 +1402,10 @@ function handleNativeMessage(msg) {
   }
   if (type === 'SET_TRACKING') {
     setTracking(msg).catch(logError('SET_TRACKING'));
+    return;
+  }
+  if (type === 'SET_OPTIONS') {
+    setOptions(msg).catch(logError('SET_OPTIONS'));
     return;
   }
   if (!Number.isInteger(tabId)) return;

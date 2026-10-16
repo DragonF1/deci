@@ -309,9 +309,30 @@ struct ChromeExtensionTrackingTests {
         manager.requestTabs()
         manager.flushMessages()
 
-        #expect(sent.types() == ["SET_TRACKING", "GET_TABS"])
+        // SET_TRACKING leads; the options and the request follow in any order.
+        #expect(sent.types().first == "SET_TRACKING")
+        #expect(Set(sent.types()) == ["SET_TRACKING", "SET_OPTIONS", "GET_TABS"])
+        #expect(sent.types().count == 3)
         #expect(sent.trackingMessages()[0]["tabs"] as? Bool == true)
         #expect(sent.trackingMessages()[0]["incognito"] as? Bool == false)
+    }
+
+    @Test("setYTMusicAutoSwitch queues SET_OPTIONS and requestTabs restates it")
+    func ytMusicAutoSwitchOptions() {
+        let (manager, sent) = makeManager()
+        let options = { sent.messages.filter { $0["type"] as? String == "SET_OPTIONS" } }
+
+        manager.setYTMusicAutoSwitch(false)
+        manager.flushMessages()
+        #expect(manager.ytMusicAutoSwitch == false)
+        #expect(options().count == 1)
+        #expect(options()[0]["ytmAutoSwitch"] as? Bool == false)
+
+        sent.clear()
+        manager.requestTabs()
+        manager.flushMessages()
+        #expect(options().count == 1)
+        #expect(options()[0]["ytmAutoSwitch"] as? Bool == false)
     }
 
     @Test("with tabs off requestTabs still probes the connection and the list stays empty")

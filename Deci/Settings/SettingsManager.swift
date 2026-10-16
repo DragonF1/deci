@@ -59,6 +59,7 @@ nonisolated struct AppSettings: Codable, Equatable {
     // Chrome
     var chromeTabsEnabled: Bool = true             // Show Chrome tabs and let the extension send them
     var chromeIncognitoEnabled: Bool = false       // Same, for tabs in incognito windows (off by default)
+    var chromeYTMusicAutoSwitch: Bool = true       // Click "Switch" when YouTube Music asks to listen on this device
 
     init() {}
 
@@ -84,6 +85,7 @@ nonisolated struct AppSettings: Codable, Equatable {
         popupSize = try c.decodeIfPresent(MenuBarPopupSize.self, forKey: .popupSize) ?? .comfortable
         chromeTabsEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeTabsEnabled) ?? true
         chromeIncognitoEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeIncognitoEnabled) ?? false
+        chromeYTMusicAutoSwitch = try c.decodeIfPresent(Bool.self, forKey: .chromeYTMusicAutoSwitch) ?? true
     }
 }
 
@@ -809,6 +811,10 @@ final class SettingsManager {
     /// reset. The one place the Chrome bridge hears about them; not called for other settings.
     var onChromeTrackingChange: ((_ tabs: Bool, _ incognito: Bool) -> Void)?
 
+    /// Called with the new value whenever the YouTube Music auto-switch setting changes,
+    /// from the UI or a reset.
+    var onChromeYTMusicAutoSwitchChange: ((Bool) -> Void)?
+
     func updateAppSettings(_ newSettings: AppSettings) {
         // Handle launch at login separately via ServiceManagement
         if newSettings.launchAtLogin != settings.appSettings.launchAtLogin {
@@ -817,11 +823,14 @@ final class SettingsManager {
         let previous = settings.appSettings
         settings.appSettings = newSettings
         scheduleSave()
-        notifyChromeTrackingIfChanged(from: previous)
+        notifyChromeSettingsIfChanged(from: previous)
     }
 
-    private func notifyChromeTrackingIfChanged(from previous: AppSettings) {
+    private func notifyChromeSettingsIfChanged(from previous: AppSettings) {
         let current = settings.appSettings
+        if previous.chromeYTMusicAutoSwitch != current.chromeYTMusicAutoSwitch {
+            onChromeYTMusicAutoSwitchChange?(current.chromeYTMusicAutoSwitch)
+        }
         guard previous.chromeTabsEnabled != current.chromeTabsEnabled
             || previous.chromeIncognitoEnabled != current.chromeIncognitoEnabled else { return }
         onChromeTrackingChange?(current.chromeTabsEnabled, current.chromeIncognitoEnabled)
@@ -887,7 +896,7 @@ final class SettingsManager {
         try? SMAppService.mainApp.unregister()
 
         scheduleSave()
-        notifyChromeTrackingIfChanged(from: previousAppSettings)
+        notifyChromeSettingsIfChanged(from: previousAppSettings)
         logger.info("Reset all settings to defaults")
     }
 
