@@ -127,6 +127,12 @@ final class MockAudioDeviceMonitor: AudioDeviceProviding {
         devicesByID[device.id] = device
     }
 
+    func addInputDevice(_ device: AudioDevice) {
+        inputDevices.append(device)
+        devicesByUID[device.uid] = device
+        devicesByID[device.id] = device
+    }
+
     func device(for uid: String) -> AudioDevice? { devicesByUID[uid] }
     func inputDevice(for uid: String) -> AudioDevice? { devicesByUID[uid] }
     func device(for id: AudioDeviceID) -> AudioDevice? { devicesByID[id] }
@@ -183,11 +189,21 @@ final class MockDeviceVolumeProviding: DeviceVolumeProviding {
         self.deviceMonitor = deviceMonitor
     }
 
-    @discardableResult
-    func setDefaultDevice(_ deviceID: AudioDeviceID) -> Bool { true }
+    /// Every default the engine asked for, in order (the mock's defaults themselves don't move).
+    private(set) var setDefaultDeviceCalls: [AudioDeviceID] = []
+    private(set) var setDefaultInputDeviceCalls: [AudioDeviceID] = []
 
     @discardableResult
-    func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool { true }
+    func setDefaultDevice(_ deviceID: AudioDeviceID) -> Bool {
+        setDefaultDeviceCalls.append(deviceID)
+        return true
+    }
+
+    @discardableResult
+    func setDefaultInputDevice(_ deviceID: AudioDeviceID) -> Bool {
+        setDefaultInputDeviceCalls.append(deviceID)
+        return true
+    }
 
     func outputVolumeBackend(for deviceID: AudioDeviceID) -> VolumeControlTier {
         if let uid = deviceMonitor.device(for: deviceID)?.uid,

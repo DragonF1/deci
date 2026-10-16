@@ -1169,19 +1169,14 @@ struct MenuBarPopupView: View {
         }
     }
 
-    /// Persists the editable order to the correct priority list, preserving disconnected device positions.
+    /// Persists the editable order to the correct priority list, preserving disconnected device
+    /// positions. A new top device becomes the active one.
     private func persistEditableOrder() {
         let connectedOrder = editableDeviceOrder.map(\.uid)
         if wasEditingInputDevices {
-            audioEngine.settingsManager.mergeInputDevicePriorityOrder(
-                oldPriority: audioEngine.settingsManager.inputDevicePriorityOrder,
-                connectedOrder: connectedOrder
-            )
+            audioEngine.applyInputPriorityOrder(connectedOrder: connectedOrder)
         } else {
-            audioEngine.settingsManager.mergeDevicePriorityOrder(
-                oldPriority: audioEngine.settingsManager.devicePriorityOrder,
-                connectedOrder: connectedOrder
-            )
+            audioEngine.applyOutputPriorityOrder(connectedOrder: connectedOrder)
         }
     }
 

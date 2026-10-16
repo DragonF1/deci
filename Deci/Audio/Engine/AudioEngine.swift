@@ -151,6 +151,49 @@ final class AudioEngine {
         return sorted
     }
 
+    /// Saves a reordered output priority list. When the order puts a different connected
+    /// device on top, that device becomes the default.
+    func applyOutputPriorityOrder(connectedOrder: [String]) {
+        let previousTop = highestPriorityOutputUID()
+        settingsManager.mergeDevicePriorityOrder(
+            oldPriority: settingsManager.devicePriorityOrder,
+            connectedOrder: connectedOrder
+        )
+        guard highestPriorityOutputUID() != previousTop else { return }
+        reEvaluateOutputDefault()
+    }
+
+    /// Input counterpart of `applyOutputPriorityOrder`. Switches only while the input follows
+    /// priority (Input Follows Priority on); otherwise macOS keeps control of the input.
+    func applyInputPriorityOrder(connectedOrder: [String]) {
+        let previousTop = highestPriorityInputUID()
+        settingsManager.mergeInputDevicePriorityOrder(
+            oldPriority: settingsManager.inputDevicePriorityOrder,
+            connectedOrder: connectedOrder
+        )
+        guard settingsManager.appSettings.lockInputDevice,
+              highestPriorityInputUID() != previousTop,
+              let target = reEvaluateInputDefault() else { return }
+        settingsManager.setLockedInputDeviceUID(target)
+        settingsManager.setPreferredInputDeviceUID(target)
+    }
+
+    private func highestPriorityOutputUID() -> String? {
+        Self.resolveHighestPriority(
+            priorityOrder: settingsManager.devicePriorityOrder,
+            connectedDevices: outputDevices,
+            isAlive: isAliveCheck
+        )?.uid
+    }
+
+    private func highestPriorityInputUID() -> String? {
+        Self.resolveHighestPriority(
+            priorityOrder: settingsManager.inputDevicePriorityOrder,
+            connectedDevices: inputDevices,
+            isAlive: isAliveCheck
+        )?.uid
+    }
+
     /// Registers any output devices not yet in the priority list.
     /// Call this when devices change (not from computed properties).
     func registerNewDevicesInPriority() {
@@ -160,6 +203,28 @@ final class AudioEngine {
         for device in inputDevices {
             settingsManager.ensureInputDeviceInPriority(device.uid)
         }
+    }
+
+    /// What an output device's connection does to the system default and follows-default routing.
+    enum ConnectedOutputDefaultAction: Equatable {
+        /// The connected device is the highest-priority connected device: make sure it is the
+        /// default and point follows-default taps at it. Also covers macOS having switched to it
+        /// already, where the taps would otherwise stay on the previous device.
+        case ensureHighestPriorityDefault
+        /// macOS switched to a lower-priority device: restore the device the user was on.
+        case restorePrevious
+        /// A lower-priority device that is not the default: leave routing alone.
+        case none
+    }
+
+    static func connectedOutputDefaultAction(
+        connectedDeviceUID: String,
+        highestPriorityConnectedUID: String?,
+        currentDefaultUID: String?
+    ) -> ConnectedOutputDefaultAction {
+        if connectedDeviceUID == highestPriorityConnectedUID { return .ensureHighestPriorityDefault }
+        if connectedDeviceUID == currentDefaultUID { return .restorePrevious }
+        return .none
     }
 
     /// Returns the highest-priority device that is both connected and alive.
@@ -1562,11 +1627,11 @@ final class AudioEngine {
         // the user chose it. We still enter PENDING_AUTOSWITCH to guard against macOS
         // auto-switching to the new device.
         let currentDefault = deviceVolumeMonitor.defaultDeviceUID
-        let isNewDeviceHigherPriority = (deviceUID == Self.resolveHighestPriority(
+        let highestPriorityUID = Self.resolveHighestPriority(
             priorityOrder: settingsManager.devicePriorityOrder,
             connectedDevices: outputDevices,
             isAlive: isAliveCheck
-        )?.uid)
+        )?.uid
 
         // If this device is present but not alive, watch for it to become alive
         if let device = deviceMonitor.device(for: deviceUID),
@@ -1574,13 +1639,22 @@ final class AudioEngine {
             installAliveWatcher(deviceID: device.id, uid: deviceUID, name: deviceName)
         }
 
-        if isNewDeviceHigherPriority, deviceUID != currentDefault {
-            // A higher-priority device reconnected — switch to it
+        switch Self.connectedOutputDefaultAction(
+            connectedDeviceUID: deviceUID,
+            highestPriorityConnectedUID: highestPriorityUID,
+            currentDefaultUID: currentDefault
+        ) {
+        case .ensureHighestPriorityDefault:
+            // The highest-priority device (re)connected. reEvaluateOutputDefault sets the default
+            // only when it differs and always re-points follows-default taps, so a default macOS
+            // already moved here no longer leaves app audio stranded on the previous device.
             reEvaluateOutputDefault()
-        } else if !isNewDeviceHigherPriority, currentDefault == deviceUID {
+        case .restorePrevious:
             // macOS already auto-switched to the lower-priority device — restore
             // what the user was on (not highest priority — they may have chosen a mid-priority device)
             restoreConfirmedDefault()
+        case .none:
+            break
         }
 
         // Cancel any existing PENDING_AUTOSWITCH before entering a new one.
@@ -1631,7 +1705,14 @@ final class AudioEngine {
                 guard let self, self.isAliveCheck(deviceID) else { return }
                 self.logger.info("Device became alive: \(name) (\(uid)), re-evaluating priority")
                 self.removeAliveWatcher(deviceID)
-                self.handleDeviceConnected(uid, name: name)
+                // One device ID can carry both directions (a USB headset), and whichever
+                // connect handler ran first owns the watcher, so re-run both as they apply.
+                if self.deviceMonitor.device(for: uid) != nil {
+                    self.handleDeviceConnected(uid, name: name)
+                }
+                if self.deviceMonitor.inputDevice(for: uid) != nil {
+                    self.handleInputDeviceConnected(uid, name: name)
+                }
             }
         }
 
@@ -2197,6 +2278,11 @@ final class AudioEngine {
         // State machine: if we're waiting for macOS to auto-switch after input device connect,
         // check whether this change is the expected auto-switch or user intent.
         if case .pendingAutoSwitch(let pendingUID, let timeoutTask) = inputPriorityState {
+            // Our own change first (as on the output side): switching to a connected top mic
+            // sets the default to the pending device, which is not a macOS auto-switch.
+            if inputEchoTracker.consume(newDefaultInputUID) {
+                return
+            }
             if newDefaultInputUID == pendingUID, settingsManager.appSettings.lockInputDevice {
                 // Case 1: macOS auto-switched to the newly connected device — restore locked device.
                 // Re-enter PENDING_AUTOSWITCH because macOS may auto-switch multiple times.
@@ -2218,11 +2304,7 @@ final class AudioEngine {
                 )
                 return
             }
-            // Case 2: Our own echo from the override. Consume without disrupting state machine.
-            if inputEchoTracker.consume(newDefaultInputUID) {
-                return
-            }
-            // Case 3: Genuine user intent — respect it.
+            // Case 2: Genuine user intent — respect it.
             timeoutTask.cancel()
             inputPriorityState = .stable
         }
@@ -2240,6 +2322,13 @@ final class AudioEngine {
 
         // If lock is disabled, let system control input freely
         guard settingsManager.appSettings.lockInputDevice else { return }
+
+        // A mic macOS switched to before the device list caught up: its connect handler
+        // decides (it may be the new top mic), so don't bounce the default back meanwhile.
+        guard deviceMonitor.inputDevice(for: newDefaultInputUID) != nil else {
+            logger.debug("Default input changed to unknown device \(newDefaultInputUID), deferring to device list refresh")
+            return
+        }
 
         // Restore the locked device — any change outside FineTune's UI is either
         // macOS auto-switch or System Settings, and the lock should hold either way.
@@ -2292,15 +2381,12 @@ final class AudioEngine {
     }
 
     /// Called when the user toggles lockInputDevice ON in settings.
-    /// Captures the current default input device as the locked and preferred device.
+    /// Switches to the highest-priority connected mic and makes it the locked and preferred device.
     func handleInputLockEnabled() {
-        guard let currentUID = deviceVolumeMonitor.defaultInputDeviceUID,
-              let device = deviceMonitor.inputDevice(for: currentUID) else {
-            return
-        }
-        logger.info("Input lock enabled, locking to current default: \(device.name)")
-        settingsManager.setLockedInputDeviceUID(device.uid)
-        settingsManager.setPreferredInputDeviceUID(device.uid)
+        guard let target = reEvaluateInputDefault() else { return }
+        logger.info("Input follows priority, locking to: \(target)")
+        settingsManager.setLockedInputDeviceUID(target)
+        settingsManager.setPreferredInputDeviceUID(target)
     }
 
     /// Called when user explicitly selects an input device (via FineTune UI).
@@ -2318,12 +2404,27 @@ final class AudioEngine {
         }
     }
 
-    /// Called when an input device connects — restores locked/preferred device and guards against auto-switch.
+    /// Called when an input device connects — moves the lock to it when it tops the input
+    /// priority list, otherwise restores the locked/preferred device, and guards against auto-switch.
     private func handleInputDeviceConnected(_ deviceUID: String, name deviceName: String) {
         guard settingsManager.appSettings.lockInputDevice else { return }
 
-        // If the reconnected device is the user's preferred device, restore the lock to it
-        if let preferredUID = settingsManager.preferredInputDeviceUID,
+        // A Bluetooth mic can show up before it is alive; decide again once it is.
+        if let device = deviceMonitor.inputDevice(for: deviceUID), !isAliveCheck(device.id) {
+            installAliveWatcher(deviceID: device.id, uid: deviceUID, name: deviceName)
+        }
+
+        let highestPriority = Self.resolveHighestPriority(
+            priorityOrder: settingsManager.inputDevicePriorityOrder,
+            connectedDevices: inputDevices,
+            isAlive: isAliveCheck
+        )
+        if let highestPriority, highestPriority.uid == deviceUID {
+            // The highest-priority mic (re)connected: it becomes the locked device
+            logger.info("Highest-priority input connected: \(deviceName), locking to it")
+            settingsManager.setLockedInputDeviceUID(highestPriority.uid)
+            settingsManager.setPreferredInputDeviceUID(highestPriority.uid)
+        } else if let preferredUID = settingsManager.preferredInputDeviceUID,
            deviceUID == preferredUID,
            settingsManager.lockedInputDeviceUID != preferredUID,
            let device = deviceMonitor.inputDevice(for: deviceUID) {
@@ -2361,6 +2462,7 @@ final class AudioEngine {
 
     /// Handles input device disconnect — uses priority fallback, then built-in mic.
     private func handleInputDeviceDisconnected(_ deviceUID: String) {
+        removeAliveWatcher(forUID: deviceUID)
         // If we were waiting for macOS to auto-switch to this device, cancel — it's gone
         if case .pendingAutoSwitch(let uid, let task) = inputPriorityState, uid == deviceUID {
             task.cancel()

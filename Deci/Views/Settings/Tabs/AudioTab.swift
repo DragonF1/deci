@@ -80,8 +80,8 @@ struct AudioTab: View {
     private var devicesSection: some View {
         SettingsSection("Devices") {
             SettingsRow(
-                "Lock Input Device",
-                description: "Prevent auto-switching when devices connect"
+                "Input Follows Priority",
+                description: "Use the top mic in your device order; macOS can't switch it"
             ) {
                 Toggle("", isOn: $settings.appSettings.lockInputDevice)
                     .toggleStyle(.switch)
