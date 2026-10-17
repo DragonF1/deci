@@ -368,7 +368,26 @@ final class ProcessTapController: ProcessTapControlling {
 
     /// Builds aggregate device description for synchronized multi-device output.
     /// First device is clock source (no drift compensation), others sync to it via drift compensation.
-    private func buildAggregateDescription(outputUIDs: [String], tapUUID: UUID, name: String) -> [String: Any] {
+    /// Whether the aggregate should drift-compensate its sub-tap. OFF whenever the tap and the
+    /// aggregate run on one clock, where the compensator has no drift to remove and instead
+    /// resyncs on timing jumps: a tap of the clock device's own stream (every follows-default
+    /// app), a Bluetooth clock device (tap and output both follow the BT clock; drift comp there
+    /// inserts/deletes a sample on the ~50ppm BT-vs-crystal offset every ~0.7s, the rhythmic call
+    /// crackle) and a virtual source (burst delivery looks like drift). With it ON, a follows-
+    /// default tap on the built-in speakers lost ~7 ms at some of Chrome's stream starts and stops.
+    /// ON only when the tap can carry another device's clock: a mixdown tap, or a stream tap of a
+    /// device other than the clock device.
+    static func tapNeedsDriftCompensation(
+        tapDeviceUID: String?,
+        clockDeviceUID: String,
+        clockIsBluetooth: Bool,
+        tapSourceIsVirtual: Bool
+    ) -> Bool {
+        if clockIsBluetooth || tapSourceIsVirtual { return false }
+        return tapDeviceUID != clockDeviceUID
+    }
+
+    private func buildAggregateDescription(outputUIDs: [String], tapUUID: UUID, tapDeviceUID: String?, name: String) -> [String: Any] {
         precondition(!outputUIDs.isEmpty, "Must have at least one output device")
 
         let plan = Self.planAggregate(
@@ -398,13 +417,13 @@ final class ProcessTapController: ProcessTapControlling {
             ])
         }
 
-        // Sub-tap drift comp must be OFF when the tap source and output share a clock domain:
-        // Bluetooth (tap and output both follow the BT clock — enabling it makes the HAL insert/
-        // delete a sample on the ~50ppm BT-vs-crystal offset every ~0.7s, the rhythmic call crackle)
-        // and virtual sources (burst delivery looks like drift). ON for wired/USB where the crystal
-        // domains genuinely differ. Defaults OFF on an unresolvable device (less wrong on unknown BT).
-        let isPrimaryBTOutput = audioDeviceID(for: plan.clockDeviceUID)?.isBluetoothDevice() ?? true
-        let tapDriftCompensation = !isTapSourceVirtual() && !isPrimaryBTOutput
+        // Defaults to Bluetooth (OFF) on an unresolvable device: less wrong on unknown BT.
+        let tapDriftCompensation = Self.tapNeedsDriftCompensation(
+            tapDeviceUID: tapDeviceUID,
+            clockDeviceUID: plan.clockDeviceUID,
+            clockIsBluetooth: audioDeviceID(for: plan.clockDeviceUID)?.isBluetoothDevice() ?? true,
+            tapSourceIsVirtual: isTapSourceVirtual()
+        )
 
         return [
             kAudioAggregateDeviceNameKey: name,
@@ -627,6 +646,7 @@ final class ProcessTapController: ProcessTapControlling {
         let description = buildAggregateDescription(
             outputUIDs: targetDeviceUIDs,
             tapUUID: tapDesc.uuid,
+            tapDeviceUID: tapDesc.deviceUID,
             name: "Deci-\(app.id)"
         )
 
@@ -1113,6 +1133,7 @@ final class ProcessTapController: ProcessTapControlling {
         let description = buildAggregateDescription(
             outputUIDs: outputUIDs,
             tapUUID: tapDesc.uuid,
+            tapDeviceUID: tapDesc.deviceUID,
             name: "Deci-\(app.id)-secondary"
         )
 
@@ -1355,6 +1376,7 @@ final class ProcessTapController: ProcessTapControlling {
         let description = buildAggregateDescription(
             outputUIDs: outputUIDs,
             tapUUID: newTapDesc.uuid,
+            tapDeviceUID: newTapDesc.deviceUID,
             name: "Deci-\(app.id)"
         )
 

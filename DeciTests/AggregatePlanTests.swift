@@ -166,3 +166,34 @@ struct InputStreamUsageTests {
         #expect(ProcessTapController.inputStreamUsageFlags(inputCount: 2, outputCount: 0) == nil)
     }
 }
+
+@Suite("ProcessTapController — Sub-tap drift compensation")
+struct TapDriftCompensationTests {
+
+    private func needsDrift(tap: String?, clock: String = "speakers", bluetooth: Bool = false, virtual: Bool = false) -> Bool {
+        ProcessTapController.tapNeedsDriftCompensation(
+            tapDeviceUID: tap,
+            clockDeviceUID: clock,
+            clockIsBluetooth: bluetooth,
+            tapSourceIsVirtual: virtual
+        )
+    }
+
+    @Test("A tap of the clock device's own stream shares its clock: OFF")
+    func sameDeviceIsOff() {
+        #expect(needsDrift(tap: "speakers") == false)
+    }
+
+    @Test("A mixdown tap or another device's stream can carry another clock: ON")
+    func otherClocksAreOn() {
+        #expect(needsDrift(tap: nil) == true)
+        #expect(needsDrift(tap: "usb-dac") == true)
+    }
+
+    @Test("A Bluetooth clock device or a virtual source stays OFF whatever the tap")
+    func bluetoothAndVirtualAreOff() {
+        #expect(needsDrift(tap: nil, bluetooth: true) == false)
+        #expect(needsDrift(tap: "usb-dac", bluetooth: true) == false)
+        #expect(needsDrift(tap: "usb-dac", virtual: true) == false)
+    }
+}
