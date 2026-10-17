@@ -1,4 +1,5 @@
 // FineTune/Audio/Engine/ProcessTapController.swift
+import Accelerate
 import AudioToolbox
 import Foundation
 import os
@@ -79,6 +80,25 @@ final class ProcessTapController: ProcessTapControlling {
     private nonisolated(unsafe) var _activationHostTime: UInt64 = 0
     /// Set once any audio callback has rendered at least one buffer.
     private nonisolated(unsafe) var _hasRenderedAudio: Bool = false
+
+    // Stuck-tap evidence for the engine's watchdog (see TapWatchdog). Written by the primary
+    // callback, reset from main whenever a new tap takes over the primary role.
+    /// Host tick when the current primary tap began (activation, destructive switch, promotion).
+    private nonisolated(unsafe) var _tapStartHostTime: UInt64 = 0
+    /// Host tick of the last primary buffer holding any non-zero tap sample; 0 = none yet.
+    private nonisolated(unsafe) var _lastInputSignalHostTime: UInt64 = 0
+    /// Host tick of the last primary buffer that was not "live input in, silence out".
+    private nonisolated(unsafe) var _lastHealthyOutputHostTime: UInt64 = 0
+    /// Host tick of the last jump in the primary input timeline (a skipped IO cycle); 0 = none.
+    private nonisolated(unsafe) var _lastDiscontinuityHostTime: UInt64 = 0
+    private nonisolated(unsafe) var _discontinuityCount: UInt32 = 0
+    #if DEBUG
+    /// DebugFaults: this tap delivers exact zeros, as a stuck tap does, until it is rebuilt.
+    private nonisolated(unsafe) var _debugStuckInput = false
+    #endif
+    /// Input sample time the next primary buffer should start at, for the callback below.
+    private nonisolated(unsafe) var _expectedInputSampleTime: Float64 = -1
+    private nonisolated(unsafe) var _expectedSampleTimeCallbackID: UInt32 = 0
 
     /// Callback role identification — RT-safe via atomic UInt32 reads.
     /// Each IO proc closure captures an immutable callbackID at creation.
@@ -184,13 +204,52 @@ final class ProcessTapController: ProcessTapControlling {
         return deltaNanos <= (seconds * 1_000_000_000.0)
     }
 
-    /// Health checks should only run after activation has settled and at least one callback occurred.
+    /// Health checks should only run after activation has settled. A tap that never rendered a
+    /// single callback is eligible too: with `.mutedWhenTapped` it silences the app on every
+    /// output, so it must be recreated rather than left alone.
     func isHealthCheckEligible(minActiveSeconds: Double) -> Bool {
-        guard _hasRenderedAudio else { return false }
         let started = _activationHostTime
         guard started != 0 else { return false }
         let deltaNanos = Double(mach_absolute_time() &- started) * Self.hostTimeNanosScale
         return deltaNanos >= (minActiveSeconds * 1_000_000_000.0)
+    }
+
+    private static func secondsSince(_ hostTime: UInt64, now: UInt64) -> Double {
+        guard hostTime != 0 else { return .infinity }
+        return Double(now &- hostTime) * hostTimeNanosScale / 1_000_000_000.0
+    }
+
+    /// A crossfade or destructive switch is rebuilding the tap.
+    var isSwitchingDevices: Bool { isSwitching || crossfadeTask != nil || switchRamp.isRamping }
+
+    /// What the primary callback has seen, for the engine's stuck-tap watchdog. Nil until the
+    /// tap has rendered: the unresponsive-tap check covers a tap whose callback never runs.
+    func healthReadings() -> TapHealthReadings? {
+        guard activated, _hasRenderedAudio, _tapStartHostTime != 0 else { return nil }
+        let now = mach_absolute_time()
+        let signal = _lastInputSignalHostTime
+        let start = _tapStartHostTime
+        return TapHealthReadings(
+            isSwitching: isSwitchingDevices,
+            secondsSinceTapStart: Self.secondsSince(start, now: now),
+            inputSignalSeen: signal != 0,
+            secondsSinceInputSignal: Self.secondsSince(signal != 0 ? signal : start, now: now),
+            secondsSinceDiscontinuity: Self.secondsSince(_lastDiscontinuityHostTime, now: now),
+            discontinuityCount: _discontinuityCount,
+            secondsSinceHealthyOutput: Self.secondsSince(max(_lastHealthyOutputHostTime, start), now: now)
+        )
+    }
+
+    /// Starts the watchdog's evidence over for a tap that just took the primary role.
+    private func markTapStart() {
+        let now = mach_absolute_time()
+        _lastInputSignalHostTime = 0
+        _lastHealthyOutputHostTime = now
+        _lastDiscontinuityHostTime = 0
+        _expectedInputSampleTime = -1
+        _expectedSampleTimeCallbackID = 0
+        OSMemoryBarrier()
+        _tapStartHostTime = now
     }
 
     var currentDeviceVolume: Float {
@@ -235,6 +294,12 @@ final class ProcessTapController: ProcessTapControlling {
         self.targetDeviceUIDs = targetDeviceUIDs
         self.deviceMonitor = deviceMonitor
         self.preferredTapSourceDeviceUID = preferredTapSourceDeviceUID
+        #if DEBUG
+        // Debug runs: force a stream tap of this device (as a follows-default app gets).
+        if let forced = ProcessInfo.processInfo.environment["DECI_DEBUG_TAP_SOURCE"] {
+            self.preferredTapSourceDeviceUID = forced
+        }
+        #endif
         self.logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "ProcessTapController(\(app.name))")
     }
 
@@ -629,6 +694,7 @@ final class ProcessTapController: ProcessTapControlling {
         _lastRenderHostTime = 0
         _activationHostTime = mach_absolute_time()
         _hasRenderedAudio = false
+        markTapStart()
 
         // Create process tap. Prefer stream-specific tap for multichannel devices to avoid
         // stereo matrix attenuation on interfaces with many output channels.
@@ -705,7 +771,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _primaryCallbackID = nextCallbackID
         let activateCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&primaryResources.deviceProcID, primaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, _, outOutputData, _ in
+        err = AudioDeviceCreateIOProcIDWithBlock(&primaryResources.deviceProcID, primaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, _ in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -714,7 +780,7 @@ final class ProcessTapController: ProcessTapControlling {
                 }
                 return
             }
-            self.processAudioCallback(inInputData, to: outOutputData, callbackID: activateCallbackID)
+            self.processAudioCallback(inInputData, inputTime: inInputTime, to: outOutputData, callbackID: activateCallbackID)
         }
         guard err == noErr else {
             cleanupPartialActivation()
@@ -743,7 +809,7 @@ final class ProcessTapController: ProcessTapControlling {
         currentDeviceUIDs = targetDeviceUIDs
 
         activated = true
-        logger.info("Tap activated for \(self.app.name) on \(self.targetDeviceUIDs.count) device(s)")
+        logger.notice("Tap activated for \(self.app.name, privacy: .public) on \(self.targetDeviceUIDs, privacy: .public)")
     }
 
     /// Switch to a single device (convenience for backward compatibility).
@@ -1194,7 +1260,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _secondaryCallbackID = nextCallbackID
         let secondaryCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&secondaryResources.deviceProcID, secondaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, _, outOutputData, _ in
+        err = AudioDeviceCreateIOProcIDWithBlock(&secondaryResources.deviceProcID, secondaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, _ in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -1203,7 +1269,7 @@ final class ProcessTapController: ProcessTapControlling {
                 }
                 return
             }
-            self.processAudioCallback(inInputData, to: outOutputData, callbackID: secondaryCallbackID)
+            self.processAudioCallback(inInputData, inputTime: inInputTime, to: outOutputData, callbackID: secondaryCallbackID)
         }
         guard err == noErr else {
             secondaryResources.destroy()
@@ -1284,6 +1350,7 @@ final class ProcessTapController: ProcessTapControlling {
         // The barrier ensures the HAL I/O thread sees the updated EQ processors,
         // volume, ramp coefficient, and stereo channels BEFORE it sees the new
         // _primaryCallbackID and switches to primary-role behavior.
+        markTapStart()
         OSMemoryBarrier()  // Flush all prior state stores before publishing new role
         _primaryCallbackID = _secondaryCallbackID
         _secondaryCallbackID = 0
@@ -1401,7 +1468,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _primaryCallbackID = nextCallbackID
         let switchCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&newResources.deviceProcID, newResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, _, outOutputData, _ in
+        err = AudioDeviceCreateIOProcIDWithBlock(&newResources.deviceProcID, newResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, _ in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -1410,7 +1477,7 @@ final class ProcessTapController: ProcessTapControlling {
                 }
                 return
             }
-            self.processAudioCallback(inInputData, to: outOutputData, callbackID: switchCallbackID)
+            self.processAudioCallback(inInputData, inputTime: inInputTime, to: outOutputData, callbackID: switchCallbackID)
         }
         guard err == noErr else {
             newResources.destroy()
@@ -1430,6 +1497,7 @@ final class ProcessTapController: ProcessTapControlling {
         // Destroy old resources, adopt new
         primaryResources.destroy()
         primaryResources = newResources
+        markTapStart()
         targetDeviceUIDs = outputUIDs
         currentDeviceUIDs = outputUIDs
 
@@ -1682,14 +1750,33 @@ final class ProcessTapController: ProcessTapControlling {
     /// - Perform file/network I/O
     nonisolated private func processAudioCallback(
         _ inputBufferList: UnsafePointer<AudioBufferList>,
+        inputTime: UnsafePointer<AudioTimeStamp>,
         to outputBufferList: UnsafeMutablePointer<AudioBufferList>,
         callbackID: UInt32
     ) {
-        _lastRenderHostTime = mach_absolute_time()
+        let now = mach_absolute_time()
+        _lastRenderHostTime = now
         _hasRenderedAudio = true
 
         let isPrimary = (callbackID == _primaryCallbackID)
         let isSecondary = !isPrimary && (callbackID == _secondaryCallbackID)
+
+        #if DEBUG
+        if isPrimary, DebugFaults.pendingStallMs > 0 {
+            let ms = DebugFaults.pendingStallMs
+            DebugFaults.pendingStallMs = 0
+            usleep(useconds_t(ms) * 1000)
+        }
+        if isPrimary, DebugFaults.pendingStuckTap {
+            DebugFaults.pendingStuckTap = false
+            _debugStuckInput = true
+        }
+        if isPrimary, _debugStuckInput {
+            for buf in UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList)) {
+                if let data = buf.mData { memset(data, 0, Int(buf.mDataByteSize)) }
+            }
+        }
+        #endif
 
         let outputBuffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
 
@@ -1713,26 +1800,44 @@ final class ProcessTapController: ProcessTapControlling {
             for buf in outputBuffers {
                 if let data = buf.mData { memset(data, 0, Int(buf.mDataByteSize)) }
             }
+            _lastHealthyOutputHostTime = now  // Intentional silence.
             return
         }
 
-        // Track peak level for VU meter
+        // Peak over every sample of every channel: it drives the VU meter, the output gate
+        // (a left-only scan kept the gate shut on right-only audio, upstream #429) and the
+        // watchdog's exact-zero test, which a stuck tap fails on all channels at once.
         var maxPeak: Float = 0.0
         var totalSamplesThisBuffer: Int = 0
         for inputBuffer in inputBuffers {
             guard let inputData = inputBuffer.mData else { continue }
-            let inputSamples = inputData.assumingMemoryBound(to: Float.self)
             let channels = max(1, Int(inputBuffer.mNumberChannels))
             let sampleCount = Int(inputBuffer.mDataByteSize) / MemoryLayout<Float>.size
             if totalSamplesThisBuffer == 0 {
                 totalSamplesThisBuffer = sampleCount / channels
             }
-            for i in stride(from: 0, to: sampleCount, by: channels) {
-                let absSample = abs(inputSamples[i])
-                if absSample > maxPeak { maxPeak = absSample }
-            }
+            guard sampleCount > 0 else { continue }
+            var bufferPeak: Float = 0
+            vDSP_maxmgv(inputData.assumingMemoryBound(to: Float.self), 1, &bufferPeak, vDSP_Length(sampleCount))
+            if bufferPeak > maxPeak { maxPeak = bufferPeak }
         }
         let rawPeak = min(maxPeak, 1.0)
+
+        if isPrimary {
+            // A jump in the input timeline means the HAL skipped a cycle (an overload). Only
+            // compared within one IOProc: a promoted tap runs on another aggregate's timeline.
+            if inputTime.pointee.mFlags.contains(.sampleTimeValid) {
+                let sampleTime = inputTime.pointee.mSampleTime
+                if _expectedSampleTimeCallbackID == callbackID, _expectedInputSampleTime >= 0,
+                   abs(sampleTime - _expectedInputSampleTime) > 1.0 {
+                    _lastDiscontinuityHostTime = now
+                    _discontinuityCount &+= 1
+                }
+                _expectedSampleTimeCallbackID = callbackID
+                _expectedInputSampleTime = sampleTime + Float64(totalSamplesThisBuffer)
+            }
+            if maxPeak > 0 { _lastInputSignalHostTime = now }
+        }
 
         if isPrimary {
             _peakLevel = _peakLevel + levelSmoothingFactor * (rawPeak - _peakLevel)
@@ -1770,6 +1875,7 @@ final class ProcessTapController: ProcessTapControlling {
             for buf in outputBuffers {
                 if let data = buf.mData { memset(data, 0, Int(buf.mDataByteSize)) }
             }
+            if isPrimary { _lastHealthyOutputHostTime = now }  // Intentional silence.
             return
         }
 
@@ -1829,6 +1935,20 @@ final class ProcessTapController: ProcessTapControlling {
 
         if isPrimary {
             _primaryCurrentVolume = currentVol
+            // Live input must come out as something. Exact zero (or NaN) with live input and a
+            // non-zero target means the chain is stuck, as in upstream #461.
+            var healthy = rawPeak <= Self.outputGateSilenceThreshold || targetVol <= 0.001
+            if !healthy {
+                for buf in outputBuffers {
+                    guard let data = buf.mData else { continue }
+                    let count = Int(buf.mDataByteSize) / MemoryLayout<Float>.size
+                    guard count > 0 else { continue }
+                    var outPeak: Float = 0
+                    vDSP_maxmgv(data.assumingMemoryBound(to: Float.self), 1, &outPeak, vDSP_Length(count))
+                    if outPeak > 0 { healthy = true; break }
+                }
+            }
+            if healthy { _lastHealthyOutputHostTime = now }
         } else {
             _secondaryCurrentVolume = currentVol
         }

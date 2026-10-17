@@ -238,6 +238,11 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                 // Skip system daemons (siri, coreaudio, etc.) - they shouldn't appear in the apps list
                 if isSystemDaemon(bundleID: bundleID, name: name) { continue }
 
+                #if DEBUG
+                // Debug runs next to the owner's listening: tap only the named test app.
+                if let only = ProcessInfo.processInfo.environment["DECI_DEBUG_TAP_ONLY"], bundleID != only { continue }
+                #endif
+
                 // Merge helper process objectIDs into parent app entry
                 if let existing = appsByPID[parentPID] {
                     if !existing.processObjectIDs.contains(objectID) {

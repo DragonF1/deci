@@ -28,6 +28,8 @@ protocol ProcessTapControlling: AnyObject, Sendable {
     func updateDevices(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws
     func hasRecentAudioCallback(within seconds: Double) -> Bool
     func isHealthCheckEligible(minActiveSeconds: Double) -> Bool
+    /// What the audio callback has seen, for the stuck-tap watchdog. Nil when not available.
+    func healthReadings() -> TapHealthReadings?
 
     var tapSourceDeviceUID: String? { get }
     func refreshTapSource(_ preferredDeviceUID: String?) async throws
@@ -69,4 +71,6 @@ extension ProcessTapControlling {
     func updateProcesses(_ newApp: AudioApp) async throws {
         // Default no-op for mocks that don't override
     }
+
+    func healthReadings() -> TapHealthReadings? { nil }
 }

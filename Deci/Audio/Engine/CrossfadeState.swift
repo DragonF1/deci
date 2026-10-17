@@ -116,7 +116,12 @@ nonisolated struct CrossfadeState: @unchecked Sendable {
     var primaryMultiplier: Float {
         switch phase {
         case .idle:
-            return progress >= 1.0 ? 0.0 : 1.0
+            // Always full volume. Gating on `progress` here silenced a promoted tap for good:
+            // a secondary callback already past its phase check can store progress = 1.0 after
+            // complete() reset it, and nothing resets progress while idle (upstream #461). The
+            // old primary is silenced by the crossfading phase (cos → 0) and, after promotion,
+            // by its stale callbackID.
+            return 1.0
         case .warmingUp:
             return 1.0
         case .crossfading:

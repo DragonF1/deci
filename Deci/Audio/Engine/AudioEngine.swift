@@ -66,6 +66,8 @@ final class AudioEngine {
     private var failedProcessLists: [pid_t: Set<AudioObjectID>] = [:]  // Last list whose rebuild failed, not retried
     private var healthMonitorTask: Task<Void, Never>?  // Periodic tap health monitor
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
+    private var tapWatchdogs: [pid_t: TapWatchdog] = [:]  // Stuck-tap detection, kept across rebuilds
+    private var loggedDiscontinuities: [pid_t: UInt32] = [:]  // Last IO discontinuity count logged per tap
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "AudioEngine")
 
     // MARK: - Priority State Machine
@@ -361,6 +363,9 @@ final class AudioEngine {
             Task { @MainActor in
                 if self.permission.status == .authorized {
                     self.processMonitor.start()
+                    // Without this the health monitor (unresponsive and stuck taps) only ever
+                    // started on a fresh permission grant, never on a normal launch.
+                    self.startHealthMonitor()
                 }
                 self.deviceMonitor.start()
                 self.bluetoothDeviceMonitor.start()
@@ -2140,14 +2145,15 @@ final class AudioEngine {
 
     // MARK: - Tap Health Monitor
 
-    /// Starts a periodic health check that recreates unresponsive taps.
-    /// Checks every 2 seconds; after 3 consecutive misses (~6s), the tap is presumed dead.
+    /// Starts a periodic health check that recreates unresponsive and stuck taps.
+    /// Checks every second; after 6 consecutive misses (~6s) a tap with no callbacks is presumed
+    /// dead, and `TapWatchdog` decides when a tap whose callback runs but delivers nothing is stuck.
     private func startHealthMonitor() {
         guard healthMonitorTask == nil else { return }
         healthMonitorTask = Task { @MainActor [weak self] in
             var consecutiveMisses: [pid_t: Int] = [:]
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, let self else { return }
 
                 // Skip entirely when no taps exist — avoids unnecessary work at idle (#176)
@@ -2156,13 +2162,18 @@ final class AudioEngine {
                 let now = Date()
 
                 for (pid, tap) in self.taps {
-                    // Skip muted apps — no callbacks while muted isn't a health signal
-                    guard !tap.isMuted else { continue }
+                    // An earlier rebuild in this pass may have replaced or removed this tap.
+                    guard self.taps[pid] === tap else { continue }
 
                     // Skip PIDs in recovery cooldown to prevent recreation thrashing
                     if let cooldownEnd = self.tapRecoveryCooldownUntil[pid], now < cooldownEnd {
                         continue
                     }
+
+                    if await self.checkTapWatchdog(pid: pid, tap: tap) { continue }
+
+                    // Skip muted apps — no callbacks while muted isn't a health signal
+                    guard !tap.isMuted else { continue }
 
                     guard tap.isHealthCheckEligible(minActiveSeconds: 5.0) else { continue }
 
@@ -2180,7 +2191,7 @@ final class AudioEngine {
                         let misses = (consecutiveMisses[pid] ?? 0) + 1
                         consecutiveMisses[pid] = misses
 
-                        if misses >= 3 {
+                        if misses >= 6 {
                             self.logger.warning("Tap for PID \(pid) unresponsive (\(misses) misses), recreating")
                             consecutiveMisses[pid] = 0
                             await self.recreateTap(for: pid)
@@ -2191,8 +2202,38 @@ final class AudioEngine {
                 // Prune entries for PIDs no longer tracked
                 consecutiveMisses = consecutiveMisses.filter { self.taps[$0.key] != nil }
                 self.tapRecoveryCooldownUntil = self.tapRecoveryCooldownUntil.filter { self.taps[$0.key] != nil }
+                self.tapWatchdogs = self.tapWatchdogs.filter { self.taps[$0.key] != nil }
+                self.loggedDiscontinuities = self.loggedDiscontinuities.filter { self.taps[$0.key] != nil }
             }
         }
+    }
+
+    /// Runs the stuck-tap watchdog for one tap. Returns true when it rebuilt the tap.
+    private func checkTapWatchdog(pid: pid_t, tap: any ProcessTapControlling) async -> Bool {
+        guard let readings = tap.healthReadings() else { return false }
+
+        // Persisted evidence: every IO discontinuity (skipped cycle) on a tap.
+        if readings.discontinuityCount != (loggedDiscontinuities[pid] ?? 0) {
+            loggedDiscontinuities[pid] = readings.discontinuityCount
+            if readings.discontinuityCount > 0 {
+                logger.notice("[WATCHDOG] \(tap.app.name, privacy: .public) (PID \(pid)) IO discontinuity #\(readings.discontinuityCount) on \(tap.currentDeviceUIDs, privacy: .public)")
+            }
+        }
+
+        let sample = TapHealthSample(
+            readings: readings,
+            appIsPlaying: tap.app.processObjectIDs.contains { $0.readProcessIsRunningOutput() },
+            isUserMuted: tap.isMuted
+        )
+        var watchdog = tapWatchdogs[pid] ?? TapWatchdog()
+        let reason = watchdog.evaluate(sample)
+        tapWatchdogs[pid] = watchdog
+        guard let reason else { return false }
+
+        logger.error("[WATCHDOG] \(tap.app.name, privacy: .public) (PID \(pid)) stuck: \(reason.rawValue, privacy: .public) on \(tap.currentDeviceUIDs, privacy: .public); input silent \(readings.secondsSinceInputSignal, format: .fixed(precision: 1))s (signal seen: \(readings.inputSignalSeen)), last discontinuity \(readings.secondsSinceDiscontinuity, format: .fixed(precision: 1))s ago, tap age \(readings.secondsSinceTapStart, format: .fixed(precision: 1))s, output silent \(readings.secondsSinceHealthyOutput, format: .fixed(precision: 1))s; rebuilding tap")
+        await recreateTap(for: pid, cooldown: 5)
+        logger.notice("[WATCHDOG] \(tap.app.name, privacy: .public) (PID \(pid)) tap rebuilt: \(self.taps[pid] != nil ? "ok" : "no tap", privacy: .public)")
+        return true
     }
 
     private func stopHealthMonitor() {
@@ -2203,14 +2244,14 @@ final class AudioEngine {
     /// Tears down and recreates a tap for a given PID, preserving routing and settings.
     /// Async: awaits full CoreAudio resource teardown before creating the replacement tap
     /// to prevent orphaned IO procs from accumulating (issue #176).
-    private func recreateTap(for pid: pid_t) async {
+    private func recreateTap(for pid: pid_t, cooldown: TimeInterval = 20) async {
         guard let oldTap = taps.removeValue(forKey: pid) else { return }
         cancelProcessRebuild(for: pid)
         let deviceUIDs = oldTap.currentDeviceUIDs
         await oldTap.invalidateAsync()
 
         // Set cooldown to prevent thrashing
-        tapRecoveryCooldownUntil[pid] = Date().addingTimeInterval(20)
+        tapRecoveryCooldownUntil[pid] = Date().addingTimeInterval(cooldown)
 
         // Find the current AudioApp entry for this PID
         guard let app = apps.first(where: { $0.id == pid }) else {
