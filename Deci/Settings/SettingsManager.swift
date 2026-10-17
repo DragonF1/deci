@@ -199,9 +199,14 @@ final class SettingsManager {
         }
     }
 
+    /// Only the app's own settings (default directory) own the login item. A manager on another
+    /// directory (tests) must not register whatever app hosts it as a login item.
+    private let managesLoginItem: Bool
+
     init(directory: URL? = nil) {
         let baseDir = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("Deci")
         self.settingsURL = baseDir.appendingPathComponent("settings.json")
+        self.managesLoginItem = directory == nil
         self.settings = Settings()
         loadFromDisk()
     }
@@ -837,6 +842,7 @@ final class SettingsManager {
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
+        guard managesLoginItem else { return }
         do {
             if enabled {
                 try SMAppService.mainApp.register()
@@ -893,7 +899,7 @@ final class SettingsManager {
         settings.userEQPresets.removeAll()
 
         // Also unregister from launch at login
-        try? SMAppService.mainApp.unregister()
+        if managesLoginItem { try? SMAppService.mainApp.unregister() }
 
         scheduleSave()
         notifyChromeSettingsIfChanged(from: previousAppSettings)

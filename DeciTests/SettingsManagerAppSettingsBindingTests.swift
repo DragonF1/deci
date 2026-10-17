@@ -1,6 +1,13 @@
 // FineTuneTests/SettingsManagerAppSettingsBindingTests.swift
 import Testing
+import Foundation
 @testable import Deci
+
+/// A manager on its own temp directory: the default one is the owner's real settings.json.
+@MainActor
+private func isolatedManager() -> SettingsManager {
+    SettingsManager(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+}
 
 @MainActor
 @Suite("SettingsManager.appSettings — direct binding setter")
@@ -8,7 +15,7 @@ struct SettingsManagerAppSettingsBindingTests {
 
     @Test("Direct assignment to appSettings persists the new value")
     func directAssignmentPersists() async {
-        let manager = SettingsManager()
+        let manager = isolatedManager()
         var newSettings = manager.appSettings
         newSettings.defaultNewAppVolume = 0.42
         newSettings.lockInputDevice = true
@@ -21,7 +28,7 @@ struct SettingsManagerAppSettingsBindingTests {
 
     @Test("Direct assignment forwards launch-at-login change to LaunchAtLoginService")
     func directAssignmentForwardsLaunchAtLogin() async {
-        let manager = SettingsManager()
+        let manager = isolatedManager()
         var newSettings = manager.appSettings
         let original = newSettings.launchAtLogin
         newSettings.launchAtLogin = !original
@@ -37,8 +44,8 @@ struct SettingsManagerAppSettingsBindingTests {
 
     @Test("Direct assignment is equivalent to updateAppSettings for the same input")
     func directAssignmentEquivalentToUpdate() async {
-        let managerA = SettingsManager()
-        let managerB = SettingsManager()
+        let managerA = isolatedManager()
+        let managerB = isolatedManager()
 
         var modified = managerA.appSettings
         modified.defaultNewAppVolume = 0.7

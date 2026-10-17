@@ -36,7 +36,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
+/// Picks the app to run. Under `xcodebuild test` this process is only the unit tests' host:
+/// the tests build their own engines with fakes, and the real app would tap the owner's
+/// apps, answer the Chrome extension and grab the media keys while the tests run.
 @main
+enum DeciMain {
+    static func main() {
+        let env = ProcessInfo.processInfo.environment
+        if env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil {
+            TestHostApp.main()
+        } else {
+            DeciApp.main()
+        }
+    }
+}
+
+/// Inert stand-in for DeciApp while hosting unit tests.
+struct TestHostApp: App {
+    var body: some Scene {
+        Settings { EmptyView() }
+    }
+}
+
 struct DeciApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var audioEngine: AudioEngine
@@ -118,7 +139,13 @@ struct DeciApp: App {
         UserDefaults.standard.set(1, forKey: "NSStatusItem VisibleCC Item-0")
         UserDefaults.standard.set(1, forKey: "NSStatusItem Visible Item-0")
 
+        #if DEBUG
+        DebugFaults.install()
+        // Debug runs can keep their settings out of the owner's real settings.json.
+        let settings = SettingsManager(directory: ProcessInfo.processInfo.environment["DECI_DEBUG_SETTINGS_DIR"].map { URL(fileURLWithPath: $0) })
+        #else
         let settings = SettingsManager()
+        #endif
         let profileManager = AutoEQProfileManager()
         let permission = AudioRecordingPermission()
         let engine = AudioEngine(permission: permission, settingsManager: settings, autoEQProfileManager: profileManager)
