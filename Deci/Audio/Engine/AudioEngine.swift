@@ -68,6 +68,9 @@ final class AudioEngine {
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
     private var tapWatchdogs: [pid_t: TapWatchdog] = [:]  // Stuck-tap detection, kept across rebuilds
     private var loggedDiscontinuities: [pid_t: UInt32] = [:]  // Last IO discontinuity count logged per tap
+    #if DEBUG
+    private var zeroRunCursors: [pid_t: ZeroRunLogCursor] = [:]  // Zero runs already logged per tap
+    #endif
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FineTune", category: "AudioEngine")
 
     // MARK: - Priority State Machine
@@ -360,6 +363,9 @@ final class AudioEngine {
         wireCallbacks()
 
         if startMonitorsAutomatically {
+            #if DEBUG
+            logger.notice("[SOAK] \(DebugSoakConfig.current.summary, privacy: .public)")
+            #endif
             Task { @MainActor in
                 if self.permission.status == .authorized {
                     self.processMonitor.start()
@@ -2204,6 +2210,9 @@ final class AudioEngine {
                 self.tapRecoveryCooldownUntil = self.tapRecoveryCooldownUntil.filter { self.taps[$0.key] != nil }
                 self.tapWatchdogs = self.tapWatchdogs.filter { self.taps[$0.key] != nil }
                 self.loggedDiscontinuities = self.loggedDiscontinuities.filter { self.taps[$0.key] != nil }
+                #if DEBUG
+                self.zeroRunCursors = self.zeroRunCursors.filter { self.taps[$0.key] != nil }
+                #endif
             }
         }
     }
@@ -2211,6 +2220,10 @@ final class AudioEngine {
     /// Runs the stuck-tap watchdog for one tap. Returns true when it rebuilt the tap.
     private func checkTapWatchdog(pid: pid_t, tap: any ProcessTapControlling) async -> Bool {
         guard let readings = tap.healthReadings() else { return false }
+
+        #if DEBUG
+        if DebugSoakConfig.current.zeroLog { logZeroRuns(pid: pid, tap: tap, readings: readings) }
+        #endif
 
         // Persisted evidence: every IO discontinuity (skipped cycle) on a tap.
         if readings.discontinuityCount != (loggedDiscontinuities[pid] ?? 0) {
@@ -2235,6 +2248,32 @@ final class AudioEngine {
         logger.notice("[WATCHDOG] \(tap.app.name, privacy: .public) (PID \(pid)) tap rebuilt: \(self.taps[pid] != nil ? "ok" : "no tap", privacy: .public)")
         return true
     }
+
+    #if DEBUG
+    /// DECI_DEBUG_ZERO_LOG: one persisted line per exact-zero input run of 100 ms or more, at its
+    /// onset and at its end. Times come from the IO thread's host clock, not from this 1 s tick.
+    private func logZeroRuns(pid: pid_t, tap: any ProcessTapControlling, readings: TapHealthReadings) {
+        var cursor = zeroRunCursors[pid] ?? ZeroRunLogCursor()
+        let events = cursor.events(for: readings.zeroRun)
+        zeroRunCursors[pid] = cursor
+        guard !events.isEmpty else { return }
+
+        let now = Date()
+        let playing = tap.app.processObjectIDs.contains { $0.readProcessIsRunningOutput() }
+        for event in events {
+            let line = event.logLine(
+                appName: tap.app.name,
+                pid: pid,
+                playing: playing,
+                devices: tap.currentDeviceUIDs,
+                tapSourceDeviceUID: tap.tapSourceDeviceUID,
+                readings: readings,
+                now: now
+            )
+            logger.notice("[ZERORUN] \(line, privacy: .public)")
+        }
+    }
+    #endif
 
     private func stopHealthMonitor() {
         healthMonitorTask?.cancel()

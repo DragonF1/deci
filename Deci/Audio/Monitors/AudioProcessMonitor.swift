@@ -190,11 +190,18 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
 
     private func startPeriodicRefresh() {
         periodicRefreshTask?.cancel()
+        // Debug runs: DECI_DEBUG_REFRESH_S replaces the interval.
+        let interval: Double
+        #if DEBUG
+        interval = DebugSoakConfig.current.refreshSeconds ?? 10
+        #else
+        interval = 10
+        #endif
         periodicRefreshTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 // 10s is sufficient as a safety net — HAL listeners handle most changes.
                 // Lower intervals waste CPU at idle (#176).
-                try? await Task.sleep(for: .seconds(10))
+                try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled, let self else { return }
                 self.refresh()
             }

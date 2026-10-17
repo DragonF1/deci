@@ -95,6 +95,15 @@ final class ProcessTapController: ProcessTapControlling {
     #if DEBUG
     /// DebugFaults: this tap delivers exact zeros, as a stuck tap does, until it is rebuilt.
     private nonisolated(unsafe) var _debugStuckInput = false
+    // Zero-run soak instrumentation (DECI_DEBUG_ZERO_LOG): the primary callback writes these,
+    // main reads them for the log and resets them in markTapStart. Torn reads only skew a log line.
+    private nonisolated(unsafe) var _zeroRun = ZeroRunTracker()
+    private nonisolated(unsafe) var _zeroRunForensics = ZeroRunForensics()
+    /// Host tick and input sample time of the previous primary callback; 0 = none yet.
+    private nonisolated(unsafe) var _zeroRunPrevHostTime: UInt64 = 0
+    private nonisolated(unsafe) var _zeroRunPrevSampleTime: Float64 = 0
+    /// The primary aggregate's rate, for the tracker's frames-to-seconds (set with the gate windows).
+    private nonisolated(unsafe) var _tapSampleRate: Double = 48_000
     #endif
     /// Input sample time the next primary buffer should start at, for the callback below.
     private nonisolated(unsafe) var _expectedInputSampleTime: Float64 = -1
@@ -229,7 +238,7 @@ final class ProcessTapController: ProcessTapControlling {
         let now = mach_absolute_time()
         let signal = _lastInputSignalHostTime
         let start = _tapStartHostTime
-        return TapHealthReadings(
+        let readings = TapHealthReadings(
             isSwitching: isSwitchingDevices,
             secondsSinceTapStart: Self.secondsSince(start, now: now),
             inputSignalSeen: signal != 0,
@@ -238,7 +247,25 @@ final class ProcessTapController: ProcessTapControlling {
             discontinuityCount: _discontinuityCount,
             secondsSinceHealthyOutput: Self.secondsSince(max(_lastHealthyOutputHostTime, start), now: now)
         )
+        #if DEBUG
+        return withSoakReadings(readings, sampledAt: now)
+        #else
+        return readings
+        #endif
     }
+
+    #if DEBUG
+    private func withSoakReadings(_ readings: TapHealthReadings, sampledAt now: UInt64) -> TapHealthReadings {
+        var readings = readings
+        readings.sampledHostTime = now
+        readings.zeroRun = _zeroRun
+        readings.zeroRunForensics = _zeroRunForensics
+        // A stream tap carries its device's UID; a mixdown tap has none.
+        readings.tapIsStream = primaryResources.tapDescription?.deviceUID != nil
+        readings.tapDriftCompensation = primaryResources.tapDriftCompensation
+        return readings
+    }
+    #endif
 
     /// Starts the watchdog's evidence over for a tap that just took the primary role.
     private func markTapStart() {
@@ -248,6 +275,12 @@ final class ProcessTapController: ProcessTapControlling {
         _lastDiscontinuityHostTime = 0
         _expectedInputSampleTime = -1
         _expectedSampleTimeCallbackID = 0
+        #if DEBUG
+        _zeroRun.reset()
+        _zeroRunForensics = ZeroRunForensics()
+        _zeroRunPrevHostTime = 0
+        _zeroRunPrevSampleTime = 0
+        #endif
         OSMemoryBarrier()
         _tapStartHostTime = now
     }
@@ -296,7 +329,7 @@ final class ProcessTapController: ProcessTapControlling {
         self.preferredTapSourceDeviceUID = preferredTapSourceDeviceUID
         #if DEBUG
         // Debug runs: force a stream tap of this device (as a follows-default app gets).
-        if let forced = ProcessInfo.processInfo.environment["DECI_DEBUG_TAP_SOURCE"] {
+        if let forced = DebugSoakConfig.current.forcedStreamTapSource {
             self.preferredTapSourceDeviceUID = forced
         }
         #endif
@@ -452,6 +485,23 @@ final class ProcessTapController: ProcessTapControlling {
         return tapDeviceUID != clockDeviceUID
     }
 
+    /// Debug runs: DECI_DEBUG_TAP_DRIFT forces drift compensation on or off for every tap.
+    private static var debugDriftOverride: Bool? {
+        #if DEBUG
+        return DebugSoakConfig.current.driftOverride
+        #else
+        return nil
+        #endif
+    }
+
+    #if DEBUG
+    /// The sub-tap drift flag a built aggregate description carries, for the soak log.
+    private static func tapDriftCompensation(in description: [String: Any]) -> Bool {
+        let taps = description[kAudioAggregateDeviceTapListKey] as? [[String: Any]]
+        return taps?.first?[kAudioSubTapDriftCompensationKey] as? Bool ?? false
+    }
+    #endif
+
     private func buildAggregateDescription(outputUIDs: [String], tapUUID: UUID, tapDeviceUID: String?, name: String) -> [String: Any] {
         precondition(!outputUIDs.isEmpty, "Must have at least one output device")
 
@@ -483,7 +533,7 @@ final class ProcessTapController: ProcessTapControlling {
         }
 
         // Defaults to Bluetooth (OFF) on an unresolvable device: less wrong on unknown BT.
-        let tapDriftCompensation = Self.tapNeedsDriftCompensation(
+        let tapDriftCompensation = Self.debugDriftOverride ?? Self.tapNeedsDriftCompensation(
             tapDeviceUID: tapDeviceUID,
             clockDeviceUID: plan.clockDeviceUID,
             clockIsBluetooth: audioDeviceID(for: plan.clockDeviceUID)?.isBluetoothDevice() ?? true,
@@ -628,6 +678,10 @@ final class ProcessTapController: ProcessTapControlling {
     /// Creates a process tap, preferring a device-stream tap to preserve multichannel routing.
     /// Falls back to stereo mixdown if stream-specific tap creation fails.
     private func createProcessTap(preferredDeviceUID: String?) throws -> (description: CATapDescription, tapID: AudioObjectID) {
+        #if DEBUG
+        // Debug runs: DECI_DEBUG_TAP_SOURCE=mixdown skips the stream branch, on every rebuild too.
+        let preferredDeviceUID = DebugSoakConfig.current.forceMixdown ? nil : preferredDeviceUID
+        #endif
         var lastError: OSStatus = noErr
 
         if let deviceUID = preferredDeviceUID {
@@ -683,6 +737,9 @@ final class ProcessTapController: ProcessTapControlling {
         let windows = OutputGateWindows(sampleRate: sampleRate)
         _outputGateRampSamples = windows.rampSamples
         _outputGateSilenceHoldSamples = windows.silenceHoldSamples
+        #if DEBUG
+        _tapSampleRate = sampleRate
+        #endif
     }
 
     func activate(initial: TapInitialState) throws {
@@ -715,6 +772,9 @@ final class ProcessTapController: ProcessTapControlling {
             tapDeviceUID: tapDesc.deviceUID,
             name: "Deci-\(app.id)"
         )
+        #if DEBUG
+        primaryResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
+        #endif
 
         var err: OSStatus
         var aggID: AudioObjectID = .unknown
@@ -1202,6 +1262,9 @@ final class ProcessTapController: ProcessTapControlling {
             tapDeviceUID: tapDesc.deviceUID,
             name: "Deci-\(app.id)-secondary"
         )
+        #if DEBUG
+        secondaryResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
+        #endif
 
         var err: OSStatus
         var aggID: AudioObjectID = .unknown
@@ -1446,6 +1509,9 @@ final class ProcessTapController: ProcessTapControlling {
             tapDeviceUID: newTapDesc.deviceUID,
             name: "Deci-\(app.id)"
         )
+        #if DEBUG
+        newResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
+        #endif
 
         var err: OSStatus
         var aggID: AudioObjectID = .unknown
@@ -1735,6 +1801,38 @@ final class ProcessTapController: ProcessTapControlling {
     // This callback runs on CoreAudio's real-time HAL I/O thread.
     // See .claude/rules/rt-safety.md for constraints.
 
+    #if DEBUG
+    /// Feeds the zero-run tracker and, at the first zero buffer of a run, snapshots how this
+    /// callback looked against the previous one. Scalar loads and stores only (RT-safe).
+    nonisolated private func trackZeroRun(
+        inputBuffers: UnsafeMutableAudioBufferListPointer,
+        inputTime: UnsafePointer<AudioTimeStamp>,
+        isZero: Bool,
+        frames: Int,
+        now: UInt64
+    ) {
+        let sampleTime = inputTime.pointee.mSampleTime
+        if isZero, frames > 0, !_zeroRun.isInRun {
+            var forensics = ZeroRunForensics()
+            forensics.startHostTime = now
+            if _zeroRunPrevHostTime != 0 {
+                forensics.hostDeltaTicks = now &- _zeroRunPrevHostTime
+                forensics.sampleTimeDelta = sampleTime - _zeroRunPrevSampleTime
+            }
+            forensics.rateScalar = inputTime.pointee.mRateScalar
+            forensics.numberBuffers = UInt32(inputBuffers.count)
+            if inputBuffers.count > 0 {
+                forensics.firstBufferBytes = inputBuffers[0].mDataByteSize
+                forensics.firstBufferChannels = inputBuffers[0].mNumberChannels
+            }
+            _zeroRunForensics = forensics
+        }
+        _zeroRun.record(isZero: isZero, frames: frames, sampleRate: _tapSampleRate, hostTime: now)
+        _zeroRunPrevHostTime = now
+        _zeroRunPrevSampleTime = sampleTime
+    }
+    #endif
+
     /// Unified audio processing callback for both primary and secondary taps.
     /// Role is determined at runtime via callbackID comparison (atomic UInt32 read).
     ///
@@ -1837,6 +1935,9 @@ final class ProcessTapController: ProcessTapControlling {
                 _expectedInputSampleTime = sampleTime + Float64(totalSamplesThisBuffer)
             }
             if maxPeak > 0 { _lastInputSignalHostTime = now }
+            #if DEBUG
+            trackZeroRun(inputBuffers: inputBuffers, inputTime: inputTime, isZero: maxPeak == 0, frames: totalSamplesThisBuffer, now: now)
+            #endif
         }
 
         if isPrimary {
