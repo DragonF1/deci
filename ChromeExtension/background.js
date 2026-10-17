@@ -20,8 +20,15 @@
  *                                      "page"     not captured, but its track has auto mode
  *                                                 on and its page routes media in-page
  *                                                 (volume, boost and EQ only, no device)
- *                                      "none"     neither
- *                                    (missing means an older extension: use captured)
+ *                                      "armed"    not captured, its track has auto mode on and
+ *                                                 its web page routes nothing yet: volume,
+ *                                                 boost and EQ are kept and apply once its
+ *                                                 media routes. Never for a tab that sounds
+ *                                                 with no media element seen, or whose frame
+ *                                                 reported media it cannot route
+ *                                      "none"     none of these
+ *                                    (missing means an older extension: use captured;
+ *                                     an older app reads "armed" as "none")
  *       volume: number 0..1,         (base volume, NOT multiplied by boost)
  *       boost: 1 | 2 | 3 | 4,
  *       muted: boolean,              (captured ? Deci gain mute : Chrome tab mute;
@@ -116,6 +123,11 @@
  *   PAGE_STATUS { routed: true }   page to worker, when the frame routes its first media
  *                                  element (again after being switched off and on). Sets
  *                                  the tab's pageControl, which makes control "page".
+ *   PAGE_STATUS { routed: false, unreachable: true }
+ *                                  page to worker, when a playing media element cannot be
+ *                                  routed (encrypted, a stream, its own output device,
+ *                                  cross-origin, or a source node the page owns). Sets the
+ *                                  tab's pageUnreachable: no "armed" control.
  *   PAGE_STATUS { routed: false, unsafe: true }
  *                                  page to worker, when a routed element starts playing
  *                                  media Web Audio cannot read (silent until reload). The
@@ -159,10 +171,13 @@
  *
  * STORAGE
  *   chrome.storage.session  'tab:<id>'  -> { volume, boost, muted, eqBands, deviceName,
- *                                            deviceStatus, captured, pageControl, pageOrigin }
+ *                                            deviceStatus, captured, pageControl, pageOrigin,
+ *                                            pageMedia, pageUnreachable }
  *                           pageControl: a frame of the tab routes its media in-page.
- *                           pageOrigin: origin of the tab URL when that was reported;
- *                           pageControl resets when the tab navigates to another origin.
+ *                           pageMedia: a frame of the tab saw a media element (PAGE_HELLO).
+ *                           pageUnreachable: a frame reported media it cannot route.
+ *                           pageOrigin: origin of the tab URL when one of these was reported;
+ *                           all three reset when the tab navigates to another origin.
  *   chrome.storage.local    'autoTracks' -> { normal: boolean, incognito: boolean }
  *                           (default both false; set true by a successful capture start from
  *                           a click or the command, either one changed by the menu checkbox)
@@ -179,7 +194,7 @@
  *   chrome.storage.session  'pageBlocked' -> [origins whose media turned unreadable in-page]
  *   chrome.storage.local    'siteDefaults' -> { hostname: { volume, boost } }
  *                           (only volume is applied, when capture starts)
- *     Written on volume or boost changes of a captured or page-controlled,
+ *     Written on volume or boost changes of a captured, page-controlled or armed,
  *     non-incognito tab.
  *     Read when a tab with no per-tab state yet starts capture or sends PAGE_HELLO.
  *     Never applied on reload or navigation, never stores mute.
@@ -204,6 +219,7 @@ const TITLE_OFF = "Deci: click to control this tab's audio";
 const TITLE_ON = 'Deci: controlling this tab (click to stop)';
 const TITLE_PAGE = 'Deci: controlling this tab in-page. Click for full capture (output device)';
 const TITLE_ARMED = 'Deci: auto mode is on, this tab is controlled once it plays audio. Click for full capture (output device)';
+const TITLE_UNREACHED = "Deci: auto mode can't reach this tab's audio. Click to control it";
 const MENU_AUTO_ID = 'deci-auto';
 const MENU_AUTO_TITLE = 'Control every tab automatically';
 const PAGE_AUDIO_FILE = 'page-audio.js';
@@ -246,7 +262,9 @@ function defaultState() {
     deviceStatus: 'default',
     captured: false,
     pageControl: false,
-    pageOrigin: ''
+    pageOrigin: '',
+    pageMedia: false,
+    pageUnreachable: false
   };
 }
 
@@ -274,6 +292,8 @@ function normalizeState(raw) {
   s.captured = raw.captured === true;
   s.pageControl = raw.pageControl === true;
   s.pageOrigin = typeof raw.pageOrigin === 'string' ? raw.pageOrigin : '';
+  s.pageMedia = raw.pageMedia === true;
+  s.pageUnreachable = raw.pageUnreachable === true;
   s.deviceStatus = s.captured && DEVICE_STATUSES.includes(raw.deviceStatus)
     ? raw.deviceStatus : unresolvedDeviceStatus(s);
   return s;
@@ -356,8 +376,21 @@ async function loadAutoTracks() {
 }
 
 // controlOf for a real tab, with the live track flags.
+// controlOf plus "armed": a web page of an auto track that routes nothing
+// yet but will once it plays. Not armed while it sounds with no media
+// element seen (Web Audio or plugins, which page-audio never reaches) or
+// after a frame reported media it cannot route.
 function tabControl(st, tab) {
-  return controlOf(st, trackOf(tab), autoTracks);
+  const control = controlOf(st, trackOf(tab), autoTracks);
+  if (control !== 'none' || !tab || !isPageUrl(tab.url) || !pageAllowed(tab)) return control;
+  if (st && st.pageUnreachable) return 'none';
+  if (tab.audible && !(st && st.pageMedia)) return 'none';
+  return 'armed';
+}
+
+// Captured or routing in-page right now (what lists a silent tab).
+function isActiveControl(control) {
+  return control === 'capture' || control === 'page';
 }
 
 // ---------------------------------------------------------------------------
@@ -668,10 +701,11 @@ const BADGES = {
   capture: { text: 'ON', color: BADGE_COLOR, title: TITLE_ON },
   page: { text: 'ON', color: BADGE_COLOR_PAGE, title: TITLE_PAGE },
   armed: { text: 'ON', color: BADGE_COLOR_PAGE, title: TITLE_ARMED },
+  unreached: { text: '', color: null, title: TITLE_UNREACHED },
   off: { text: '', color: null, title: TITLE_OFF }
 };
 
-// mode: 'capture' | 'page' | 'armed' | 'off'
+// mode: 'capture' | 'page' | 'armed' | 'unreached' | 'off'
 function setBadge(tabId, mode) {
   const ignore = () => {};
   const badge = BADGES[mode] || BADGES.off;
@@ -680,13 +714,16 @@ function setBadge(tabId, mode) {
   chrome.action.setTitle({ tabId, title: badge.title }).catch(ignore);
 }
 
-// A tab's badge: ON (blue) when captured, ON (grey) on every other tab of a
-// track with auto mode on, routed media or not, so a new tab shows at once
-// that Deci has it. A blocked origin shows nothing. st may be undefined.
+// A tab's badge: ON (blue) when captured, ON (grey) when its control is
+// "page" or "armed", so a new tab shows at once that Deci has it, and on
+// non-web tabs of an auto track. A web page whose sound auto mode cannot
+// reach shows no ON (the app shows it as not controlled), nor does a
+// blocked origin. st may be undefined.
 function badgeFor(st, tab) {
   const control = tabControl(st, tab);
   if (control !== 'none') return control;
-  return pageAllowed(tab) ? 'armed' : 'off';
+  if (!pageAllowed(tab)) return 'off';
+  return isPageUrl(tab.url) ? 'unreached' : 'armed';
 }
 
 // Re-derives a tab's badge from its stored state and its track's auto flag.
@@ -995,8 +1032,9 @@ async function injectPageAudio(tabId) {
 // PAGE_HELLO), the others when their first media appears.
 async function applyAutoToTab(store, tab, on) {
   const st = store.tabs.get(tab.id);
-  if (!on && st && st.pageControl) {
+  if (!on && st && (st.pageControl || st.pageUnreachable)) {
     st.pageControl = false; // rows fall back
+    st.pageUnreachable = false; // frames report again when auto turns back on
     persistTab(tab.id, st);
   }
   setBadge(tab.id, badgeFor(st, tab));
@@ -1034,8 +1072,26 @@ async function pageHello(tab) {
   const store = await ready();
   if (!pageAllowed(tab) || removedTabs.has(tab.id)) return { on: false };
   const st = await ensureTabState(store, tab);
+  if (!st.pageMedia || st.pageOrigin !== originOf(tab.url)) {
+    markPage(st, tab, 'pageMedia');
+    setBadge(tab.id, badgeFor(st, tab));
+    schedulePush();
+  }
   if (st.captured) return { on: false };
   return { on: true, volume: st.volume, boost: st.boost, eqBands: st.eqBands.slice() };
+}
+
+// Sets one of the per-origin page flags (see STORAGE) for the tab's origin.
+function markPage(st, tab, flag) {
+  const origin = originOf(tab.url);
+  if (st.pageOrigin !== origin) {
+    st.pageControl = false;
+    st.pageMedia = false;
+    st.pageUnreachable = false;
+    st.pageOrigin = origin;
+  }
+  st[flag] = true;
+  persistTab(tab.id, st);
 }
 
 // PAGE_STATUS: a frame of the tab routes its media in-page.
@@ -1043,9 +1099,18 @@ async function pageRouted(tab) {
   const store = await ready();
   if (!pageAllowed(tab) || removedTabs.has(tab.id)) return;
   const st = await ensureTabState(store, tab);
-  st.pageControl = true;
-  st.pageOrigin = originOf(tab.url);
-  persistTab(tab.id, st);
+  markPage(st, tab, 'pageControl');
+  setBadge(tab.id, badgeFor(st, tab));
+  schedulePush();
+}
+
+// PAGE_STATUS unreachable: a frame of the tab plays media it cannot route.
+async function pageCannotRoute(tab) {
+  const store = await ready();
+  if (!pageAllowed(tab) || removedTabs.has(tab.id)) return;
+  const st = await ensureTabState(store, tab);
+  if (st.pageUnreachable && st.pageOrigin === originOf(tab.url)) return;
+  markPage(st, tab, 'pageUnreachable');
   setBadge(tab.id, badgeFor(st, tab));
   schedulePush();
 }
@@ -1086,6 +1151,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'PAGE_STATUS') {
     if (msg.routed === true) pageRouted(tab).catch(logError('PAGE_STATUS'));
     else if (msg.unsafe === true) pageUnsafe(tab).catch(logError('PAGE_STATUS unsafe'));
+    else if (msg.unreachable === true) pageCannotRoute(tab).catch(logError('PAGE_STATUS unreachable'));
     sendResponse({ ok: true });
   }
   return false;
@@ -1178,8 +1244,8 @@ async function sendTabList() {
     const st = store.tabs.get(t.id);
     const captured = !!(st && st.captured);
     const control = tabControl(st, t);
-    // A page-controlled tab is listed like a captured one.
-    if (!t.audible && control === 'none' && !store.known.has(t.id)) continue;
+    // A page-controlled tab is listed like a captured one; an armed one only once known.
+    if (!t.audible && !isActiveControl(control) && !store.known.has(t.id)) continue;
     // Hidden by the tracking switch, or the gate is still closed on this port.
     // Bookkeeping above and all audio handling are unchanged; only the report
     // leaves the tab out.
@@ -1247,20 +1313,24 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!listChange && !('url' in changeInfo)) return;
   ready().then((store) => {
     const st = store.tabs.get(tabId);
-    // Page control belongs to the origin that reported it.
-    if (st && st.pageControl && 'url' in changeInfo && originOf(changeInfo.url) !== st.pageOrigin) {
+    // The page flags belong to the origin that reported them.
+    if (st && (st.pageControl || st.pageMedia || st.pageUnreachable) && 'url' in changeInfo &&
+      originOf(changeInfo.url) !== st.pageOrigin) {
       st.pageControl = false;
+      st.pageMedia = false;
+      st.pageUnreachable = false;
       persistTab(tabId, st);
       schedulePush();
     }
     const control = tabControl(st, tab);
-    // Navigation can reset per-tab action state, and the new origin may be blocked.
-    if ('status' in changeInfo || 'url' in changeInfo) setBadge(tabId, badgeFor(st, tab));
+    // Navigation can reset per-tab action state, the new origin may be blocked,
+    // and sound with no media element seen ends "armed".
+    if ('status' in changeInfo || 'url' in changeInfo || 'audible' in changeInfo) setBadge(tabId, badgeFor(st, tab));
     if (changeInfo.audible === true && !store.known.has(tabId)) {
       store.known.add(tabId);
       persistKnown(store);
     }
-    if (listChange && (tab.audible || control !== 'none' || store.known.has(tabId))) schedulePush();
+    if (listChange && (tab.audible || isActiveControl(control) || store.known.has(tabId))) schedulePush();
   }).catch(logError('tab update'));
 });
 

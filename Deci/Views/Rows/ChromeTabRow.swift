@@ -171,7 +171,7 @@ struct ChromeTabRow: View {
                 .font(.system(size: 9))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .lineLimit(1)
-        } else if tab.control == .page, tab.deviceName != nil {
+        } else if tab.control == .page || tab.control == .armed, tab.deviceName != nil {
             // In-page control cannot pick an output; the stored device waits for a capture.
             Text("Click Deci in Chrome to use this output")
                 .font(.system(size: 9))

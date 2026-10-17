@@ -314,13 +314,15 @@ struct ChromeExtensionManagerTests {
             ["id": 5, "captured": true],
             ["id": 6],
             ["id": 7, "control": "somethingNew"],
+            ["id": 8, "control": "armed", "captured": false],
+            ["id": 9, "control": "armed", "captured": true],
         ]]
 
         let tabs = ChromeExtensionManager.parseTabList(json).tabs
 
-        #expect(tabs.map(\.control) == [.capture, .page, .none, .capture, .capture, .none, .none])
-        #expect(tabs.map(\.isControlled) == [true, true, false, true, true, false, false])
-        #expect(tabs.map(\.isCaptured) == [true, false, false, true, true, false, false])
+        #expect(tabs.map(\.control) == [.capture, .page, .none, .capture, .capture, .none, .none, .armed, .capture])
+        #expect(tabs.map(\.isControlled) == [true, true, false, true, true, false, false, true, true])
+        #expect(tabs.map(\.isCaptured) == [true, false, false, true, true, false, false, false, true])
     }
 
     @Test("clearing isCaptured only drops a capture, never page control")
@@ -333,6 +335,9 @@ struct ChromeExtensionManagerTests {
         #expect(tab.control == .capture)
         tab.isCaptured = false
         #expect(tab.control == .none)
+        tab.control = .armed
+        tab.isCaptured = false
+        #expect(tab.control == .armed)
     }
 
     @Test("a TAB_LIST message updates deviceAccess and each tab's deviceStatus")

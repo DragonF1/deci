@@ -11,13 +11,23 @@
  * Elements are routed only once they play (the source has settled by then).
  * Mute is not handled here (the worker uses the tab mute). Messages are in
  * the contract at the top of background.js (PAGE_HELLO, PAGE_STATUS,
- * PAGE_STATE, PAGE_ASK).
+ * PAGE_STATE, PAGE_ASK). A playing element that cannot be routed is reported
+ * (PAGE_STATUS unreachable), so the app does not offer controls that do nothing.
  *
  * Safety: a routed element cannot be un-routed, and Web Audio plays silence
  * for media it may not read. So nothing doubtful is routed, an element that
  * later turns unreadable is reported (the worker turns the tab dry and stops
  * routing on that origin), and a copy cut off from the extension (reload or
- * update) goes dry for good: dry is unity and unprocessed, never silent.
+ * update) goes dry: dry is unity and unprocessed, never silent.
+ *
+ * Handoff: after a reload the new copy runs in a new isolated world, and media
+ * the old copy routed stays bound to the old AudioContext (the new copy gets
+ * InvalidStateError). So the new copy asks over a DOM event on the frame's
+ * document (the one thing the worlds share): a cut-off copy that holds routed
+ * media answers, and from then on paints the state the new copy posts. Events
+ * are only sent once an element turns out to be taken, never on a normal page.
+ * The page can send them too, but they only reach volume, boost and EQ of its
+ * own media.
  *
  * Wrapped in a function because the same file can run twice in one isolated
  * world (manifest content script plus executeScript), and a second top-level
@@ -67,6 +77,14 @@
     return typeof el.crossOrigin === 'string' && el.readyState >= HAVE_METADATA;
   }
 
+  // Whether el is known to stay unroutable: isEligible is also false while
+  // the source has not settled (no src yet, CORS metadata still loading).
+  function knownIneligible(el, loc) {
+    if (el.srcObject || el.mediaKeys || el.sinkId) return true;
+    if (!(el.currentSrc || el.src) || el.readyState < HAVE_METADATA) return false;
+    return !isEligible(el, loc);
+  }
+
   // A plain same-origin src can still redirect to another origin, which Web
   // Audio would read as silence: such a src is checked with a request first.
   // With a crossOrigin attribute a redirect needs CORS, so no check is needed.
@@ -86,7 +104,7 @@
   }
 
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { isEligible, sameOrigin, needsProbe, turnedUnsafe };
+    module.exports = { isEligible, knownIneligible, sameOrigin, needsProbe, turnedUnsafe };
     return;
   }
   if (globalThis.__deciPageAudio) return;
@@ -102,7 +120,8 @@
   let reported = false; // PAGE_STATUS sent for the current on period
   let sawMedia = false;  // the frame has seen a media element
   let blocked = false;   // a routed element turned unsafe: route nothing more
-  let orphaned = false;  // cut off from the extension: dry for good
+  let orphaned = false;  // cut off from the extension: dry unless a newer copy takes over
+  let unreachableSent = false; // PAGE_STATUS unreachable sent for the current on period
 
   function clampNumber(value, min, max, fallback) {
     const n = Number(value);
@@ -127,6 +146,58 @@
   // chrome.runtime.id is gone once the extension reloads, updates or is removed.
   function extensionAlive() {
     try { return !!(chrome.runtime && chrome.runtime.id); } catch (e) { return false; }
+  }
+
+  // -------------------------------------------------------------------------
+  // Handoff between copies (see the header)
+  // -------------------------------------------------------------------------
+
+  const HANDOFF_EVENT = '__deci-page-audio';
+  const copyId = Math.random().toString(36).slice(2);
+  let asked = false;     // hello sent
+  let held = false;      // a cut-off copy holds routed media for this copy
+  let controller = null; // cut off: the copy whose state this one paints
+
+  function post(message) {
+    const detail = JSON.stringify({ ...message, from: copyId });
+    document.dispatchEvent(new CustomEvent(HANDOFF_EVENT, { detail }));
+  }
+
+  function postState() {
+    if (held) post({ kind: 'state', on: state.on, volume: state.volume, boost: state.boost, eqBands: state.eqBands });
+  }
+
+  // Asks once whether a cut-off copy holds this frame's media. The answer
+  // arrives during the dispatch, so `held` is current when this returns.
+  function askHolders() {
+    if (asked) return held;
+    asked = true;
+    post({ kind: 'hello' });
+    if (held) {
+      postState();
+      reportRouted();
+    }
+    return held;
+  }
+
+  function onHandoff(event) {
+    let msg;
+    try { msg = JSON.parse(event.detail); } catch (e) { return; }
+    if (!msg || typeof msg.from !== 'string' || msg.from === copyId) return;
+    if (!checkAlive()) {
+      // Cut off: answer the newest copy that asks, paint what it posts.
+      if (msg.kind === 'hello' && hasRouted) {
+        controller = msg.from;
+        post({ kind: 'held', to: msg.from });
+      } else if (msg.kind === 'state' && msg.from === controller) {
+        state = mergeState(state, msg);
+        if (graph) paintGraph(graph, ctx, false);
+      }
+      return;
+    }
+    if (msg.to !== copyId) return;
+    if (msg.kind === 'held') held = true;
+    else if (msg.kind === 'unsafe' && held) reportUnsafe();
   }
 
   // -------------------------------------------------------------------------
@@ -244,9 +315,11 @@
     try {
       source = c.createMediaElementSource(el);
     } catch (err) {
-      // InvalidStateError: the page already owns a source node for this element.
+      // InvalidStateError: a source node exists for this element already, made
+      // by the page or by a copy cut off by a reload (which may take orders).
       unroutable.add(el);
       if (!err || err.name !== 'InvalidStateError') console.warn('Deci: cannot route a media element:', err);
+      if (!(err && err.name === 'InvalidStateError' && askHolders())) reportUnreachable();
       return;
     }
     source.connect(graph.input);
@@ -260,7 +333,10 @@
 
   async function route(el) {
     const probed = needsProbe(el, location) ? el.currentSrc || el.src : null;
-    if (probed !== null && !(await probeSrc(probed))) return;
+    if (probed !== null && !(await probeSrc(probed))) {
+      reportUnreachable();
+      return;
+    }
     const c = await runningContext();
     if (!c) {
       needsRoute = true; // retried when the context starts, or on pointerdown or keydown
@@ -272,9 +348,17 @@
     attach(c, el);
   }
 
+  // Called for playing elements only.
   function consider(el) {
-    if (!state.on || blocked || orphaned || routed.has(el) || unroutable.has(el) || routing.has(el)) return;
-    if (!isEligible(el, location)) return;
+    if (!state.on || blocked || orphaned || routed.has(el) || routing.has(el)) return;
+    if (unroutable.has(el)) {
+      if (!held) reportUnreachable();
+      return;
+    }
+    if (!isEligible(el, location)) {
+      if (knownIneligible(el, location)) reportUnreachable();
+      return;
+    }
     routing.add(el);
     route(el)
       .catch((err) => console.warn('Deci: routing a media element failed:', err))
@@ -293,22 +377,38 @@
   // reported: the worker turns the tab dry and routes nothing more on this
   // origin, and a reload brings the sound back.
   function checkRouted(el) {
-    if (orphaned || !turnedUnsafe(el, location)) return;
+    if (!turnedUnsafe(el, location)) return;
     console.warn('Deci: a routed media element now plays a source Web Audio cannot read; reload the tab to restore it:', el.currentSrc || el.src);
+    if (!checkAlive()) {
+      if (controller) post({ kind: 'unsafe', to: controller });
+      return;
+    }
+    reportUnsafe();
+  }
+
+  function reportUnsafe() {
     if (blocked) return;
     blocked = true;
     needsRoute = false;
     send({ type: 'PAGE_STATUS', routed: false, unsafe: true }).catch(() => {});
   }
 
-  // A copy cut off from the extension can never be told anything again:
-  // it goes dry for good and only keeps its context running for the
-  // elements it routed.
+  // A playing element this frame cannot route: the tab keeps no in-page control.
+  function reportUnreachable() {
+    if (unreachableSent || !state.on || orphaned) return;
+    unreachableSent = true;
+    send({ type: 'PAGE_STATUS', routed: false, unreachable: true }).catch(() => { unreachableSent = false; });
+  }
+
+  // A copy cut off from the extension hears from it no more: it goes dry
+  // (and so do the copies it controlled) and only keeps its context running
+  // for the elements it routed, until a newer copy asks for them.
   function goOrphan() {
     orphaned = true;
     needsRoute = false;
     state = { ...state, on: false };
     if (graph) paintGraph(graph, ctx, false);
+    postState();
     if (orphanTimer !== null) clearInterval(orphanTimer);
     orphanTimer = null;
     for (const type of MEDIA_EVENTS) document.removeEventListener(type, onMediaEvent, true);
@@ -321,7 +421,7 @@
   }
 
   function reportRouted() {
-    if (!hasRouted || reported || !state.on || blocked) return;
+    if (!(hasRouted || held) || reported || !state.on || blocked) return;
     reported = true;
     send({ type: 'PAGE_STATUS', routed: true }).catch(() => { reported = false; });
   }
@@ -330,11 +430,13 @@
     if (!checkAlive()) return;
     state = mergeState(state, msg);
     if (graph) paintGraph(graph, ctx, false);
+    postState();
     if (state.on) {
       routePending();
       reportRouted();
     } else {
       reported = false; // told again when switched back on
+      unreachableSent = false;
     }
   }
 
@@ -359,6 +461,7 @@
     pushed = false;
     greeted = false;
     reported = false;
+    unreachableSent = false;
     if (sawMedia) greet();
   }
 
@@ -388,6 +491,7 @@
     if (!event.persisted || orphaned) return;
     state = { ...state, on: false };
     if (graph) paintGraph(graph, ctx, true);
+    postState();
     regreet();
   }
 
@@ -401,6 +505,7 @@
 
   for (const type of MEDIA_EVENTS) document.addEventListener(type, onMediaEvent, true);
   for (const type of ['pointerdown', 'keydown']) document.addEventListener(type, onGesture, true);
+  document.addEventListener(HANDOFF_EVENT, onHandoff);
   addEventListener('pageshow', onPageShow);
 
   // Injected into an existing tab: media may already be loaded or playing.

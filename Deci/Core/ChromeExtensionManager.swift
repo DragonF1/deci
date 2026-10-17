@@ -586,6 +586,9 @@ enum ChromeTabControl: String, Equatable {
     case capture
     /// Auto mode routed the page's media in-page: volume, boost and EQ, no output device.
     case page
+    /// Auto mode is on for the tab but nothing plays yet: volume, boost and EQ are kept
+    /// and apply once its media routes in-page (no output device).
+    case armed
     /// Nothing controls the tab until the user clicks Deci in Chrome.
     case none
 
@@ -613,7 +616,7 @@ struct ChromeTab: Identifiable, Equatable {
         get { control == .capture }
         set { control = newValue ? .capture : (control == .capture ? .none : control) }
     }
-    /// Volume, boost and EQ work (captured or auto-controlled in-page).
+    /// Volume, boost and EQ work (captured, or auto mode in-page now or once it plays).
     var isControlled: Bool { control != .none }
     var isIncognito: Bool = false
     var currentTime: Double = 0
