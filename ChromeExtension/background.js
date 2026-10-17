@@ -223,6 +223,8 @@ const TITLE_UNREACHED = "Deci: auto mode can't reach this tab's audio. Click to 
 const MENU_AUTO_ID = 'deci-auto';
 const MENU_AUTO_TITLE = 'Control every tab automatically';
 const PAGE_AUDIO_FILE = 'page-audio.js';
+const YTM_SWITCH_FILE = 'ytm-switch.js';
+const YTM_URL_PATTERN = 'https://music.youtube.com/*';
 const DEVICE_STATUSES = ['default', 'pending', 'routed', 'notFound', 'noAccess'];
 const REPORTED_DEVICE_STATUSES = ['default', 'routed', 'notFound', 'noAccess'];
 
@@ -1027,6 +1029,16 @@ async function injectPageAudio(tabId) {
   } catch (e) { /* not injectable */ }
 }
 
+// Same for ytm-switch.js: the copy in an open YouTube Music tab is orphaned by a
+// reload, update or disable and stops, so without this the tab never clicks
+// "Switch" until the user reloads it. Top frame only, as in the manifest.
+async function injectYTMSwitch() {
+  const tabs = await chrome.tabs.query({ url: YTM_URL_PATTERN });
+  await Promise.all(tabs.filter((tab) => !tab.discarded).map((tab) =>
+    chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [YTM_SWITCH_FILE] }).catch(() => {})
+  ));
+}
+
 // Brings one tab in line with its track's flag. A tab with no state gets no
 // state here: its frames that saw media ask for it (PAGE_ASK, then
 // PAGE_HELLO), the others when their first media appears.
@@ -1610,6 +1622,9 @@ chrome.alarms.get(RECONNECT_ALARM).then((alarm) => {
 
 ready().catch(logError('startup state load'));
 loadTracking().catch(logError('tracking read'));
+// Every worker start, not onInstalled: re-enabling the extension orphans the
+// tab's copy too and fires no onInstalled. A live copy ignores the repeat.
+injectYTMSwitch().catch(logError('inject ytm-switch'));
 syncAutoMenu();
 // Never throws (async); if the Permissions API is unusable here, the
 // offscreen document and permissions.html still report access.

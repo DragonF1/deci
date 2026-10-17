@@ -13,10 +13,15 @@
  *
  * At most MAX_CLICKS clicks per CLICK_WINDOW_MS, then it rests for BREAK_MS, so a
  * dialog a click cannot dismiss is never clicked forever. A copy left behind by an
- * extension reload (chrome.runtime.id gone) stops for good.
+ * extension reload (chrome.runtime.id gone) stops for good; the service worker
+ * injects a fresh copy into open YouTube Music tabs every time it starts.
  */
 (function () {
   'use strict';
+
+  // The manifest copy and an injected one share this isolated world.
+  if (globalThis.__deciYtmSwitch) return;
+  globalThis.__deciYtmSwitch = true;
 
   const DIALOG_SELECTOR = 'tp-yt-paper-dialog, [role="dialog"], [role="alertdialog"], yt-confirm-dialog-renderer';
   const BUTTON_SELECTOR = 'button, [role="button"], tp-yt-paper-button, yt-button-renderer, yt-button-shape';
@@ -63,7 +68,9 @@
 
   function check() {
     checkTimer = 0;
-    if (!chrome.runtime || !chrome.runtime.id) {
+    let alive = false;
+    try { alive = !!(chrome.runtime && chrome.runtime.id); } catch (e) { /* orphaned */ }
+    if (!alive) {
       apply(false); // orphaned by an extension reload: storage and the toggle are gone
       return;
     }
