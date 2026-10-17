@@ -30,6 +30,12 @@ protocol ProcessTapControlling: AnyObject, Sendable {
     func isHealthCheckEligible(minActiveSeconds: Double) -> Bool
     /// What the audio callback has seen, for the stuck-tap watchdog. Nil when not available.
     func healthReadings() -> TapHealthReadings?
+    /// Make-before-break rescue of a tap that reads exact zeros while its app plays. Builds a
+    /// candidate tap beside the primary and promotes it only when the candidate hears signal
+    /// within `TapRescueVerifier.window` while the primary stays at exact zero. Throws
+    /// `CrossfadeError.candidateSilent` or `.primaryRecovered` when that is not proven (nothing
+    /// changed), `.switchInFlight` when a switch is running, `CancellationError` when torn down.
+    func rescueStuckTap() async throws -> TapRescueReport
 
     var tapSourceDeviceUID: String? { get }
     func refreshTapSource(_ preferredDeviceUID: String?) async throws
@@ -73,4 +79,9 @@ extension ProcessTapControlling {
     }
 
     func healthReadings() -> TapHealthReadings? { nil }
+
+    func rescueStuckTap() async throws -> TapRescueReport {
+        // Default for mocks that don't override: unsupported, so the engine rebuilds instead.
+        throw CrossfadeError.noTapDescription
+    }
 }

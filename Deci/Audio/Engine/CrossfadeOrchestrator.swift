@@ -9,6 +9,13 @@ enum CrossfadeError: LocalizedError {
     case deviceNotReady
     case secondaryTapFailed
     case noTapDescription
+    /// A rescue's candidate tap heard no signal in time: the app is genuinely silent (or the
+    /// candidate is dead too), so the primary is not provably stuck.
+    case candidateSilent
+    /// The primary tap delivered signal again while a rescue was verifying, so it was not stuck.
+    case primaryRecovered
+    /// A switch or another rescue is running on this tap; a rescue must not overlap it.
+    case switchInFlight
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +29,12 @@ enum CrossfadeError: LocalizedError {
             return "Secondary tap invalid after timeout"
         case .noTapDescription:
             return "No tap description available"
+        case .candidateSilent:
+            return "Rescue candidate tap heard no signal"
+        case .primaryRecovered:
+            return "Primary tap recovered during rescue verify"
+        case .switchInFlight:
+            return "A switch is already in flight"
         }
     }
 }

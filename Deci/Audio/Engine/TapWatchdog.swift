@@ -17,23 +17,28 @@ struct TapHealthReadings: Equatable {
     var discontinuityCount: UInt32
     /// Since the last buffer that was not "live input in, silence out".
     var secondsSinceHealthyOutput: Double
+    /// The tap is a device-stream tap (false: stereo mixdown), and whether its aggregate was built
+    /// with drift compensation. Filled in every build: the `[RESCUE]` line reports them.
+    var tapIsStream = false
+    var tapDriftCompensation = false
 
     // Debug soak instrumentation: filled by DEBUG builds only, left at these defaults otherwise.
     /// Host tick the debug fields below were read at.
     var sampledHostTime: UInt64 = 0
     var zeroRun = ZeroRunTracker()
     var zeroRunForensics = ZeroRunForensics()
-    /// The tap is a device-stream tap (false: stereo mixdown).
-    var tapIsStream = false
-    var tapDriftCompensation = false
 }
 
 /// One health-monitor tick for one tap: its readings plus what the engine knows.
 struct TapHealthSample: Equatable {
     var readings: TapHealthReadings
-    /// The tapped process is running output IO (HAL `IsRunningOutput`).
-    var appIsPlaying: Bool
+    /// The tapped process is running output IO (HAL `IsRunningOutput`). Nil when it was not read:
+    /// the engine asks only once a rule is close to firing (`TapWatchdog.needsPlayingState`).
+    var appIsPlaying: Bool?
     var isUserMuted: Bool
+    /// When the sample was taken, in seconds on any steady clock (the engine passes the tick's
+    /// `timeIntervalSinceReferenceDate`). Only differences matter.
+    var clock: Double = 0
 }
 
 enum TapWatchdogReason: String, Equatable {
@@ -41,13 +46,23 @@ enum TapWatchdogReason: String, Equatable {
     case silentAfterOverload
     /// A fresh or just-switched tap delivered nothing while the app played.
     case silentAfterTapStart
-    /// Long digital silence while the app kept its output running.
-    case longSilence
+    /// Digital silence while the app kept its output running, with no known cause.
+    case unexplainedSilence
     /// Live input, but the processing chain wrote silence.
     case outputSilent
 }
 
-/// Decides when a tap is stuck and must be rebuilt.
+/// What the watchdog wants done about a tap.
+enum TapWatchdogAction: Equatable {
+    /// Probe with a candidate tap (make-before-break). It promotes only when the candidate hears
+    /// signal while this tap reads exact zeros; the engine reports an inconclusive probe back
+    /// through `rescueInconclusive`. `rung` is the ladder step that fired.
+    case rescue(TapWatchdogReason, rung: Int)
+    /// Tear the tap down and build it again.
+    case rebuild(TapWatchdogReason)
+}
+
+/// Decides when a tap is stuck and what to do about it.
 ///
 /// A process tap with drift compensation off (every Bluetooth output, every tap of the clock
 /// device's own stream) can stop delivering samples for good after a system-wide stall: when
@@ -57,65 +72,177 @@ enum TapWatchdogReason: String, Equatable {
 /// output. Measured in a standalone repro: a simultaneous 600-1000 ms stall stuck the tap in
 /// 2 of 3 runs; a fresh tap of the same process heard the app at once.
 ///
-/// Digital silence is also what a paused app with an open stream sends, so rebuilds stay rare:
-/// fast only right after something that can break a tap, slow otherwise, and capped per
-/// silence episode (the app playing with no input signal). Rebuilding a genuinely silent tap
-/// is inaudible. Pure value type, one per app pid, kept across rebuilds.
+/// Digital silence is also what a paused app with an open stream sends (Chrome does, while
+/// YouTube Music is paused, with IsRunningOutput true), so silence alone proves nothing. The one
+/// reliable test is a candidate tap that hears signal while this tap reads exact zeros. Probing
+/// is cheap and inaudible (the candidate's output is muted until it is promoted), so the ladder
+/// probes early and backs off: at 0.25, 2, 4 and 8 s of silence, then every 20 s, and starts
+/// over when signal returns. A probe that proves nothing steps the ladder; it never rebuilds.
+/// Pure value type, one per app pid, kept across rebuilds.
+///
+/// Three refinements keep the probes rare. Once two inconclusive probes come within
+/// `ladderResetAfter` of each other, signal that returns inside that window keeps the ladder at
+/// rung 1, so a bursty app is not probed at every gap. A single probe (a gap between tracks)
+/// still resets to rung 0.
+/// Silence is counted from when the app was seen starting to play, not from the last signal
+/// minutes ago. And after three promotions in a row the ladder never drops below rung 1.
 struct TapWatchdog: Equatable {
-    /// Silence after an IO discontinuity on the current tap before rebuilding.
-    static let silenceAfterOverload: Double = 1.0
-    /// Silence on a tap that started or switched recently before rebuilding.
-    static let silenceAfterTapStart: Double = 3.0
-    /// How recent a discontinuity or tap start must be to count as the cause.
+    /// Silence at which each of the first rungs rescues. The first is also the silence below
+    /// which a tap counts as having signal.
+    static let rescueThresholds: [Double] = [0.25, 2.0, 4.0, 8.0]
+    /// Between the steady probes after the last threshold.
+    static let probeInterval: Double = 20.0
+    /// How recent a discontinuity or tap start must be to count as the cause (reason only).
     static let disturbanceWindow: Double = 15.0
-    /// Silence with no known cause before rebuilding.
-    static let longSilence: Double = 20.0
     /// Live input with silent output before rebuilding.
     static let outputSilentFor: Double = 1.5
-    /// Rebuilds for input silence per episode (a fresh tap that is also silent is genuine silence).
-    static let maxSilenceRebuilds = 3
+    /// Rebuilds per episode after a rescue failed for a reason other than silence. A tap that
+    /// cannot be probed is still rebuilt, but not in a loop.
+    static let maxFallbackRebuilds = 3
     /// Rebuilds for silent output per playing run.
     static let maxOutputRebuilds = 2
+    /// Inconclusive probes this close together (each to the one before) form a chain, and while
+    /// the last is this recent, signal keeps the ladder at rung 1 instead of resetting it.
+    static let ladderResetAfter: Double = 10
+    /// Chain length before the memory holds: one probe is a track gap, two is a bursty app or a pause.
+    static let ladderMemoryProbes = 2
+    /// Promotions this close together (each to the one before) count as one storm.
+    static let promotionStormWindow: Double = 30
+    /// Promotions in a storm before the ladder floor rises.
+    static let promotionStormCount = 3
 
-    private(set) var silenceRebuilds = 0
-    private(set) var longSilenceRebuilds = 0
+    /// Silence at which `rung` rescues: the listed thresholds, then one every `probeInterval`.
+    static func rescueThreshold(rung: Int) -> Double {
+        if rung < rescueThresholds.count { return rescueThresholds[max(0, rung)] }
+        return rescueThresholds[rescueThresholds.count - 1] + probeInterval * Double(rung - rescueThresholds.count + 1)
+    }
+
+    /// The first rung whose threshold lies strictly past `silence`.
+    static func firstRung(after silence: Double) -> Int {
+        var rung = 0
+        while rescueThreshold(rung: rung) <= silence { rung += 1 }
+        return rung
+    }
+
+    /// Whether IsRunningOutput is worth reading: only once a rule could fire on it. A tap already
+    /// known to be stopped waits for the output rule; the engine re-reads it once a second.
+    func needsPlayingState(_ readings: TapHealthReadings) -> Bool {
+        (!isStopped && effectiveSilence(readings) >= Self.rescueThreshold(rung: nextRung))
+            || readings.secondsSinceHealthyOutput >= Self.outputSilentFor
+    }
+
+    /// The ladder rung the next rescue runs on.
+    private(set) var nextRung = 0
+    private(set) var fallbackRebuilds = 0
     private(set) var outputRebuilds = 0
+    /// Clock of the last probe that proved nothing; nil when none since the ladder last reset.
+    private(set) var lastInconclusiveClock: Double?
+    private(set) var recentInconclusive = 0
+    /// The app was last seen not running output, so its silence says nothing until it plays.
+    private(set) var isStopped = false
+    /// The input silence when the app was seen starting to play: what came before was idle time.
+    private(set) var silenceAtPlayStart: Double = 0
+    /// Promotions in the current storm, and the clock of the latest one.
+    private(set) var recentPromotions = 0
+    private(set) var lastPromotionClock: Double?
 
-    mutating func evaluate(_ sample: TapHealthSample) -> TapWatchdogReason? {
+    /// Input silence counted from the play start, never negative.
+    func effectiveSilence(_ r: TapHealthReadings) -> Double {
+        max(0, r.secondsSinceInputSignal - silenceAtPlayStart)
+    }
+
+    mutating func evaluate(_ sample: TapHealthSample) -> TapWatchdogAction? {
         let r = sample.readings
-        guard sample.appIsPlaying else {
+        // Signal came back, or a new tap restarted the clock: the offset no longer applies.
+        if r.secondsSinceInputSignal < silenceAtPlayStart { silenceAtPlayStart = 0 }
+        if sample.appIsPlaying == false {
             self = TapWatchdog()
+            isStopped = true
             return nil
         }
-        if r.inputSignalSeen && r.secondsSinceInputSignal < 1.0 {
-            silenceRebuilds = 0
-            longSilenceRebuilds = 0
+        if sample.appIsPlaying == true, isStopped {
+            isStopped = false
+            silenceAtPlayStart = r.secondsSinceInputSignal
         }
-        guard !sample.isUserMuted, !r.isSwitching else { return nil }
+        let silent = effectiveSilence(r)
+        if silent < Self.rescueThreshold(rung: 0) {
+            // Signal is flowing (or a promoted tap's clock just restarted): a new episode, unless
+            // a probe proved nothing a moment ago and this is only a burst between gaps.
+            // The memory keeps one rung at most: after a long pause climbed the ladder, a tap that
+            // dies right after playback resumes still waits 2 s, not the paused rung's minute.
+            let remembered = recentInconclusive >= Self.ladderMemoryProbes
+                && (lastInconclusiveClock.map { sample.clock - $0 < Self.ladderResetAfter } ?? false)
+            if remembered {
+                nextRung = min(nextRung, 1)
+            } else {
+                resetLadder(clock: sample.clock)
+            }
+        }
+        guard !sample.isUserMuted, !r.isSwitching, sample.appIsPlaying == true else { return nil }
 
         if r.secondsSinceHealthyOutput >= Self.outputSilentFor, outputRebuilds < Self.maxOutputRebuilds {
             outputRebuilds += 1
-            return .outputSilent
+            return .rebuild(.outputSilent)
         }
 
-        guard silenceRebuilds < Self.maxSilenceRebuilds else { return nil }
-        let silent = r.secondsSinceInputSignal
+        guard silent >= Self.rescueThreshold(rung: nextRung) else { return nil }
         let reason: TapWatchdogReason
-        if r.secondsSinceDiscontinuity < Self.disturbanceWindow, silent >= Self.silenceAfterOverload {
-            // The discontinuity is on the current tap (a rebuilt tap starts with none), so a
-            // rebuild cannot retrigger this on its own.
+        if r.secondsSinceDiscontinuity < Self.disturbanceWindow {
+            // The discontinuity is on the current tap (a rebuilt tap starts with none).
             reason = .silentAfterOverload
-        } else if silenceRebuilds == 0, r.secondsSinceTapStart < Self.disturbanceWindow,
-                  silent >= Self.silenceAfterTapStart {
+        } else if r.secondsSinceTapStart < Self.disturbanceWindow {
             reason = .silentAfterTapStart
-        } else if longSilenceRebuilds == 0, silent >= Self.longSilence {
-            longSilenceRebuilds += 1
-            reason = .longSilence
         } else {
-            return nil
+            reason = .unexplainedSilence
         }
-        silenceRebuilds += 1
-        return reason
+        return .rescue(reason, rung: nextRung)
+    }
+
+    /// A rescue proved nothing (the candidate heard no signal, or the primary recovered): wait
+    /// for the next rung past the silence the rescue ran at. `silence` is the raw reading.
+    mutating func rescueInconclusive(atSilence silence: Double, clock: Double) {
+        nextRung = max(nextRung + 1, Self.firstRung(after: max(0, silence - silenceAtPlayStart)))
+        let chained = lastInconclusiveClock.map { clock - $0 < Self.ladderResetAfter } ?? false
+        recentInconclusive = chained ? recentInconclusive + 1 : 1
+        lastInconclusiveClock = clock
+    }
+
+    /// A rescue promoted its candidate: the new tap starts a new episode. Promotions each within
+    /// `promotionStormWindow` of the last count as a storm, which raises the ladder floor.
+    mutating func rescuePromoted(clock: Double) {
+        if let last = lastPromotionClock, clock - last < Self.promotionStormWindow {
+            recentPromotions += 1
+        } else {
+            recentPromotions = 1
+        }
+        lastPromotionClock = clock
+        lastInconclusiveClock = nil
+        recentInconclusive = 0
+        resetLadder(clock: clock)
+    }
+
+    /// Rung 1 while a promotion storm is on (three promotions in a row, the last under 30 s ago),
+    /// else rung 0: a tap that keeps dying and being replaced is not probed at 0.25 s again.
+    private func floorRung(clock: Double) -> Int {
+        guard recentPromotions >= Self.promotionStormCount, let last = lastPromotionClock,
+              clock - last < Self.promotionStormWindow else { return 0 }
+        return 1
+    }
+
+    private mutating func resetLadder(clock: Double) {
+        nextRung = floorRung(clock: clock)
+        fallbackRebuilds = 0
+        // The probe chain outlives the reset until it expires: the next gap may extend it.
+        if let last = lastInconclusiveClock, clock - last < Self.ladderResetAfter { return }
+        lastInconclusiveClock = nil
+        recentInconclusive = 0
+    }
+
+    /// Takes one of the episode's fallback rebuilds; false once they are spent.
+    mutating func claimFallbackRebuild() -> Bool {
+        guard fallbackRebuilds < Self.maxFallbackRebuilds else { return false }
+        fallbackRebuilds += 1
+        return true
     }
 }
 
@@ -251,7 +378,7 @@ extension ZeroRunEvent {
 }
 
 /// Main-thread side of the zero-run log: which of a tracker's runs were already reported, so
-/// each onset and each end is reported once however the 1 s monitor tick falls against them.
+/// each onset and each end is reported once however the 250 ms health tick falls against them.
 struct ZeroRunLogCursor: Equatable {
     private var onsetLogged: UInt64 = 0
     private var endedLogged: UInt64 = 0
@@ -281,7 +408,7 @@ struct ZeroRunLogCursor: Equatable {
 }
 
 /// Host ticks (`mach_absolute_time`) to wall-clock time, for stamping log lines with the moment
-/// the IO thread saw something rather than the moment a 1 s tick noticed it.
+/// the IO thread saw something rather than the moment a health tick noticed it.
 enum ZeroRunClock {
     static let nanosPerTick: Double = {
         var info = mach_timebase_info_data_t()

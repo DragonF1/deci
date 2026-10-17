@@ -170,7 +170,7 @@ struct InputStreamUsageTests {
 @Suite("ProcessTapController — Sub-tap drift compensation")
 struct TapDriftCompensationTests {
 
-    private func needsDrift(tap: String?, clock: String = "speakers", bluetooth: Bool = false, virtual: Bool = false) -> Bool {
+    private func needsDrift(tap: String?, clock: String = "speakers", bluetooth: Bool? = false, virtual: Bool = false) -> Bool {
         ProcessTapController.tapNeedsDriftCompensation(
             tapDeviceUID: tap,
             clockDeviceUID: clock,
@@ -195,5 +195,25 @@ struct TapDriftCompensationTests {
         #expect(needsDrift(tap: nil, bluetooth: true) == false)
         #expect(needsDrift(tap: "usb-dac", bluetooth: true) == false)
         #expect(needsDrift(tap: "usb-dac", virtual: true) == false)
+    }
+
+    @Test("A clock device that does not resolve counts as Bluetooth: OFF, as before the policy was explicit")
+    func unresolvedClockIsTreatedAsBluetooth() {
+        #expect(ProcessTapController.unresolvedClockIsBluetooth == true)
+        #expect(needsDrift(tap: nil, bluetooth: nil) == false)
+        #expect(needsDrift(tap: "usb-dac", bluetooth: nil) == false)
+        #expect(needsDrift(tap: nil, bluetooth: false) == true)
+    }
+
+    @Test("The decision log line names the inputs, marking an unresolved clock")
+    func driftLogLine() {
+        let resolved = ProcessTapController.driftDecisionSummary(
+            drift: true, tapDeviceUID: nil, clockDeviceUID: "speakers", clockIsBluetooth: false, tapSourceIsVirtual: false
+        )
+        #expect(resolved == "drift=on src=mixdown clock=speakers clockBT=no virtualSource=no")
+        let unresolved = ProcessTapController.driftDecisionSummary(
+            drift: false, tapDeviceUID: "speakers", clockDeviceUID: "speakers", clockIsBluetooth: nil, tapSourceIsVirtual: true
+        )
+        #expect(unresolved == "drift=off src=stream:speakers clock=speakers clockBT=unresolved(assumed yes) virtualSource=yes")
     }
 }

@@ -119,8 +119,28 @@ final class RecordingProcessTapController: ProcessTapControlling {
         currentDeviceUIDs = newDeviceUIDs
     }
 
-    func hasRecentAudioCallback(within seconds: Double) -> Bool { false }
-    func isHealthCheckEligible(minActiveSeconds: Double) -> Bool { false }
+    // Health monitor (runHealthTick). The defaults model a tap that has not rendered yet.
+    /// What `healthReadings()` returns; nil is a tap whose callback never ran.
+    var readings: TapHealthReadings?
+    /// Whether the unresponsive-tap check applies to this tap, and whether its callback ran lately.
+    var healthCheckEligible = false
+    var hasRecentCallback = false
+
+    // Stuck-tap rescue. `rescueResult` is what each call answers once any delay has passed.
+    private(set) var rescueCalls = 0
+    var rescueResult: Result<TapRescueReport, any Error> = .failure(CrossfadeError.candidateSilent)
+    /// When non-zero, `rescueStuckTap` suspends this long (models the 500 ms verify window).
+    var rescueDelay: Duration = .zero
+
+    func hasRecentAudioCallback(within seconds: Double) -> Bool { hasRecentCallback }
+    func isHealthCheckEligible(minActiveSeconds: Double) -> Bool { healthCheckEligible }
+    func healthReadings() -> TapHealthReadings? { readings }
+
+    func rescueStuckTap() async throws -> TapRescueReport {
+        rescueCalls += 1
+        if rescueDelay > .zero { try await Task.sleep(for: rescueDelay) }
+        return try rescueResult.get()
+    }
 
     func refreshTapSource(_ preferredDeviceUID: String?) async throws {}
 

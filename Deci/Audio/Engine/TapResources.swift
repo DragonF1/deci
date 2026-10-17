@@ -19,10 +19,8 @@ nonisolated struct TapResources {
     var aggregateDeviceID: AudioObjectID = .unknown
     var deviceProcID: AudioDeviceIOProcID?
     var tapDescription: CATapDescription?
-    #if DEBUG
-    /// The drift flag the tap's aggregate was built with (soak log only).
+    /// The drift flag the tap's aggregate was built with (rescue and soak logs).
     var tapDriftCompensation = false
-    #endif
 
     /// Whether these resources are currently active
     var isActive: Bool {

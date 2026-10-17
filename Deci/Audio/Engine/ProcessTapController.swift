@@ -87,14 +87,20 @@ final class ProcessTapController: ProcessTapControlling {
     private nonisolated(unsafe) var _tapStartHostTime: UInt64 = 0
     /// Host tick of the last primary buffer holding any non-zero tap sample; 0 = none yet.
     private nonisolated(unsafe) var _lastInputSignalHostTime: UInt64 = 0
+    /// Host tick of the first secondary (candidate) buffer holding any non-zero tap sample; 0 = none
+    /// yet. Written once by the secondary callback, read by a rescue's verify, so the candidate's
+    /// latency is its first-signal latency. Reset when a secondary is created and when it is
+    /// cleaned up.
+    private nonisolated(unsafe) var _secondaryFirstInputSignalHostTime: UInt64 = 0
     /// Host tick of the last primary buffer that was not "live input in, silence out".
     private nonisolated(unsafe) var _lastHealthyOutputHostTime: UInt64 = 0
     /// Host tick of the last jump in the primary input timeline (a skipped IO cycle); 0 = none.
     private nonisolated(unsafe) var _lastDiscontinuityHostTime: UInt64 = 0
     private nonisolated(unsafe) var _discontinuityCount: UInt32 = 0
     #if DEBUG
-    /// DebugFaults: this tap delivers exact zeros, as a stuck tap does, until it is rebuilt.
-    private nonisolated(unsafe) var _debugStuckInput = false
+    /// DebugFaults: the callback ID whose tap delivers exact zeros, as a stuck tap does, until it
+    /// is rebuilt; 0 = none. Keyed by callback, not role, so a rescue's promoted tap is healthy.
+    private nonisolated(unsafe) var _debugStuckCallbackID: UInt32 = 0
     // Zero-run soak instrumentation (DECI_DEBUG_ZERO_LOG): the primary callback writes these,
     // main reads them for the log and resets them in markTapStart. Torn reads only skew a log line.
     private nonisolated(unsafe) var _zeroRun = ZeroRunTracker()
@@ -191,6 +197,9 @@ final class ProcessTapController: ProcessTapControlling {
     private var isSwitching = false
     /// Cancellable crossfade task — cancelled when a new switch starts
     private var crossfadeTask: Task<Void, Error>?
+    /// What the last verified crossfade (a stuck-tap rescue) measured; `rescueStuckTap` reads it
+    /// back, since the switch runs in a Task that cannot hand a local out.
+    private var lastRescueReport: TapRescueReport?
     private var didLogEQBypassForMultichannel = false
 
     // MARK: - Public Properties
@@ -245,7 +254,10 @@ final class ProcessTapController: ProcessTapControlling {
             secondsSinceInputSignal: Self.secondsSince(signal != 0 ? signal : start, now: now),
             secondsSinceDiscontinuity: Self.secondsSince(_lastDiscontinuityHostTime, now: now),
             discontinuityCount: _discontinuityCount,
-            secondsSinceHealthyOutput: Self.secondsSince(max(_lastHealthyOutputHostTime, start), now: now)
+            secondsSinceHealthyOutput: Self.secondsSince(max(_lastHealthyOutputHostTime, start), now: now),
+            // A stream tap carries its device's UID; a mixdown tap has none.
+            tapIsStream: primaryResources.tapDescription?.deviceUID != nil,
+            tapDriftCompensation: primaryResources.tapDriftCompensation
         )
         #if DEBUG
         return withSoakReadings(readings, sampledAt: now)
@@ -260,9 +272,6 @@ final class ProcessTapController: ProcessTapControlling {
         readings.sampledHostTime = now
         readings.zeroRun = _zeroRun
         readings.zeroRunForensics = _zeroRunForensics
-        // A stream tap carries its device's UID; a mixdown tap has none.
-        readings.tapIsStream = primaryResources.tapDescription?.deviceUID != nil
-        readings.tapDriftCompensation = primaryResources.tapDriftCompensation
         return readings
     }
     #endif
@@ -475,14 +484,34 @@ final class ProcessTapController: ProcessTapControlling {
     /// default tap on the built-in speakers lost ~7 ms at some of Chrome's stream starts and stops.
     /// ON only when the tap can carry another device's clock: a mixdown tap, or a stream tap of a
     /// device other than the clock device.
+    ///
+    /// `clockIsBluetooth` is nil when the clock device did not resolve; it then takes
+    /// `unresolvedClockIsBluetooth`.
     static func tapNeedsDriftCompensation(
         tapDeviceUID: String?,
         clockDeviceUID: String,
-        clockIsBluetooth: Bool,
+        clockIsBluetooth: Bool?,
         tapSourceIsVirtual: Bool
     ) -> Bool {
-        if clockIsBluetooth || tapSourceIsVirtual { return false }
+        if clockIsBluetooth ?? unresolvedClockIsBluetooth || tapSourceIsVirtual { return false }
         return tapDeviceUID != clockDeviceUID
+    }
+
+    /// Policy for a clock device that cannot be resolved: treat it as Bluetooth (drift OFF), the
+    /// less wrong choice on an unknown device. Kept explicit so the decision log can say so.
+    static let unresolvedClockIsBluetooth = true
+
+    /// The drift decision and what it was based on, for the `[DRIFT]` log line.
+    static func driftDecisionSummary(
+        drift: Bool,
+        tapDeviceUID: String?,
+        clockDeviceUID: String,
+        clockIsBluetooth: Bool?,
+        tapSourceIsVirtual: Bool
+    ) -> String {
+        let source = tapDeviceUID.map { "stream:\($0)" } ?? "mixdown"
+        let bluetooth = clockIsBluetooth.map { $0 ? "yes" : "no" } ?? "unresolved(assumed \(unresolvedClockIsBluetooth ? "yes" : "no"))"
+        return "drift=\(drift ? "on" : "off") src=\(source) clock=\(clockDeviceUID) clockBT=\(bluetooth) virtualSource=\(tapSourceIsVirtual ? "yes" : "no")"
     }
 
     /// Debug runs: DECI_DEBUG_TAP_DRIFT forces drift compensation on or off for every tap.
@@ -494,13 +523,11 @@ final class ProcessTapController: ProcessTapControlling {
         #endif
     }
 
-    #if DEBUG
-    /// The sub-tap drift flag a built aggregate description carries, for the soak log.
+    /// The sub-tap drift flag a built aggregate description carries, for the rescue and soak logs.
     private static func tapDriftCompensation(in description: [String: Any]) -> Bool {
         let taps = description[kAudioAggregateDeviceTapListKey] as? [[String: Any]]
         return taps?.first?[kAudioSubTapDriftCompensationKey] as? Bool ?? false
     }
-    #endif
 
     private func buildAggregateDescription(outputUIDs: [String], tapUUID: UUID, tapDeviceUID: String?, name: String) -> [String: Any] {
         precondition(!outputUIDs.isEmpty, "Must have at least one output device")
@@ -532,13 +559,24 @@ final class ProcessTapController: ProcessTapControlling {
             ])
         }
 
-        // Defaults to Bluetooth (OFF) on an unresolvable device: less wrong on unknown BT.
+        // nil when the clock device does not resolve: tapNeedsDriftCompensation applies the
+        // unresolved-clock policy, and the log line says so.
+        let clockIsBluetooth = audioDeviceID(for: plan.clockDeviceUID)?.isBluetoothDevice()
+        let tapSourceIsVirtual = isTapSourceVirtual()
         let tapDriftCompensation = Self.debugDriftOverride ?? Self.tapNeedsDriftCompensation(
             tapDeviceUID: tapDeviceUID,
             clockDeviceUID: plan.clockDeviceUID,
-            clockIsBluetooth: audioDeviceID(for: plan.clockDeviceUID)?.isBluetoothDevice() ?? true,
-            tapSourceIsVirtual: isTapSourceVirtual()
+            clockIsBluetooth: clockIsBluetooth,
+            tapSourceIsVirtual: tapSourceIsVirtual
         )
+        let decision = Self.driftDecisionSummary(
+            drift: tapDriftCompensation,
+            tapDeviceUID: tapDeviceUID,
+            clockDeviceUID: plan.clockDeviceUID,
+            clockIsBluetooth: clockIsBluetooth,
+            tapSourceIsVirtual: tapSourceIsVirtual
+        )
+        logger.info("[DRIFT] \(name, privacy: .public): \(decision, privacy: .public)")
 
         return [
             kAudioAggregateDeviceNameKey: name,
@@ -772,9 +810,7 @@ final class ProcessTapController: ProcessTapControlling {
             tapDeviceUID: tapDesc.deviceUID,
             name: "Deci-\(app.id)"
         )
-        #if DEBUG
         primaryResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
-        #endif
 
         var err: OSStatus
         var aggID: AudioObjectID = .unknown
@@ -989,6 +1025,35 @@ final class ProcessTapController: ProcessTapControlling {
         logger.info("[REFRESH] Tap source refresh complete for \(self.app.name)")
     }
 
+    /// Replaces a tap that reads exact zeros while its app may still be playing, make-before-break.
+    /// A candidate tap is built next to the primary and must hear signal within
+    /// `TapRescueVerifier.window` while the primary stays at exact zero; only then is it promoted
+    /// (without a crossfade: the old tap delivered nothing to blend from). A paused app is not a
+    /// dead tap, so a silent candidate throws `.candidateSilent` and the primary is left alone.
+    /// Throws `.primaryRecovered` when the primary heard signal during the verify, and
+    /// `.switchInFlight` when a switch is already running (never two at once).
+    func rescueStuckTap() async throws -> TapRescueReport {
+        guard activated, primaryResources.tapDescription != nil, let primaryUID = currentDeviceUIDs.first else {
+            throw CrossfadeError.noTapDescription
+        }
+        guard !isSwitchingDevices else {
+            throw CrossfadeError.switchInFlight
+        }
+
+        let allUIDs = currentDeviceUIDs
+        lastRescueReport = nil
+        let task = Task {
+            try await performCrossfadeSwitch(to: primaryUID, allDeviceUIDs: allUIDs, verifyDeadPrimary: true)
+        }
+        crossfadeTask = task
+        defer { if crossfadeTask == task { crossfadeTask = nil } }
+        try await task.value
+
+        guard let report = lastRescueReport else { throw CrossfadeError.secondaryTapFailed }
+        lastRescueReport = nil
+        return report
+    }
+
     /// Rebuilds the tap around a new process list. The tap captures the process objects it was
     /// created with, so a helper that appears later (a new browser tab process) is not captured
     /// until the tap is rebuilt. Crossfades to the same devices (gapless), falling back to a
@@ -1151,7 +1216,12 @@ final class ProcessTapController: ProcessTapControlling {
 
     // MARK: - Crossfade Operations
 
-    private func performCrossfadeSwitch(to primaryDeviceUID: String, allDeviceUIDs: [String]? = nil) async throws {
+    /// - Parameter verifyDeadPrimary: A stuck-tap rescue (`rescueStuckTap`). The candidate runs
+    ///   muted (warming up) until it has heard signal while the primary stayed at exact zero;
+    ///   then it is promoted at once, with no BT warmup and no crossfade (the old primary
+    ///   delivered nothing to blend from). The promoted tap gets the normal output-gate fade-in.
+    ///   The report is left in `lastRescueReport`.
+    private func performCrossfadeSwitch(to primaryDeviceUID: String, allDeviceUIDs: [String]? = nil, verifyDeadPrimary: Bool = false) async throws {
         let deviceUIDs = allDeviceUIDs ?? [primaryDeviceUID]
 
         // Re-entrant guard (ORCH-001): if already switching, tear down in-progress secondary
@@ -1179,7 +1249,16 @@ final class ProcessTapController: ProcessTapControlling {
         crossfadeState.beginWarmup()
 
         logger.info("[CROSSFADE] Step 3: Creating secondary tap for \(deviceUIDs.count) device(s)")
-        try createSecondaryTap(for: deviceUIDs)
+        // What the primary last heard, before the candidate exists (a rescue's reference point).
+        let primarySignalAtStart = _lastInputSignalHostTime
+        do {
+            try createSecondaryTap(for: deviceUIDs)
+        } catch {
+            // The failed secondary never took a role; do not leave the state machine warming up.
+            crossfadeState.complete()
+            throw error
+        }
+        let candidateStartHostTime = mach_absolute_time()
 
         // LIFE-004/005: Ensure secondary tap is cleaned up if crossfade fails or is cancelled
         var crossfadeCompleted = false
@@ -1191,6 +1270,47 @@ final class ProcessTapController: ProcessTapControlling {
             }
         }
 
+        var rescueReport: TapRescueReport?
+        if verifyDeadPrimary {
+            rescueReport = try await verifyCandidate(primarySignalAtStart: primarySignalAtStart, candidateStartHostTime: candidateStartHostTime)
+        } else {
+            try await runWarmupAndCrossfade(isBluetoothDestination: isBluetoothDestination)
+        }
+
+        // Verify secondary tap is valid before promotion
+        guard secondaryResources.aggregateDeviceID.isValid, secondaryResources.deviceProcID != nil else {
+            logger.error("[CROSSFADE] Secondary tap invalid after timeout")
+            // defer will handle cleanup (cleanupSecondaryTap + crossfadeState.complete)
+            throw CrossfadeError.secondaryTapFailed
+        }
+
+        if !verifyDeadPrimary {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        if verifyDeadPrimary {
+            logger.info("[CROSSFADE] Candidate verified, promoting secondary without a crossfade")
+        } else {
+            logger.info("[CROSSFADE] Crossfade complete, promoting secondary")
+        }
+
+        destroyPrimaryTap()
+        promoteSecondaryToPrimary()
+        // Record the devices in the same step that swaps the aggregate, so anyone resuming
+        // after this crossfade reads the device set that is really playing.
+        targetDeviceUIDs = deviceUIDs
+        currentDeviceUIDs = deviceUIDs
+
+        crossfadeState.complete()
+        crossfadeCompleted = true
+        lastRescueReport = rescueReport
+
+        logger.info("[CROSSFADE] Complete")
+    }
+
+    /// Steps 4 and 5 of a device switch: the secondary's warmup, then the equal-power crossfade
+    /// (polled to completion, forced complete on timeout).
+    private func runWarmupAndCrossfade(isBluetoothDestination: Bool) async throws {
         if isBluetoothDestination {
             logger.info("[CROSSFADE] Destination is Bluetooth - using extended warmup")
         }
@@ -1218,34 +1338,43 @@ final class ProcessTapController: ProcessTapControlling {
             logger.warning("[CROSSFADE] Timeout at \(progressAtTimeout * 100)% - forcing completion")
             crossfadeState.progress = 1.0
         }
+    }
 
-        // Verify secondary tap is valid before promotion
-        guard secondaryResources.aggregateDeviceID.isValid, secondaryResources.deviceProcID != nil else {
-            logger.error("[CROSSFADE] Secondary tap invalid after timeout")
-            // defer will handle cleanup (cleanupSecondaryTap + crossfadeState.complete)
-            throw CrossfadeError.secondaryTapFailed
+    /// A rescue's verify: waits until the candidate tap hears signal while the primary stays at
+    /// exact zero. The candidate is muted meanwhile (the warming-up phase mixes only the
+    /// primary), so a silent app costs one inaudible probe. Throws `.candidateSilent` when the
+    /// candidate heard nothing within `TapRescueVerifier.window`, `.primaryRecovered` when the
+    /// primary heard signal again.
+    private func verifyCandidate(primarySignalAtStart: UInt64, candidateStartHostTime: UInt64) async throws -> TapRescueReport {
+        let verifier = TapRescueVerifier(primarySignalAtStart: primarySignalAtStart, candidateStartHostTime: candidateStartHostTime)
+        logger.info("[VERIFY] \(self.app.name, privacy: .public): waiting up to \(TapRescueVerifier.window * 1000, format: .fixed(precision: 0)) ms for the candidate to hear signal")
+        while true {
+            switch verifier.verdict(primarySignal: _lastInputSignalHostTime, candidateSignal: _secondaryFirstInputSignalHostTime, now: mach_absolute_time()) {
+            case .waiting:
+                try await Task.sleep(for: .milliseconds(5))
+            case .primaryRecovered:
+                logger.info("[VERIFY] \(self.app.name, privacy: .public): the primary heard signal again, aborting")
+                throw CrossfadeError.primaryRecovered
+            case .candidateSilent:
+                logger.info("[VERIFY] \(self.app.name, privacy: .public): the candidate heard no signal, the app is silent")
+                throw CrossfadeError.candidateSilent
+            case .candidateHeard(let latency):
+                // A pause ending right now reaches both taps; give the primary a moment to say so.
+                try await Task.sleep(for: TapRescueVerifier.primaryRecheckDelay)
+                if verifier.primaryRecovered(primarySignal: _lastInputSignalHostTime) {
+                    logger.info("[VERIFY] \(self.app.name, privacy: .public): the primary heard signal too, aborting")
+                    throw CrossfadeError.primaryRecovered
+                }
+                logger.info("[VERIFY] \(self.app.name, privacy: .public): the candidate heard signal after \(latency * 1000, format: .fixed(precision: 1)) ms while the primary stayed at exact zero")
+                return TapRescueReport(candidateSignalLatency: latency)
+            }
         }
-
-        try await Task.sleep(for: .milliseconds(10))
-
-        logger.info("[CROSSFADE] Crossfade complete, promoting secondary")
-
-        destroyPrimaryTap()
-        promoteSecondaryToPrimary()
-        // Record the devices in the same step that swaps the aggregate, so anyone resuming
-        // after this crossfade reads the device set that is really playing.
-        targetDeviceUIDs = deviceUIDs
-        currentDeviceUIDs = deviceUIDs
-
-        crossfadeState.complete()
-        crossfadeCompleted = true
-
-        logger.info("[CROSSFADE] Complete")
     }
 
     private func createSecondaryTap(for outputUIDs: [String]) throws {
         precondition(!outputUIDs.isEmpty, "Must have at least one output device")
 
+        _secondaryFirstInputSignalHostTime = 0
         let (tapDesc, tapID) = try createProcessTap(preferredDeviceUID: preferredTapSourceDeviceUID)
         secondaryResources.tapDescription = tapDesc
         let preferred = preferredStereoChannels(for: outputUIDs.first)
@@ -1262,9 +1391,7 @@ final class ProcessTapController: ProcessTapControlling {
             tapDeviceUID: tapDesc.deviceUID,
             name: "Deci-\(app.id)-secondary"
         )
-        #if DEBUG
         secondaryResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
-        #endif
 
         var err: OSStatus
         var aggID: AudioObjectID = .unknown
@@ -1358,6 +1485,7 @@ final class ProcessTapController: ProcessTapControlling {
     private func cleanupSecondaryTap() {
         guard secondaryResources.isActive else { return }
         _secondaryCallbackID = 0
+        _secondaryFirstInputSignalHostTime = 0
         secondaryResources.destroy()
         secondaryEQProcessor = nil
         secondaryAutoEQProcessor = nil
@@ -1509,9 +1637,7 @@ final class ProcessTapController: ProcessTapControlling {
             tapDeviceUID: newTapDesc.deviceUID,
             name: "Deci-\(app.id)"
         )
-        #if DEBUG
         newResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
-        #endif
 
         var err: OSStatus
         var aggID: AudioObjectID = .unknown
@@ -1867,9 +1993,9 @@ final class ProcessTapController: ProcessTapControlling {
         }
         if isPrimary, DebugFaults.pendingStuckTap {
             DebugFaults.pendingStuckTap = false
-            _debugStuckInput = true
+            _debugStuckCallbackID = callbackID
         }
-        if isPrimary, _debugStuckInput {
+        if DebugFaults.isStuck(callbackID: callbackID, stuckCallbackID: _debugStuckCallbackID, stuckAll: DebugFaults.stuckAll) {
             for buf in UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList)) {
                 if let data = buf.mData { memset(data, 0, Int(buf.mDataByteSize)) }
             }
@@ -1944,6 +2070,7 @@ final class ProcessTapController: ProcessTapControlling {
             _peakLevel = _peakLevel + levelSmoothingFactor * (rawPeak - _peakLevel)
         } else {
             _secondaryPeakLevel = _secondaryPeakLevel + levelSmoothingFactor * (rawPeak - _secondaryPeakLevel)
+            if maxPeak > 0, _secondaryFirstInputSignalHostTime == 0 { _secondaryFirstInputSignalHostTime = now }
             // Only the secondary callback advances crossfade progress (single-writer pattern).
             _ = crossfadeState.updateProgress(samples: totalSamplesThisBuffer)
         }

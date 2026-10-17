@@ -15,10 +15,16 @@ import AudioToolbox
 /// Mutable state behind the engine's injected closures.
 @MainActor
 final class EngineProbes {
-    /// HAL process objects that still exist (backs `processObjectExists`).
+    /// HAL process objects that still exist (backs `processObjectList`).
     var liveObjectIDs: Set<AudioObjectID> = []
+    /// How many times the engine read the HAL process list.
+    private(set) var processListReadCount = 0
     /// Processes that are still running (backs `isProcessAlive`).
     var alivePIDs: Set<pid_t> = []
+    /// Processes whose HAL IsRunningOutput reads true (backs `isProcessRunningOutput`).
+    var runningOutputPIDs: Set<pid_t> = []
+    /// How many times the engine read IsRunningOutput.
+    private(set) var runningOutputQueryCount = 0
     /// How many times the engine asked whether a pid is alive.
     private(set) var aliveQueryCount = 0
     /// Every tap the factory handed out, in creation order.
@@ -27,6 +33,16 @@ final class EngineProbes {
     func recordAliveQuery(_ pid: pid_t) -> Bool {
         aliveQueryCount += 1
         return alivePIDs.contains(pid)
+    }
+
+    func readProcessList() -> Set<AudioObjectID> {
+        processListReadCount += 1
+        return liveObjectIDs
+    }
+
+    func recordRunningOutputQuery(_ pid: pid_t) -> Bool {
+        runningOutputQueryCount += 1
+        return runningOutputPIDs.contains(pid)
     }
 
     func record(_ tap: RecordingProcessTapController) {
@@ -100,7 +116,8 @@ struct EngineHarness {
             },
             isAlive: { _ in true },
             isProcessAlive: { probes.recordAliveQuery($0) },
-            processObjectExists: { probes.liveObjectIDs.contains($0) },
+            processObjectList: { probes.readProcessList() },
+            isProcessRunningOutput: { probes.recordRunningOutputQuery($0.id) },
             staleTapGrace: staleGrace,
             staleTapPollInterval: stalePoll,
             processRebuildDebounce: debounce,
@@ -173,7 +190,7 @@ struct EngineHarness {
     func makeApp(
         pid: pid_t = 4242,
         ids: [AudioObjectID],
-        bundleID: String = "com.google.Chrome"
+        bundleID: String? = "com.google.Chrome"
     ) -> AudioApp {
         AudioApp(
             id: pid,
