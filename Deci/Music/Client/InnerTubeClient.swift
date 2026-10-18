@@ -193,18 +193,21 @@ actor InnerTubeClient {
         return String(decoding: response.data, as: UTF8.self)
     }
 
-    /// The single history ping: the tracking URL plus the web client's own parameters.
-    func reportPlayback(trackingURL: URL, cpn: String) async throws {
+    /// One history ping (playback or watchtime): the tracking URL moved to music.youtube.com plus the
+    /// web client's own parameters, sent with the cookies and SAPISIDHASH auth. Returns the status
+    /// (200 or 204); any other status throws.
+    func reportHistory(_ ping: HistoryPing) async throws -> Int {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
-        guard Self.isTrusted(trackingURL) else { throw MusicError.parse("tracking url is not an https YouTube url") }
+        guard Self.isTrusted(ping.url) else { throw MusicError.parse("tracking url is not an https YouTube url") }
         let session = try await sessionOrFallback()
         let epoch = epoch
-        let url = HistoryURLBuilder.url(trackingURL: trackingURL, cpn: cpn, clientVersion: session.clientVersion)
+        let url = HistoryURLBuilder.url(for: ping, clientVersion: session.clientVersion)
         guard var headers = authenticatedHeaders(for: url, session: session) else { throw MusicError.signedOut }
         headers["Content-Type"] = nil
         let response = try await transport.send(HTTPRequest(url: url, method: "GET", headers: headers))
         absorbCookies(from: response, url: url, epoch: epoch)
         guard response.statusCode == 200 || response.statusCode == 204 else { throw Self.error(for: response.statusCode) }
+        return response.statusCode
     }
 
     // MARK: - Requests

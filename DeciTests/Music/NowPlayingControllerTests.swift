@@ -13,6 +13,8 @@ private final class FetchLog {
     var urls: [URL] = []
     var data: Data?
     var gate: MusicTestGate?
+    /// URLs whose download fails.
+    var failing: Set<URL> = []
 }
 
 private func pngData() -> Data {
@@ -104,6 +106,14 @@ struct NowPlayingInfoTests {
 
         let scaled = ArtworkFactory.sized(image, to: CGSize(width: 32, height: 32))
         #expect(scaled.size == CGSize(width: 32, height: 32))
+        #expect(scaled.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width == 32)
+        let huge = ArtworkFactory.sized(image, to: CGSize(width: 5000, height: 5000))
+        #expect(huge.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width == 1024)
+        let wide = ArtworkFactory.sized(image, to: CGSize(width: 4000, height: 2000)).cgImage(forProposedRect: nil, context: nil, hints: nil)
+        #expect(wide?.width == 1024)
+        #expect(wide?.height == 512)
+        #expect(ArtworkFactory.sized(image, to: CGSize(width: CGFloat.nan, height: 10)) === image)
+        #expect(ArtworkFactory.sized(image, to: CGSize(width: CGFloat.infinity, height: 10)) === image)
         #expect(ArtworkFactory.sized(image, to: image.size) === image)
         #expect(ArtworkFactory.sized(image, to: .zero) === image)
         #expect(ArtworkFactory.sized(image, to: CGSize(width: -4, height: 10)) === image)
@@ -128,7 +138,7 @@ struct NowPlayingControllerTests {
                 await MainActor.run { fetch.urls.append(url) }
                 let gate = await MainActor.run { fetch.gate }
                 if let gate { await gate.wait() }
-                return await MainActor.run { fetch.data }
+                return await MainActor.run { fetch.failing.contains(url) ? nil : fetch.data }
             })
         }
     }
@@ -268,6 +278,30 @@ struct NowPlayingControllerTests {
         #expect(rig.surface.last?.elapsed == 60)
     }
 
+    @Test("YouTube Music cover art is fetched at 544 px")
+    func artworkLargeFirst() async {
+        let rig = Rig()
+        let small = "https://lh3.googleusercontent.com/abc=w60-h60-l90-rj"
+        rig.controller.update(state(track("a", art: small)))
+        await rig.controller.artworkTask?.value
+
+        #expect(rig.fetch.urls == [URL(string: "https://lh3.googleusercontent.com/abc=w544-h544-l90-rj")!])
+        #expect(rig.surface.last?.info[MPMediaItemPropertyArtwork] is MPMediaItemArtwork)
+    }
+
+    @Test("when the 544 px cover fails the list thumbnail is used instead")
+    func artworkLargeFallback() async {
+        let rig = Rig()
+        let small = URL(string: "https://lh3.googleusercontent.com/abc=w60-h60-l90-rj")!
+        let large = URL(string: "https://lh3.googleusercontent.com/abc=w544-h544-l90-rj")!
+        rig.fetch.failing = [large]
+        rig.controller.update(state(track("a", art: small.absoluteString)))
+        await rig.controller.artworkTask?.value
+
+        #expect(rig.fetch.urls == [large, small])
+        #expect(rig.surface.last?.info[MPMediaItemPropertyArtwork] is MPMediaItemArtwork)
+    }
+
     @Test("a track without a thumbnail never downloads anything")
     func noThumbnail() {
         let rig = Rig()
@@ -350,5 +384,32 @@ struct SystemNowPlayingSurfaceTests {
             }
         }
         #expect(seen == [.seek(9)])
+    }
+}
+
+// MARK: - Artwork URL
+
+@Suite("MusicArtworkURL")
+struct MusicArtworkURLTests {
+    private func large(_ text: String) -> String { MusicArtworkURL.large(URL(string: text)!).absoluteString }
+
+    @Test("width and height sizes on Google image hosts become 544, other options stay")
+    func widthHeight() {
+        #expect(large("https://lh3.googleusercontent.com/abc=w120-h120-l90-rj") == "https://lh3.googleusercontent.com/abc=w544-h544-l90-rj")
+        #expect(large("https://yt3.googleusercontent.com/abc=w60-h60") == "https://yt3.googleusercontent.com/abc=w544-h544")
+    }
+
+    @Test("square sizes become 544")
+    func square() {
+        #expect(large("https://yt3.ggpht.com/abc=s88-c-k-c0x00ffffff-no-rj") == "https://yt3.ggpht.com/abc=s544-c-k-c0x00ffffff-no-rj")
+    }
+
+    @Test("other hosts and URLs without a size are left alone")
+    func untouched() {
+        let ytimg = "https://i.ytimg.com/vi/abc/sddefault.jpg?sqp=xyz=w120"
+        #expect(large(ytimg) == ytimg)
+        #expect(large("https://img.example.test/a=w60-h60") == "https://img.example.test/a=w60-h60")
+        #expect(large("https://lh3.googleusercontent.com/abc") == "https://lh3.googleusercontent.com/abc")
+        #expect(large("https://lh3.googleusercontent.com/abc=rj") == "https://lh3.googleusercontent.com/abc=rj")
     }
 }

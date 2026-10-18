@@ -212,6 +212,8 @@ struct InnerTubeParserTests {
         #expect(response.lengthSeconds == 370)
         #expect(response.playbackTrackingURL?.host == "s.youtube.com")
         #expect(response.playbackTrackingURL?.path == "/api/stats/playback")
+        #expect(response.watchtimeTrackingURL?.host == "s.youtube.com")
+        #expect(response.watchtimeTrackingURL?.path == "/api/stats/watchtime")
         let itags = response.formats.map(\.itag)
         #expect(itags.contains(140))
         #expect(itags.contains(251))
@@ -220,6 +222,34 @@ struct InnerTubeParserTests {
         #expect(aac.bitrate == 137_064)
         #expect(aac.url == nil)
         #expect(aac.signatureCipher?.hasPrefix("s=") == true)
+    }
+
+    @Test("The watchtime URL is read independently of the playback URL")
+    func playerWatchtimeURL() throws {
+        let both = #"""
+        {"playabilityStatus":{"status":"OK"},"playbackTracking":{
+          "videostatsPlaybackUrl":{"baseUrl":"https://s.youtube.com/api/stats/playback?docid=a"},
+          "videostatsWatchtimeUrl":{"baseUrl":"https://s.youtube.com/api/stats/watchtime?docid=a"}}}
+        """#
+        let response = try InnerTubeParser.playerResponse(from: Data(both.utf8))
+        #expect(response.playbackTrackingURL?.absoluteString == "https://s.youtube.com/api/stats/playback?docid=a")
+        #expect(response.watchtimeTrackingURL?.absoluteString == "https://s.youtube.com/api/stats/watchtime?docid=a")
+
+        let onlyPlayback = #"""
+        {"playabilityStatus":{"status":"OK"},"playbackTracking":{
+          "videostatsPlaybackUrl":{"baseUrl":"https://s.youtube.com/api/stats/playback?docid=a"}}}
+        """#
+        let partial = try InnerTubeParser.playerResponse(from: Data(onlyPlayback.utf8))
+        #expect(partial.playbackTrackingURL != nil)
+        #expect(partial.watchtimeTrackingURL == nil)
+
+        let onlyWatchtime = #"""
+        {"playabilityStatus":{"status":"OK"},"playbackTracking":{
+          "videostatsWatchtimeUrl":{"baseUrl":"https://s.youtube.com/api/stats/watchtime?docid=a"}}}
+        """#
+        let other = try InnerTubeParser.playerResponse(from: Data(onlyWatchtime.utf8))
+        #expect(other.playbackTrackingURL == nil)
+        #expect(other.watchtimeTrackingURL != nil)
     }
 
     @Test("A format with a direct url keeps it and has no cipher")
@@ -241,6 +271,7 @@ struct InnerTubeParserTests {
         #expect(response.reason == "Sign in to confirm you are not a bot")
         #expect(response.formats.isEmpty)
         #expect(response.playbackTrackingURL == nil)
+        #expect(response.watchtimeTrackingURL == nil)
     }
 
     @Test("A missing playabilityStatus is reported as UNKNOWN, never a crash")

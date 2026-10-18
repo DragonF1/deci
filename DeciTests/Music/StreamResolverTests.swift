@@ -54,6 +54,7 @@ struct StreamResolverTests {
         #expect(items["itag"] == "140")
         #expect(stream.expiresAt == Date(timeIntervalSince1970: 1_792_305_256))
         #expect(stream.playbackTrackingURL?.host == "s.youtube.com")
+        #expect(stream.watchtimeTrackingURL?.path == "/api/stats/watchtime")
         #expect(stream.httpHeaders == ["User-Agent": MusicAuthHeaders.userAgent])
         let duration = try #require(stream.durationSeconds)
         #expect(abs(duration - 369.626) < 0.001)

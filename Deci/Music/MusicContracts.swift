@@ -26,8 +26,49 @@ struct ResolvedStream: Sendable, Equatable {
     let expiresAt: Date
     /// playbackTracking.videostatsPlaybackUrl.baseUrl, used for the history ping.
     let playbackTrackingURL: URL?
+    /// playbackTracking.videostatsWatchtimeUrl.baseUrl, used for the watchtime ping that follows it.
+    let watchtimeTrackingURL: URL?
     /// Headers AVURLAsset must send with the stream (User-Agent).
     let httpHeaders: [String: String]
+
+    init(
+        videoId: String,
+        url: URL,
+        itag: Int,
+        durationSeconds: Double?,
+        expiresAt: Date,
+        playbackTrackingURL: URL?,
+        watchtimeTrackingURL: URL? = nil,
+        httpHeaders: [String: String]
+    ) {
+        self.videoId = videoId
+        self.url = url
+        self.itag = itag
+        self.durationSeconds = durationSeconds
+        self.expiresAt = expiresAt
+        self.playbackTrackingURL = playbackTrackingURL
+        self.watchtimeTrackingURL = watchtimeTrackingURL
+        self.httpHeaders = httpHeaders
+    }
+}
+
+/// One ping that puts a play into the account's YouTube Music history. A session sends the
+/// playback ping and then the watchtime ping, both with the same `cpn`.
+struct HistoryPing: Sendable, Equatable {
+    enum Kind: Sendable, Hashable {
+        /// videostatsPlaybackUrl: marks the song as played.
+        case playback
+        /// videostatsWatchtimeUrl: reports how much of it was watched.
+        case watchtime
+    }
+
+    let kind: Kind
+    /// The tracking URL exactly as the player response gave it.
+    let url: URL
+    /// The session's client playback nonce, see `CPN`.
+    let cpn: String
+    /// Position in the song, in seconds, when the ping goes out.
+    let mediaTime: TimeInterval
 }
 
 /// One cookie from the Google sign-in, as stored in the Keychain.
@@ -86,8 +127,9 @@ protocol MusicBackend: Sendable {
     func radio(seedVideoId: String) async throws -> MusicQueuePage
     /// The page after `continuation` of the radio seeded by `seedVideoId`.
     func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage
-    /// Sends the single history ping for one playback session.
-    func reportPlayback(trackingURL: URL, cpn: String) async throws
+    /// Sends one history ping and returns the HTTP status YouTube answered with (200 or 204 when
+    /// it took the ping). Throws on any other status, when signed out, or when the URL is not YouTube's.
+    func reportHistory(_ ping: HistoryPing) async throws -> Int
 }
 
 /// Client playback nonce: 16 chars from A-Za-z0-9-_, one per playback session.

@@ -67,6 +67,11 @@ final class AVPlaybackEngine: PlaybackEngine {
             options[AVURLAssetHTTPUserAgentKey] = userAgent
         }
         let item = AVPlayerItem(asset: AVURLAsset(url: stream.url, options: options))
+        let knownDuration = Self.knownDuration(of: stream)
+        if let knownDuration {
+            // Without this the item runs on through the bogus silent half (see `knownDuration(of:)`).
+            item.forwardPlaybackEndTime = CMTime(seconds: knownDuration, preferredTimescale: 1000)
+        }
 
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
@@ -82,9 +87,9 @@ final class AVPlaybackEngine: PlaybackEngine {
 
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
             let status = observed.status
-            let duration = observed.duration.seconds
             Task { @MainActor [weak self] in
-                self?.handleStatus(status, duration: duration, token: token)
+                // Never the item's own duration: it is doubled. Unknown leaves the player on the track's listed length.
+                self?.handleStatus(status, duration: knownDuration, token: token)
             }
         }
         controlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] observed, _ in
@@ -110,6 +115,14 @@ final class AVPlaybackEngine: PlaybackEngine {
         player.replaceCurrentItem(with: item)
     }
 
+    /// The stream's own length (YouTube's approxDurationMs, exact to the millisecond), when it has one.
+    /// AVFoundation reads YouTube's fragmented audio as twice its real length: the empty header still states the
+    /// full duration and the fragments are added on top. Trusting it plays the song, then as long again of silence.
+    nonisolated static func knownDuration(of stream: ResolvedStream) -> TimeInterval? {
+        guard let seconds = stream.durationSeconds, seconds.isFinite, seconds > 0 else { return nil }
+        return seconds
+    }
+
     func play() {
         wantsPlay = true
         if player.currentItem?.status == .readyToPlay { player.play() }
@@ -130,11 +143,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         wantsPlay = false
     }
 
-    private func handleStatus(_ status: AVPlayerItem.Status, duration: TimeInterval, token: Int) {
+    private func handleStatus(_ status: AVPlayerItem.Status, duration: TimeInterval?, token: Int) {
         guard generation == token else { return }
         switch status {
         case .readyToPlay:
-            onEvent?(.ready(duration: duration.isFinite && duration > 0 ? duration : nil))
+            onEvent?(.ready(duration: duration))
             let start = pendingStart
             pendingStart = 0
             if start > 0 {

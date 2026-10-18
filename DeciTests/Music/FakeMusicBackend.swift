@@ -27,8 +27,10 @@ actor MusicTestGate {
 
 actor FakeMusicBackend: MusicBackend {
     nonisolated struct Report: Equatable, Sendable {
+        let kind: HistoryPing.Kind
         let url: URL
         let cpn: String
+        let mediaTime: TimeInterval
     }
 
     nonisolated struct MoreRadioCall: Hashable, Sendable {
@@ -44,7 +46,8 @@ actor FakeMusicBackend: MusicBackend {
     private var streams: [String: ResolvedStream] = [:]
     private var resolveErrors: [String: any Error] = [:]
     private var resolveGates: [String: MusicTestGate] = [:]
-    private var reportError: (any Error)?
+    private var reportErrors: [HistoryPing.Kind: any Error] = [:]
+    private var reportStatus = 204
     private var radioPages: [String: MusicQueuePage] = [:]
     private var radioErrors: [String: any Error] = [:]
     private var radioGates: [String: MusicTestGate] = [:]
@@ -75,7 +78,11 @@ actor FakeMusicBackend: MusicBackend {
     func setResolveError(_ videoId: String, _ error: any Error) { resolveErrors[videoId] = error }
     func clearResolveError(_ videoId: String) { resolveErrors[videoId] = nil }
     func setResolveGate(_ videoId: String, _ gate: MusicTestGate) { resolveGates[videoId] = gate }
-    func setReportError(_ error: (any Error)?) { reportError = error }
+    /// Makes history pings throw `error`: both kinds, or just `kind` when given. Nil clears.
+    func setReportError(_ error: (any Error)?, kind: HistoryPing.Kind? = nil) {
+        for each in kind.map({ [$0] }) ?? [.playback, .watchtime] { reportErrors[each] = error }
+    }
+    func setReportStatus(_ status: Int) { reportStatus = status }
     func setRadio(seed: String, tracks: [Deci.MusicTrack], continuation: String? = nil) {
         radioPages[seed] = MusicQueuePage(tracks: tracks, continuation: continuation)
     }
@@ -135,9 +142,10 @@ actor FakeMusicBackend: MusicBackend {
         return morePages[call] ?? MusicQueuePage(tracks: [], continuation: nil)
     }
 
-    func reportPlayback(trackingURL: URL, cpn: String) async throws {
-        reportAttempts.append(Report(url: trackingURL, cpn: cpn))
-        if let reportError { throw reportError }
+    func reportHistory(_ ping: HistoryPing) async throws -> Int {
+        reportAttempts.append(Report(kind: ping.kind, url: ping.url, cpn: ping.cpn, mediaTime: ping.mediaTime))
+        if let error = reportErrors[ping.kind] { throw error }
+        return reportStatus
     }
 }
 
@@ -231,6 +239,7 @@ nonisolated enum MusicSamples {
         videoId: String = "vid1",
         expiresAt: Date = Date(timeIntervalSinceNow: 6 * 3600),
         trackingURL: URL? = URL(string: "https://music.example.test/stats?ev=1"),
+        watchtimeURL: URL? = nil,
         duration: Double? = 200
     ) -> ResolvedStream {
         ResolvedStream(
@@ -240,6 +249,7 @@ nonisolated enum MusicSamples {
             durationSeconds: duration,
             expiresAt: expiresAt,
             playbackTrackingURL: trackingURL,
+            watchtimeTrackingURL: watchtimeURL,
             httpHeaders: ["User-Agent": "test-agent"]
         )
     }

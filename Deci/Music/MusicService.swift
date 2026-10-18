@@ -29,10 +29,12 @@ final class MusicService {
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
 
-    /// One playback session: one CPN, one listening-time count, at most one history ping.
+    /// One playback session: one CPN, one listening-time count, at most one history ping
+    /// (a playback ping plus, when the stream has a watchtime URL, a watchtime ping with the same CPN).
     private struct Session {
         let cpn: String
         var trackingURL: URL?
+        var watchtimeURL: URL?
         var accumulator = PlaybackTimeAccumulator()
     }
 
@@ -311,7 +313,7 @@ final class MusicService {
         do {
             let stream = try await streamForPlayback(of: track)
             guard generation == playGeneration, !Task.isCancelled else { return }
-            session = Session(cpn: CPN.make(), trackingURL: stream.playbackTrackingURL)
+            session = Session(cpn: CPN.make(), trackingURL: stream.playbackTrackingURL, watchtimeURL: stream.watchtimeTrackingURL)
             player.load(stream: stream, track: track)
             scheduleMemoryProbe()
         } catch {
@@ -337,10 +339,13 @@ final class MusicService {
             // Another track may have started meanwhile: its session and error line are not this refresh's to touch.
             guard generation == playGeneration, !Task.isCancelled else { throw CancellationError() }
             refreshError = nil
+            if session?.watchtimeURL == nil { session?.watchtimeURL = stream.watchtimeTrackingURL }
             if session?.trackingURL == nil, let url = stream.playbackTrackingURL {
                 session?.trackingURL = url
                 // The 30 s may have passed while there was nowhere to send the ping.
-                if session?.accumulator.claim() == true, let cpn = session?.cpn { reportHistory(url: url, cpn: cpn) }
+                if session?.accumulator.claim() == true, let cpn = session?.cpn {
+                    reportHistory(playback: url, watchtime: session?.watchtimeURL, cpn: cpn, mediaTime: player.currentTime)
+                }
             }
             return stream
         } catch {
@@ -611,17 +616,29 @@ final class MusicService {
         let url = session?.trackingURL
         guard session?.accumulator.record(position: position, isPlaying: isPlaying, canFire: url != nil) == true,
               let url, let cpn = session?.cpn else { return }
-        reportHistory(url: url, cpn: cpn)
+        reportHistory(playback: url, watchtime: session?.watchtimeURL, cpn: cpn, mediaTime: position)
     }
 
-    private func reportHistory(url: URL, cpn: String) {
+    /// Sends the playback ping, then the watchtime ping when there is a URL for it. The two are
+    /// independent: a failure of one never stops the other, and neither is retried.
+    private func reportHistory(playback: URL, watchtime: URL?, cpn: String, mediaTime: TimeInterval) {
         reportTask = Task { [backend] in
-            do {
-                try await backend.reportPlayback(trackingURL: url, cpn: cpn)
-                logger.info("history ping sent")
-            } catch {
-                logger.error("history ping failed: \(Self.logDescription(of: error), privacy: .public)")
+            await Self.send(HistoryPing(kind: .playback, url: playback, cpn: cpn, mediaTime: mediaTime), through: backend)
+            if let watchtime {
+                await Self.send(HistoryPing(kind: .watchtime, url: watchtime, cpn: cpn, mediaTime: mediaTime), through: backend)
             }
+        }
+    }
+
+    /// Logs the outcome at a level that persists. Only the status code or the error kind is public:
+    /// never the URL, its query or any cookie.
+    private static func send(_ ping: HistoryPing, through backend: any MusicBackend) async {
+        let name = ping.kind == .playback ? "history" : "watchtime"
+        do {
+            let status = try await backend.reportHistory(ping)
+            logger.notice("\(name, privacy: .public) ping ok \(status, privacy: .public)")
+        } catch {
+            logger.error("\(name, privacy: .public) ping failed: \(logDescription(of: error), privacy: .public)")
         }
     }
 

@@ -179,6 +179,8 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
             return HTTPResponse(statusCode: config.playerStatus, headers: config.playerHeaders, data: config.playerBody)
         case ("music.youtube.com", _) where url.path.hasSuffix("/base.js"):
             return HTTPResponse(statusCode: config.playerJSStatus, headers: [:], data: Data(config.playerJS.utf8))
+        case ("music.youtube.com", _) where url.path.hasPrefix("/api/stats/"):
+            return HTTPResponse(statusCode: config.statsStatus, headers: [:], data: Data())
         case ("s.youtube.com", _):
             return HTTPResponse(statusCode: config.statsStatus, headers: [:], data: Data())
         default:

@@ -136,14 +136,18 @@ struct MusicBackendLiveTests {
         await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.resolve(videoId: "4D7u5KF7SP8") }
     }
 
-    @Test("reportPlayback sends one ping to the tracking host with the cpn")
-    func reportPlayback() async throws {
+    @Test("reportHistory sends one ping to music.youtube.com with the cpn and returns the status")
+    func reportHistory() async throws {
         let harness = makeHarness(signedIn: true)
         defer { try? FileManager.default.removeItem(at: harness.directory) }
         let tracking = try #require(URL(string: "https://s.youtube.com/api/stats/playback?docid=abc"))
-        try await harness.backend.reportPlayback(trackingURL: tracking, cpn: "AbCd_-0123456789")
-        let pings = harness.youtube.requests.filter { $0.url.host == "s.youtube.com" }
+        let status = try await harness.backend.reportHistory(
+            HistoryPing(kind: .playback, url: tracking, cpn: "AbCd_-0123456789", mediaTime: 30)
+        )
+        #expect(status == 204)
+        let pings = harness.youtube.requests.filter { $0.url.path == "/api/stats/playback" }
         #expect(pings.count == 1)
+        #expect(pings.first?.url.host == "music.youtube.com")
         #expect(pings.first?.url.absoluteString.contains("cpn=AbCd_-0123456789") == true)
     }
 

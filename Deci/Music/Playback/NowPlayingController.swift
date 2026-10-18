@@ -116,8 +116,11 @@ final class NowPlayingController {
         artworkTask?.cancel()
         fetchingArtwork = url
         let fetch = fetchArtwork
+        let large = MusicArtworkURL.large(url)
         artworkTask = Task { [weak self] in
-            let data = await fetch(url)
+            // The list thumbnail is 60 to 120 px; the widget shows it at 600. Fall back to it if the big one fails.
+            var data = await fetch(large)
+            if data == nil, large != url, !Task.isCancelled { data = await fetch(url) }
             guard let self, !Task.isCancelled else { return }
             self.finishArtwork(url: url, data: data)
         }
@@ -127,9 +130,10 @@ final class NowPlayingController {
         fetchingArtwork = nil
         guard let data, let image = NSImage(data: data), image.isValid else {
             failedArtwork.insert(url)
-            logger.info("now playing artwork unavailable")
+            logger.notice("now playing artwork unavailable")
             return
         }
+        logger.notice("now playing artwork loaded \(Int(image.size.width), privacy: .public)x\(Int(image.size.height), privacy: .public)")
         artworkCache.append((url, ArtworkFactory.make(image: image)))
         if artworkCache.count > Self.artworkCacheLimit { artworkCache.removeFirst() }
         if state?.track.thumbnailURL == url { publish() }
@@ -183,25 +187,73 @@ enum NowPlayingInfo {
 enum ArtworkFactory {
     private final class Box: @unchecked Sendable {
         let image: NSImage
-        init(_ image: NSImage) { self.image = image }
+        /// Taken once on the caller's thread, so the system queues never touch the NSImage's reps.
+        let bitmap: CGImage?
+        init(_ image: NSImage) {
+            self.image = image
+            self.bitmap = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
     }
+
+    /// Upper bound for the longer side of a resized copy, so a strange request cannot allocate a huge bitmap.
+    private static let maxEdge: CGFloat = 1024
 
     nonisolated static func make(image: NSImage) -> MPMediaItemArtwork {
         let box = Box(image)
         let natural = image.size.width > 0 && image.size.height > 0 ? image.size : CGSize(width: 300, height: 300)
         return MPMediaItemArtwork(boundsSize: natural) { requested in
-            sized(box.image, to: requested)
+            let size = String(format: "%.0fx%.0f", requested.width, requested.height)
+            logger.notice("now playing artwork requested \(size, privacy: .public)")
+            return sized(box.image, bitmap: box.bitmap, to: requested)
         }
     }
 
-    /// The image drawn at `requested`; the original when that size is unusable or already matches.
+    /// The image redrawn into a bitmap at `requested`; the original when that size is unusable or already matches.
+    /// Drawn right away, not lazily: the system turns what this returns into data on its own queue.
     nonisolated static func sized(_ image: NSImage, to requested: CGSize) -> NSImage {
-        guard requested.width > 0, requested.height > 0, requested != image.size else { return image }
-        let box = Box(image)
-        return NSImage(size: requested, flipped: false) { rect in
-            box.image.draw(in: rect)
-            return true
+        sized(image, bitmap: image.cgImage(forProposedRect: nil, context: nil, hints: nil), to: requested)
+    }
+
+    private nonisolated static func sized(_ image: NSImage, bitmap: CGImage?, to requested: CGSize) -> NSImage {
+        guard requested.width.isFinite, requested.height.isFinite,
+              requested.width > 0, requested.height > 0, requested != image.size, let bitmap else { return image }
+        // One factor for both sides keeps the shape; a capped copy still reports the requested point size.
+        let scale = min(1, maxEdge / max(requested.width, requested.height))
+        let width = max(1, Int((requested.width * scale).rounded(.up)))
+        let height = max(1, Int((requested.height * scale).rounded(.up)))
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else { return image }
+        context.interpolationQuality = .high
+        context.draw(bitmap, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let scaled = context.makeImage() else { return image }
+        return NSImage(cgImage: scaled, size: requested)
+    }
+}
+
+/// YouTube Music cover art URLs carry their size in the path, and the server scales to any size asked for.
+enum MusicArtworkURL {
+    /// Edge YouTube Music's own web player uses for the big cover.
+    static let largeEdge = 544
+
+    /// The same art at `largeEdge` px for Google image hosts (`=w120-h120-...` or `=s120-...`); anything else unchanged.
+    static func large(_ url: URL) -> URL {
+        guard let host = url.host?.lowercased(),
+              host.hasSuffix(".googleusercontent.com") || host.hasSuffix(".ggpht.com") else { return url }
+        let text = url.absoluteString
+        guard let marker = text.lastIndex(of: "=") else { return url }
+        let options = text[text.index(after: marker)...]
+        let resized: String
+        if let match = options.firstMatch(of: /^w\d+-h\d+/) {
+            resized = "w\(largeEdge)-h\(largeEdge)" + options[match.range.upperBound...]
+        } else if let match = options.firstMatch(of: /^s\d+/) {
+            resized = "s\(largeEdge)" + options[match.range.upperBound...]
+        } else {
+            return url
         }
+        return URL(string: String(text[...marker]) + resized) ?? url
     }
 }
 

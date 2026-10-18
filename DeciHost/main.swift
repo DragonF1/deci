@@ -42,38 +42,47 @@ class NativeMessagingHost {
 
     func readFromChrome() {
         while true {
-            let lengthData = FileHandle.standardInput.readData(ofLength: 4)
-            if lengthData.count != 4 {
-                log.info("stdin closed, exiting")
+            // This block never returns, so the queue's own pool never drains: without a pool per message
+            // every autoreleased read buffer (a TAB_LIST is hundreds of KB) stays alive for the life of the host.
+            autoreleasepool {
+                readOneMessage()
+            }
+        }
+    }
+
+    /// Reads one framed message from Chrome and forwards it to the app. Exits when the stream ends or loses sync.
+    private func readOneMessage() {
+        let lengthData = FileHandle.standardInput.readData(ofLength: 4)
+        if lengthData.count != 4 {
+            log.info("stdin closed, exiting")
+            exit(0)
+        }
+
+        let length = Int(UInt32(littleEndian: lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }))
+
+        if length > maxIncomingBytes {
+            log.error("Dropping oversize message from Chrome: \(length) bytes")
+            if length > maxDiscardBytes || !discardFromStdin(length) {
+                log.error("Cannot resync stdin, exiting")
                 exit(0)
             }
+            return
+        }
 
-            let length = Int(UInt32(littleEndian: lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }))
+        let messageData = FileHandle.standardInput.readData(ofLength: length)
 
-            if length > maxIncomingBytes {
-                log.error("Dropping oversize message from Chrome: \(length) bytes")
-                if length > maxDiscardBytes || !discardFromStdin(length) {
-                    log.error("Cannot resync stdin, exiting")
-                    exit(0)
-                }
-                continue
-            }
+        if messageData.count != length { exit(0) }
 
-            let messageData = FileHandle.standardInput.readData(ofLength: length)
+        if let messageString = String(data: messageData, encoding: .utf8) {
+            log.debug("Chrome -> App: \(self.messageType(messageString), privacy: .public), \(length) bytes")
 
-            if messageData.count != length { exit(0) }
-
-            if let messageString = String(data: messageData, encoding: .utf8) {
-                log.debug("Chrome -> App: \(self.messageType(messageString), privacy: .public), \(length) bytes")
-
-                DispatchQueue.main.async {
-                    DistributedNotificationCenter.default().postNotificationName(
-                        NSNotification.Name("com.abraham.Deci.FromChrome"),
-                        object: messageString,
-                        userInfo: nil,
-                        deliverImmediately: true
-                    )
-                }
+            DispatchQueue.main.async {
+                DistributedNotificationCenter.default().postNotificationName(
+                    NSNotification.Name("com.abraham.Deci.FromChrome"),
+                    object: messageString,
+                    userInfo: nil,
+                    deliverImmediately: true
+                )
             }
         }
     }
@@ -82,9 +91,11 @@ class NativeMessagingHost {
     private func discardFromStdin(_ count: Int) -> Bool {
         var remaining = count
         while remaining > 0 {
-            let chunk = FileHandle.standardInput.readData(ofLength: min(remaining, 64 * 1024))
-            if chunk.isEmpty { return false }
-            remaining -= chunk.count
+            let read = autoreleasepool {
+                FileHandle.standardInput.readData(ofLength: min(remaining, 64 * 1024)).count
+            }
+            if read == 0 { return false }
+            remaining -= read
         }
         return true
     }

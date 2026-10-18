@@ -85,6 +85,14 @@
      "headerType": "USER_AUTH"
     }
    ]
+  },
+  "videostatsWatchtimeUrl": {
+   "baseUrl": "https://s.youtube.com/api/stats/watchtime?cl=999364917&docid=4D7u5KF7SP8&ei=EI_SCRUBBED&fexp=&ns=yt&plid=PLID_SCRUBBED&el=detailpage&len=370&of=OF_SCRUBBED&vm=VM_SCRUBBED",
+   "headers": [
+    {
+     "headerType": "USER_AUTH"
+    }
+   ]
   }
  },
  "videoDetails": {

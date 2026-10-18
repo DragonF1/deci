@@ -51,7 +51,7 @@ actor MusicBackendLive: MusicBackend {
         try await client.moreRadio(continuation: continuation)
     }
 
-    func reportPlayback(trackingURL: URL, cpn: String) async throws {
-        try await client.reportPlayback(trackingURL: trackingURL, cpn: cpn)
+    func reportHistory(_ ping: HistoryPing) async throws -> Int {
+        try await client.reportHistory(ping)
     }
 }

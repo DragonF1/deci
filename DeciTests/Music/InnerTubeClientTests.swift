@@ -732,16 +732,32 @@ struct InnerTubeClientTests {
     // MARK: - History ping
 
     private static let trackingURL = URL(string: "https://s.youtube.com/api/stats/playback?cl=1&docid=abc&ei=E&len=370")!
+    private static let watchtimeURL = URL(string: "https://s.youtube.com/api/stats/watchtime?cl=1&docid=abc&ei=E&len=370")!
 
-    @Test("reportPlayback GETs the tracking URL with the client parameters and auth headers")
-    func reportPlaybackShape() async throws {
+    private static func ping(
+        _ kind: HistoryPing.Kind = .playback,
+        url: URL? = nil,
+        mediaTime: TimeInterval = 30
+    ) -> HistoryPing {
+        HistoryPing(
+            kind: kind,
+            url: url ?? (kind == .playback ? trackingURL : watchtimeURL),
+            cpn: "AbCd_-0123456789",
+            mediaTime: mediaTime
+        )
+    }
+
+    @Test("The playback ping GETs music.youtube.com with the client parameters and auth headers")
+    func playbackPingShape() async throws {
         let youtube = FakeYouTube()
-        try await makeClient(youtube).reportPlayback(trackingURL: Self.trackingURL, cpn: "AbCd_-0123456789")
+        let status = try await makeClient(youtube).reportHistory(Self.ping(.playback, mediaTime: 30.5))
+        #expect(status == 204)
         let request = try #require(youtube.requests.last)
         #expect(request.method == "GET")
         #expect(request.body == nil)
         let components = try #require(URLComponents(url: request.url, resolvingAgainstBaseURL: false))
-        #expect(components.host == "s.youtube.com")
+        #expect(components.scheme == "https")
+        #expect(components.host == "music.youtube.com")
         #expect(components.path == "/api/stats/playback")
         let items = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
         #expect(items["docid"] == "abc")
@@ -749,45 +765,98 @@ struct InnerTubeClientTests {
         #expect(items["c"] == "WEB_REMIX")
         #expect(items["cpn"] == "AbCd_-0123456789")
         #expect(items["cver"] == "1.20261013.15.00")
+        #expect(items["cmt"] == "30.500")
+        #expect(items["el"] == "detailpage")
+        #expect(items["st"] == nil)
+        #expect(items["et"] == nil)
+        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH ") == true)
+        #expect(request.headers["Cookie"]?.contains("SAPISID=") == true)
+        #expect(request.headers["Origin"] == "https://music.youtube.com")
+        #expect(request.headers["Content-Type"] == nil)
+    }
+
+    @Test("The watchtime ping GETs music.youtube.com with st, et, cmt and the same auth headers")
+    func reportWatchtimeShape() async throws {
+        let youtube = FakeYouTube()
+        let status = try await makeClient(youtube).reportHistory(Self.ping(.watchtime, mediaTime: 30.5))
+        #expect(status == 204)
+        let request = try #require(youtube.requests.last)
+        #expect(request.method == "GET")
+        let components = try #require(URLComponents(url: request.url, resolvingAgainstBaseURL: false))
+        #expect(components.host == "music.youtube.com")
+        #expect(components.path == "/api/stats/watchtime")
+        let items = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        #expect(items["docid"] == "abc")
+        #expect(items["cpn"] == "AbCd_-0123456789")
+        #expect(items["cmt"] == "30.500")
+        #expect(items["st"] == "0")
+        #expect(items["et"] == "30.500")
         #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH ") == true)
         #expect(request.headers["Cookie"]?.contains("SAPISID=") == true)
     }
 
-    @Test("Both 200 and 204 count as a recorded play")
-    func reportPlaybackSuccessCodes() async throws {
+    @Test("Both pings of a session reach music.youtube.com and never s.youtube.com")
+    func pingsNeverUseTheOldHost() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        _ = try await client.reportHistory(Self.ping(.playback))
+        _ = try await client.reportHistory(Self.ping(.watchtime))
+        let stats = youtube.requests.filter { $0.url.path.hasPrefix("/api/stats/") }
+        #expect(stats.map(\.url.path) == ["/api/stats/playback", "/api/stats/watchtime"])
+        #expect(stats.allSatisfy { $0.url.host == "music.youtube.com" })
+        #expect(youtube.requests.contains { $0.url.host == "s.youtube.com" } == false)
+    }
+
+    @Test("A www.youtube.com tracking URL is sent to music.youtube.com as well")
+    func wwwHostRewritten() async throws {
+        let youtube = FakeYouTube()
+        let url = try #require(URL(string: "https://www.youtube.com/api/stats/playback?docid=abc"))
+        _ = try await makeClient(youtube).reportHistory(Self.ping(.playback, url: url))
+        #expect(youtube.requests.last?.url.host == "music.youtube.com")
+    }
+
+    @Test("Both 200 and 204 count as a recorded play and are returned")
+    func pingSuccessCodes() async throws {
         for status in [200, 204] {
             let youtube = FakeYouTube { $0.statsStatus = status }
-            try await makeClient(youtube).reportPlayback(trackingURL: Self.trackingURL, cpn: "AbCd_-0123456789")
+            let returned = try await makeClient(youtube).reportHistory(Self.ping())
+            #expect(returned == status)
         }
     }
 
     @Test("A failing history ping reports its status")
-    func reportPlaybackFailure() async {
+    func pingFailureStatus() async {
         let client = makeClient(FakeYouTube { $0.statsStatus = 500 })
-        await #expect(throws: MusicError.http(500)) {
-            try await client.reportPlayback(trackingURL: Self.trackingURL, cpn: "AbCd_-0123456789")
-        }
+        await #expect(throws: MusicError.http(500)) { try await client.reportHistory(Self.ping(.playback)) }
+        await #expect(throws: MusicError.http(500)) { try await client.reportHistory(Self.ping(.watchtime)) }
+    }
+
+    @Test("A 401 from the stats host means the session is dead")
+    func pingUnauthorized() async {
+        let client = makeClient(FakeYouTube { $0.statsStatus = 401 })
+        await #expect(throws: MusicError.signedOut) { try await client.reportHistory(Self.ping()) }
     }
 
     @Test("The history ping is refused when signed out")
-    func reportPlaybackSignedOut() async {
+    func pingSignedOut() async {
         let youtube = FakeYouTube()
         let client = makeClient(youtube, store: MemorySecretStore())
-        await #expect(throws: MusicError.signedOut) {
-            try await client.reportPlayback(trackingURL: Self.trackingURL, cpn: "AbCd_-0123456789")
-        }
+        await #expect(throws: MusicError.signedOut) { try await client.reportHistory(Self.ping()) }
+        await #expect(throws: MusicError.signedOut) { try await client.reportHistory(Self.ping(.watchtime)) }
         #expect(youtube.requests.isEmpty)
     }
 
     @Test("Credentials are never sent to a tracking URL outside YouTube")
-    func reportPlaybackHostGuard() async {
+    func pingHostGuard() async throws {
         let youtube = FakeYouTube()
         let client = makeClient(youtube)
-        await #expect(throws: MusicError.self) {
-            try await client.reportPlayback(trackingURL: URL(string: "https://evil.example/api/stats/playback")!, cpn: "AbCd_-0123456789")
-        }
-        await #expect(throws: MusicError.self) {
-            try await client.reportPlayback(trackingURL: URL(string: "http://s.youtube.com/api/stats/playback")!, cpn: "AbCd_-0123456789")
+        let evil = try #require(URL(string: "https://evil.example/api/stats/playback"))
+        let insecure = try #require(URL(string: "http://s.youtube.com/api/stats/playback"))
+        let lookalike = try #require(URL(string: "https://notyoutube.com/api/stats/playback"))
+        for kind in [HistoryPing.Kind.playback, .watchtime] {
+            for url in [evil, insecure, lookalike] {
+                await #expect(throws: MusicError.self) { try await client.reportHistory(Self.ping(kind, url: url)) }
+            }
         }
         #expect(youtube.requests.isEmpty)
     }

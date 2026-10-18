@@ -24,6 +24,7 @@ struct PlayerResponse: Sendable, Equatable {
     let expiresInSeconds: Int?
     let lengthSeconds: Int?
     let playbackTrackingURL: URL?
+    let watchtimeTrackingURL: URL?
 }
 
 /// Pure parsing of the InnerTube responses. Every lookup tolerates a missing or re-shaped
@@ -317,15 +318,21 @@ enum InnerTubeParser {
         let playability = root["playabilityStatus"] as? [String: Any]
         let streaming = root["streamingData"] as? [String: Any]
         let formats = (streaming?["adaptiveFormats"] as? [[String: Any]] ?? []).compactMap(format(from:))
-        let tracking = (root["playbackTracking"] as? [String: Any])?["videostatsPlaybackUrl"] as? [String: Any]
+        let tracking = root["playbackTracking"] as? [String: Any]
         return PlayerResponse(
             status: string(playability?["status"]) ?? "UNKNOWN",
             reason: reason(in: playability),
             formats: formats,
             expiresInSeconds: int(streaming?["expiresInSeconds"]),
             lengthSeconds: int((root["videoDetails"] as? [String: Any])?["lengthSeconds"]),
-            playbackTrackingURL: string(tracking?["baseUrl"]).flatMap { URL(string: $0) }
+            playbackTrackingURL: trackingURL(tracking?["videostatsPlaybackUrl"]),
+            watchtimeTrackingURL: trackingURL(tracking?["videostatsWatchtimeUrl"])
         )
+    }
+
+    /// `baseUrl` of one playbackTracking entry.
+    private static func trackingURL(_ entry: Any?) -> URL? {
+        string((entry as? [String: Any])?["baseUrl"]).flatMap { URL(string: $0) }
     }
 
     private static func format(from json: [String: Any]) -> PlayerFormat? {

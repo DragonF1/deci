@@ -506,8 +506,85 @@ struct MusicServicePlaybackTests {
 
         let reports = await h.backend.reportAttempts
         #expect(reports.count == 1)
+        #expect(reports.first?.kind == .playback)
         #expect(reports.first?.url == trackingURL)
         #expect(isValidCPN(reports.first?.cpn ?? ""))
+        #expect(reports.first?.mediaTime == 30)
+    }
+
+    @Test("at 30 s the playback ping goes first, then the watchtime ping, both once with the same CPN and media time")
+    func bothPingsOnce() async {
+        let h = Harness()
+        let playbackURL = URL(string: "https://music.example.test/stats/playback?ev=7")!
+        let watchtimeURL = URL(string: "https://music.example.test/stats/watchtime?ev=7")!
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: playbackURL, watchtimeURL: watchtimeURL))
+        await h.startPlaying(MusicSamples.track("abc"))
+
+        h.listen(seconds: 29.5)
+        #expect(h.service.reportTask == nil)
+        #expect(await h.backend.reportAttempts.isEmpty)
+
+        h.listen(seconds: 90, from: 29.5)
+        await h.service.reportTask?.value
+
+        let reports = await h.backend.reportAttempts
+        #expect(reports.map(\.kind) == [.playback, .watchtime])
+        #expect(reports.map(\.url) == [playbackURL, watchtimeURL])
+        #expect(isValidCPN(reports.first?.cpn ?? ""))
+        #expect(Set(reports.map(\.cpn)).count == 1)
+        #expect(reports.map(\.mediaTime) == [30, 30])
+    }
+
+    @Test("a stream without a watchtime URL sends only the playback ping")
+    func playbackOnlyWithoutWatchtimeURL() async {
+        let h = Harness()
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", watchtimeURL: nil))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 90)
+        await h.service.reportTask?.value
+
+        #expect(await h.backend.reportAttempts.map(\.kind) == [.playback])
+    }
+
+    @Test("a failing playback ping does not stop the watchtime ping")
+    func playbackFailureStillSendsWatchtime() async {
+        let h = Harness()
+        let watchtimeURL = URL(string: "https://music.example.test/stats/watchtime?ev=1")!
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", watchtimeURL: watchtimeURL))
+        await h.backend.setReportError(URLError(.timedOut), kind: .playback)
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 90)
+        await h.service.reportTask?.value
+
+        let reports = await h.backend.reportAttempts
+        #expect(reports.map(\.kind) == [.playback, .watchtime])
+        #expect(reports.last?.url == watchtimeURL)
+    }
+
+    @Test("a failing watchtime ping leaves the playback ping sent and is not retried")
+    func watchtimeFailureIsContained() async {
+        let h = Harness()
+        let watchtimeURL = URL(string: "https://music.example.test/stats/watchtime?ev=1")!
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", watchtimeURL: watchtimeURL))
+        await h.backend.setReportError(MusicError.http(500), kind: .watchtime)
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 120)
+        await h.service.reportTask?.value
+
+        #expect(await h.backend.reportAttempts.map(\.kind) == [.playback, .watchtime])
+    }
+
+    @Test("both pings failing is survived and neither is retried")
+    func bothFailing() async {
+        let h = Harness()
+        let watchtimeURL = URL(string: "https://music.example.test/stats/watchtime?ev=1")!
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", watchtimeURL: watchtimeURL))
+        await h.backend.setReportError(URLError(.notConnectedToInternet))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 120)
+        await h.service.reportTask?.value
+
+        #expect(await h.backend.reportAttempts.count == 2)
     }
 
     @Test("no ping before 30 s")
@@ -599,6 +676,28 @@ struct MusicServicePlaybackTests {
         h.listen(seconds: 60, from: 40)
         await h.service.reportTask?.value
         #expect(await h.backend.reportAttempts.count == 1)
+    }
+
+    @Test("a stream refresh after 30 s that brings both URLs sends both pings at the current media time")
+    func lateURLsSendBothPings() async {
+        let h = Harness()
+        let playbackURL = URL(string: "https://music.example.test/stats/playback?ev=9")!
+        let watchtimeURL = URL(string: "https://music.example.test/stats/watchtime?ev=9")!
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: nil))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 40)
+        #expect(h.service.reportTask == nil)
+
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: playbackURL, watchtimeURL: watchtimeURL))
+        h.engine.emit(.failed)
+        await h.player.refreshTask?.value
+        await h.service.reportTask?.value
+
+        let reports = await h.backend.reportAttempts
+        #expect(reports.map(\.kind) == [.playback, .watchtime])
+        #expect(reports.map(\.url) == [playbackURL, watchtimeURL])
+        #expect(Set(reports.map(\.cpn)).count == 1)
+        #expect(reports.map(\.mediaTime) == [40, 40])
     }
 
     @Test("a tracking URL that arrives before 30 s waits for the threshold")
@@ -1548,6 +1647,33 @@ struct MusicServiceSessionTests {
         #expect(reports.map(\.url) == [urlA, urlB])
         #expect(reports.allSatisfy { isValidCPN($0.cpn) })
         #expect(Set(reports.map(\.cpn)).count == 2)
+    }
+
+    @Test("each track's watchtime ping shares its own playback ping's CPN and not the other track's")
+    func perTrackWatchtimeCPN() async {
+        let h = Harness()
+        for id in ["a", "b"] {
+            await h.backend.setStream(MusicSamples.stream(
+                videoId: id,
+                trackingURL: URL(string: "https://music.example.test/stats/playback?ev=\(id)")!,
+                watchtimeURL: URL(string: "https://music.example.test/stats/watchtime?ev=\(id)")!
+            ))
+        }
+        await h.startQueue(["a", "b"])
+        h.listen(seconds: 31)
+        await h.service.reportTask?.value
+
+        h.engine.emit(.ended)
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        h.listen(seconds: 31)
+        await h.service.reportTask?.value
+
+        let reports = await h.backend.reportAttempts
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .playback, .watchtime])
+        #expect(reports[0].cpn == reports[1].cpn)
+        #expect(reports[2].cpn == reports[3].cpn)
+        #expect(reports[0].cpn != reports[2].cpn)
     }
 
     @Test("listening time does not carry over to the next track")
