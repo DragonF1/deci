@@ -1,6 +1,6 @@
 // DeciTests/ChromeAutoSwitchTests.swift
 // The YouTube Music auto-Switch in Chrome pauses while Deci plays natively: the extension is told
-// `setting && !nativeMusicPlaying`, the stored setting is never touched, and a change is sent once.
+// `setting && !nativeMusicPlaying`, the stored setting is never touched, and it is sent only when that value changes.
 
 import Foundation
 import Testing
@@ -80,21 +80,24 @@ struct ChromeAutoSwitchTests {
         #expect(sent.messages.isEmpty)
     }
 
-    @Test("a flip is sent even when the effective value stays off because the user switched it off")
+    @Test("a flip that leaves the effective value off sends nothing")
     func flipWithSettingOff() {
         let (manager, sent) = makeManager()
         manager.setYTMusicAutoSwitch(false)
         manager.flushMessages()
+        #expect(sent.options == [false])
         sent.clear()
 
         manager.setNativeMusicPlaying(true)
         manager.flushMessages()
         manager.setNativeMusicPlaying(false)
         manager.flushMessages()
-        #expect(sent.options == [false, false])
+        #expect(sent.messages.isEmpty)
+        #expect(manager.nativeMusicPlaying == false)
+        #expect(manager.effectiveYTMusicAutoSwitch == false)
     }
 
-    @Test("toggling the setting during native playback keeps sending off")
+    @Test("toggling the setting during native playback sends nothing but still stores it")
     func toggleDuringNative() {
         let (manager, sent) = makeManager()
         manager.setNativeMusicPlaying(true)
@@ -103,8 +106,47 @@ struct ChromeAutoSwitchTests {
 
         manager.setYTMusicAutoSwitch(true)
         manager.flushMessages()
-        #expect(sent.options == [false])
+        #expect(sent.messages.isEmpty)
         #expect(manager.ytMusicAutoSwitch)
+        #expect(manager.effectiveYTMusicAutoSwitch == false)
+    }
+
+    @Test("changing the setting sends once per real change and the stored value follows every call")
+    func settingSendsOnlyOnChange() {
+        let (manager, sent) = makeManager()
+        manager.setYTMusicAutoSwitch(true)
+        manager.flushMessages()
+        #expect(sent.messages.isEmpty)
+
+        manager.setYTMusicAutoSwitch(false)
+        manager.flushMessages()
+        manager.setYTMusicAutoSwitch(false)
+        manager.flushMessages()
+        #expect(sent.options == [false])
+        #expect(manager.ytMusicAutoSwitch == false)
+
+        manager.setYTMusicAutoSwitch(true)
+        manager.flushMessages()
+        #expect(sent.options == [false, true])
+        #expect(manager.ytMusicAutoSwitch)
+    }
+
+    @Test("pausing native playback with the setting on sends the restored value, with the setting off it sends nothing")
+    func pauseRestoresOnlyWhenOn() {
+        let (on, sentOn) = makeManager()
+        on.setNativeMusicPlaying(true)
+        on.setNativeMusicPlaying(false)
+        on.flushMessages()
+        #expect(sentOn.options == [true])
+
+        let (off, sentOff) = makeManager()
+        off.setYTMusicAutoSwitch(false)
+        off.flushMessages()
+        sentOff.clear()
+        off.setNativeMusicPlaying(true)
+        off.setNativeMusicPlaying(false)
+        off.flushMessages()
+        #expect(sentOff.messages.isEmpty)
     }
 
     @Test("every tab request carries the effective value")

@@ -59,6 +59,11 @@ final class NowPlayingController {
 
     isolated deinit {
         artworkTask?.cancel()
+        // The system keeps its own references to the command targets and the info: let go of them with the controller.
+        if isRegistered {
+            surface.removeCommands()
+            surface.clearInfo()
+        }
     }
 
     /// Shows `state`, or releases the system when it is nil.
@@ -275,14 +280,12 @@ final class SystemNowPlayingSurface: NowPlayingSurface {
         }
     }
 
-    private nonisolated static func deliver(
+    /// Always hops to a later main-actor turn, even from the main thread: the handler may touch the
+    /// command center, which must not happen inside the system's own call. The caller answers `.success` at once.
+    nonisolated static func deliver(
         _ command: NowPlayingCommand,
         to handler: @escaping @MainActor (NowPlayingCommand) -> Void
     ) {
-        if Thread.isMainThread {
-            MainActor.assumeIsolated { handler(command) }
-        } else {
-            Task { @MainActor in handler(command) }
-        }
+        Task { @MainActor in handler(command) }
     }
 }

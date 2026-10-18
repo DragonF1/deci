@@ -283,4 +283,72 @@ struct NowPlayingControllerTests {
         #expect(plain == nil)
         #expect(file == nil)
     }
+
+    // MARK: Release
+
+    @Test("dropping a controller that is registered releases the commands and the widget")
+    func deinitReleases() async {
+        let surface = FakeNowPlayingSurface()
+        do {
+            let controller = NowPlayingController(surface: surface, fetchArtwork: { _ in nil })
+            controller.update(state())
+            #expect(surface.hasCommands)
+        }
+        await Task.yield()
+
+        #expect(surface.removeCount == 1)
+        #expect(surface.clearCount == 1)
+        #expect(surface.hasCommands == false)
+    }
+
+    @Test("dropping a controller that never registered, or already released, touches nothing")
+    func deinitWhenIdle() async {
+        let surface = FakeNowPlayingSurface()
+        do {
+            _ = NowPlayingController(surface: surface, fetchArtwork: { _ in nil })
+        }
+        let released = FakeNowPlayingSurface()
+        do {
+            let controller = NowPlayingController(surface: released, fetchArtwork: { _ in nil })
+            controller.update(state())
+            controller.update(nil)
+        }
+        await Task.yield()
+
+        #expect(surface.removeCount == 0)
+        #expect(surface.clearCount == 0)
+        #expect(released.removeCount == 1)
+        #expect(released.clearCount == 1)
+    }
+}
+
+// MARK: - System surface
+
+@MainActor
+@Suite("SystemNowPlayingSurface delivery")
+struct SystemNowPlayingSurfaceTests {
+    @Test("a command that arrives on the main thread is still handled on a later turn, never inside the system call")
+    func deliverAlwaysHops() async {
+        var seen: [NowPlayingCommand] = []
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            SystemNowPlayingSurface.deliver(.next) { command in
+                seen.append(command)
+                done.resume()
+            }
+            #expect(seen.isEmpty)
+        }
+        #expect(seen == [.next])
+    }
+
+    @Test("a command that arrives on another thread reaches the handler on the main actor")
+    func deliverFromBackground() async {
+        let seen = await withCheckedContinuation { (done: CheckedContinuation<[NowPlayingCommand], Never>) in
+            DispatchQueue.global().async {
+                SystemNowPlayingSurface.deliver(.seek(9)) { command in
+                    done.resume(returning: [command])
+                }
+            }
+        }
+        #expect(seen == [.seek(9)])
+    }
 }

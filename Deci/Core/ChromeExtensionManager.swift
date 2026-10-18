@@ -332,17 +332,19 @@ final class ChromeExtensionManager: NSObject {
         ])
     }
 
-    /// Sets the YouTube Music auto-switch and tells the extension.
+    /// Stores the YouTube Music auto-switch and tells the extension when what it acts on changed.
     func setYTMusicAutoSwitch(_ enabled: Bool) {
+        let before = effectiveYTMusicAutoSwitch
         ytMusicAutoSwitch = enabled
-        queueOptions()
+        if effectiveYTMusicAutoSwitch != before { queueOptions() }
     }
 
-    /// Called when Deci's Music player starts or stops playing. Sends only when the state changed.
+    /// Called when Deci's Music player starts or stops playing. Sends only when the effective value changed.
     func setNativeMusicPlaying(_ playing: Bool) {
         guard playing != nativeMusicPlaying else { return }
+        let before = effectiveYTMusicAutoSwitch
         nativeMusicPlaying = playing
-        queueOptions()
+        if effectiveYTMusicAutoSwitch != before { queueOptions() }
     }
 
     private func queueOptions() {

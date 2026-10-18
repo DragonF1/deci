@@ -68,6 +68,19 @@ struct MusicQueueTests {
         #expect(queue.needsMore == false)
     }
 
+    @Test("dropping the continuation ends paging and leaves the tracks and the position alone")
+    func clearContinuation() {
+        var queue = makeQueue(["a", "b", "c"], continuation: "c1")
+        queue.advance()
+        queue.clearContinuation()
+
+        #expect(queue.continuation == nil)
+        #expect(queue.needsMore == false)
+        #expect(ids(queue.tracks) == ["a", "b", "c"])
+        #expect(queue.current?.videoId == "b")
+        #expect(queue.seedVideoId == "a")
+    }
+
     @Test("advance and retreat move the current position and stop at the ends")
     func moves() {
         var queue = makeQueue(["a", "b", "c"])

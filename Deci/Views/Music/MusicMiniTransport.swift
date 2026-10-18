@@ -38,7 +38,8 @@ enum MusicTimeFormat {
 struct MusicMiniTransport: View {
     let service: MusicService
     /// Fraction under the finger while scrubbing; nil otherwise. Seeks on release.
-    @State private var dragFraction: Double?
+    /// A gesture state, so a drag that is cancelled (the track changed, the window lost focus) lets go by itself.
+    @GestureState private var dragFraction: Double? = nil
 
     private var player: MusicPlayer { service.player }
 
@@ -87,7 +88,7 @@ struct MusicMiniTransport: View {
                         .controlSize(.small)
                 } else {
                     Button(player.isPlaying ? "Pause" : "Play", systemImage: player.isPlaying ? "pause.fill" : "play.fill") {
-                        player.toggle()
+                        service.togglePlayback()
                     }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.plain)
@@ -139,7 +140,7 @@ struct MusicMiniTransport: View {
 private struct MusicScrubber: View {
     let fraction: Double
     let isEnabled: Bool
-    @Binding var dragFraction: Double?
+    let dragFraction: GestureState<Double?>
     let onSeek: (Double) -> Void
 
     var body: some View {
@@ -155,11 +156,10 @@ private struct MusicScrubber: View {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        dragFraction = MusicTimeFormat.fraction(x: value.location.x, width: proxy.size.width)
+                    .updating(dragFraction) { value, state, _ in
+                        state = MusicTimeFormat.fraction(x: value.location.x, width: proxy.size.width)
                     }
                     .onEnded { value in
-                        dragFraction = nil
                         onSeek(MusicTimeFormat.fraction(x: value.location.x, width: proxy.size.width))
                     }
             )

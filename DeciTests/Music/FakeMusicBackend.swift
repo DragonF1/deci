@@ -73,6 +73,7 @@ actor FakeMusicBackend: MusicBackend {
     func setSearchGate(_ query: String, _ gate: MusicTestGate) { searchGates[query] = gate }
     func setStream(_ stream: ResolvedStream) { streams[stream.videoId] = stream }
     func setResolveError(_ videoId: String, _ error: any Error) { resolveErrors[videoId] = error }
+    func clearResolveError(_ videoId: String) { resolveErrors[videoId] = nil }
     func setResolveGate(_ videoId: String, _ gate: MusicTestGate) { resolveGates[videoId] = gate }
     func setReportError(_ error: (any Error)?) { reportError = error }
     func setRadio(seed: String, tracks: [Deci.MusicTrack], continuation: String? = nil) {

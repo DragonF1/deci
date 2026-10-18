@@ -74,6 +74,11 @@ struct MusicQueue: Equatable {
         return tracks[index]
     }
 
+    /// Ends paging: the tracks and the position stay, no further page is asked for.
+    mutating func clearContinuation() {
+        continuation = nil
+    }
+
     mutating func clear() {
         self = MusicQueue()
     }

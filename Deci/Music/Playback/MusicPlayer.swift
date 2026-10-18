@@ -56,6 +56,9 @@ final class MusicPlayer {
         engine.unload()
     }
 
+    /// False when the current track's stream never resolved, so there is nothing to resume.
+    var hasStream: Bool { stream != nil }
+
     /// Playing, or about to: loading, or wanting to play through a stall. False when paused, ended or failed.
     var isActive: Bool {
         nowPlaying != nil && (isPlaying || isLoading || wantsPlay)
@@ -125,6 +128,15 @@ final class MusicPlayer {
         nowPlaying = nil
         isLoading = false
         error = nil
+        notifyStateChange()
+    }
+
+    /// The stream could not be resolved for a reason that says nothing about the track: keep it selected,
+    /// stop the spinner and leave playback off. Unlike a failure, it does not ask for a successor.
+    func failLoading() {
+        guard nowPlaying != nil else { return }
+        isLoading = false
+        wantsPlay = false
         notifyStateChange()
     }
 
@@ -218,6 +230,8 @@ final class MusicPlayer {
         case .playingChanged(let playing):
             isPlaying = playing
             if playing { isLoading = false }
+            // The ticks come every 0.5 s: take the exact position, so a pause shows where it stopped.
+            if !isLoading, !hasEnded { currentTime = engine.position }
         case .ended:
             hasEnded = true
             wantsPlay = false

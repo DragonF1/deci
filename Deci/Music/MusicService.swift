@@ -38,12 +38,24 @@ final class MusicService {
 
     private enum Direction { case forward, backward }
 
+    /// An advance the queue could not make because the radio may still add tracks: it waits for the page.
+    private enum PendingAdvance {
+        /// The track played to its end.
+        case ended
+        /// The listener pressed Next.
+        case skipped
+        /// The stream died and cannot be recovered.
+        case failed
+    }
+
     /// Previous restarts the track instead of going back once it has played this long.
     private static let restartThreshold: TimeInterval = 3
     /// Consecutive tracks that may fail before playback stops with an error.
     private static let maxFailures = 3
     /// The next track's stream is resolved this long before the current one ends.
     private static let prefetchLead: TimeInterval = 15
+    /// Radio pages overlap, so a page can add nothing new. This many in a row ends a top-up.
+    private static let maxEmptyPages = 3
 
     @ObservationIgnored private let backend: any MusicBackend
     @ObservationIgnored private let presentSignIn: SignInPresenter
@@ -51,6 +63,9 @@ final class MusicService {
     @ObservationIgnored private var session: Session?
     @ObservationIgnored private var direction = Direction.forward
     @ObservationIgnored private var failureStreak = 0
+    @ObservationIgnored private var pendingAdvance: PendingAdvance?
+    /// Why the last stream refresh failed; read when the player then gives up on the track.
+    @ObservationIgnored private var refreshError: (any Error)?
     @ObservationIgnored private var nativePlaying = false
     @ObservationIgnored private var radioGeneration = 0
     @ObservationIgnored private var prefetchAttempt: String?
@@ -222,11 +237,25 @@ final class MusicService {
         begin(track)
     }
 
+    /// Play/pause for the transport and media keys. A track whose stream never resolved has nothing
+    /// to resume, so Play tries it again instead.
+    func togglePlayback() {
+        if player.isPlaying || player.isLoading { player.toggle() } else { resume() }
+    }
+
+    func resume() {
+        guard let track = player.nowPlaying else { return }
+        guard !player.hasStream, !player.isLoading else { return player.play() }
+        failureStreak = 0
+        begin(track)
+    }
+
     func next() {
         direction = .forward
         failureStreak = 0
         guard let track = queue.advance() else {
-            stopPlayback()
+            // The radio may still be loading: keep playing and move on when its page lands.
+            if !awaitRadio(for: .skipped) { stopPlayback() }
             return
         }
         begin(track)
@@ -267,6 +296,8 @@ final class MusicService {
         playGeneration += 1
         let generation = playGeneration
         cancelPrefetch()
+        pendingAdvance = nil
+        refreshError = nil
         lastError = nil
         session = nil
         player.beginLoading(track)
@@ -300,8 +331,12 @@ final class MusicService {
 
     /// Used by the player to replace a dead or expired stream. The playback session carries on.
     private func resolveFreshStream(for track: MusicTrack) async throws -> ResolvedStream {
+        let generation = playGeneration
         do {
             let stream = try await backend.resolve(videoId: track.videoId)
+            // Another track may have started meanwhile: its session and error line are not this refresh's to touch.
+            guard generation == playGeneration, !Task.isCancelled else { throw CancellationError() }
+            refreshError = nil
             if session?.trackingURL == nil, let url = stream.playbackTrackingURL {
                 session?.trackingURL = url
                 // The 30 s may have passed while there was nowhere to send the ping.
@@ -309,6 +344,8 @@ final class MusicService {
             }
             return stream
         } catch {
+            guard generation == playGeneration, !Task.isCancelled else { throw error }
+            refreshError = error
             handle(error)
             throw error
         }
@@ -318,12 +355,25 @@ final class MusicService {
 
     private func handleTrackEnded() {
         direction = .forward
-        // At the end of the queue the player stays on the finished track, as with a single song.
-        guard let track = queue.advance() else { return }
+        guard let track = queue.advance() else {
+            // At the end of the queue the player stays on the finished track, as with a single song,
+            // unless the radio is still loading: then the next track starts when its page lands.
+            _ = awaitRadio(for: .ended)
+            return
+        }
         begin(track)
     }
 
-    /// A track that cannot be resolved is skipped; the third failure in a row stops playback.
+    /// Only a track that cannot be played at all is skipped; a dropped connection or a server hiccup says nothing about it.
+    private static func skipsTrack(_ error: any Error) -> Bool {
+        switch error as? MusicError {
+        case .unplayable, .noAudioFormat: true
+        default: false
+        }
+    }
+
+    /// A track that cannot be played is skipped; the third failure in a row stops playback but keeps the queue.
+    /// A failure that says nothing about the track keeps it selected with the error line and does not skip.
     private func handleResolveFailure(_ error: any Error) {
         if Self.isCancellation(error) || Self.isSignedOut(error) {
             player.stop()
@@ -332,24 +382,39 @@ final class MusicService {
             return
         }
         failureStreak += 1
-        logger.error("track skipped: \(Self.logDescription(of: error), privacy: .public)")
-        if skipToNeighbour() { return }
-        player.stop()
-        endQueue()
+        logger.error("track failed: \(Self.logDescription(of: error), privacy: .public)")
+        let exhausted = failureStreak >= Self.maxFailures
+        if Self.skipsTrack(error) {
+            if skipToNeighbour() { return }
+            player.stop()
+            // At the end of the queue there is nothing to keep; after three failures Next must still work.
+            if !exhausted { endQueue() }
+        } else if exhausted {
+            player.stop()
+        } else {
+            player.failLoading()
+        }
         handle(error)
     }
 
     /// The player gave up on the current stream (recovery failed or was already spent).
     private func handlePlayerFailure() {
         guard player.nowPlaying != nil else { return }
+        let cause = refreshError
+        refreshError = nil
         if authState == .signedOut {
             player.stop()
             endQueue()
             return
         }
         failureStreak += 1
+        // The refresh failed for a reason that says nothing about the track: keep it and the queue, as it is.
+        if let cause, !Self.skipsTrack(cause) { return }
         if skipToNeighbour() { return }
         // Nothing left to skip to: the failure stays on the player, as it did for a single song.
+        // The radio may still add a track; three failures in a row keep the queue so Next still works.
+        if failureStreak >= Self.maxFailures { return }
+        if direction == .forward, awaitRadio(for: .failed) { return }
         endQueue()
     }
 
@@ -373,8 +438,46 @@ final class MusicService {
     private func endQueue() {
         cancelRadio()
         cancelPrefetch()
+        pendingAdvance = nil
         prefetched = nil
         queue.clear()
+    }
+
+    /// Parks `advance` until the radio's next page lands. False when no page is on its way, so the caller ends as before.
+    /// A top-up that stopped on the empty-page cap gets a fresh attempt: this one starts with an empty count.
+    private func awaitRadio(for advance: PendingAdvance) -> Bool {
+        topUpQueue()
+        guard radioTask != nil else { return false }
+        pendingAdvance = advance
+        return true
+    }
+
+    /// Starts the next track when the parked advance still applies. False when there is nothing to start.
+    private func resumePendingAdvance() -> Bool {
+        guard let advance = pendingAdvance else { return false }
+        let applies: Bool = switch advance {
+        case .ended: player.hasEnded
+        case .failed: player.error != nil
+        case .skipped: true
+        }
+        // The listener may have replayed the track or retried it since: then the wait is over.
+        guard applies, let track = queue.advance() else {
+            if !applies { pendingAdvance = nil }
+            return false
+        }
+        begin(track)
+        return true
+    }
+
+    /// The radio has nothing more: finish the way the advance would have without it.
+    private func settlePendingAdvance() {
+        guard let advance = pendingAdvance else { return }
+        pendingAdvance = nil
+        switch advance {
+        case .ended: break
+        case .skipped: stopPlayback()
+        case .failed: endQueue()
+        }
     }
 
     // MARK: - Radio
@@ -388,15 +491,17 @@ final class MusicService {
     }
 
     /// Asks for the next page when the queue is running low. One fetch at a time.
-    private func topUpQueue() {
-        guard radioTask == nil, queue.needsMore, let seed = queue.seedVideoId, let continuation = queue.continuation else { return }
+    /// `emptyPages` counts pages in a row that added nothing after de-duplication.
+    private func topUpQueue(emptyPages: Int = 0) {
+        guard radioTask == nil, emptyPages < Self.maxEmptyPages, queue.needsMore,
+              let seed = queue.seedVideoId, let continuation = queue.continuation else { return }
         let generation = radioGeneration
         radioTask = Task { [weak self] in
-            await self?.fetchRadioPage(seed: seed, continuation: continuation, generation: generation)
+            await self?.fetchRadioPage(seed: seed, continuation: continuation, generation: generation, emptyPages: emptyPages)
         }
     }
 
-    private func fetchRadioPage(seed: String, continuation: String?, generation: Int) async {
+    private func fetchRadioPage(seed: String, continuation: String?, generation: Int, emptyPages: Int = 0) async {
         let page: MusicQueuePage
         do {
             if let continuation {
@@ -409,12 +514,30 @@ final class MusicService {
             guard generation == radioGeneration else { return }
             radioTask = nil
             logger.info("radio unavailable: \(Self.logDescription(of: error), privacy: .public)")
+            // A page that cannot be read or that the server rejects would fail the same way again: stop paging.
+            // A dead session is not retried either. Anything else (network, 5xx) keeps the continuation.
+            if Self.endsPaging(error) || Self.isSignedOut(error) { queue.clearContinuation() }
+            if Self.isSignedOut(error) { handle(error) }
+            settlePendingAdvance()
             return
         }
         guard generation == radioGeneration, !Task.isCancelled else { return }
         radioTask = nil
-        // A page of repeats adds nothing; asking again right away could loop, so wait for the next track change.
-        if queue.append(page.tracks, continuation: page.continuation) > 0 { topUpQueue() }
+        // Pages overlap heavily: one that adds nothing still has a continuation, so ask again at once,
+        // up to `maxEmptyPages` in a row. The next track change starts a fresh attempt.
+        let added = queue.append(page.tracks, continuation: page.continuation)
+        if added > 0, resumePendingAdvance() { return }
+        topUpQueue(emptyPages: added > 0 ? 0 : emptyPages + 1)
+        if radioTask == nil { settlePendingAdvance() }
+    }
+
+    /// A radio page error that retrying will not fix: an unreadable response or a rejected request.
+    private static func endsPaging(_ error: any Error) -> Bool {
+        switch error as? MusicError {
+        case .parse: true
+        case .http(let status): (400..<500).contains(status)
+        default: false
+        }
     }
 
     private func cancelRadio() {
@@ -470,9 +593,9 @@ final class MusicService {
 
     private func handleRemote(_ command: NowPlayingCommand) {
         switch command {
-        case .play: player.play()
+        case .play: resume()
         case .pause: player.pause()
-        case .toggle: player.toggle()
+        case .toggle: togglePlayback()
         case .next: next()
         case .previous: previous()
         case .seek(let seconds): seek(to: seconds)
