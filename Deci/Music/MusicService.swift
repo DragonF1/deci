@@ -15,8 +15,19 @@ final class MusicService {
 
     /// Opens the sign-in UI and reports the harvested cookies, or nil when the user closed it.
     typealias SignInPresenter = @MainActor (_ completion: @escaping @MainActor ([StoredCookie]?) -> Void) -> Void
+    /// Opens the channel picker on the current session and reports the cookies under the picked
+    /// channel, or nil when the user closed it without picking.
+    typealias ChannelPickerPresenter = @MainActor (
+        _ session: [StoredCookie],
+        _ completion: @escaping @MainActor ([StoredCookie]?) -> Void
+    ) -> Void
 
     private(set) var authState: AuthState = .unknown
+    /// Whether plays (and so History) land on a brand channel; nil until the home page says.
+    private(set) var isBrandChannel: Bool?
+    private(set) var isSwitchingChannel = false
+    /// The own-channel notice was closed. Only for this launch and this sign-in.
+    var channelNoticeDismissed = false
     var query = ""
     private(set) var results: [MusicTrack] = []
     private(set) var isSearching = false
@@ -61,6 +72,8 @@ final class MusicService {
 
     @ObservationIgnored private let backend: any MusicBackend
     @ObservationIgnored private let presentSignIn: SignInPresenter
+    @ObservationIgnored private let presentChannelPicker: ChannelPickerPresenter
+    @ObservationIgnored private let closeSignInWindow: @MainActor () -> Void
     @ObservationIgnored private let nowPlaying: NowPlayingController
     @ObservationIgnored private var session: Session?
     @ObservationIgnored private var direction = Direction.forward
@@ -78,6 +91,8 @@ final class MusicService {
     @ObservationIgnored private(set) var signInTask: Task<Void, Never>?
     @ObservationIgnored private(set) var reportTask: Task<Void, Never>?
     @ObservationIgnored private(set) var signOutTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var identityTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var channelSwitchTask: Task<Void, Never>?
     /// The radio fetch in flight (first page or a continuation); nil when none is running.
     @ObservationIgnored private(set) var radioTask: Task<Void, Never>?
     @ObservationIgnored private(set) var prefetchTask: Task<Void, Never>?
@@ -91,12 +106,18 @@ final class MusicService {
         backend: any MusicBackend,
         player: MusicPlayer = MusicPlayer(),
         presentSignIn: @escaping SignInPresenter = { MusicSignInWindowController.present(completion: $0) },
+        presentChannelPicker: @escaping ChannelPickerPresenter = {
+            MusicSignInWindowController.presentChannelPicker(session: $0, completion: $1)
+        },
+        closeSignInWindow: @escaping @MainActor () -> Void = { MusicSignInWindowController.cancelActive() },
         nowPlaying: NowPlayingController = NowPlayingController(),
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
         self.player = player
         self.presentSignIn = presentSignIn
+        self.presentChannelPicker = presentChannelPicker
+        self.closeSignInWindow = closeSignInWindow
         self.nowPlaying = nowPlaying
         player.onTick = { [weak self] position, isPlaying in
             self?.handlePlaybackTick(position: position, isPlaying: isPlaying)
@@ -118,6 +139,8 @@ final class MusicService {
         searchTask?.cancel()
         playTask?.cancel()
         signInTask?.cancel()
+        identityTask?.cancel()
+        channelSwitchTask?.cancel()
         radioTask?.cancel()
         prefetchTask?.cancel()
         #if DEBUG
@@ -131,6 +154,7 @@ final class MusicService {
         let signedIn = await backend.isSignedIn()
         guard authState != .signingIn else { return }
         authState = signedIn ? .signedIn : .signedOut
+        if signedIn { refreshChannelIdentity() }
     }
 
     func signIn() {
@@ -152,6 +176,7 @@ final class MusicService {
             do {
                 try await self.backend.signIn(with: cookies)
                 self.authState = .signedIn
+                self.refreshChannelIdentity()
             } catch {
                 logger.error("sign-in failed: \(Self.logDescription(of: error), privacy: .public)")
                 self.authState = .signedOut
@@ -169,7 +194,70 @@ final class MusicService {
         query = ""
         lastError = nil
         authState = .signedOut
+        identityTask?.cancel()
+        channelSwitchTask?.cancel()
+        isBrandChannel = nil
+        isSwitchingChannel = false
+        channelNoticeDismissed = false
+        // An open picker still holds the old session; it must not sign anyone back in.
+        closeSignInWindow()
         signOutTask = Task { [backend] in await backend.signOut() }
+    }
+
+    // MARK: - Channel
+
+    private func refreshChannelIdentity() {
+        identityTask?.cancel()
+        identityTask = Task { [weak self, backend] in
+            let identity = await backend.channelIdentity()
+            guard let self, !Task.isCancelled, self.authState == .signedIn else { return }
+            self.isBrandChannel = identity
+        }
+    }
+
+    /// Opens YouTube's channel picker on the current session, so History lands on the channel
+    /// picked there. The session stays as it is when the window is closed without a pick.
+    func switchChannel() {
+        guard authState == .signedIn, !isSwitchingChannel else { return }
+        isSwitchingChannel = true
+        lastError = nil
+        channelSwitchTask = Task { [weak self, backend] in
+            let cookies = await backend.sessionCookies()
+            guard let self, !Task.isCancelled, self.authState == .signedIn, !cookies.isEmpty else {
+                self?.isSwitchingChannel = false
+                return
+            }
+            self.presentChannelPicker(cookies) { [weak self] picked in
+                self?.finishChannelSwitch(with: picked)
+            }
+        }
+    }
+
+    private func finishChannelSwitch(with cookies: [StoredCookie]?) {
+        guard isSwitchingChannel else { return }
+        guard let cookies, !cookies.isEmpty, authState == .signedIn else {
+            isSwitchingChannel = false
+            return
+        }
+        channelSwitchTask = Task { [weak self] in
+            // A sign-out since the pick cancels this; the picked session must not sign back in.
+            guard let self, !Task.isCancelled else { return }
+            do {
+                try await self.backend.signIn(with: cookies)
+                guard self.authState == .signedIn else { return }
+                // Stay in "switching" until the new identity is known, so the old notice doesn't flash back.
+                self.identityTask?.cancel()
+                self.isBrandChannel = nil
+                self.channelNoticeDismissed = false
+                let identity = await self.backend.channelIdentity()
+                guard !Task.isCancelled, self.authState == .signedIn else { return }
+                self.isBrandChannel = identity
+            } catch {
+                logger.error("channel switch failed: \(Self.logDescription(of: error), privacy: .public)")
+                self.lastError = "Couldn't switch the channel. Still playing as before."
+            }
+            self.isSwitchingChannel = false
+        }
     }
 
     /// Stops playback and pending work. Called when the app quits.

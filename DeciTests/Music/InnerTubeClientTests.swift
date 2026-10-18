@@ -281,6 +281,26 @@ struct InnerTubeClientTests {
         #expect(session.playerHash == "0229cd64")
     }
 
+    @Test("channelIdentity reads the page's DATASYNC_ID, and is nil when signed out")
+    func channelIdentity() async throws {
+        let brand = FakeYouTube {
+            $0.bootstrapHTML = #"<script>ytcfg.set({"INNERTUBE_CLIENT_VERSION":"1.2","DATASYNC_ID":"brand123||user456"});</script>"#
+        }
+        #expect(await makeClient(brand).channelIdentity() == true)
+        let own = FakeYouTube {
+            $0.bootstrapHTML = #"<script>ytcfg.set({"INNERTUBE_CLIENT_VERSION":"1.2","DATASYNC_ID":"user456||"});</script>"#
+        }
+        #expect(await makeClient(own).channelIdentity() == false)
+        #expect(await makeClient(FakeYouTube { $0.bootstrapStatus = 500 }).channelIdentity() == nil)
+        #expect(await makeClient(brand, store: MemorySecretStore(data: nil)).channelIdentity() == nil)
+    }
+
+    @Test("sessionCookies hands back the stored jar")
+    func sessionCookies() async {
+        let cookies = await makeClient().sessionCookies()
+        #expect(cookies.contains { $0.name == "SAPISID" })
+    }
+
     @Test("session() surfaces a bootstrap HTTP error")
     func sessionHTTPError() async {
         let client = makeClient(FakeYouTube { $0.bootstrapStatus = 500 })

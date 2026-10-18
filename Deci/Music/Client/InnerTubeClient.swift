@@ -6,6 +6,8 @@ struct InnerTubeSession: Sendable, Equatable {
     let clientVersion: String
     let visitorData: String?
     let playerJSURL: URL?
+    /// Whether the page was served to a brand channel; nil when it didn't say.
+    var isBrandChannel: Bool?
 
     var playerHash: String? { playerJSURL.flatMap(InnerTubeParser.playerHash(fromPlayerJSURL:)) }
 }
@@ -67,6 +69,15 @@ actor InnerTubeClient {
         resetSession()
     }
 
+    func channelIdentity() async -> Bool? {
+        guard currentJar().hasSignInCookies else { return nil }
+        return try? await session().isBrandChannel
+    }
+
+    func sessionCookies() -> [StoredCookie] {
+        currentJar().cookies
+    }
+
     // MARK: - Session
 
     /// The home page's client version, visitor id and player JS URL, refreshed every six hours.
@@ -97,13 +108,14 @@ actor InnerTubeClient {
         let session = InnerTubeSession(
             clientVersion: config.clientVersion ?? Self.fallbackClientVersion,
             visitorData: config.visitorData,
-            playerJSURL: config.playerJSURL
+            playerJSURL: config.playerJSURL,
+            isBrandChannel: config.isBrandChannel
         )
         if (config.clientVersion != nil || config.playerJSURL != nil), !Task.isCancelled, epoch == self.epoch {
             cachedSession = (session, now())
         }
         Self.log.info("bootstrap ok, client \(session.clientVersion, privacy: .public), player \(session.playerHash ?? "none", privacy: .public)")
-        let identity = config.isBrandChannel.map { $0 ? "brand channel" : "own channel" } ?? "unknown"
+        let identity = session.isBrandChannel.map { $0 ? "brand channel" : "own channel" } ?? "unknown"
         Self.log.notice("bootstrap identity: \(identity, privacy: .public)")
         return session
     }

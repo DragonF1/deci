@@ -94,6 +94,15 @@ extension StoredCookie {
             isHTTPOnly: cookie.isHTTPOnly
         )
     }
+
+    /// Back to an HTTPCookie, to seed the channel picker's web view with the current session.
+    var httpCookie: HTTPCookie? {
+        var properties: [HTTPCookiePropertyKey: Any] = [.name: name, .value: value, .domain: domain, .path: path]
+        if let expires { properties[.expires] = expires }
+        if isSecure { properties[.secure] = "TRUE" }
+        if isHTTPOnly { properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
+        return HTTPCookie(properties: properties)
+    }
 }
 
 /// One page of a radio (autoplay) queue from the `next` endpoint.
@@ -121,6 +130,11 @@ protocol MusicBackend: Sendable {
     func signIn(with cookies: [StoredCookie]) async throws
     /// Wipes the Keychain jar and any cached session state.
     func signOut() async
+    /// Whether the session plays as a brand channel (History is kept per channel), or nil when
+    /// signed out or the home page doesn't say. Runs the bootstrap if it hasn't run yet.
+    func channelIdentity() async -> Bool?
+    /// The session's cookies, for the channel picker window to start from.
+    func sessionCookies() async -> [StoredCookie]
     func search(_ query: String) async throws -> [MusicTrack]
     func resolve(videoId: String) async throws -> ResolvedStream
     /// First page of the radio seeded by `seedVideoId` (playlist RDAMVM<seedVideoId>).

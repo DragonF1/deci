@@ -61,6 +61,8 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var resolvedIDs: [String] = []
     private(set) var reportAttempts: [Report] = []
     private(set) var signInCookies: [[StoredCookie]] = []
+    private var identity: Bool?
+    private var currentCookies: [StoredCookie] = []
     private(set) var signOutCount = 0
 
     init(signedIn: Bool = true) {
@@ -70,6 +72,8 @@ actor FakeMusicBackend: MusicBackend {
     // MARK: Scripting
 
     func setSignedIn(_ value: Bool) { signedIn = value }
+    func setChannelIdentity(_ value: Bool?) { identity = value }
+    func setSessionCookies(_ value: [StoredCookie]) { currentCookies = value }
     func setSignInError(_ error: (any Error)?) { signInError = error }
     func setSearch(_ query: String, results: [Deci.MusicTrack]) { searchResults[query] = results }
     func setSearchError(_ query: String, _ error: any Error) { searchErrors[query] = error }
@@ -112,6 +116,10 @@ actor FakeMusicBackend: MusicBackend {
         signOutCount += 1
         signedIn = false
     }
+
+    func channelIdentity() async -> Bool? { signedIn ? identity : nil }
+
+    func sessionCookies() async -> [StoredCookie] { currentCookies }
 
     func search(_ query: String) async throws -> [Deci.MusicTrack] {
         searchedQueries.append(query)

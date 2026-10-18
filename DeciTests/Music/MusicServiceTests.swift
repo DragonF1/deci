@@ -13,6 +13,10 @@ import Testing
 private final class SignInProbe {
     var presentCount = 0
     var completion: (@MainActor ([StoredCookie]?) -> Void)?
+    /// The session each channel picker opened on, and the last picker's completion.
+    var pickerSessions: [[StoredCookie]] = []
+    var pickerCompletion: (@MainActor ([StoredCookie]?) -> Void)?
+    var windowCloses = 0
     /// Every value `onNativePlayingChange` reported, in order.
     var nativeChanges: [Bool] = []
 }
@@ -40,6 +44,11 @@ private struct Harness {
                 probe.presentCount += 1
                 probe.completion = completion
             },
+            presentChannelPicker: { session, completion in
+                probe.pickerSessions.append(session)
+                probe.pickerCompletion = completion
+            },
+            closeSignInWindow: { probe.windowCloses += 1 },
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             refreshOnCreate: false
         )
@@ -146,6 +155,25 @@ struct MusicServiceAuthTests {
         #expect(h.service.lastError == nil)
     }
 
+    @Test("refreshAuth and sign-in read which channel the session plays as")
+    func channelIdentity() async {
+        let h = Harness(signedIn: true)
+        await h.backend.setChannelIdentity(false)
+        await h.service.refreshAuth()
+        await h.service.identityTask?.value
+        #expect(h.service.isBrandChannel == false)
+
+        h.service.signOut()
+        #expect(h.service.isBrandChannel == nil)
+
+        await h.backend.setChannelIdentity(true)
+        h.service.signIn()
+        h.probe.completion?([StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))])
+        await h.service.signInTask?.value
+        await h.service.identityTask?.value
+        #expect(h.service.isBrandChannel == true)
+    }
+
     @Test("closing the window early returns to signedOut without calling the backend")
     func signInCancelled() async {
         let h = Harness(signedIn: false)
@@ -211,6 +239,108 @@ struct MusicServiceAuthTests {
     }
 }
 
+
+// MARK: - Channel switch
+
+@MainActor
+@Suite("MusicService channel switch")
+struct MusicServiceChannelSwitchTests {
+    private static let current = [StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))]
+    private static let picked = [StoredCookie(MusicSamples.cookie("__Secure-3PAPISID", domain: ".youtube.com"))]
+
+    private func signedInHarness() async -> Harness {
+        let h = Harness(signedIn: true)
+        await h.backend.setSessionCookies(Self.current)
+        await h.backend.setChannelIdentity(false)
+        await h.service.refreshAuth()
+        await h.service.identityTask?.value
+        return h
+    }
+
+    @Test("switchChannel opens the picker on the current session and keeps the picked one")
+    func switchKeepsPick() async {
+        let h = await signedInHarness()
+        h.service.channelNoticeDismissed = true
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(h.probe.pickerSessions == [Self.current])
+        #expect(h.service.isSwitchingChannel)
+
+        await h.backend.setChannelIdentity(true)
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+        await h.service.identityTask?.value
+
+        #expect(await h.backend.signInCookies == [Self.picked])
+        #expect(h.service.authState == .signedIn)
+        #expect(h.service.isBrandChannel == true)
+        #expect(!h.service.isSwitchingChannel)
+        #expect(!h.service.channelNoticeDismissed)
+        #expect(h.service.lastError == nil)
+    }
+
+    @Test("closing the picker keeps the session as it was")
+    func closeKeepsSession() async {
+        let h = await signedInHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(nil)
+
+        #expect(await h.backend.signInCookies.isEmpty)
+        #expect(h.service.authState == .signedIn)
+        #expect(h.service.isBrandChannel == false)
+        #expect(!h.service.isSwitchingChannel)
+    }
+
+    @Test("a second switchChannel while the picker is open is ignored")
+    func secondSwitchIgnored() async {
+        let h = await signedInHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(h.probe.pickerSessions.count == 1)
+    }
+
+    @Test("a failed switch keeps the session and says so")
+    func failedSwitch() async {
+        let h = await signedInHarness()
+        await h.backend.setSignInError(MusicError.signedOut)
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+
+        #expect(h.service.authState == .signedIn)
+        #expect(h.service.lastError?.contains("Still playing as before") == true)
+        #expect(!h.service.isSwitchingChannel)
+    }
+
+    @Test("a sign-out while the picker is open drops the pick")
+    func signOutDropsPick() async {
+        let h = await signedInHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.service.signOut()
+        #expect(h.probe.windowCloses == 1)
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+
+        #expect(await h.backend.signInCookies.isEmpty)
+        #expect(h.service.authState == .signedOut)
+        #expect(!h.service.isSwitchingChannel)
+    }
+
+    @Test("switchChannel does nothing while signed out")
+    func signedOutIgnored() async {
+        let h = Harness(signedIn: false)
+        await h.service.refreshAuth()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(h.probe.pickerSessions.isEmpty)
+        #expect(!h.service.isSwitchingChannel)
+    }
+}
 // MARK: - Search
 
 @MainActor

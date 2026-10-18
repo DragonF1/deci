@@ -29,6 +29,36 @@ struct MusicSignInWindowControllerTests {
         #expect(!MusicSignInWindowController.isYouTubeHost(URL(string: "http://www.youtube.com/")))
     }
 
+    @Test("A stored cookie converts back to an HTTPCookie for seeding the picker")
+    func cookieRoundTrip() throws {
+        let stored = StoredCookie(
+            name: "SAPISID", value: "v", domain: ".youtube.com", path: "/",
+            // Whole seconds and under Foundation's 400-day cookie cap, so the date comes back as is.
+            expires: Date(timeIntervalSince1970: (Date().timeIntervalSince1970 + 86_400).rounded()),
+            isSecure: true, isHTTPOnly: false
+        )
+        let cookie = try #require(stored.httpCookie)
+        #expect(StoredCookie(cookie) == stored)
+
+        var httpOnly = stored
+        httpOnly.name = "__Secure-3PSID"
+        httpOnly.isHTTPOnly = true
+        httpOnly.expires = nil
+        let sessionCookie = try #require(httpOnly.httpCookie)
+        #expect(StoredCookie(sessionCookie) == httpOnly)
+    }
+
+    @Test("Closing hands cookies back only once signed in, and a seeded picker only after a click")
+    func closeDisposition() {
+        typealias C = MusicSignInWindowController
+        #expect(!C.harvestsOnClose(stage: .signingIn, seeded: false, channelPicked: false))
+        #expect(C.harvestsOnClose(stage: .pickingChannel, seeded: false, channelPicked: false))
+        #expect(!C.harvestsOnClose(stage: .pickingChannel, seeded: true, channelPicked: false))
+        #expect(C.harvestsOnClose(stage: .pickingChannel, seeded: true, channelPicked: true))
+        #expect(C.harvestsOnClose(stage: .confirming, seeded: true, channelPicked: true))
+        #expect(C.harvestsOnClose(stage: .confirming, seeded: false, channelPicked: true))
+    }
+
     @Test("Only a cancelled load is ignored as a failure after the pick")
     func cancellation() {
         #expect(MusicSignInWindowController.isCancellation(URLError(.cancelled)))

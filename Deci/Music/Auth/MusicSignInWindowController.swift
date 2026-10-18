@@ -10,6 +10,9 @@ private let logger = Logger(subsystem: "com.abraham.Deci", category: "Music")
 /// picker: a fresh sign-in always lands on the account's own channel, and History is kept per
 /// channel, so a brand channel has to be picked here. After the pick (or when the window is
 /// closed on the picker) the YouTube cookies are handed back. Nothing is persisted here.
+///
+/// `presentChannelPicker` opens the same window straight on the picker, seeded with the current
+/// session's cookies. If the switch needs Google to sign in again, Google asks in the window.
 @MainActor
 final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKHTTPCookieStoreObserver {
     static let signInURL = URL(string: "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmusic.youtube.com%2F&hl=en")!
@@ -21,7 +24,7 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
     /// How long music.youtube.com gets to load under the picked channel before the cookies are taken anyway.
     static let confirmTimeout: Duration = .seconds(10)
 
-    private enum Stage {
+    enum Stage {
         case signingIn
         /// Signed in; the channel picker is on screen.
         case pickingChannel
@@ -43,6 +46,9 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
 
     private let window: NSWindow
     private let webView: WKWebView
+    /// The session to start from when the window opens on the picker; nil for a fresh sign-in.
+    private let seed: [StoredCookie]?
+    private var started = false
     private var completion: @MainActor ([StoredCookie]?) -> Void
     private var finished = false
     private var stage = Stage.signingIn
@@ -55,17 +61,38 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
 
     /// Shows the window. Calls `completion` once with the cookies, or nil when the window is closed early.
     static func present(completion: @escaping @MainActor ([StoredCookie]?) -> Void) {
+        open(seed: nil, completion: completion)
+    }
+
+    /// Shows the channel picker for `session`. Calls `completion` once with the cookies under the
+    /// picked channel, or nil when the window is closed without a pick.
+    static func presentChannelPicker(session: [StoredCookie], completion: @escaping @MainActor ([StoredCookie]?) -> Void) {
+        open(seed: session, completion: completion)
+    }
+
+    /// Closes the window without handing anything back. Called on sign-out, so a picker still
+    /// holding the old session can't be reused or picked from.
+    static func cancelActive() {
+        active?.finish(with: nil, closeWindow: true)
+    }
+
+    private static func open(seed: [StoredCookie]?, completion: @escaping @MainActor ([StoredCookie]?) -> Void) {
         if let active, !active.closing {
-            active.completion = completion
-            active.show()
-            return
+            // Only a fresh sign-in window is reused: a picker is tied to the session it was seeded with.
+            if active.seed == nil, seed == nil {
+                active.completion = completion
+                active.show()
+                return
+            }
+            active.finish(with: nil, closeWindow: true)
         }
-        let controller = MusicSignInWindowController(completion: completion)
+        let controller = MusicSignInWindowController(seed: seed, completion: completion)
         active = controller
         controller.show()
     }
 
-    private init(completion: @escaping @MainActor ([StoredCookie]?) -> Void) {
+    private init(seed: [StoredCookie]?, completion: @escaping @MainActor ([StoredCookie]?) -> Void) {
+        self.seed = seed
         self.completion = completion
 
         let configuration = WKWebViewConfiguration()
@@ -105,8 +132,26 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
         }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        if webView.url == nil {
-            webView.load(URLRequest(url: Self.signInURL))
+        guard let seed else {
+            if webView.url == nil { webView.load(URLRequest(url: Self.signInURL)) }
+            return
+        }
+        guard !started else { return }
+        started = true
+        stage = .pickingChannel
+        window.title = "Pick the channel to play as"
+        let store = webView.configuration.websiteDataStore.httpCookieStore
+        let cookies = seed.compactMap(\.httpCookie)
+        if cookies.count < seed.count {
+            logger.error("channel picker dropped \(seed.count - cookies.count, privacy: .public) unreadable cookies")
+        }
+        Task { [weak self] in
+            for cookie in cookies {
+                guard self?.finished == false else { return }
+                await store.setCookie(cookie)
+            }
+            guard let self, !self.finished else { return }
+            self.webView.load(URLRequest(url: Self.channelPickerURL))
         }
     }
 
@@ -174,6 +219,11 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
                 .map { $0 ? "brand channel" : "own channel" } ?? "unknown"
             logger.notice("channel picked: \(identity, privacy: .public)")
             let cookies = await store.allCookies()
+            guard Self.hasSessionCookie(cookies) else {
+                logger.error("channel pick ended without a session cookie")
+                self?.finish(with: nil, closeWindow: true)
+                return
+            }
             self?.finish(with: Self.harvest(cookies), closeWindow: true)
         }
     }
@@ -209,6 +259,18 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
         guard let url, isYouTubeHost(url) else { return false }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         return items.contains { $0.name == "action_handle_signin" || $0.name == "pageid" }
+    }
+
+    /// Whether closing the window hands the cookies back. Closing before sign-in cancels it.
+    /// Closing on the picker keeps the channel the session is on now, so a signed-in session is
+    /// never thrown away; when the window opened on the picker that session is the one the app
+    /// already has, so nothing comes back unless a channel was already clicked.
+    nonisolated static func harvestsOnClose(stage: Stage, seeded: Bool, channelPicked: Bool) -> Bool {
+        switch stage {
+        case .signingIn: false
+        case .pickingChannel: !seeded || channelPicked
+        case .confirming: true
+        }
     }
 
     /// A load cut short by the next one, not a real failure.
@@ -263,11 +325,10 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
 
     // MARK: - NSWindowDelegate
 
-    /// Closing before sign-in cancels it. Closing on the picker keeps the channel the session is
-    /// on now, so a signed-in session is never thrown away.
+    /// See `harvestsOnClose` for what a close hands back.
     func windowWillClose(_ notification: Notification) {
         guard !finished else { return }
-        guard stage != .signingIn else {
+        guard Self.harvestsOnClose(stage: stage, seeded: seed != nil, channelPicked: channelPicked) else {
             finish(with: nil, closeWindow: false)
             return
         }
@@ -276,6 +337,11 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
         // Strong on purpose: a new sign-in can replace `active` while the cookies are read.
         Task {
             let cookies = await store.allCookies()
+            guard Self.hasSessionCookie(cookies) else {
+                logger.error("window closed without a session cookie")
+                self.finish(with: nil, closeWindow: false)
+                return
+            }
             logger.notice("channel picker closed, keeping the current channel")
             self.finish(with: Self.harvest(cookies), closeWindow: false)
         }
