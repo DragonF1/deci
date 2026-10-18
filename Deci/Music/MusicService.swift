@@ -42,6 +42,8 @@ final class MusicService {
     private(set) var queue = MusicQueue()
     /// Home, Library and the pages opened from them.
     let browse: MusicBrowseStore
+    /// Synced lyrics of the playing track, for the lyrics panel.
+    let lyrics: MusicLyricsStore
     var canGoNext: Bool { queue.hasNext }
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
@@ -126,10 +128,12 @@ final class MusicService {
         closeSignInWindow: @escaping @MainActor () -> Void = { MusicSignInWindowController.cancelActive() },
         raiseSignInWindow: @escaping @MainActor () -> Void = { MusicSignInWindowController.bringToFront() },
         nowPlaying: NowPlayingController = NowPlayingController(),
+        lyrics: MusicLyricsStore = MusicLyricsStore(provider: LRCLibClient.live()),
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
         self.browse = MusicBrowseStore(backend: backend)
+        self.lyrics = lyrics
         self.player = player
         self.presentSignIn = presentSignIn
         self.presentChannelPicker = presentChannelPicker
@@ -227,6 +231,7 @@ final class MusicService {
         // An open picker still holds the old session; it must not sign anyone back in.
         closeSignInWindow()
         browse.reset()
+        lyrics.reset()
         signOutTask = Task { [backend] in await backend.signOut() }
     }
 
@@ -323,6 +328,7 @@ final class MusicService {
         isBrandChannel = nil
         channelNoticeDismissed = false
         browse.reset()
+        lyrics.reset()
         clearAccount()
         refreshIdentity()
     }
@@ -836,6 +842,9 @@ final class MusicService {
             nativePlaying = active
             onNativePlayingChange?(active)
         }
+        // The lyrics follow the loaded track. Its length is the stream's exact one once that has loaded.
+        lyrics.trackChanged(player.nowPlaying, duration: player.duration)
+        lyrics.observePlayback(position: player.currentTime, isPlaying: player.isPlaying)
         syncNowPlaying()
     }
 
@@ -867,6 +876,8 @@ final class MusicService {
 
     /// Fed by the player every 0.5 s. Pings YouTube's history once after 30 s of real listening.
     func handlePlaybackTick(position: TimeInterval, isPlaying: Bool) {
+        // Before the session guard: the lyrics highlight needs the position whether or not History is tracking.
+        lyrics.observePlayback(position: position, isPlaying: isPlaying)
         guard session != nil else { return }
         if isPlaying { prefetchNextIfNeeded(position: position) }
         let url = session?.trackingURL

@@ -12,6 +12,11 @@ final class MusicServiceHost {
     /// Whether the account card in the Music tab's search row is open. Lives here, not in the tab's
     /// view, so the popup's Escape handler can close the card before it dismisses the popup.
     var isAccountCardOpen = false
+    /// The popup is on screen. It stays mounted while hidden, so `MenuBarPopupView` reports it here; the lyrics
+    /// panel fetches and animates only while this is true. Remembered for a service that is created later.
+    var isPopupVisible = true {
+        didSet { service?.lyrics.setPopupVisible(isPopupVisible) }
+    }
 
     @ObservationIgnored private let makeService: @MainActor () -> MusicService
 
@@ -25,6 +30,7 @@ final class MusicServiceHost {
         MusicMemoryLog.log("music-open")
         let service = makeService()
         service.onNativePlayingChange = { [weak self] playing in self?.onNativePlayingChange?(playing) }
+        service.lyrics.setPopupVisible(isPopupVisible)
         self.service = service
     }
 

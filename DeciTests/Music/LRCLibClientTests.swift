@@ -1,0 +1,578 @@
+// DeciTests/Music/LRCLibClientTests.swift
+// The LRCLIB client against a scripted lrclib.net: request shapes, the get-then-search flow, the
+// duration window, the cleaned-title retry, the 429 window and the disk cache. Made-up lyrics only.
+
+import Foundation
+import Testing
+@testable import Deci
+
+@Suite("LRCLIB client")
+struct LRCLibClientTests {
+
+    private static let userAgent = "Deci/9.9.9 (macOS; lyrics via LRCLIB)"
+    private static let day: TimeInterval = 86_400
+
+    private struct Rig {
+        let client: LRCLibClient
+        let transport: FakeLRCLib
+        let cache: LyricsDiskCache
+        let clock: MutableClock
+        let directory: URL
+
+        func cleanUp() { try? FileManager.default.removeItem(at: directory) }
+    }
+
+    private func makeRig(_ transport: FakeLRCLib = FakeLRCLib(), clock: MutableClock = MutableClock()) -> Rig {
+        let directory = makeTemporaryDirectory("deci-lrclib")
+        let cache = LyricsDiskCache(directory: directory.appendingPathComponent("Lyrics", isDirectory: true), now: { clock.now })
+        let client = LRCLibClient(transport: transport, cache: cache, userAgent: Self.userAgent, now: { clock.now })
+        return Rig(client: client, transport: transport, cache: cache, clock: clock, directory: directory)
+    }
+
+    private func cut(_ name: String, lines: Int = 6) -> String {
+        LyricsSamples.syncedBody(lines: lines, prefix: name)
+    }
+
+    private func firstText(_ result: LyricsResult) -> String? {
+        if case .synced(let lines) = result { return lines.first?.text }
+        return nil
+    }
+
+    // MARK: - Request shape
+
+    @Test("/api/get carries track, artist, album and the duration in whole seconds")
+    func getRequestShape() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        _ = try await rig.client.lyrics(for: LyricsSamples.query(duration: 213.4))
+        let request = try #require(rig.transport.getRequests.first)
+        #expect(request.url.scheme == "https")
+        #expect(request.url.host == "lrclib.net")
+        #expect(request.url.path == "/api/get")
+        #expect(request.method == "GET")
+        #expect(request.body == nil)
+        #expect(FakeLRCLib.query(request) == [
+            "track_name": "Test Song", "artist_name": "Test Artist", "album_name": "Test Album", "duration": "213",
+        ])
+    }
+
+    @Test("Special characters in the query are escaped")
+    func queryEscaping() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query(title: "Rock & Roll? 100% #1", artist: "A+B / C", album: "Ça va 🎵")
+        _ = try await rig.client.lyrics(for: query)
+        let sent = FakeLRCLib.query(try #require(rig.transport.getRequests.first))
+        #expect(sent["track_name"] == "Rock & Roll? 100% #1")
+        #expect(sent["artist_name"] == "A+B / C")
+        #expect(sent["album_name"] == "Ça va 🎵")
+    }
+
+    @Test("Every request names the app and sends nothing that identifies the listener")
+    func noCredentialsEver() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.notFound], search: [.empty, .empty]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query(title: "Test Song (Official Video)", artist: "Main Artist, Guest")
+        _ = try await rig.client.lyrics(for: query)
+        let requests = rig.transport.requests
+        #expect(requests.count == 3)
+        for request in requests {
+            #expect(request.headers["User-Agent"] == Self.userAgent)
+            let names = Set(request.headers.keys.map { $0.lowercased() })
+            #expect(names.isSubset(of: ["user-agent", "accept"]), "unexpected headers: \(names)")
+            #expect(request.body == nil)
+            #expect(request.method == "GET")
+            #expect(request.url.host == "lrclib.net")
+            #expect(request.url.user == nil)
+        }
+    }
+
+    @Test("The User-Agent is Deci/<version> (macOS; lyrics via LRCLIB)")
+    func userAgentFormat() {
+        #expect(LRCLibClient.userAgent(version: "1.2.3") == "Deci/1.2.3 (macOS; lyrics via LRCLIB)")
+        #expect(LRCLibClient.userAgent(version: nil) == "Deci/0 (macOS; lyrics via LRCLIB)")
+        #expect(LRCLibClient.userAgent(version: "  ") == "Deci/0 (macOS; lyrics via LRCLIB)")
+    }
+
+    @Test("The session is ephemeral with no cookies, cache or credentials, and a 10 s timeout")
+    func sessionConfiguration() {
+        let config = LRCLibClient.makeConfiguration()
+        #expect(config.timeoutIntervalForRequest == 10)
+        #expect(config.timeoutIntervalForResource <= 15)
+        #expect(config.httpCookieStorage == nil)
+        #expect(config.httpShouldSetCookies == false)
+        #expect(config.httpCookieAcceptPolicy == .never)
+        #expect(config.urlCache == nil)
+        #expect(config.urlCredentialStorage == nil)
+        #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(config.waitsForConnectivity == false)
+        #expect(config.identifier == nil)
+    }
+
+    // MARK: - /api/get
+
+    @Test("A good /api/get record is the answer, with no search")
+    func getHit() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(result == .synced(LyricsSamples.syncedLines))
+        #expect(rig.transport.searchRequests.isEmpty)
+    }
+
+    @Test("A record with only plain lyrics is plain")
+    func getPlainOnly() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record(synced: nil))]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(result == .plain(LyricsSamples.plain))
+    }
+
+    @Test("Synced text with no usable line falls back to the plain text")
+    func unusableSyncedFallsBackToPlain() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record(synced: "[ar:Test Artist]\nnot lrc at all"))]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(result == .plain(LyricsSamples.plain))
+    }
+
+    @Test("An instrumental record is instrumental")
+    func getInstrumental() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record(instrumental: true, plain: nil, synced: nil))]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query()) == .instrumental)
+    }
+
+    @Test("A 404 from /api/get falls back to /api/search")
+    func getNotFoundSearches() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.notFound], search: [.results([LyricsSamples.record(synced: cut("Found"))])]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(firstText(result) == "Found 0")
+        #expect(rig.transport.getRequests.count == 1)
+        #expect(rig.transport.searchRequests.count == 1)
+    }
+
+    @Test("An unknown album goes straight to search")
+    func noAlbumSearches() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.results([LyricsSamples.record(synced: cut("Found"))])]))
+        defer { rig.cleanUp() }
+        for album in [nil, "", "   "] as [String?] {
+            _ = try await rig.client.lyrics(for: LyricsSamples.query(videoId: "id-\(album ?? "nil")", album: album))
+        }
+        #expect(rig.transport.getRequests.isEmpty)
+        #expect(rig.transport.searchRequests.count == 3)
+    }
+
+    @Test("An unknown duration cannot use /api/get either")
+    func noDurationSearches() async throws {
+        for duration in [nil, 0, -5] as [TimeInterval?] {
+            let rig = makeRig(FakeLRCLib(search: [.results([LyricsSamples.record(synced: cut("Found"))])]))
+            defer { rig.cleanUp() }
+            let result = try await rig.client.lyrics(for: LyricsSamples.query(duration: duration))
+            #expect(firstText(result) == "Found 0")
+            #expect(rig.transport.getRequests.isEmpty)
+        }
+    }
+
+    @Test("A junk /api/get record (one short line) is not shown when a search finds the real one")
+    func weakGetRecordYieldsToSearch() async throws {
+        let junk = LyricsSamples.record(plain: "abcde", synced: "[00:00.00]abcde")
+        let rig = makeRig(FakeLRCLib(get: [.record(junk)], search: [.results([LyricsSamples.record(synced: cut("Real"))])]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(firstText(result) == "Real 0")
+        #expect(rig.transport.searchRequests.count == 1)
+    }
+
+    @Test("A junk record with nothing better behind it is not found")
+    func weakGetRecordAlone() async throws {
+        let junk = LyricsSamples.record(plain: "abcde", synced: "[00:00.00]abcde")
+        let rig = makeRig(FakeLRCLib(get: [.record(junk)], search: [.empty, .empty]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query()) == .notFound)
+    }
+
+    // MARK: - /api/search
+
+    @Test("Search sends the track and artist and nothing else")
+    func searchRequestShape() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.results([LyricsSamples.record()])]))
+        defer { rig.cleanUp() }
+        _ = try await rig.client.lyrics(for: LyricsSamples.query(album: nil))
+        let request = try #require(rig.transport.searchRequests.first)
+        #expect(request.url.path == "/api/search")
+        #expect(FakeLRCLib.query(request) == ["track_name": "Test Song", "artist_name": "Test Artist"])
+    }
+
+    @Test("Search takes the record within 2 s of the duration and prefers synced lyrics")
+    func searchPicksByDurationAndSynced() async throws {
+        let results = [
+            LyricsSamples.record(id: 1, duration: 215, synced: cut("Far cut")),
+            LyricsSamples.record(id: 2, duration: 201, synced: nil),
+            LyricsSamples.record(id: 3, duration: 199, synced: cut("Near cut")),
+        ]
+        let rig = makeRig(FakeLRCLib(search: [.results(results)]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(album: nil))
+        #expect(firstText(result) == "Near cut 0")
+    }
+
+    @Test("With no synced record in range, plain lyrics are used")
+    func searchFallsBackToPlain() async throws {
+        let results = [
+            LyricsSamples.record(id: 1, duration: 215, synced: cut("Far cut")),
+            LyricsSamples.record(id: 2, duration: 201, plain: "Plain one\nPlain two\nPlain three\nPlain four", synced: nil),
+        ]
+        let rig = makeRig(FakeLRCLib(search: [.results(results)]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(album: nil))
+        #expect(result == .plain("Plain one\nPlain two\nPlain three\nPlain four"))
+    }
+
+    @Test(
+        "The window is 2 s either way, inclusive",
+        arguments: [(198.0, true), (202.0, true), (200.0, true), (197.9, false), (202.1, false), (260.0, false)]
+    )
+    func durationWindow(recordDuration: Double, accepted: Bool) async throws {
+        let rig = makeRig(FakeLRCLib(search: [.results([LyricsSamples.record(duration: recordDuration, synced: cut("Cut"))])]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(album: nil, duration: 200))
+        #expect((result != .notFound) == accepted)
+    }
+
+    @Test("Without a duration the first usable record is taken")
+    func searchWithoutDuration() async throws {
+        let results = [LyricsSamples.record(id: 1, duration: 500, synced: cut("First cut")), LyricsSamples.record(id: 2, synced: cut("Second cut"))]
+        let rig = makeRig(FakeLRCLib(search: [.results(results)]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(album: nil, duration: nil))
+        #expect(firstText(result) == "First cut 0")
+    }
+
+    @Test("A record with real lyrics beats an instrumental one")
+    func lyricsBeatInstrumental() async throws {
+        let results = [
+            LyricsSamples.record(id: 1, instrumental: true, plain: nil, synced: nil),
+            LyricsSamples.record(id: 2, synced: cut("Sung")),
+        ]
+        let rig = makeRig(FakeLRCLib(search: [.results(results)]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(album: nil))
+        #expect(firstText(result) == "Sung 0")
+    }
+
+    @Test("Only an instrumental record in range makes the song instrumental")
+    func instrumentalFromSearch() async throws {
+        let results = [
+            LyricsSamples.record(id: 1, duration: 300, synced: cut("Far cut")),
+            LyricsSamples.record(id: 2, instrumental: true, plain: nil, synced: nil),
+        ]
+        let rig = makeRig(FakeLRCLib(search: [.results(results)]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(album: nil)) == .instrumental)
+    }
+
+    @Test("A one-line junk record loses to a real plain one")
+    func searchSkipsWeakRecords() async throws {
+        let results = [
+            LyricsSamples.record(id: 1, plain: "abcde", synced: "[00:00.00]abcde"),
+            LyricsSamples.record(id: 2, plain: "Plain one\nPlain two\nPlain three", synced: nil),
+        ]
+        let rig = makeRig(FakeLRCLib(search: [.results(results)]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(album: nil))
+        #expect(result == .plain("Plain one\nPlain two\nPlain three"))
+    }
+
+    @Test("Records with no lyrics at all are skipped")
+    func searchSkipsEmptyRecords() async throws {
+        let results = [LyricsSamples.record(id: 1, plain: nil, synced: nil), LyricsSamples.record(id: 2, plain: "", synced: "")]
+        let rig = makeRig(FakeLRCLib(search: [.results(results), .results(results)]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(album: nil)) == .notFound)
+    }
+
+    // MARK: - Cleaned retry
+
+    @Test("When search finds nothing, it retries once with the cleaned title and the first artist")
+    func cleanedRetry() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.empty, .results([LyricsSamples.record(synced: cut("Found"))])]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query(title: "Test Song (feat. Guest) [Remastered]", artist: "Main Artist, Guest", album: nil)
+        let result = try await rig.client.lyrics(for: query)
+        #expect(firstText(result) == "Found 0")
+        let searches = rig.transport.searchRequests.map(FakeLRCLib.query)
+        #expect(searches.count == 2)
+        #expect(searches[0] == ["track_name": "Test Song (feat. Guest) [Remastered]", "artist_name": "Main Artist, Guest"])
+        #expect(searches[1] == ["track_name": "Test Song", "artist_name": "Main Artist"])
+    }
+
+    @Test("The retry happens once, even when it finds nothing")
+    func cleanedRetryIsOnce() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.empty]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query(title: "Test Song (Official Video)", artist: "Main Artist & Guest", album: nil)
+        #expect(try await rig.client.lyrics(for: query) == .notFound)
+        #expect(rig.transport.searchRequests.count == 2)
+    }
+
+    @Test("Nothing to clean means no second search")
+    func noRetryWhenAlreadyClean() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.empty]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(album: nil)) == .notFound)
+        #expect(rig.transport.searchRequests.count == 1)
+    }
+
+    @Test("A retry that answers with a record out of range is still not found")
+    func retryRespectsTheWindow() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.empty, .results([LyricsSamples.record(duration: 400, synced: cut("Far"))])]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query(title: "Test Song (Lyrics)", album: nil)
+        #expect(try await rig.client.lyrics(for: query) == .notFound)
+    }
+
+    // MARK: - Busy window
+
+    @Test("429 reads Retry-After in seconds, answers busy and sends nothing until then")
+    func busyInSeconds() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(429, headers: ["Retry-After": "30"])]))
+        defer { rig.cleanUp() }
+        let until = rig.clock.now.addingTimeInterval(30)
+        await #expect(throws: LyricsError.busy(until: until)) {
+            try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a"))
+        }
+        #expect(rig.transport.requests.count == 1)
+        #expect(await rig.client.busyUntil == until)
+
+        // Inside the window another song sends nothing at all.
+        rig.clock.advance(by: 10)
+        await #expect(throws: LyricsError.busy(until: until)) {
+            try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b"))
+        }
+        #expect(rig.transport.requests.count == 1)
+
+        // Past it the client asks again.
+        rig.clock.advance(by: 21)
+        rig.transport.setGet(.record(LyricsSamples.record()))
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b")) == .synced(LyricsSamples.syncedLines))
+        #expect(rig.transport.requests.count == 2)
+        #expect(await rig.client.busyUntil == nil)
+    }
+
+    @Test("Retry-After as an HTTP date")
+    func busyWithHTTPDate() async throws {
+        // Wed, 21 Oct 2015 07:28:00 GMT
+        let target = Date(timeIntervalSince1970: 1_445_412_480)
+        let clock = MutableClock(target.addingTimeInterval(-90))
+        let rig = makeRig(FakeLRCLib(get: [.status(429, headers: ["Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"])]), clock: clock)
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.busy(until: target)) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+    }
+
+    @Test("A missing, empty or unreadable Retry-After means 60 s")
+    func busyDefault() async throws {
+        let headers: [[String: String]] = [[:], ["Retry-After": ""], ["Retry-After": "soon"], ["Retry-After": "-5x"]]
+        for header in headers {
+            let rig = makeRig(FakeLRCLib(get: [.status(429, headers: header)]))
+            defer { rig.cleanUp() }
+            let until = rig.clock.now.addingTimeInterval(60)
+            await #expect(throws: LyricsError.busy(until: until)) {
+                try await rig.client.lyrics(for: LyricsSamples.query())
+            }
+        }
+    }
+
+    @Test("The Retry-After header name is matched case-insensitively")
+    func busyHeaderCase() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(429, headers: ["retry-after": "12"])]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.busy(until: rig.clock.now.addingTimeInterval(12))) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+    }
+
+    @Test("The wait is at least a second and at most an hour")
+    func busyBounds() async throws {
+        for (header, expected) in [("0", 1.0), ("99999", 3600.0)] {
+            let rig = makeRig(FakeLRCLib(get: [.status(429, headers: ["Retry-After": header])]))
+            defer { rig.cleanUp() }
+            await #expect(throws: LyricsError.busy(until: rig.clock.now.addingTimeInterval(expected))) {
+                try await rig.client.lyrics(for: LyricsSamples.query())
+            }
+        }
+    }
+
+    @Test("A date already in the past still waits a second")
+    func busyDateInThePast() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(429, headers: ["Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"])]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.busy(until: rig.clock.now.addingTimeInterval(1))) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+    }
+
+    @Test("429 on the search step is busy too, and is never retried in a loop")
+    func busyOnSearch() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.notFound], search: [.status(429, headers: ["Retry-After": "5"])]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.busy(until: rig.clock.now.addingTimeInterval(5))) {
+            try await rig.client.lyrics(for: LyricsSamples.query(title: "Test Song (Lyrics)"))
+        }
+        #expect(rig.transport.requests.count == 2)
+    }
+
+    @Test("503 with Retry-After is busy as well")
+    func overloadedIsBusy() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(503, headers: ["Retry-After": "1"], body: #"{"name":"ServerOverloaded"}"#)]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.busy(until: rig.clock.now.addingTimeInterval(1))) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+    }
+
+    @Test("A busy answer is not cached")
+    func busyIsNotCached() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(429, headers: ["Retry-After": "5"])]))
+        defer { rig.cleanUp() }
+        _ = try? await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(await rig.cache.cached(videoId: "vid1") == nil)
+    }
+
+    // MARK: - Failures
+
+    @Test("Other HTTP errors are reported with their status and not cached")
+    func httpErrors() async throws {
+        for status in [400, 500, 502] {
+            let rig = makeRig(FakeLRCLib(get: [.status(status)]))
+            defer { rig.cleanUp() }
+            await #expect(throws: LyricsError.http(status)) {
+                try await rig.client.lyrics(for: LyricsSamples.query())
+            }
+            #expect(await rig.cache.cached(videoId: "vid1") == nil)
+            #expect(await rig.client.busyUntil == nil)
+        }
+    }
+
+    @Test("A network failure is thrown as it is and not cached")
+    func networkFailure() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.fail(.notConnectedToInternet)]))
+        defer { rig.cleanUp() }
+        await #expect(throws: URLError.self) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+        #expect(await rig.cache.cached(videoId: "vid1") == nil)
+        // The next call goes out again.
+        rig.transport.setGet(.record(LyricsSamples.record()))
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query()) == .synced(LyricsSamples.syncedLines))
+    }
+
+    @Test("A body that is not JSON is a parse error and not cached")
+    func garbageBody() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.ok(Data("<html>oops</html>".utf8))]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.parse) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+        #expect(await rig.cache.cached(videoId: "vid1") == nil)
+    }
+
+    @Test("A search body that is not a list is a parse error")
+    func searchBodyShape() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.ok(Data("{}".utf8))]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.parse) {
+            try await rig.client.lyrics(for: LyricsSamples.query(album: nil))
+        }
+    }
+
+    @Test("A cancelled lookup throws and writes nothing")
+    func cancellation() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        let gate = MusicTestGate()
+        rig.transport.setGate(gate)
+        let client = rig.client
+        let task = Task { try await client.lyrics(for: LyricsSamples.query()) }
+        #expect(await eventually { !rig.transport.requests.isEmpty })
+        task.cancel()
+        await gate.open()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(await rig.cache.cached(videoId: "vid1") == nil)
+    }
+
+    // MARK: - Cache
+
+    @Test("A second lookup of the same video is served from disk with no request")
+    func cacheHit() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        let first = try await rig.client.lyrics(for: LyricsSamples.query())
+        let second = try await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(first == second)
+        #expect(rig.transport.requests.count == 1)
+    }
+
+    @Test("The cache is shared by a new client over the same directory")
+    func cacheSurvivesAClient() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        _ = try await rig.client.lyrics(for: LyricsSamples.query())
+        let fresh = FakeLRCLib()
+        let other = LRCLibClient(transport: fresh, cache: rig.cache, userAgent: Self.userAgent, now: { rig.clock.now })
+        #expect(try await other.lyrics(for: LyricsSamples.query()) == .synced(LyricsSamples.syncedLines))
+        #expect(fresh.requests.isEmpty)
+    }
+
+    @Test("A different video is a different entry")
+    func cacheKeyIsTheVideo() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        _ = try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a"))
+        _ = try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b"))
+        #expect(rig.transport.requests.count == 2)
+    }
+
+    @Test("Not-found is cached too, for 3 days")
+    func negativeCache() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.notFound], search: [.empty]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query()
+        #expect(try await rig.client.lyrics(for: query) == .notFound)
+        let sent = rig.transport.requests.count
+        #expect(try await rig.client.lyrics(for: query) == .notFound)
+        #expect(rig.transport.requests.count == sent)
+
+        rig.clock.advance(by: 3 * Self.day + 1)
+        rig.transport.setGet(.record(LyricsSamples.record()))
+        #expect(try await rig.client.lyrics(for: query) == .synced(LyricsSamples.syncedLines))
+        #expect(rig.transport.requests.count == sent + 1)
+    }
+
+    @Test("Found lyrics are cached for 30 days, then asked for again")
+    func foundCacheExpires() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query()
+        _ = try await rig.client.lyrics(for: query)
+        rig.clock.advance(by: 29 * Self.day)
+        _ = try await rig.client.lyrics(for: query)
+        #expect(rig.transport.requests.count == 1)
+        rig.clock.advance(by: 2 * Self.day)
+        _ = try await rig.client.lyrics(for: query)
+        #expect(rig.transport.requests.count == 2)
+    }
+
+    @Test("A cache hit still works inside the busy window")
+    func cacheServesWhileBusy() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record()), .status(429, headers: ["Retry-After": "30"])]))
+        defer { rig.cleanUp() }
+        _ = try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a"))
+        _ = try? await rig.client.lyrics(for: LyricsSamples.query(videoId: "b"))
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a")) == .synced(LyricsSamples.syncedLines))
+        #expect(rig.transport.requests.count == 2)
+    }
+}

@@ -241,6 +241,7 @@ struct MenuBarPopupView: View {
             else { return }
             isPopupVisible = true
             popupVisibility.isVisible = true
+            musicHost.isPopupVisible = true
             audioEngine.bluetoothDeviceMonitor.refresh()
             requestChromeTabs()
             syncNavOrder()
@@ -255,6 +256,7 @@ struct MenuBarPopupView: View {
             else { return }
             isPopupVisible = false
             popupVisibility.isVisible = false
+            musicHost.isPopupVisible = false
             hasKeyboardEngaged = false
             selectedRow = nil
             // A card left open must not greet the next open of the popup.

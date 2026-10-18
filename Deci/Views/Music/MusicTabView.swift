@@ -96,6 +96,12 @@ private struct MusicSignedInView: View {
         !service.queue.isEmpty && queueForced
     }
 
+    /// The lyrics panel is open for the loaded track. The store owns the flag (it also gates the fetch), and
+    /// Up next and Lyrics are never both on: turning one on turns the other off.
+    private var showsLyrics: Bool {
+        service.lyrics.isPanelOpen && service.lyrics.track != nil
+    }
+
     /// Search results show while there is a query and a search for it is running, has results,
     /// or came back empty. Otherwise Home, Library or an open page shows.
     private var showsResults: Bool {
@@ -103,7 +109,7 @@ private struct MusicSignedInView: View {
     }
 
     private var isBrowsing: Bool {
-        !showsQueue && !showsResults
+        !showsQueue && !showsResults && !showsLyrics
     }
 
     var body: some View {
@@ -135,7 +141,9 @@ private struct MusicSignedInView: View {
                     .allowsHitTesting(isBrowsing)
                     .accessibilityHidden(!isBrowsing)
 
-                if showsQueue {
+                if showsLyrics {
+                    MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
+                } else if showsQueue {
                     queueList
                 } else if showsResults {
                     resultsList
@@ -152,10 +160,14 @@ private struct MusicSignedInView: View {
         }
         .animation(DesignTokens.Animation.quick, value: isAccountCardOpen)
         // Leaving the signed-in view (sign out, a dead session, another tab) takes the card with it.
-        .onDisappear { isAccountCardOpen = false }
+        .onDisappear {
+            isAccountCardOpen = false
+            service.lyrics.setPanelOpen(false)
+        }
         .task { searchFocused = true }
         .onChange(of: service.query) {
             queueForced = false
+            service.lyrics.setPanelOpen(false)
             // An emptied field stops the search and drops its results, back to browsing.
             if searchIsEmpty, service.isSearching || !service.results.isEmpty {
                 service.search()
@@ -165,11 +177,16 @@ private struct MusicSignedInView: View {
         .onChange(of: service.queue.isEmpty) { _, isEmpty in
             if isEmpty { queueForced = false }
         }
+        // Nothing is loaded any more: the button is gone, so the panel goes with it.
+        .onChange(of: service.lyrics.track == nil) { _, noTrack in
+            if noTrack { service.lyrics.setPanelOpen(false) }
+        }
     }
 
     /// Home or Library from the switch: leaves search and the queue and goes to the tab's root.
     private func select(_ tab: MusicBrowseStore.Tab) {
         queueForced = false
+        service.lyrics.setPanelOpen(false)
         if showsResults { service.query = "" }
         service.browse.tab = tab
         service.browse.popToRoot()
@@ -187,6 +204,7 @@ private struct MusicSignedInView: View {
                     .focused($searchFocused)
                     .onSubmit {
                         queueForced = false
+                        service.lyrics.setPanelOpen(false)
                         submittedQuery = trimmedQuery
                         service.search()
                     }
@@ -219,8 +237,21 @@ private struct MusicSignedInView: View {
                     )
             )
 
+            if service.lyrics.track != nil {
+                Button("Lyrics", systemImage: "quote.bubble") {
+                    queueForced = false
+                    service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(showsLyrics ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
+                .accessibilityAddTraits(showsLyrics ? .isSelected : [])
+            }
+
             if !service.queue.isEmpty {
                 Button("Up next", systemImage: "list.bullet") {
+                    service.lyrics.setPanelOpen(false)
                     queueForced.toggle()
                 }
                 .labelStyle(.iconOnly)
