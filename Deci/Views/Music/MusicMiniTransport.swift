@@ -20,11 +20,27 @@ enum MusicTimeFormat {
         guard current.isFinite, duration.isFinite, duration > 0 else { return 0 }
         return min(max(current / duration, 0), 1)
     }
+
+    /// Where a touch at `x` points along a bar `width` wide, clamped to 0...1.
+    static func fraction(x: CGFloat, width: CGFloat) -> Double {
+        guard x.isFinite, width.isFinite, width > 0 else { return 0 }
+        return Double(min(max(x / width, 0), 1))
+    }
+
+    /// Time left as "-m:ss"; "-0:00" while the duration is unknown or already passed.
+    static func remaining(current: TimeInterval, duration: TimeInterval) -> String {
+        guard current.isFinite, duration.isFinite, duration > current else { return "-0:00" }
+        return "-" + string(duration - current)
+    }
 }
 
-/// Pinned under the results: what is playing, play/pause and a thin progress bar.
+/// Pinned under the list: what is playing, previous / play-pause / next and a scrubbable progress bar.
 struct MusicMiniTransport: View {
-    let player: MusicPlayer
+    let service: MusicService
+    /// Fraction under the finger while scrubbing; nil otherwise. Seeks on release.
+    @State private var dragFraction: Double?
+
+    private var player: MusicPlayer { service.player }
 
     var body: some View {
         if let track = player.nowPlaying {
@@ -44,7 +60,7 @@ struct MusicMiniTransport: View {
 
                     Spacer(minLength: DesignTokens.Spacing.sm)
 
-                    transportButton
+                    transportButtons
                 }
 
                 progressRow
@@ -61,45 +77,98 @@ struct MusicMiniTransport: View {
         }
     }
 
-    private var transportButton: some View {
-        ZStack {
-            if player.isLoading {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Button(player.isPlaying ? "Pause" : "Play", systemImage: player.isPlaying ? "pause.fill" : "play.fill") {
-                    player.toggle()
+    private var transportButtons: some View {
+        HStack(spacing: DesignTokens.Spacing.xs) {
+            skipButton("Previous", systemImage: "backward.fill", enabled: true) { service.previous() }
+
+            ZStack {
+                if player.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Button(player.isPlaying ? "Pause" : "Play", systemImage: player.isPlaying ? "pause.fill" : "play.fill") {
+                        player.toggle()
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 14))
+                    .foregroundStyle(DesignTokens.Colors.textPrimary)
+                    .contentShape(Rectangle())
                 }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .font(.system(size: 14))
-                .foregroundStyle(DesignTokens.Colors.textPrimary)
-                .contentShape(Rectangle())
             }
+            .frame(width: 28, height: 28)
+
+            skipButton("Next", systemImage: "forward.fill", enabled: service.canGoNext) { service.next() }
         }
-        .frame(width: 28, height: 28)
+    }
+
+    private func skipButton(_ title: String, systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(title, systemImage: systemImage, action: action)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            .foregroundStyle(enabled ? DesignTokens.Colors.textPrimary : DesignTokens.Colors.textTertiary)
+            .frame(width: 22, height: 28)
+            .contentShape(Rectangle())
+            .disabled(!enabled)
     }
 
     private var progressRow: some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            Text(MusicTimeFormat.string(player.currentTime))
+        let shown = dragFraction.map { $0 * player.duration } ?? player.currentTime
+        return HStack(spacing: DesignTokens.Spacing.sm) {
+            Text(MusicTimeFormat.string(shown))
                 .frame(width: 38, alignment: .trailing)
 
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(DesignTokens.Colors.sliderTrack)
-                    Capsule()
-                        .fill(DesignTokens.Colors.sliderFill)
-                        .frame(width: proxy.size.width * MusicTimeFormat.progress(current: player.currentTime, duration: player.duration))
-                }
+            MusicScrubber(
+                fraction: dragFraction ?? MusicTimeFormat.progress(current: player.currentTime, duration: player.duration),
+                isEnabled: player.duration > 0,
+                dragFraction: $dragFraction
+            ) { fraction in
+                service.seek(to: fraction * player.duration)
             }
-            .frame(height: 3)
 
-            Text(MusicTimeFormat.string(player.duration))
+            Text(MusicTimeFormat.remaining(current: shown, duration: player.duration))
                 .frame(width: 38, alignment: .leading)
         }
         .font(DesignTokens.Typography.percentage)
         .foregroundStyle(DesignTokens.Colors.textTertiary)
+    }
+}
+
+/// A thin progress bar with a taller hit area. Dragging (or clicking) previews the position, release seeks.
+private struct MusicScrubber: View {
+    let fraction: Double
+    let isEnabled: Bool
+    @Binding var dragFraction: Double?
+    let onSeek: (Double) -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(DesignTokens.Colors.sliderTrack)
+                    .frame(height: 3)
+                Capsule()
+                    .fill(DesignTokens.Colors.sliderFill)
+                    .frame(width: proxy.size.width * fraction, height: 3)
+            }
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        dragFraction = MusicTimeFormat.fraction(x: value.location.x, width: proxy.size.width)
+                    }
+                    .onEnded { value in
+                        dragFraction = nil
+                        onSeek(MusicTimeFormat.fraction(x: value.location.x, width: proxy.size.width))
+                    }
+            )
+            .allowsHitTesting(isEnabled)
+        }
+        .frame(height: 14)
+        .accessibilityElement()
+        .accessibilityLabel("Playback position")
+        .accessibilityValue("\(Int(fraction * 100)) percent")
     }
 }
 

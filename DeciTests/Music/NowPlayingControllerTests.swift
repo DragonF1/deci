@@ -1,0 +1,286 @@
+// DeciTests/Music/NowPlayingControllerTests.swift
+// The Now Playing widget and media keys: the pure state-to-dictionary mapping, lazy command
+// registration, release on deactivate and the cover art download with its tiny cache.
+
+import AppKit
+import Foundation
+import MediaPlayer
+import Testing
+@testable import Deci
+
+@MainActor
+private final class FetchLog {
+    var urls: [URL] = []
+    var data: Data?
+    var gate: MusicTestGate?
+}
+
+private func pngData() -> Data {
+    let image = NSImage(size: NSSize(width: 8, height: 8), flipped: false) { rect in
+        NSColor.red.setFill()
+        rect.fill()
+        return true
+    }
+    let rep = NSBitmapImageRep(data: image.tiffRepresentation!)!
+    return rep.representation(using: .png, properties: [:])!
+}
+
+private func state(
+    _ track: Deci.MusicTrack = MusicSamples.track("a", title: "Aerodynamic", artist: "Daft Punk"),
+    elapsed: TimeInterval = 42.5,
+    duration: TimeInterval = 187,
+    isPlaying: Bool = true
+) -> NowPlayingState {
+    NowPlayingState(track: track, elapsed: elapsed, duration: duration, isPlaying: isPlaying)
+}
+
+private func track(_ id: String, art: String?) -> Deci.MusicTrack {
+    Deci.MusicTrack(
+        videoId: id, title: "Song \(id)", artist: "Artist", album: nil, durationSeconds: 200,
+        thumbnailURL: art.flatMap { URL(string: $0) }
+    )
+}
+
+// MARK: - Mapping
+
+@MainActor
+@Suite("NowPlayingInfo mapping")
+struct NowPlayingInfoTests {
+    @Test("title, artist, duration, elapsed and rate map to the MediaPlayer keys")
+    func fullMapping() {
+        let info = NowPlayingInfo.dictionary(for: state(
+            Deci.MusicTrack(videoId: "a", title: "Aerodynamic", artist: "Daft Punk", album: "Discovery", durationSeconds: 212, thumbnailURL: nil)
+        ))
+        #expect(info[MPMediaItemPropertyTitle] as? String == "Aerodynamic")
+        #expect(info[MPMediaItemPropertyArtist] as? String == "Daft Punk")
+        #expect(info[MPMediaItemPropertyAlbumTitle] as? String == "Discovery")
+        #expect(info[MPMediaItemPropertyPlaybackDuration] as? Double == 187)
+        #expect(info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double == 42.5)
+        #expect(info[MPNowPlayingInfoPropertyPlaybackRate] as? Double == 1)
+        #expect(info[MPNowPlayingInfoPropertyDefaultPlaybackRate] as? Double == 1)
+        #expect(info[MPNowPlayingInfoPropertyMediaType] as? UInt == MPNowPlayingInfoMediaType.audio.rawValue)
+        #expect(info[MPMediaItemPropertyArtwork] == nil)
+    }
+
+    @Test("paused means rate 0")
+    func pausedRate() {
+        let info = NowPlayingInfo.dictionary(for: state(isPlaying: false))
+        #expect(info[MPNowPlayingInfoPropertyPlaybackRate] as? Double == 0)
+    }
+
+    @Test("a missing or empty album is left out")
+    func albumOmitted() {
+        #expect(NowPlayingInfo.dictionary(for: state())[MPMediaItemPropertyAlbumTitle] == nil)
+        let empty = Deci.MusicTrack(videoId: "a", title: "T", artist: "A", album: "", durationSeconds: nil, thumbnailURL: nil)
+        #expect(NowPlayingInfo.dictionary(for: state(empty))[MPMediaItemPropertyAlbumTitle] == nil)
+    }
+
+    @Test("an unknown duration is left out and elapsed is not capped")
+    func unknownDuration() {
+        let info = NowPlayingInfo.dictionary(for: state(duration: 0))
+        #expect(info[MPMediaItemPropertyPlaybackDuration] == nil)
+        #expect(info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double == 42.5)
+    }
+
+    @Test("elapsed is clamped to zero and the duration, and non-finite values read as zero")
+    func elapsedClamped() {
+        #expect(NowPlayingInfo.dictionary(for: state(elapsed: -5))[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double == 0)
+        #expect(NowPlayingInfo.dictionary(for: state(elapsed: 999))[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double == 187)
+        #expect(NowPlayingInfo.dictionary(for: state(elapsed: .nan))[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double == 0)
+        #expect(NowPlayingInfo.dictionary(for: state(duration: .infinity))[MPMediaItemPropertyPlaybackDuration] == nil)
+    }
+
+    @Test("artwork is included when given")
+    func artworkIncluded() throws {
+        let image = try #require(NSImage(data: pngData()))
+        let info = NowPlayingInfo.dictionary(for: state(), artwork: ArtworkFactory.make(image: image))
+        #expect(info[MPMediaItemPropertyArtwork] is MPMediaItemArtwork)
+    }
+
+    @Test("the artwork is as large as the image and resizes to the size the system asks for")
+    func artworkSizeHandler() throws {
+        let image = try #require(NSImage(data: pngData()))
+        #expect(ArtworkFactory.make(image: image).bounds.size == image.size)
+
+        let scaled = ArtworkFactory.sized(image, to: CGSize(width: 32, height: 32))
+        #expect(scaled.size == CGSize(width: 32, height: 32))
+        #expect(ArtworkFactory.sized(image, to: image.size) === image)
+        #expect(ArtworkFactory.sized(image, to: .zero) === image)
+        #expect(ArtworkFactory.sized(image, to: CGSize(width: -4, height: 10)) === image)
+    }
+}
+
+// MARK: - Controller
+
+@MainActor
+@Suite("NowPlayingController")
+struct NowPlayingControllerTests {
+    private struct Rig {
+        let surface = FakeNowPlayingSurface()
+        let fetch = FetchLog()
+        let controller: NowPlayingController
+
+        init() {
+            let surface = self.surface
+            let fetch = self.fetch
+            fetch.data = pngData()
+            controller = NowPlayingController(surface: surface, fetchArtwork: { url in
+                await MainActor.run { fetch.urls.append(url) }
+                let gate = await MainActor.run { fetch.gate }
+                if let gate { await gate.wait() }
+                return await MainActor.run { fetch.data }
+            })
+        }
+    }
+
+    @Test("nothing reaches the system until the first update")
+    func lazy() {
+        let rig = Rig()
+        #expect(rig.surface.registerCount == 0)
+        #expect(rig.surface.published.isEmpty)
+        rig.controller.update(nil)
+        #expect(rig.surface.registerCount == 0)
+        #expect(rig.surface.clearCount == 0)
+        #expect(rig.surface.removeCount == 0)
+    }
+
+    @Test("the first update registers the commands once and publishes the state")
+    func firstUpdateRegisters() {
+        let rig = Rig()
+        rig.controller.update(state())
+        rig.controller.update(state(elapsed: 50))
+        rig.controller.update(state(MusicSamples.track("b", title: "Next")))
+
+        #expect(rig.surface.registerCount == 1)
+        #expect(rig.surface.published.count == 3)
+        #expect(rig.surface.last?.title == "Next")
+    }
+
+    @Test("an unchanged state is not published again")
+    func unchangedSkipped() {
+        let rig = Rig()
+        rig.controller.update(state())
+        rig.controller.update(state())
+        #expect(rig.surface.published.count == 1)
+    }
+
+    @Test("play state reaches the surface")
+    func playbackState() {
+        let rig = Rig()
+        rig.controller.update(state(isPlaying: true))
+        rig.controller.update(state(isPlaying: false))
+        #expect(rig.surface.published.map(\.isPlaying) == [true, false])
+    }
+
+    @Test("update(nil) removes the commands and clears the info once")
+    func deactivate() {
+        let rig = Rig()
+        rig.controller.update(state())
+        rig.controller.update(nil)
+        rig.controller.update(nil)
+
+        #expect(rig.surface.removeCount == 1)
+        #expect(rig.surface.clearCount == 1)
+        #expect(rig.surface.hasCommands == false)
+    }
+
+    @Test("playing again after a release registers again")
+    func reactivate() {
+        let rig = Rig()
+        rig.controller.update(state())
+        rig.controller.update(nil)
+        rig.controller.update(state())
+        #expect(rig.surface.registerCount == 2)
+        #expect(rig.surface.published.count == 2)
+    }
+
+    @Test("commands from the system reach onCommand")
+    func commandsForwarded() {
+        let rig = Rig()
+        var seen: [NowPlayingCommand] = []
+        rig.controller.onCommand = { seen.append($0) }
+        rig.controller.update(state())
+        rig.surface.send(.next)
+        rig.surface.send(.seek(12))
+        #expect(seen == [.next, .seek(12)])
+    }
+
+    // MARK: Artwork
+
+    @Test("artwork is downloaded once per URL and added to the info")
+    func artworkDownloaded() async {
+        let rig = Rig()
+        let withArt = track("a", art: "https://img.example.test/a.jpg")
+        rig.controller.update(state(withArt))
+        #expect(rig.surface.last?.info[MPMediaItemPropertyArtwork] == nil)
+        await rig.controller.artworkTask?.value
+
+        #expect(rig.fetch.urls == [withArt.thumbnailURL!])
+        #expect(rig.surface.last?.info[MPMediaItemPropertyArtwork] is MPMediaItemArtwork)
+
+        rig.controller.update(state(withArt, elapsed: 90))
+        #expect(rig.fetch.urls.count == 1)
+        #expect(rig.surface.last?.info[MPMediaItemPropertyArtwork] is MPMediaItemArtwork)
+    }
+
+    @Test("coming back to a track reuses the cached artwork")
+    func artworkCached() async {
+        let rig = Rig()
+        let first = track("a", art: "https://img.example.test/a.jpg")
+        let second = track("b", art: "https://img.example.test/b.jpg")
+        rig.controller.update(state(first))
+        await rig.controller.artworkTask?.value
+        rig.controller.update(state(second))
+        await rig.controller.artworkTask?.value
+        rig.controller.update(state(first))
+
+        #expect(rig.fetch.urls.count == 2)
+        #expect(rig.surface.last?.info[MPMediaItemPropertyArtwork] is MPMediaItemArtwork)
+    }
+
+    @Test("a download that finishes after the track changed does not publish the old cover")
+    func staleArtworkDoesNotPublish() async {
+        let rig = Rig()
+        let gate = MusicTestGate()
+        rig.fetch.gate = gate
+        rig.controller.update(state(track("a", art: "https://img.example.test/a.jpg")))
+        let stale = rig.controller.artworkTask
+
+        rig.controller.update(state(track("b", art: nil)))
+        await gate.open()
+        await stale?.value
+
+        #expect(rig.surface.last?.title == "Song b")
+        #expect(rig.surface.last?.info[MPMediaItemPropertyArtwork] == nil)
+    }
+
+    @Test("a failed or undecodable download leaves the info without artwork and is not retried")
+    func artworkFailure() async {
+        let rig = Rig()
+        rig.fetch.data = Data([0, 1, 2])
+        let broken = track("a", art: "https://img.example.test/a.jpg")
+        rig.controller.update(state(broken))
+        await rig.controller.artworkTask?.value
+        rig.controller.update(state(broken, elapsed: 60))
+
+        #expect(rig.fetch.urls.count == 1)
+        #expect(rig.surface.last?.info[MPMediaItemPropertyArtwork] == nil)
+        #expect(rig.surface.last?.elapsed == 60)
+    }
+
+    @Test("a track without a thumbnail never downloads anything")
+    func noThumbnail() {
+        let rig = Rig()
+        rig.controller.update(state(track("a", art: nil)))
+        #expect(rig.controller.artworkTask == nil)
+        #expect(rig.fetch.urls.isEmpty)
+    }
+
+    @Test("only https artwork is fetched over the network")
+    func httpsOnly() async {
+        let plain = await NowPlayingController.fetchOverNetwork(URL(string: "http://img.example.test/a.jpg")!)
+        let file = await NowPlayingController.fetchOverNetwork(URL(fileURLWithPath: "/etc/hosts"))
+        #expect(plain == nil)
+        #expect(file == nil)
+    }
+}

@@ -278,6 +278,8 @@ struct DeciApp: App {
         _shortcutsRegistry = State(initialValue: registry)
         _resolver = State(initialValue: resolver)
         let music = MusicServiceHost()
+        // Only this boolean reaches Chrome: while Deci plays, the extension stops auto-clicking "Switch".
+        music.onNativePlayingChange = { ChromeExtensionManager.shared.setNativeMusicPlaying($0) }
         _musicHost = State(initialValue: music)
 
         // Pass engine to AppDelegate
@@ -313,6 +315,8 @@ struct DeciApp: App {
                 accessibilityService.stop()
                 hud.shutdown()
                 music.shutdown()
+                // Stopping music queues one last options message; the app exits before the batch timer fires.
+                ChromeExtensionManager.shared.flushMessages()
                 settings.flushSync()
             }
         }

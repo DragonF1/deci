@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicServiceTests.swift
 // Music tab logic with a fake backend and a fake AVPlayer seam: search, auth, play, the
-// 30 s history ping, stream recovery, the sign-in cookie filter and the small formatters.
+// 30 s history ping, stream recovery, the radio queue, seek, Now Playing, the sign-in cookie
+// filter and the small formatters.
 
 import Foundation
 import Testing
@@ -12,6 +13,8 @@ import Testing
 private final class SignInProbe {
     var presentCount = 0
     var completion: (@MainActor ([StoredCookie]?) -> Void)?
+    /// Every value `onNativePlayingChange` reported, in order.
+    var nativeChanges: [Bool] = []
 }
 
 @MainActor
@@ -19,6 +22,7 @@ private struct Harness {
     let backend: FakeMusicBackend
     let engine = FakePlaybackEngine()
     let probe = SignInProbe()
+    let surface = FakeNowPlayingSurface()
     let player: MusicPlayer
     let service: MusicService
 
@@ -36,8 +40,42 @@ private struct Harness {
                 probe.presentCount += 1
                 probe.completion = completion
             },
+            nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             refreshOnCreate: false
         )
+        service.onNativePlayingChange = { probe.nativeChanges.append($0) }
+    }
+
+    /// Waits until the play and radio work started so far, including follow-ups they start, has finished.
+    func settle() async {
+        while true {
+            let play = service.playTask
+            let radio = service.radioTask
+            await play?.value
+            await radio?.value
+            if service.playTask == play, service.radioTask == radio { break }
+        }
+    }
+
+    /// Plays `track` with its radio and waits for both. The engine reports the track as playing.
+    func startQueue(_ ids: [String], continuation: String? = nil) async {
+        let tracks = ids.map { MusicSamples.track($0, title: "Song \($0)") }
+        await backend.setRadio(seed: ids[0], tracks: tracks, continuation: continuation)
+        service.play(tracks[0])
+        await settle()
+        engine.emit(.playingChanged(true))
+    }
+
+    var queuedIDs: [String] { service.queue.tracks.map(\.videoId) }
+    var loadedIDs: [String] { engine.loads.map(\.stream.videoId) }
+
+    /// Polls until `condition` holds; for work that is held at a gate and cannot be awaited.
+    func eventually(_ condition: () async -> Bool) async -> Bool {
+        for _ in 0..<400 {
+            if await condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return false
     }
 
     /// Plays `track` and waits until the player has loaded its stream.
@@ -580,6 +618,733 @@ struct MusicServicePlaybackTests {
     }
 }
 
+// MARK: - Queue and radio
+
+@MainActor
+@Suite("MusicService queue")
+struct MusicServiceQueueTests {
+    @Test("a tapped track starts a queue of one, then the radio's tracks follow it")
+    func tapThenRadio() async {
+        let h = Harness()
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b", "c"))
+        h.service.play(MusicSamples.track("a"))
+        #expect(h.queuedIDs == ["a"])
+
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a", "b", "c"])
+        #expect(await h.backend.radioSeeds == ["a"])
+        #expect(h.service.queue.current?.videoId == "a")
+        #expect(h.service.canGoNext)
+    }
+
+    @Test("the seed and repeated tracks are dropped from the radio page")
+    func radioDedupes() async {
+        let h = Harness()
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b", "b", "c", "a"))
+        h.service.play(MusicSamples.track("a"))
+        await h.settle()
+        #expect(h.queuedIDs == ["a", "b", "c"])
+    }
+
+    @Test("a radio error leaves the song playing and shows nothing")
+    func radioErrorIsSilent() async {
+        let h = Harness()
+        await h.backend.setRadioError(seed: "a", URLError(.notConnectedToInternet))
+        h.service.play(MusicSamples.track("a"))
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a"])
+        #expect(h.service.lastError == nil)
+        #expect(h.service.radioTask == nil)
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.loadedIDs == ["a"])
+    }
+
+    @Test("a new seed ignores the page its predecessor was still fetching")
+    func staleRadioIgnored() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await h.backend.setRadioGate(seed: "a", gate)
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "old1", "old2"))
+        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "new1"))
+
+        h.service.play(MusicSamples.track("a"))
+        let stale = h.service.radioTask
+        h.service.play(MusicSamples.track("b"))
+        await h.settle()
+        #expect(h.queuedIDs == ["b", "new1"])
+
+        await gate.open()
+        await stale?.value
+
+        #expect(h.queuedIDs == ["b", "new1"])
+        #expect(h.service.queue.seedVideoId == "b")
+    }
+
+    @Test("more radio is fetched once three or fewer tracks are left, and not before")
+    func topUpAtThree() async {
+        let h = Harness()
+        let call = FakeMusicBackend.MoreRadioCall(seed: "a", continuation: "c1")
+        await h.backend.setMoreRadio(seed: "a", continuation: "c1", tracks: MusicSamples.tracks("i", "j", "k"))
+        await h.startQueue(["a", "b", "c", "d", "e", "f", "g", "h"], continuation: "c1")
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+
+        for _ in 0..<3 { h.service.next() }
+        await h.settle()
+        #expect(h.service.queue.upcomingCount == 4)
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+
+        h.service.next()
+        await h.settle()
+
+        #expect(await h.backend.moreRadioCalls == [call])
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"])
+        #expect(h.service.queue.continuation == nil)
+    }
+
+    @Test("only one more-radio fetch runs at a time")
+    func oneFetchAtATime() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreRadioGate(seed: "a", continuation: "c1", gate)
+        await h.backend.setMoreRadio(seed: "a", continuation: "c1", tracks: MusicSamples.tracks("f", "g"))
+        await h.startQueue(["a", "b", "c", "d", "e"], continuation: "c1")
+        #expect(h.service.radioTask == nil)
+
+        h.service.next()
+        let inFlight = h.service.radioTask
+        #expect(inFlight != nil)
+        h.service.next()
+        h.service.next()
+        #expect(h.service.radioTask == inFlight)
+
+        await gate.open()
+        await inFlight?.value
+        await h.settle()
+
+        #expect(await h.backend.moreRadioCalls.count == 1)
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "g"])
+    }
+
+    @Test("a queue without a continuation never asks for more")
+    func noContinuation() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+        h.service.next()
+        h.service.next()
+        await h.settle()
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+        #expect(h.service.radioTask == nil)
+    }
+
+    @Test("a failed more-radio fetch is silent and tried again on the next track")
+    func moreRadioErrorRetries() async {
+        let h = Harness()
+        await h.backend.setMoreRadioError(seed: "a", continuation: "c1", URLError(.timedOut))
+        await h.startQueue(["a", "b", "c"], continuation: "c1")
+        #expect(await h.backend.moreRadioCalls.count == 1)
+        #expect(h.service.lastError == nil)
+
+        h.service.next()
+        await h.settle()
+
+        #expect(await h.backend.moreRadioCalls.count == 2)
+        #expect(h.service.lastError == nil)
+        #expect(h.queuedIDs == ["a", "b", "c"])
+    }
+
+    @Test("a page of repeats does not trigger an immediate re-fetch")
+    func repeatsDoNotLoop() async {
+        let h = Harness()
+        await h.backend.setMoreRadio(seed: "a", continuation: "c1", tracks: MusicSamples.tracks("b", "c"), next: "c2")
+        await h.startQueue(["a", "b", "c"], continuation: "c1")
+
+        #expect(await h.backend.moreRadioCalls.count == 1)
+        #expect(h.service.queue.continuation == "c2")
+        #expect(h.service.radioTask == nil)
+    }
+}
+
+// MARK: - Moving through the queue
+
+@MainActor
+@Suite("MusicService queue navigation")
+struct MusicServiceNavigationTests {
+    @Test("a track that ends starts the next one")
+    func autoplay() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a", "b"])
+        #expect(h.service.queue.current?.videoId == "b")
+        #expect(h.player.nowPlaying?.videoId == "b")
+    }
+
+    @Test("the last track ending leaves the player on the finished song and releases Now Playing")
+    func endOfQueue() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a"])
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.player.hasEnded)
+        #expect(h.probe.nativeChanges == [true, false])
+        #expect(h.surface.clearCount == 1)
+        #expect(h.surface.hasCommands == false)
+    }
+
+    @Test("next moves on, and at the end of the queue stops playback")
+    func nextAndEnd() async {
+        let h = Harness()
+        await h.startQueue(["a", "b"])
+        #expect(h.service.canGoNext)
+        h.service.next()
+        await h.settle()
+        #expect(h.loadedIDs == ["a", "b"])
+        #expect(h.service.canGoNext == false)
+
+        h.service.next()
+
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.service.queue.isEmpty)
+        #expect(h.loadedIDs == ["a", "b"])
+    }
+
+    @Test("previous restarts a track past three seconds and otherwise goes back", arguments: [
+        (3.1, true), (3.0, false), (0.0, false),
+    ])
+    func previousRule(position: Double, restarts: Bool) async {
+        let h = Harness()
+        await h.startQueue(["a", "b"])
+        h.service.next()
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        h.engine.tick(position, playing: true)
+
+        h.service.previous()
+        await h.settle()
+
+        if restarts {
+            #expect(h.engine.seeks == [0])
+            #expect(h.loadedIDs == ["a", "b"])
+            #expect(h.service.queue.current?.videoId == "b")
+        } else {
+            #expect(h.engine.seeks.isEmpty)
+            #expect(h.loadedIDs == ["a", "b", "a"])
+            #expect(h.service.queue.current?.videoId == "a")
+        }
+    }
+
+    @Test("previous on the first track restarts it however little has played")
+    func previousAtFirst() async {
+        let h = Harness()
+        await h.startQueue(["a", "b"])
+        h.engine.tick(1, playing: true)
+
+        h.service.previous()
+        await h.settle()
+
+        #expect(h.engine.seeks == [0])
+        #expect(h.loadedIDs == ["a"])
+        #expect(h.service.queue.current?.videoId == "a")
+    }
+
+    @Test("previous after the track ended replays it")
+    func previousAfterEnd() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.engine.emit(.ended)
+
+        h.service.previous()
+
+        #expect(h.engine.seeks == [0])
+        #expect(h.engine.playCount == 1)
+        #expect(h.player.hasEnded == false)
+    }
+
+    @Test("previous with nothing loaded does nothing")
+    func previousIdle() {
+        let h = Harness()
+        h.service.previous()
+        #expect(h.engine.seeks.isEmpty)
+        #expect(h.engine.loads.isEmpty)
+    }
+
+    @Test("jumping to a queued track plays it, and an unknown track is ignored")
+    func jump() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c", "d"])
+        let tracks = h.service.queue.tracks
+
+        h.service.jump(to: tracks[3])
+        await h.settle()
+        #expect(h.loadedIDs == ["a", "d"])
+        #expect(h.service.queue.upcomingCount == 0)
+
+        h.service.jump(to: MusicSamples.track("zzz"))
+        await h.settle()
+        #expect(h.loadedIDs == ["a", "d"])
+
+        h.service.jump(to: tracks[1])
+        await h.settle()
+        #expect(h.loadedIDs == ["a", "d", "b"])
+        #expect(h.queuedIDs == ["a", "b", "c", "d"])
+        #expect(h.service.queue.current?.videoId == "b")
+    }
+}
+
+// MARK: - Failures
+
+@MainActor
+@Suite("MusicService skipping")
+struct MusicServiceSkipTests {
+    @Test("a track that cannot be resolved is skipped")
+    func resolveFailureSkips() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+        await h.backend.setResolveError("b", MusicError.unplayable("Private"))
+
+        h.service.next()
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a", "c"])
+        #expect(h.service.queue.current?.videoId == "c")
+        #expect(h.service.lastError == nil)
+    }
+
+    @Test("going back skips a failed track backwards")
+    func skipDirection() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c", "d"])
+        h.service.jump(to: h.service.queue.tracks[3])
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        await h.backend.setResolveError("c", MusicError.unplayable("Private"))
+
+        h.service.previous()
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a", "d", "b"])
+        #expect(h.service.queue.current?.videoId == "b")
+    }
+
+    @Test("two failures in a row still reach the next playable track")
+    func twoFailuresRecover() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c", "d"])
+        await h.backend.setResolveError("b", MusicError.noAudioFormat)
+        await h.backend.setResolveError("c", MusicError.noAudioFormat)
+
+        h.service.next()
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a", "d"])
+        #expect(h.service.lastError == nil)
+    }
+
+    @Test("the third failure in a row stops playback with an error")
+    func threeFailuresStop() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c", "d", "e"])
+        for id in ["b", "c", "d"] {
+            await h.backend.setResolveError(id, MusicError.noAudioFormat)
+        }
+
+        h.service.next()
+        await h.settle()
+
+        #expect(await h.backend.resolvedIDs == ["a", "b", "c", "d"])
+        #expect(h.service.lastError == "No audio stream for this track.")
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.service.queue.isEmpty)
+        #expect(h.probe.nativeChanges == [true, false])
+    }
+
+    @Test("a track that plays resets the failure count")
+    func playingResetsStreak() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c", "d", "e", "f", "g"])
+        for id in ["b", "d", "e"] {
+            await h.backend.setResolveError(id, MusicError.noAudioFormat)
+        }
+
+        h.engine.emit(.ended)
+        await h.settle()
+        #expect(h.loadedIDs == ["a", "c"])
+
+        h.engine.emit(.playingChanged(true))
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a", "c", "f"])
+        #expect(h.player.nowPlaying?.videoId == "f")
+        #expect(h.service.lastError == nil)
+    }
+
+    @Test("a stream that dies twice skips to the next track")
+    func playerFailureSkips() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+        h.engine.emit(.failed)
+        await h.player.refreshTask?.value
+        h.engine.emit(.failed)
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a", "a", "b"])
+        #expect(h.player.nowPlaying?.videoId == "b")
+        #expect(h.player.error == nil)
+    }
+
+    @Test("a stream that dies with nothing queued behind it keeps the error")
+    func playerFailureLast() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.engine.emit(.failed)
+        await h.player.refreshTask?.value
+        h.engine.emit(.failed)
+        await h.settle()
+
+        #expect(h.player.error == "Couldn't play this track.")
+        #expect(h.service.queue.isEmpty)
+        #expect(h.probe.nativeChanges == [true, false])
+    }
+
+    @Test("a sign-out found while advancing ends the queue and signs out")
+    func signedOutWhileAdvancing() async {
+        let h = Harness()
+        await h.service.refreshAuth()
+        await h.startQueue(["a", "b"])
+        await h.backend.setResolveError("b", MusicError.signedOut)
+
+        h.service.next()
+        await h.settle()
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(h.service.queue.isEmpty)
+        #expect(h.player.nowPlaying == nil)
+        #expect(await h.backend.signOutCount == 1)
+        #expect(h.loadedIDs == ["a"])
+    }
+}
+
+// MARK: - Sessions
+
+@MainActor
+@Suite("MusicService per-track sessions")
+struct MusicServiceSessionTests {
+    @Test("every queued track gets its own CPN and its own history ping")
+    func perTrackPing() async {
+        let h = Harness()
+        let urlA = URL(string: "https://music.example.test/stats?ev=a")!
+        let urlB = URL(string: "https://music.example.test/stats?ev=b")!
+        await h.backend.setStream(MusicSamples.stream(videoId: "a", trackingURL: urlA))
+        await h.backend.setStream(MusicSamples.stream(videoId: "b", trackingURL: urlB))
+        await h.startQueue(["a", "b"])
+        h.listen(seconds: 31)
+        await h.service.reportTask?.value
+
+        h.engine.emit(.ended)
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        h.listen(seconds: 31)
+        await h.service.reportTask?.value
+
+        let reports = await h.backend.reportAttempts
+        #expect(reports.map(\.url) == [urlA, urlB])
+        #expect(reports.allSatisfy { isValidCPN($0.cpn) })
+        #expect(Set(reports.map(\.cpn)).count == 2)
+    }
+
+    @Test("listening time does not carry over to the next track")
+    func noCarryOver() async {
+        let h = Harness()
+        await h.startQueue(["a", "b"])
+        h.listen(seconds: 20)
+        h.service.next()
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        h.listen(seconds: 20)
+
+        #expect(h.service.reportTask == nil)
+    }
+}
+
+// MARK: - Seek
+
+@MainActor
+@Suite("MusicService seek")
+struct MusicServiceSeekTests {
+    @Test("seek goes through the engine")
+    func seekForwarded() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.service.seek(to: 120)
+        #expect(h.engine.seeks == [120])
+        #expect(h.player.currentTime == 120)
+    }
+
+    @Test("seek with nothing playing does nothing")
+    func seekIdle() {
+        let h = Harness()
+        h.service.seek(to: 10)
+        #expect(h.engine.seeks.isEmpty)
+    }
+
+    @Test("a short seek forward is not counted as listening")
+    func shortSeekNotCounted() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.listen(seconds: 29)
+
+        h.service.seek(to: 30)
+        h.engine.tick(30.5, playing: true)
+
+        #expect(h.service.reportTask == nil)
+        #expect(await h.backend.reportAttempts.isEmpty)
+    }
+}
+
+// MARK: - Prefetch
+
+@MainActor
+@Suite("MusicService prefetch")
+struct MusicServicePrefetchTests {
+    @Test("the next track is resolved shortly before the end and used when it starts")
+    func prefetchesNearEnd() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+        h.engine.tick(150, playing: true)
+        await h.service.prefetchTask?.value
+        #expect(await h.backend.resolvedIDs == ["a"])
+
+        h.engine.tick(186, playing: true)
+        await h.service.prefetchTask?.value
+        h.engine.tick(187, playing: true)
+        await h.service.prefetchTask?.value
+        #expect(await h.backend.resolvedIDs == ["a", "b"])
+
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a", "b"])
+        #expect(await h.backend.resolvedIDs == ["a", "b"])
+    }
+
+    @Test("a prefetched stream about to expire is not used")
+    func expiringPrefetchNotUsed() async {
+        let h = Harness()
+        await h.backend.setStream(MusicSamples.stream(videoId: "b", expiresAt: Date().addingTimeInterval(30)))
+        await h.startQueue(["a", "b"])
+        h.engine.tick(186, playing: true)
+        await h.service.prefetchTask?.value
+
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(await h.backend.resolvedIDs == ["a", "b", "b"])
+        #expect(h.loadedIDs == ["a", "b"])
+    }
+
+    @Test("jumping elsewhere resolves the chosen track itself")
+    func jumpIgnoresPrefetch() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+        h.engine.tick(186, playing: true)
+        await h.service.prefetchTask?.value
+
+        h.service.jump(to: h.service.queue.tracks[2])
+        await h.settle()
+
+        #expect(await h.backend.resolvedIDs == ["a", "b", "c"])
+        #expect(h.loadedIDs == ["a", "c"])
+    }
+
+    @Test("a short track is never prefetched")
+    func shortTrackSkipped() async {
+        let h = Harness()
+        await h.backend.setStream(MusicSamples.stream(videoId: "a", duration: 20))
+        await h.startQueue(["a", "b"])
+        h.engine.tick(10, playing: true)
+        #expect(h.service.prefetchTask == nil)
+        #expect(await h.backend.resolvedIDs == ["a"])
+    }
+}
+
+// MARK: - Native playing flag
+
+@MainActor
+@Suite("MusicService native playing flag")
+struct MusicServiceNativeFlagTests {
+    @Test("it turns on with a play, off with a pause, and on again")
+    func flips() async {
+        let h = Harness()
+        #expect(h.probe.nativeChanges.isEmpty)
+
+        h.service.play(MusicSamples.track("a"))
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        #expect(h.probe.nativeChanges == [true])
+
+        h.player.pause()
+        h.engine.emit(.playingChanged(false))
+        #expect(h.probe.nativeChanges == [true, false])
+
+        h.player.play()
+        #expect(h.probe.nativeChanges == [true, false, true])
+    }
+
+    @Test("a stall does not flip it")
+    func stallKeepsFlag() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.engine.emit(.playingChanged(false))
+        h.engine.emit(.playingChanged(true))
+        #expect(h.probe.nativeChanges == [true])
+    }
+
+    @Test("moving between tracks does not flip it")
+    func autoplayKeepsFlag() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+        h.engine.emit(.ended)
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        h.service.next()
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        #expect(h.probe.nativeChanges == [true])
+    }
+
+    @Test("it turns off when the queue ends and when the user signs out")
+    func endsAndSignOut() async {
+        let ended = Harness()
+        await ended.startQueue(["a", "b"])
+        ended.engine.emit(.ended)
+        await ended.settle()
+        ended.engine.emit(.playingChanged(true))
+        ended.engine.emit(.ended)
+        #expect(ended.probe.nativeChanges == [true, false])
+
+        let signedOut = Harness()
+        await signedOut.startQueue(["a"])
+        signedOut.service.signOut()
+        #expect(signedOut.probe.nativeChanges == [true, false])
+    }
+}
+
+// MARK: - Now Playing and media keys
+
+@MainActor
+@Suite("MusicService Now Playing")
+struct MusicServiceNowPlayingTests {
+    @Test("nothing is registered until the first native play")
+    func lazyRegistration() async {
+        let h = Harness()
+        await h.backend.setSearch("q", results: [MusicSamples.track()])
+        await h.service.refreshAuth()
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        #expect(h.surface.registerCount == 0)
+        #expect(h.surface.published.isEmpty)
+
+        h.service.play(MusicSamples.track())
+
+        #expect(h.surface.registerCount == 1)
+        #expect(h.surface.hasCommands)
+    }
+
+    @Test("one registration serves the whole queue")
+    func registeredOnce() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+        h.service.next()
+        await h.settle()
+        h.service.next()
+        await h.settle()
+
+        #expect(h.surface.registerCount == 1)
+        #expect(h.surface.removeCount == 0)
+        #expect(h.surface.last?.title == "Song c")
+    }
+
+    @Test("sign-out releases the commands and the widget, and the next play registers again")
+    func signOutReleases() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.service.signOut()
+
+        #expect(h.surface.removeCount == 1)
+        #expect(h.surface.clearCount == 1)
+        #expect(h.surface.hasCommands == false)
+
+        h.service.play(MusicSamples.track("z"))
+        #expect(h.surface.registerCount == 2)
+    }
+
+    @Test("the widget follows duration, play state and seeks, but not every tick")
+    func infoFollowsPlayer() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.engine.emit(.ready(duration: 187))
+        #expect(h.surface.last?.duration == 187)
+        #expect(h.surface.last?.rate == 1)
+
+        let published = h.surface.published.count
+        for position in [40.0, 41.0, 42.0] { h.engine.tick(position, playing: true) }
+        #expect(h.surface.published.count == published)
+
+        h.player.pause()
+        h.engine.emit(.playingChanged(false))
+        #expect(h.surface.last?.isPlaying == false)
+        #expect(h.surface.last?.rate == 0)
+        #expect(h.surface.last?.elapsed == 42)
+
+        h.service.seek(to: 100)
+        #expect(h.surface.last?.elapsed == 100)
+    }
+
+    @Test("next and previous keys move through the queue")
+    func remoteNextPrevious() async {
+        let h = Harness()
+        await h.startQueue(["a", "b", "c"])
+
+        h.surface.send(.next)
+        await h.settle()
+        #expect(h.service.queue.current?.videoId == "b")
+
+        h.surface.send(.previous)
+        await h.settle()
+        #expect(h.service.queue.current?.videoId == "a")
+        #expect(h.loadedIDs == ["a", "b", "a"])
+    }
+
+    @Test("play, pause, toggle and the scrubber reach the player")
+    func remotePlaybackKeys() async {
+        let h = Harness()
+        await h.startQueue(["a"])
+
+        h.surface.send(.toggle)
+        #expect(h.engine.pauseCount == 1)
+        h.engine.emit(.playingChanged(false))
+
+        h.surface.send(.play)
+        #expect(h.engine.playCount == 1)
+
+        h.surface.send(.pause)
+        #expect(h.engine.pauseCount == 2)
+
+        h.surface.send(.seek(90))
+        #expect(h.engine.seeks == [90])
+    }
+}
+
 // MARK: - Host
 
 @MainActor
@@ -600,6 +1365,7 @@ struct MusicServiceHostTests {
                 backend: FakeMusicBackend(),
                 player: MusicPlayer(engine: engine),
                 presentSignIn: { _ in },
+                nowPlaying: NowPlayingController(surface: FakeNowPlayingSurface(), fetchArtwork: { _ in nil }),
                 refreshOnCreate: false
             )
         })
@@ -632,6 +1398,24 @@ struct MusicServiceHostTests {
         host.shutdown()
         #expect(host.service == nil)
         #expect(counter.builds == 0)
+    }
+
+    @Test("the native playing callback reaches the host, set before or after the service exists")
+    func nativePlayingForwarded() async throws {
+        let counter = Counter()
+        let host = makeHost(counter)
+        var seen: [Bool] = []
+        host.onNativePlayingChange = { seen.append($0) }
+        #expect(seen.isEmpty)
+
+        host.loadIfNeeded()
+        let service = try #require(host.service)
+        service.play(MusicSamples.track())
+        await service.playTask?.value
+        #expect(seen == [true])
+
+        host.shutdown()
+        #expect(seen == [true, false])
     }
 
     @Test("shutdown stops playback")
@@ -930,6 +1714,152 @@ struct MusicPlayerTests {
         #expect(seen.first?.1 == true)
         #expect(seen.last?.1 == false)
     }
+
+    // MARK: Seek and state callbacks
+
+    @Test("seek moves the clock and the engine, clamped to the track")
+    func seekClamps() {
+        let rig = Rig()
+        rig.load()
+        rig.engine.emit(.ready(duration: 187))
+        rig.player.seek(to: 100)
+        rig.player.seek(to: 999)
+        rig.player.seek(to: -4)
+        #expect(rig.engine.seeks == [100, 187, 0])
+        #expect(rig.player.currentTime == 0)
+    }
+
+    @Test("seek is ignored with nothing loaded, during a refresh and for non-finite input")
+    func seekIgnored() async {
+        let rig = Rig()
+        rig.player.seek(to: 10)
+        #expect(rig.engine.seeks.isEmpty)
+
+        rig.load()
+        rig.player.seek(to: .nan)
+        rig.player.seek(to: .infinity)
+        #expect(rig.engine.seeks.isEmpty)
+
+        let gate = MusicTestGate()
+        rig.fresh.gate = gate
+        rig.engine.emit(.failed)
+        rig.player.seek(to: 10)
+        #expect(rig.engine.seeks.isEmpty)
+        await gate.open()
+        await rig.player.refreshTask?.value
+    }
+
+    @Test("seeking after the track ended makes it live again")
+    func seekAfterEnd() {
+        let rig = Rig()
+        rig.load()
+        rig.engine.emit(.ready(duration: 200))
+        rig.engine.emit(.playingChanged(true))
+        rig.engine.emit(.ended)
+        #expect(rig.player.hasEnded)
+
+        rig.player.seek(to: 10)
+
+        #expect(rig.player.hasEnded == false)
+        #expect(rig.player.currentTime == 10)
+    }
+
+    @Test("onEnded fires before the state change that follows it")
+    func endedOrdering() {
+        let rig = Rig()
+        rig.load()
+        rig.engine.emit(.playingChanged(true))
+        var events: [String] = []
+        rig.player.onEnded = { events.append("ended") }
+        rig.player.onStateChange = { events.append("state") }
+
+        rig.engine.emit(.ended)
+
+        #expect(events == ["ended", "state"])
+    }
+
+    @Test("onFailed fires when recovery is spent or the refresh fails, not on the first retry")
+    func failedCallback() async {
+        let spent = Rig()
+        var spentCount = 0
+        spent.player.onFailed = { spentCount += 1 }
+        spent.load()
+        spent.engine.emit(.failed)
+        await spent.player.refreshTask?.value
+        #expect(spentCount == 0)
+        spent.engine.emit(.failed)
+        #expect(spentCount == 1)
+
+        let broken = Rig(fresh: .failure(MusicError.http(500)))
+        var brokenCount = 0
+        broken.player.onFailed = { brokenCount += 1 }
+        broken.load()
+        broken.engine.emit(.failed)
+        await broken.player.refreshTask?.value
+        #expect(brokenCount == 1)
+    }
+
+    @Test("isActive means a track that is playing, loading or wants to play")
+    func isActiveRules() {
+        let rig = Rig()
+        #expect(rig.player.isActive == false)
+
+        rig.player.beginLoading(MusicSamples.track())
+        #expect(rig.player.isActive)
+
+        rig.load()
+        rig.engine.emit(.playingChanged(true))
+        #expect(rig.player.isActive)
+
+        rig.engine.emit(.playingChanged(false))
+        #expect(rig.player.isActive)
+
+        rig.player.pause()
+        #expect(rig.player.isActive == false)
+
+        rig.player.play()
+        #expect(rig.player.isActive)
+
+        rig.engine.emit(.ended)
+        #expect(rig.player.isActive == false)
+
+        rig.player.stop()
+        #expect(rig.player.isActive == false)
+    }
+
+    @Test("every state-changing call tells onStateChange")
+    func stateChangeCallbacks() {
+        let rig = Rig()
+        var count = 0
+        rig.player.onStateChange = { count += 1 }
+        func changed(_ step: () -> Void) -> Bool {
+            let before = count
+            step()
+            return count > before
+        }
+
+        #expect(changed { rig.player.beginLoading(MusicSamples.track()) })
+        #expect(changed { rig.load() })
+        #expect(changed { rig.engine.emit(.playingChanged(true)) })
+        #expect(changed { rig.player.pause() })
+        #expect(changed { rig.player.play() })
+        #expect(changed { rig.player.seek(to: 5) })
+        #expect(changed { rig.player.stop() })
+    }
+
+    @Test("beginLoading clears the previous track's error")
+    func beginLoadingClearsError() async {
+        let rig = Rig()
+        rig.load()
+        rig.engine.emit(.failed)
+        await rig.player.refreshTask?.value
+        rig.engine.emit(.failed)
+        #expect(rig.player.error != nil)
+
+        rig.player.beginLoading(MusicSamples.track("next"))
+
+        #expect(rig.player.error == nil)
+    }
 }
 
 // MARK: - Messages
@@ -1069,5 +1999,23 @@ struct MusicTimeFormatTests {
         #expect(MusicTimeFormat.progress(current: -5, duration: 200) == 0)
         #expect(MusicTimeFormat.progress(current: 10, duration: 0) == 0)
         #expect(MusicTimeFormat.progress(current: .nan, duration: 200) == 0)
+    }
+
+    @Test("a touch position maps to a clamped fraction")
+    func fraction() {
+        #expect(MusicTimeFormat.fraction(x: 50, width: 200) == 0.25)
+        #expect(MusicTimeFormat.fraction(x: -10, width: 200) == 0)
+        #expect(MusicTimeFormat.fraction(x: 300, width: 200) == 1)
+        #expect(MusicTimeFormat.fraction(x: 10, width: 0) == 0)
+        #expect(MusicTimeFormat.fraction(x: .nan, width: 200) == 0)
+    }
+
+    @Test("time left counts down and reads -0:00 when unknown")
+    func remaining() {
+        #expect(MusicTimeFormat.remaining(current: 42, duration: 187) == "-2:25")
+        #expect(MusicTimeFormat.remaining(current: 0, duration: 3725) == "-1:02:05")
+        #expect(MusicTimeFormat.remaining(current: 10, duration: 0) == "-0:00")
+        #expect(MusicTimeFormat.remaining(current: 200, duration: 187) == "-0:00")
+        #expect(MusicTimeFormat.remaining(current: .nan, duration: 187) == "-0:00")
     }
 }

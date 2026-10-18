@@ -27,6 +27,11 @@ final class ChromeExtensionManager: NSObject {
     /// Whether the extension clicks "Switch" when YouTube Music asks to listen on this device.
     /// Restated with every request, so a change made while Chrome was closed still lands.
     private(set) var ytMusicAutoSwitch = true
+    /// True while Deci's own YouTube Music player is playing. The extension is told "off" for as
+    /// long as it is, so a YouTube Music tab cannot take the session over; the setting itself is untouched.
+    private(set) var nativeMusicPlaying = false
+    /// What the extension is actually told: the user's choice, unless native playback is on.
+    var effectiveYTMusicAutoSwitch: Bool { ytMusicAutoSwitch && !nativeMusicPlaying }
 
     /// True when per-tab device choices exist that the extension cannot resolve yet
     /// because device names are unreadable.
@@ -333,10 +338,17 @@ final class ChromeExtensionManager: NSObject {
         queueOptions()
     }
 
+    /// Called when Deci's Music player starts or stops playing. Sends only when the state changed.
+    func setNativeMusicPlaying(_ playing: Bool) {
+        guard playing != nativeMusicPlaying else { return }
+        nativeMusicPlaying = playing
+        queueOptions()
+    }
+
     private func queueOptions() {
         queueMessage([
             "type": "SET_OPTIONS",
-            "ytmAutoSwitch": ytMusicAutoSwitch
+            "ytmAutoSwitch": effectiveYTMusicAutoSwitch
         ])
     }
 
