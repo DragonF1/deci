@@ -350,4 +350,45 @@ struct MusicCookieJarTests {
         #expect(!MusicCookieJar(cookies: [cookie("__Secure-3PAPISID", "1", domain: "accounts.google.com")]).hasSignInCookies)
         #expect(MusicCookieJar(cookies: [cookie("SAPISID", "1", domain: "music.youtube.com")]).hasSignInCookies)
     }
+
+    // MARK: - Sign-in snapshot
+
+    @Test("The sign-in snapshot ignores an expiry-only difference")
+    func snapshotIgnoresExpiry() {
+        let early = MusicCookieJar(cookies: [cookie("SAPISID", "v", expires: now.addingTimeInterval(1_000))])
+        let late = MusicCookieJar(cookies: [cookie("SAPISID", "v", expires: now.addingTimeInterval(9_000_000))])
+        let session = MusicCookieJar(cookies: [cookie("SAPISID", "v", expires: nil)])
+        #expect(early.signInSnapshot == late.signInSnapshot)
+        #expect(early.signInSnapshot == session.signInSnapshot)
+    }
+
+    @Test("The sign-in snapshot changes with a value, the secure flag, the domain, the path, an addition or a removal")
+    func snapshotSeesEverythingElse() {
+        let base = MusicCookieJar(cookies: [cookie("SAPISID", "v")])
+        let changed: [MusicCookieJar] = [
+            MusicCookieJar(cookies: [cookie("SAPISID", "other")]),
+            MusicCookieJar(cookies: [cookie("SAPISID", "v", secure: false)]),
+            MusicCookieJar(cookies: [cookie("SAPISID", "v", domain: ".music.youtube.com")]),
+            MusicCookieJar(cookies: [cookie("SAPISID", "v", path: "/youtubei")]),
+            MusicCookieJar(cookies: [cookie("SAPISID", "v"), cookie("LOGIN_INFO", "x")]),
+            MusicCookieJar(cookies: []),
+        ]
+        for jar in changed {
+            #expect(jar.signInSnapshot != base.signInSnapshot)
+        }
+    }
+
+    @Test("The sign-in snapshot reads domain case and an empty path the way the jar matches them")
+    func snapshotNormalisesIdentity() {
+        let plain = MusicCookieJar(cookies: [cookie("SAPISID", "v", domain: ".youtube.com", path: "/")])
+        let shouty = MusicCookieJar(cookies: [cookie("SAPISID", "v", domain: ".YouTube.COM", path: "")])
+        #expect(plain.signInSnapshot == shouty.signInSnapshot)
+    }
+
+    @Test("The sign-in snapshot leaves every other cookie out")
+    func snapshotIgnoresOtherCookies() {
+        let base = MusicCookieJar(cookies: [cookie("SAPISID", "v")])
+        let busy = MusicCookieJar(cookies: [cookie("SAPISID", "v"), cookie("YSC", "1"), cookie("PREF", "2")])
+        #expect(base.signInSnapshot == busy.signInSnapshot)
+    }
 }

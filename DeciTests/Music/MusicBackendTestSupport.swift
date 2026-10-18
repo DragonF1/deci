@@ -25,13 +25,14 @@ nonisolated enum MusicFixtures {
 
 /// An in-memory stand-in for the Keychain item. It counts every operation, so a test can say how
 /// often the real item would have prompted.
-nonisolated final class MemorySecretStore: MusicSecretStore, @unchecked Sendable {
+nonisolated final class MemorySecretStore: MusicSecretStore {
     private struct State {
         var data: Data?
         var loadCount = 0
         var saveCount = 0
         var deleteCount = 0
         var failSaves = false
+        var failDeletes = false
     }
 
     private let state: OSAllocatedUnfairLock<State>
@@ -41,11 +42,17 @@ nonisolated final class MemorySecretStore: MusicSecretStore, @unchecked Sendable
     }
 
     var loadCount: Int { state.withLock { $0.loadCount } }
+    /// Saves that went through; a refused save does not count.
     var saveCount: Int { state.withLock { $0.saveCount } }
+    /// Deletes that went through; a refused delete does not count.
     var deleteCount: Int { state.withLock { $0.deleteCount } }
     var failSaves: Bool {
         get { state.withLock { $0.failSaves } }
         set { state.withLock { $0.failSaves = newValue } }
+    }
+    var failDeletes: Bool {
+        get { state.withLock { $0.failDeletes } }
+        set { state.withLock { $0.failDeletes = newValue } }
     }
 
     /// What the item holds right now, without counting as a read.
@@ -71,7 +78,122 @@ nonisolated final class MemorySecretStore: MusicSecretStore, @unchecked Sendable
         }
     }
 
-    func delete() {
+    func delete() throws {
+        try state.withLock { state in
+            if state.failDeletes { throw KeychainSecretStore.KeychainError(status: -25308) }
+            state.data = nil
+            state.deleteCount += 1
+        }
+    }
+}
+
+/// A counter that hands out strictly increasing numbers from any thread, so a test can say which of two
+/// events on different threads came first.
+nonisolated final class Ticker: Sendable {
+    private let value = OSAllocatedUnfairLock(initialState: 0)
+
+    func next() -> Int {
+        value.withLock { value in
+            value += 1
+            return value
+        }
+    }
+}
+
+/// A store that records every call in the order it landed, stamped from a shared `Ticker`, and notices two
+/// calls running at once, which the real Keychain item must never see from the persister. Each call lingers
+/// briefly so that an overlap would show up.
+nonisolated final class OrderedSecretStore: MusicSecretStore {
+    enum Operation: Equatable, Sendable {
+        case save(Data)
+        case delete
+    }
+
+    struct Landed: Sendable {
+        let operation: Operation
+        /// Taken when the call finished, so it sorts against the tickets a test takes around its own calls.
+        let tick: Int
+    }
+
+    private struct State {
+        var landed: [Landed] = []
+        var running = 0
+        var overlaps = 0
+    }
+
+    private let ticker: Ticker
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    init(ticker: Ticker = Ticker()) {
+        self.ticker = ticker
+    }
+
+    var landed: [Landed] { state.withLock { $0.landed } }
+    var operations: [Operation] { landed.map(\.operation) }
+    /// How many calls began while another was still running.
+    var overlaps: Int { state.withLock { $0.overlaps } }
+
+    func load() -> Data? { nil }
+
+    func save(_ data: Data) throws {
+        record(.save(data))
+    }
+
+    func delete() throws {
+        record(.delete)
+    }
+
+    private func record(_ operation: Operation) {
+        state.withLock { state in
+            state.running += 1
+            if state.running > 1 { state.overlaps += 1 }
+        }
+        usleep(20)
+        state.withLock { state in
+            state.landed.append(Landed(operation: operation, tick: ticker.next()))
+            state.running -= 1
+        }
+    }
+}
+
+/// A store whose saves wait at a gate, to stand in for a Keychain call that is sitting behind a prompt.
+/// `waitUntilSaving` returns once a save is inside the call, `finishOneSave` lets one waiting save through.
+nonisolated final class BlockingSecretStore: MusicSecretStore {
+    private struct State {
+        var data: Data?
+        var saveCount = 0
+        var deleteCount = 0
+    }
+
+    private let entered = DispatchSemaphore(value: 0)
+    private let gate = DispatchSemaphore(value: 0)
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// What the item holds, written when a save gets through the gate.
+    var contents: Data? { state.withLock { $0.data } }
+    var saveCount: Int { state.withLock { $0.saveCount } }
+    var deleteCount: Int { state.withLock { $0.deleteCount } }
+
+    func waitUntilSaving(timeout: TimeInterval = 5) -> Bool {
+        entered.wait(timeout: .now() + timeout) == .success
+    }
+
+    func finishOneSave() {
+        gate.signal()
+    }
+
+    func load() -> Data? { contents }
+
+    func save(_ data: Data) throws {
+        entered.signal()
+        gate.wait()
+        state.withLock { state in
+            state.data = data
+            state.saveCount += 1
+        }
+    }
+
+    func delete() throws {
         state.withLock { state in
             state.data = nil
             state.deleteCount += 1
@@ -80,7 +202,7 @@ nonisolated final class MemorySecretStore: MusicSecretStore, @unchecked Sendable
 }
 
 /// The clock the client reads, advanced by hand.
-nonisolated final class MutableClock: @unchecked Sendable {
+nonisolated final class MutableClock: Sendable {
     private let date: OSAllocatedUnfairLock<Date>
 
     init(_ start: Date = MusicTestJar.now) {
@@ -96,7 +218,7 @@ nonisolated final class MutableClock: @unchecked Sendable {
 
 /// A scheduler that runs nothing by itself: a test moves time forward and the writes that came due
 /// run in order, on the calling thread. It shares the clock the client and persister read.
-nonisolated final class ManualWriteScheduler: MusicWriteScheduler, @unchecked Sendable {
+nonisolated final class ManualWriteScheduler: MusicWriteScheduler {
     private struct Entry {
         let fireAt: Date
         let work: @Sendable () -> Void

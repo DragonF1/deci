@@ -42,9 +42,13 @@ struct InnerTubeClientCookiePersistenceTests {
             client = InnerTubeClient(transport: youtube, secretStore: store, now: { clock.now }, scheduler: scheduler)
         }
 
-        /// A whole second, 90 days out. HTTPCookie judges an Expires header against the real clock and caps it at
-        /// 400 days from now, so a date further away would come back changed and break the comparisons below.
-        static let defaultExpiry = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 + 90 * 86_400).rounded(.down))
+        /// A whole second, 90 days past the test clock, so no test ever sees a cookie lapse under its own clock.
+        /// HTTPCookie judges an Expires header against the real clock too: it drops a date already behind it and
+        /// caps one past 400 days. Starting from whichever clock is later keeps this date clear of both for as
+        /// long as the test clock's date is not hundreds of days ahead of the real one.
+        static let defaultExpiry = Date(
+            timeIntervalSince1970: (max(MusicTestJar.now, Date()).timeIntervalSince1970 + 90 * 86_400).rounded(.down)
+        )
 
         /// A Set-Cookie value for a youtube.com cookie that expires on `expires`.
         static func header(_ name: String, _ value: String, expires: Date = defaultExpiry) -> String {
@@ -58,6 +62,16 @@ struct InnerTubeClientCookiePersistenceTests {
         /// The next search answers by setting `name`, then runs it.
         func rotate(_ name: String, _ value: String, expires: Date = defaultExpiry) async throws {
             youtube.update { $0.searchHeaders = ["Set-Cookie": Self.header(name, value, expires: expires)] }
+            _ = try await client.search("q")
+        }
+
+        /// The next search sets every `(name, value)` pair again with a sliding `Max-Age`, then runs it. HTTPCookie
+        /// resolves that against the real clock, so the same cookie comes back with a new expiry each time.
+        func slide(_ cookies: [(name: String, value: String)]) async throws {
+            let header = cookies
+                .map { "\($0.name)=\($0.value); Domain=.youtube.com; Path=/; Secure; Max-Age=7776000" }
+                .joined(separator: ", ")
+            youtube.update { $0.searchHeaders = ["Set-Cookie": header] }
             _ = try await client.search("q")
         }
 
@@ -142,20 +156,58 @@ struct InnerTubeClientCookiePersistenceTests {
         #expect(try #require(rig.store.storedJar).value(named: name) == "changed-value")
     }
 
-    @Test("A sign-in cookie that is deleted or only gets a new expiry counts as a change")
-    func deletionAndExpiryAreChanges() async throws {
+    @Test("A sign-in cookie that is deleted counts as a change")
+    func deletionIsAChange() async throws {
         let seeded = [MusicTestJar.cookie("LOGIN_INFO", "login"), MusicTestJar.cookie("__Secure-1PSIDTS", "same")]
+        let rig = Rig(store: MusicTestJar.signedInStore(adding: seeded))
+        try await rig.expire("LOGIN_INFO")
+        #expect(rig.store.saveCount == 1)
+        #expect(try #require(rig.store.storedJar).value(named: "LOGIN_INFO") == nil)
+    }
 
-        let deleted = Rig(store: MusicTestJar.signedInStore(adding: seeded))
-        try await deleted.expire("LOGIN_INFO")
-        #expect(deleted.store.saveCount == 1)
-        #expect(try #require(deleted.store.storedJar).value(named: "LOGIN_INFO") == nil)
+    @Test("A sign-in cookie that only gets a new expiry writes nothing at once, and the next write carries the new date")
+    func expiryOnlyChangeMarksTheJarDirty() async throws {
+        let seeded = [MusicTestJar.cookie("__Secure-1PSIDTS", "same")]
+        let rig = Rig(store: MusicTestJar.signedInStore(adding: seeded))
+        try await rig.rotate("__Secure-1PSIDTS", "same")
+        #expect(rig.store.saveCount == 0)
+        #expect(rig.scheduler.pendingCount == 0)
 
-        let renewed = Rig(store: MusicTestJar.signedInStore(adding: seeded))
-        try await renewed.rotate("__Secure-1PSIDTS", "same")
-        #expect(renewed.store.saveCount == 1)
-        let expiry = try #require(renewed.store.storedJar?.cookies.first { $0.name == "__Secure-1PSIDTS" }?.expires)
+        rig.client.flushNow()
+        #expect(rig.store.saveCount == 1)
+        let expiry = try #require(rig.store.storedJar?.cookies.first { $0.name == "__Secure-1PSIDTS" }?.expires)
         #expect(expiry == Rig.defaultExpiry)
+    }
+
+    @Test("Ten responses that re-send unchanged SAPISID and __Secure-1PSIDTS with a Max-Age write the Keychain zero times")
+    func slidingExpiryWritesNothing() async throws {
+        let rig = Rig(store: MusicTestJar.signedInStore(adding: [MusicTestJar.cookie("__Secure-1PSIDTS", "same-psidts")]))
+        let slid = [(name: "SAPISID", value: "sapisid-secret"), (name: "__Secure-1PSIDTS", value: "same-psidts")]
+        for _ in 0..<10 {
+            try await rig.slide(slid)
+        }
+        #expect(rig.store.saveCount == 0)
+        #expect(rig.scheduler.pendingCount == 0)
+
+        // The jar is dirty: the new expiry goes out with the quit flush.
+        rig.client.flushNow()
+        #expect(rig.store.saveCount == 1)
+        let saved = try #require(rig.store.storedJar)
+        let sapisid = try #require(saved.cookies.first { $0.name == "SAPISID" })
+        #expect(try #require(sapisid.expires) < MusicTestJar.farFuture, "the Max-Age date replaced the seeded one")
+    }
+
+    @Test("A real value change among sliding sign-in cookies still writes at once")
+    func valueChangeAmongSlidingCookiesStillWrites() async throws {
+        let rig = Rig()
+        for _ in 0..<3 {
+            try await rig.slide([(name: "SAPISID", value: "sapisid-secret")])
+        }
+        #expect(rig.store.saveCount == 0)
+
+        try await rig.slide([(name: "SAPISID", value: "rotated-sapisid")])
+        #expect(rig.store.saveCount == 1)
+        #expect(try #require(rig.store.storedJar).value(named: "SAPISID") == "rotated-sapisid")
     }
 
     @Test("A sign-in cookie sent again unchanged writes nothing")
@@ -221,13 +273,15 @@ struct InnerTubeClientCookiePersistenceTests {
         #expect(rig.store.deleteCount == 0)
     }
 
-    @Test("Dirty changes are written by themselves 30 minutes later when the app keeps running")
-    func dirtyChangesAreWrittenPeriodically() async throws {
+    @Test("Dirty changes arm no timer: nothing writes them while the app keeps running")
+    func dirtyChangesNeverWriteOnATimer() async throws {
         let rig = Rig()
         try await rig.rotate("YSC", "ysc-1")
-        rig.scheduler.advance(by: 29 * 60)
+        #expect(rig.scheduler.pendingCount == 0)
+        rig.scheduler.advance(by: 24 * 60 * 60)
         #expect(rig.store.saveCount == 0)
-        rig.scheduler.advance(by: 60)
+
+        rig.client.flushNow()
         #expect(rig.store.saveCount == 1)
         #expect(try #require(rig.store.storedJar).value(named: "YSC") == "ysc-1")
     }
@@ -243,6 +297,22 @@ struct InnerTubeClientCookiePersistenceTests {
         rig.client.flushNow()
         #expect(rig.store.saveCount == 1)
         #expect(try #require(rig.store.storedJar).value(named: "__Secure-1PSIDTS") == "fresh")
+    }
+
+    @Test("A refused write arms no retry timer: only the next sign-in change or the quit flush tries again")
+    func refusedWriteArmsNoTimer() async throws {
+        let rig = Rig()
+        rig.store.failSaves = true
+        try await rig.rotate("__Secure-1PSIDTS", "fresh")
+        #expect(rig.scheduler.pendingCount == 0)
+
+        rig.store.failSaves = false
+        rig.scheduler.advance(by: 3 * 60 * 60)
+        #expect(rig.store.saveCount == 0)
+
+        try await rig.rotate("__Secure-1PSIDTS", "fresher")
+        #expect(rig.store.saveCount == 1)
+        #expect(try #require(rig.store.storedJar).value(named: "__Secure-1PSIDTS") == "fresher")
     }
 
     // MARK: - signIn
@@ -322,8 +392,8 @@ struct InnerTubeClientCookiePersistenceTests {
         #expect(rig.store.contents == nil)
     }
 
-    @Test("Sign-out drops the periodic write too")
-    func signOutDropsThePeriodicWrite() async throws {
+    @Test("Sign-out drops dirty data too")
+    func signOutDropsDirtyData() async throws {
         let rig = Rig()
         try await rig.rotate("YSC", "ysc-1")
         await rig.client.signOut()
@@ -332,8 +402,65 @@ struct InnerTubeClientCookiePersistenceTests {
         #expect(rig.store.contents == nil)
     }
 
-    @Test("A response that lands after sign-out leaves nothing to flush")
-    func lateResponseLeavesNothingToFlush() async throws {
+    @Test("A refused delete at sign-out stays owed, and the quit flush deletes the item")
+    func refusedDeleteIsRetriedAtQuit() async throws {
+        let rig = Rig()
+        rig.store.failDeletes = true
+        await rig.client.signOut()
+        #expect(rig.store.deleteCount == 0)
+        #expect(rig.store.contents != nil)
+        #expect(await rig.client.isSignedIn() == false, "this launch is signed out whatever the Keychain said")
+
+        rig.store.failDeletes = false
+        rig.client.flushNow()
+        #expect(rig.store.deleteCount == 1)
+        #expect(rig.store.contents == nil)
+
+        rig.client.flushNow()
+        #expect(rig.store.deleteCount == 1, "settled: nothing more to do")
+    }
+
+    @Test("A sign-in after a refused delete saves the new jar, and the old one is gone for good")
+    func signInAfterRefusedDelete() async throws {
+        let rig = Rig()
+        rig.store.failDeletes = true
+        await rig.client.signOut()
+        rig.store.failDeletes = false
+        try await rig.client.signIn(with: [MusicTestJar.cookie("SAPISID", "second-account")])
+        rig.client.flushNow()
+
+        #expect(rig.store.deleteCount == 0)
+        #expect(rig.store.saveCount == 1)
+        let saved = try #require(rig.store.storedJar)
+        #expect(saved.value(named: "SAPISID") == "second-account")
+        #expect(saved.value(named: "__Secure-3PAPISID") == nil)
+    }
+
+    @Test("A sign-in cookie that arrives after sign-out is dropped by the epoch guard, not saved")
+    func lateSignInCookieAfterSignOutIsDropped() async throws {
+        let gate = MusicTestGate()
+        let rig = Rig()
+        _ = try await rig.client.session()
+        rig.youtube.update {
+            $0.gate = gate
+            $0.searchHeaders = ["Set-Cookie": Rig.header("SAPISID", "late-sapisid")]
+        }
+        let search = Task { try await rig.client.search("a") }
+        #expect(await eventually { rig.youtube.requests(path: "/youtubei/v1/search").count == 1 })
+
+        await rig.client.signOut()
+        await gate.open()
+        _ = try? await search.value
+        rig.client.flushNow()
+
+        // A SAPISID is a sign-in cookie, so a response that got past the guard would have been written at once.
+        #expect(rig.store.saveCount == 0)
+        #expect(rig.store.contents == nil)
+        #expect(await rig.client.isSignedIn() == false)
+    }
+
+    @Test("A response that lands after a second account signed in leaves no stale cookie to flush")
+    func lateResponseAfterSecondSignIn() async throws {
         let gate = MusicTestGate()
         let rig = Rig()
         _ = try await rig.client.session()
@@ -345,12 +472,15 @@ struct InnerTubeClientCookiePersistenceTests {
         #expect(await eventually { rig.youtube.requests(path: "/youtubei/v1/search").count == 1 })
 
         await rig.client.signOut()
+        try await rig.client.signIn(with: [MusicTestJar.cookie("SAPISID", "second-account")])
         await gate.open()
         _ = try? await search.value
         rig.client.flushNow()
 
-        #expect(rig.store.saveCount == 0)
-        #expect(rig.store.contents == nil)
+        #expect(rig.store.saveCount == 1, "only the sign-in; the late response left nothing dirty")
+        let saved = try #require(rig.store.storedJar)
+        #expect(saved.value(named: "SAPISID") == "second-account")
+        #expect(saved.value(named: "YSC") == nil)
     }
 
     @Test("Signing in again after a sign-out writes the new session and only that")

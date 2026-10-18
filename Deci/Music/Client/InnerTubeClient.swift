@@ -69,15 +69,17 @@ actor InnerTubeClient {
         Task { _ = try? await session() }
     }
 
-    /// Deletes the Keychain item and drops every write the persister was holding back.
+    /// Deletes the Keychain item and drops every write the persister was holding back. A delete the Keychain
+    /// refuses is logged and retried by `flushNow()`.
     func signOut() {
         persister.discard()
         jar = MusicCookieJar()
         resetSession()
     }
 
-    /// Writes any cookie change that is still held back. Synchronous and callable from any thread (the
-    /// quit path runs it on the main thread right before the process exits); it never waits for the actor.
+    /// Writes any cookie change that is still held back, and retries a sign-out delete that was refused.
+    /// Synchronous and callable from any thread (the quit path runs it on the main thread right before the
+    /// process exits); it never waits for the actor, nor for a Keychain call that another thread is in.
     nonisolated func flushNow() {
         persister.flushNow()
     }

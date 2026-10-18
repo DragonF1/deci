@@ -62,10 +62,35 @@ struct MusicCookieJar: Codable, Sendable, Equatable {
         value(named: "SAPISID") != nil || value(named: "__Secure-3PAPISID") != nil
     }
 
-    /// The sign-in cookies as they stand. Two snapshots are equal exactly when no sign-in cookie was
-    /// added, removed or changed (value, expiry or any attribute) in between.
-    var signInSnapshot: Set<StoredCookie> {
-        Set(cookies.filter { Self.signInCookieNames.contains($0.name) })
+    /// What makes a sign-in cookie the same cookie with the same meaning: its identity, its value and whether
+    /// it is Secure. The expiry is left out on purpose. A sign-in cookie that is re-sent unchanged with a
+    /// `Max-Age` gets a new expiry on every response, and treating that as a change would write the Keychain
+    /// (and prompt) about once a minute. A new expiry still reaches the Keychain, with the next write.
+    struct SignInCookieState: Hashable {
+        let name: String
+        let domain: String
+        let path: String
+        let value: String
+        let isSecure: Bool
+    }
+
+    /// The sign-in cookies as they stand. Two snapshots are equal exactly when no sign-in cookie was added,
+    /// removed or given another value, domain, path or Secure flag in between; an expiry-only difference is
+    /// not a difference.
+    var signInSnapshot: Set<SignInCookieState> {
+        Set(
+            cookies
+                .filter { Self.signInCookieNames.contains($0.name) }
+                .map {
+                    SignInCookieState(
+                        name: $0.name,
+                        domain: $0.domain.lowercased(),
+                        path: Self.normalizedPath($0.path),
+                        value: $0.value,
+                        isSecure: $0.isSecure
+                    )
+                }
+        )
     }
 
     // MARK: - Sending

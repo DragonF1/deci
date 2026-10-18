@@ -6,7 +6,8 @@ import Security
 protocol MusicSecretStore: Sendable {
     func load() -> Data?
     func save(_ data: Data) throws
-    func delete()
+    /// Removes the item. Throws when the Keychain refuses; an item that is already gone is not a failure.
+    func delete() throws
 }
 
 /// One generic-password item in the classic login keychain (no data-protection keychain,
@@ -71,10 +72,11 @@ struct KeychainSecretStore: MusicSecretStore {
         }
     }
 
-    func delete() {
+    func delete() throws {
         let status = SecItemDelete(query as CFDictionary)
-        if status != errSecSuccess && status != errSecItemNotFound {
+        guard status == errSecSuccess || status == errSecItemNotFound else {
             Self.logger.error("Keychain delete failed: \(status)")
+            throw KeychainError(status: status)
         }
     }
 }
