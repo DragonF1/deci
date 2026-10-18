@@ -7,6 +7,8 @@ import Observation
 @Observable
 final class MusicServiceHost {
     private(set) var service: MusicService?
+    /// Told when native playback starts or stops. Set before or after the service exists.
+    @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
 
     @ObservationIgnored private let makeService: @MainActor () -> MusicService
 
@@ -18,7 +20,9 @@ final class MusicServiceHost {
     func loadIfNeeded() {
         guard service == nil else { return }
         MusicMemoryLog.log("music-open")
-        service = makeService()
+        let service = makeService()
+        service.onNativePlayingChange = { [weak self] playing in self?.onNativePlayingChange?(playing) }
+        self.service = service
     }
 
     /// Quit path: stops playback if the service was ever created.

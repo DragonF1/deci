@@ -2,7 +2,10 @@
 // Test doubles for the Music tab: a scriptable backend, a fake AVPlayer seam and small fixtures.
 
 import Foundation
+import MediaPlayer
 @testable import Deci
+
+// MediaPlayer re-exports AudioToolbox, whose `MusicTrack` and `MusicPlayer` clash with ours: spell them `Deci.MusicTrack` in files that import it.
 
 /// Suspends callers until `open()`; lets a test hold a request in flight.
 actor MusicTestGate {
@@ -28,16 +31,29 @@ actor FakeMusicBackend: MusicBackend {
         let cpn: String
     }
 
+    nonisolated struct MoreRadioCall: Hashable, Sendable {
+        let seed: String
+        let continuation: String
+    }
+
     private var signedIn: Bool
     private var signInError: (any Error)?
-    private var searchResults: [String: [MusicTrack]] = [:]
+    private var searchResults: [String: [Deci.MusicTrack]] = [:]
     private var searchErrors: [String: any Error] = [:]
     private var searchGates: [String: MusicTestGate] = [:]
     private var streams: [String: ResolvedStream] = [:]
     private var resolveErrors: [String: any Error] = [:]
     private var resolveGates: [String: MusicTestGate] = [:]
     private var reportError: (any Error)?
+    private var radioPages: [String: MusicQueuePage] = [:]
+    private var radioErrors: [String: any Error] = [:]
+    private var radioGates: [String: MusicTestGate] = [:]
+    private var morePages: [MoreRadioCall: MusicQueuePage] = [:]
+    private var moreErrors: [MoreRadioCall: any Error] = [:]
+    private var moreGates: [MoreRadioCall: MusicTestGate] = [:]
 
+    private(set) var radioSeeds: [String] = []
+    private(set) var moreRadioCalls: [MoreRadioCall] = []
     private(set) var searchedQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
     private(set) var reportAttempts: [Report] = []
@@ -52,13 +68,27 @@ actor FakeMusicBackend: MusicBackend {
 
     func setSignedIn(_ value: Bool) { signedIn = value }
     func setSignInError(_ error: (any Error)?) { signInError = error }
-    func setSearch(_ query: String, results: [MusicTrack]) { searchResults[query] = results }
+    func setSearch(_ query: String, results: [Deci.MusicTrack]) { searchResults[query] = results }
     func setSearchError(_ query: String, _ error: any Error) { searchErrors[query] = error }
     func setSearchGate(_ query: String, _ gate: MusicTestGate) { searchGates[query] = gate }
     func setStream(_ stream: ResolvedStream) { streams[stream.videoId] = stream }
     func setResolveError(_ videoId: String, _ error: any Error) { resolveErrors[videoId] = error }
     func setResolveGate(_ videoId: String, _ gate: MusicTestGate) { resolveGates[videoId] = gate }
     func setReportError(_ error: (any Error)?) { reportError = error }
+    func setRadio(seed: String, tracks: [Deci.MusicTrack], continuation: String? = nil) {
+        radioPages[seed] = MusicQueuePage(tracks: tracks, continuation: continuation)
+    }
+    func setRadioError(seed: String, _ error: any Error) { radioErrors[seed] = error }
+    func setRadioGate(seed: String, _ gate: MusicTestGate) { radioGates[seed] = gate }
+    func setMoreRadio(seed: String, continuation: String, tracks: [Deci.MusicTrack], next: String? = nil) {
+        morePages[MoreRadioCall(seed: seed, continuation: continuation)] = MusicQueuePage(tracks: tracks, continuation: next)
+    }
+    func setMoreRadioError(seed: String, continuation: String, _ error: any Error) {
+        moreErrors[MoreRadioCall(seed: seed, continuation: continuation)] = error
+    }
+    func setMoreRadioGate(seed: String, continuation: String, _ gate: MusicTestGate) {
+        moreGates[MoreRadioCall(seed: seed, continuation: continuation)] = gate
+    }
 
     // MARK: MusicBackend
 
@@ -75,7 +105,7 @@ actor FakeMusicBackend: MusicBackend {
         signedIn = false
     }
 
-    func search(_ query: String) async throws -> [MusicTrack] {
+    func search(_ query: String) async throws -> [Deci.MusicTrack] {
         searchedQueries.append(query)
         if let gate = searchGates[query] { await gate.wait() }
         if let error = searchErrors[query] { throw error }
@@ -90,11 +120,18 @@ actor FakeMusicBackend: MusicBackend {
     }
 
     func radio(seedVideoId: String) async throws -> MusicQueuePage {
-        MusicQueuePage(tracks: [], continuation: nil)
+        radioSeeds.append(seedVideoId)
+        if let gate = radioGates[seedVideoId] { await gate.wait() }
+        if let error = radioErrors[seedVideoId] { throw error }
+        return radioPages[seedVideoId] ?? MusicQueuePage(tracks: [], continuation: nil)
     }
 
     func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage {
-        MusicQueuePage(tracks: [], continuation: nil)
+        let call = MoreRadioCall(seed: seedVideoId, continuation: continuation)
+        moreRadioCalls.append(call)
+        if let gate = moreGates[call] { await gate.wait() }
+        if let error = moreErrors[call] { throw error }
+        return morePages[call] ?? MusicQueuePage(tracks: [], continuation: nil)
     }
 
     func reportPlayback(trackingURL: URL, cpn: String) async throws {
@@ -138,9 +175,55 @@ final class FakePlaybackEngine: PlaybackEngine {
     }
 }
 
+/// Stands in for MPNowPlayingInfoCenter and MPRemoteCommandCenter: records what the controller asked for.
+@MainActor
+final class FakeNowPlayingSurface: NowPlayingSurface {
+    struct Published {
+        let info: [String: Any]
+        let isPlaying: Bool
+
+        var title: String? { info[MPMediaItemPropertyTitle] as? String }
+        var elapsed: Double? { info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double }
+        var duration: Double? { info[MPMediaItemPropertyPlaybackDuration] as? Double }
+        var rate: Double? { info[MPNowPlayingInfoPropertyPlaybackRate] as? Double }
+    }
+
+    private(set) var published: [Published] = []
+    private(set) var clearCount = 0
+    private(set) var registerCount = 0
+    private(set) var removeCount = 0
+    private var handler: (@MainActor (NowPlayingCommand) -> Void)?
+
+    var last: Published? { published.last }
+    var hasCommands: Bool { handler != nil }
+
+    func setInfo(_ info: [String: Any], isPlaying: Bool) {
+        published.append(Published(info: info, isPlaying: isPlaying))
+    }
+
+    func clearInfo() { clearCount += 1 }
+
+    func registerCommands(_ handler: @escaping @MainActor (NowPlayingCommand) -> Void) {
+        registerCount += 1
+        self.handler = handler
+    }
+
+    func removeCommands() {
+        removeCount += 1
+        handler = nil
+    }
+
+    /// What a media key press does.
+    func send(_ command: NowPlayingCommand) { handler?(command) }
+}
+
 nonisolated enum MusicSamples {
-    static func track(_ id: String = "vid1", title: String = "Song", artist: String = "Artist", seconds: Int? = 200) -> MusicTrack {
-        MusicTrack(videoId: id, title: title, artist: artist, album: nil, durationSeconds: seconds, thumbnailURL: nil)
+    static func track(_ id: String = "vid1", title: String = "Song", artist: String = "Artist", seconds: Int? = 200) -> Deci.MusicTrack {
+        Deci.MusicTrack(videoId: id, title: title, artist: artist, album: nil, durationSeconds: seconds, thumbnailURL: nil)
+    }
+
+    static func tracks(_ ids: String...) -> [Deci.MusicTrack] {
+        ids.map { track($0, title: "Song \($0)") }
     }
 
     static func stream(

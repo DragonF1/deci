@@ -75,6 +75,17 @@ private struct MusicServiceView: View {
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
     @FocusState private var searchFocused: Bool
+    /// The Up next button forces the queue even while a search is on screen.
+    @State private var queueForced = false
+
+    private var searchIsEmpty: Bool {
+        service.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The queue shows when there is one and the search field is empty, or when asked for.
+    private var showsQueue: Bool {
+        !service.queue.isEmpty && (queueForced || searchIsEmpty)
+    }
 
     var body: some View {
         VStack(spacing: DesignTokens.Spacing.sm) {
@@ -87,11 +98,16 @@ private struct MusicSignedInView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            resultsList
+            if showsQueue {
+                queueList
+            } else {
+                resultsList
+            }
 
-            MusicMiniTransport(player: service.player)
+            MusicMiniTransport(service: service)
         }
         .task { searchFocused = true }
+        .onChange(of: service.query) { queueForced = false }
     }
 
     private var searchRow: some View {
@@ -104,7 +120,10 @@ private struct MusicSignedInView: View {
                     .textFieldStyle(.plain)
                     .font(DesignTokens.Typography.rowName)
                     .focused($searchFocused)
-                    .onSubmit { service.search() }
+                    .onSubmit {
+                        queueForced = false
+                        service.search()
+                    }
                 if service.isSearching {
                     ProgressView()
                         .controlSize(.mini)
@@ -120,6 +139,17 @@ private struct MusicSignedInView: View {
                             .strokeBorder(DesignTokens.Colors.glassRowBorder, lineWidth: 0.5)
                     )
             )
+
+            if !service.queue.isEmpty {
+                Button("Up next", systemImage: "list.bullet") {
+                    queueForced.toggle()
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(showsQueue ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
+                .accessibilityAddTraits(showsQueue ? .isSelected : [])
+            }
 
             Button("Sign out") {
                 service.signOut()
@@ -146,6 +176,29 @@ private struct MusicSignedInView: View {
                             isCurrent: service.player.nowPlaying?.videoId == track.videoId
                         ) {
                             service.play(track)
+                        }
+                    }
+                }
+            }
+            .scrollIndicators(.never)
+        }
+    }
+
+    private var queueList: some View {
+        VStack(spacing: DesignTokens.Spacing.xs) {
+            Text("Up next")
+                .font(DesignTokens.Typography.caption)
+                .foregroundStyle(DesignTokens.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(service.queue.fromCurrent) { track in
+                        MusicResultRow(
+                            track: track,
+                            isCurrent: service.queue.current?.videoId == track.videoId
+                        ) {
+                            service.jump(to: track)
                         }
                     }
                 }

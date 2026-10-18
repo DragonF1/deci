@@ -22,12 +22,19 @@ final class MusicPlayer {
     @ObservationIgnored var onTick: (@MainActor (_ position: TimeInterval, _ isPlaying: Bool) -> Void)?
     /// Resolves a new stream for the track whose stream died or expired.
     @ObservationIgnored var onNeedsFreshStream: (@MainActor (MusicTrack) async throws -> ResolvedStream)?
+    /// The track played to its end. Fires before `onStateChange`, so a successor can be started first.
+    @ObservationIgnored var onEnded: (@MainActor () -> Void)?
+    /// The player gave up on the track: recovery failed or was already used.
+    @ObservationIgnored var onFailed: (@MainActor () -> Void)?
+    /// Anything the Now Playing widget or the Chrome auto-Switch cares about changed.
+    @ObservationIgnored var onStateChange: (@MainActor () -> Void)?
 
     @ObservationIgnored private let engine: any PlaybackEngine
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var stream: ResolvedStream?
     @ObservationIgnored private var recoveryUsed = false
-    @ObservationIgnored private var hasEnded = false
+    /// True once the track played to its end, until something restarts or replaces it.
+    @ObservationIgnored private(set) var hasEnded = false
     @ObservationIgnored private var wantsPlay = false
     /// Exposed read-only so tests can await a recovery in flight.
     @ObservationIgnored private(set) var refreshTask: Task<Void, Never>?
@@ -49,13 +56,20 @@ final class MusicPlayer {
         engine.unload()
     }
 
+    /// Playing, or about to: loading, or wanting to play through a stall. False when paused, ended or failed.
+    var isActive: Bool {
+        nowPlaying != nil && (isPlaying || isLoading || wantsPlay)
+    }
+
     // MARK: - Public API
 
     /// Shows the track as loading while its stream is being resolved. Silences whatever was playing.
     func beginLoading(_ track: MusicTrack) {
+        defer { notifyStateChange() }
         teardownCurrent()
         nowPlaying = track
         isLoading = true
+        error = nil
         duration = Double(track.durationSeconds ?? 0)
     }
 
@@ -66,6 +80,7 @@ final class MusicPlayer {
     }
 
     func play() {
+        defer { notifyStateChange() }
         guard nowPlaying != nil, let stream else { return }
         wantsPlay = true
         // A dead or expired stream is replaced before resuming; a new stream carries a new expiry, so this cannot loop.
@@ -84,6 +99,17 @@ final class MusicPlayer {
     func pause() {
         wantsPlay = false
         engine.pause()
+        notifyStateChange()
+    }
+
+    /// Jumps to `seconds`, clamped to the track. Does not change whether it is playing.
+    func seek(to seconds: TimeInterval) {
+        guard nowPlaying != nil, stream != nil, refreshTask == nil, seconds.isFinite else { return }
+        let target = min(max(0, seconds), duration > 0 ? duration : .infinity)
+        hasEnded = false
+        currentTime = target
+        engine.seek(to: target)
+        notifyStateChange()
     }
 
     func toggle() {
@@ -99,6 +125,7 @@ final class MusicPlayer {
         nowPlaying = nil
         isLoading = false
         error = nil
+        notifyStateChange()
     }
 
     // MARK: - Loading
@@ -116,6 +143,11 @@ final class MusicPlayer {
         currentTime = startAt
         duration = stream.durationSeconds ?? Double(track.durationSeconds ?? 0)
         engine.load(stream, startAt: startAt, autoplay: autoplay)
+        notifyStateChange()
+    }
+
+    private func notifyStateChange() {
+        onStateChange?()
     }
 
     private func teardownCurrent() {
@@ -141,6 +173,7 @@ final class MusicPlayer {
         isLoading = true
         error = nil
         engine.pause()
+        notifyStateChange()
         refreshTask = Task { [weak self] in
             let fresh: ResolvedStream?
             do {
@@ -163,7 +196,10 @@ final class MusicPlayer {
     private func fail(_ message: String) {
         isLoading = false
         isPlaying = false
+        wantsPlay = false
         error = message
+        onFailed?()
+        notifyStateChange()
     }
 
     // MARK: - Engine callbacks
@@ -174,6 +210,7 @@ final class MusicPlayer {
     }
 
     private func handle(_ event: PlaybackEngineEvent) {
+        defer { notifyStateChange() }
         switch event {
         case .ready(let engineDuration):
             if let engineDuration { duration = engineDuration }
@@ -187,6 +224,7 @@ final class MusicPlayer {
             isPlaying = false
             isLoading = false
             if duration > 0 { currentTime = duration }
+            onEnded?()
         case .failed:
             guard refreshTask == nil else { return }
             if !recoveryUsed, nowPlaying != nil, onNeedsFreshStream != nil {
