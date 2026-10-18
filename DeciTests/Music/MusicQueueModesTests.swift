@@ -230,12 +230,77 @@ struct MusicQueueModesTests {
         #expect(ids(queue.tracks) == ["a", "b", "c"])
     }
 
-    @Test("wrapping a shuffled queue goes to the first track of the shuffled order")
+    @Test("wrapping a shuffled queue mixes it again, keeps every track and opens the next lap on a different track")
     func wrapToStartShuffled() {
         var queue = shuffled(makeQueue(), seed: 4)
-        let first = queue.tracks[0].videoId
+        let lap = ids(queue.tracks)
         for _ in 0..<(Self.letters.count - 1) { queue.advance() }
-        #expect(queue.wrapToStart()?.videoId == first)
+        var generator = MusicShuffleGenerator(seed: 11)
+        let first = queue.wrapToStart(using: &generator)
+        #expect(first?.videoId == queue.tracks[0].videoId)
+        #expect(queue.currentIndex == 0)
+        #expect(queue.isShuffled)
+        #expect(Set(ids(queue.tracks)) == Set(lap))
+        #expect(queue.tracks.count == lap.count)
+        #expect(ids(queue.tracks) != lap)
+        #expect(first?.videoId != lap.last)
+    }
+
+    @Test("the next lap never opens on the track that just played, whatever the mix")
+    func wrapNeverRepeatsTheLastTrack() {
+        for size in [2, 3, 5] {
+            for seed in 0..<100 {
+                var generator = MusicShuffleGenerator(seed: UInt64(seed))
+                var queue = shuffled(makeQueue(Array(Self.letters.prefix(size))), seed: UInt64(seed) + 500)
+                for _ in 1..<size { queue.advance() }
+                let played = queue.current?.videoId
+                let first = queue.wrapToStart(using: &generator)
+                #expect(first?.videoId != played, "size \(size), seed \(seed)")
+                #expect(queue.current?.videoId == first?.videoId)
+                #expect(Set(ids(queue.tracks)) == Set(Self.letters.prefix(size)))
+            }
+        }
+    }
+
+    @Test("a new lap is a new mix: different seeds give different laps, the same seed the same one")
+    func wrapIsSeeded() {
+        func lap(seed: UInt64) -> [String] {
+            var generator = MusicShuffleGenerator(seed: seed)
+            var queue = shuffled(makeQueue(), seed: 3)
+            for _ in 0..<(Self.letters.count - 1) { queue.advance() }
+            queue.wrapToStart(using: &generator)
+            return ids(queue.tracks)
+        }
+        #expect(lap(seed: 1) == lap(seed: 1))
+        #expect(lap(seed: 1) != lap(seed: 2))
+    }
+
+    @Test("after a wrap, unshuffling still gives the natural order and stays on the current track")
+    func unshuffleAfterWrap() {
+        var queue = shuffled(makeQueue(), seed: 9)
+        for _ in 0..<(Self.letters.count - 1) { queue.advance() }
+        var generator = MusicShuffleGenerator(seed: 2)
+        queue.wrapToStart(using: &generator)
+        let current = queue.current?.videoId
+        queue.unshuffle()
+        #expect(ids(queue.tracks) == Self.letters)
+        #expect(queue.current?.videoId == current)
+        #expect(queue.isShuffled == false)
+    }
+
+    @Test("wrapping an unshuffled queue with a generator does not mix it")
+    func wrapUnshuffledWithGenerator() {
+        var queue = makeQueue(["a", "b", "c"], current: 2)
+        var generator = MusicShuffleGenerator(seed: 5)
+        #expect(queue.wrapToStart(using: &generator)?.videoId == "a")
+        #expect(ids(queue.tracks) == ["a", "b", "c"])
+    }
+
+    @Test("wrapping a shuffled one-track queue stays on that track")
+    func wrapShuffledSingle() {
+        var queue = shuffled(makeQueue(["a"]))
+        var generator = MusicShuffleGenerator(seed: 5)
+        #expect(queue.wrapToStart(using: &generator)?.videoId == "a")
         #expect(queue.currentIndex == 0)
     }
 
@@ -259,47 +324,95 @@ struct MusicQueueModesTests {
         #expect(MusicQueue().hasReachedPageEnd == false)
     }
 
-    @Test("adopting the radio seeds it with the last track, keeps the tracks and the position and has no continuation yet")
+    @Test("a page queue at its end offers the last track as the radio seed and asking changes nothing")
+    func handOverSeed() {
+        let queue = makePageQueue(["a", "b", "c"], tap: "c")
+        #expect(queue.radioHandOverSeed == "c")
+        #expect(queue.source == .page(browseId: "VLPL1"))
+        #expect(queue.seedVideoId == nil)
+        #expect(queue.hasReachedPageEnd)
+    }
+
+    @Test("the hand-over seed is the last track of a shuffled order")
+    func handOverSeedShuffled() {
+        var queue = shuffled(makePageQueue(tap: "a"), seed: 6)
+        for _ in 0..<(Self.letters.count - 1) { queue.advance() }
+        #expect(queue.radioHandOverSeed == queue.tracks.last?.videoId)
+    }
+
+    @Test("a radio queue, a page with more to load, the middle of a page and an empty queue offer no seed")
+    func handOverSeedRefused() {
+        #expect(makeQueue(["a", "b"], current: 1).radioHandOverSeed == nil)
+        #expect(makePageQueue(["a", "b"], tap: "b", continuation: "t1").radioHandOverSeed == nil)
+        #expect(makePageQueue(["a", "b", "c"], tap: "b").radioHandOverSeed == nil)
+        #expect(MusicQueue().radioHandOverSeed == nil)
+    }
+
+    @Test("adopting the radio seeds it, keeps the tracks and the position and has no continuation yet")
     func adoptRadio() {
         var queue = makePageQueue(["a", "b", "c"], tap: "c")
-        let seed = queue.adoptRadioOfLastTrack()
-        #expect(seed == "c")
+        queue.adoptRadio(seedVideoId: "c")
         #expect(queue.source == .radio(seedVideoId: "c"))
         #expect(queue.seedVideoId == "c")
         #expect(queue.continuation == nil)
         #expect(ids(queue.tracks) == ["a", "b", "c"])
         #expect(queue.current?.videoId == "c")
         #expect(queue.hasReachedPageEnd == false)
-    }
-
-    @Test("adopting seeds the radio with the last track of a shuffled order")
-    func adoptRadioShuffled() {
-        var queue = shuffled(makePageQueue(tap: "a"), seed: 6)
-        for _ in 0..<(Self.letters.count - 1) { queue.advance() }
-        let last = queue.tracks.last!.videoId
-        #expect(queue.adoptRadioOfLastTrack() == last)
-    }
-
-    @Test("a radio queue, a page with more to load and an empty queue are not adopted")
-    func adoptRadioRefused() {
-        var radio = makeQueue(["a", "b"], current: 1)
-        #expect(radio.adoptRadioOfLastTrack() == nil)
-        var more = makePageQueue(["a", "b"], tap: "b", continuation: "t1")
-        #expect(more.adoptRadioOfLastTrack() == nil)
-        #expect(more.source == .page(browseId: "VLPL1"))
-        var middle = makePageQueue(["a", "b", "c"], tap: "b")
-        #expect(middle.adoptRadioOfLastTrack() == nil)
-        var empty = MusicQueue()
-        #expect(empty.adoptRadioOfLastTrack() == nil)
+        #expect(queue.radioHandOverSeed == nil)
     }
 
     @Test("pages appended after adopting the radio page on like a radio queue")
     func adoptedRadioPages() {
         var queue = makePageQueue(["a", "b"], tap: "b")
-        queue.adoptRadioOfLastTrack()
+        queue.adoptRadio(seedVideoId: "b")
         queue.append(MusicSamples.tracks("b", "r1", "r2", "r3"), continuation: "m1")
         #expect(ids(queue.tracks) == ["a", "b", "r1", "r2", "r3"])
         #expect(queue.needsMore)
         #expect(queue.source == .radio(seedVideoId: "b"))
+    }
+
+    // MARK: - Loading a shuffled page in full
+
+    @Test("a shuffled page queue asks for its next page whatever is left, and an unshuffled one waits for three")
+    func shuffledPageNeedsMore() {
+        let queue = makePageQueue(tap: "a", continuation: "t1")
+        #expect(queue.needsMore == false)
+        var mixed = shuffled(queue)
+        #expect(mixed.needsMore)
+        mixed.unshuffle()
+        #expect(mixed.needsMore == false)
+    }
+
+    @Test("a shuffled page queue without a continuation has nothing to ask for")
+    func shuffledPageWithoutContinuation() {
+        #expect(shuffled(makePageQueue(tap: "a")).needsMore == false)
+    }
+
+    @Test("a shuffled page queue stops asking once it holds the cap")
+    func shuffledPageCap() {
+        func queue(count: Int) -> MusicQueue {
+            let list = (0..<count).map { "p\($0)" }
+            return shuffled(makePageQueue(list, tap: "p0", continuation: "t1"))
+        }
+        #expect(MusicQueue.fullLoadCap == 2000)
+        #expect(queue(count: MusicQueue.fullLoadCap - 1).needsMore)
+        #expect(queue(count: MusicQueue.fullLoadCap).needsMore == false)
+        #expect(queue(count: MusicQueue.fullLoadCap + 1).needsMore == false)
+    }
+
+    @Test("past the cap a shuffled page queue falls back to asking when three tracks are left")
+    func shuffledPagePastTheCap() {
+        let list = (0..<MusicQueue.fullLoadCap).map { "p\($0)" }
+        var queue = shuffled(makePageQueue(list, tap: "p0", continuation: "t1"))
+        #expect(queue.needsMore == false)
+        for _ in 0..<(MusicQueue.fullLoadCap - 4) { queue.advance() }
+        #expect(queue.upcomingCount == 3)
+        #expect(queue.needsMore)
+    }
+
+    @Test("a shuffled radio queue still waits for three tracks to be left")
+    func shuffledRadioNeedsMore() {
+        let queue = shuffled(makeQueue(continuation: "m1"))
+        #expect(queue.needsMore == false)
     }
 }

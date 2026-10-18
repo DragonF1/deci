@@ -132,6 +132,35 @@ struct MusicPlaylistSortTests {
         #expect(sorted(.artist, ascending: false, list) == ["a", "c", "e", "b", "d"])
     }
 
+    @Test("titles that differ only in case, accents or width tie and keep the playlist order both ways")
+    func foldedTies() {
+        let list = [
+            track("a", title: "Émile"),
+            track("b", title: "emile"),
+            track("c", title: "ÉMILE"),
+            track("d", title: "\u{FF25}mile"),
+            track("e", title: "Zed")
+        ]
+        #expect(sorted(.title, list) == ["a", "b", "c", "d", "e"])
+        #expect(sorted(.title, ascending: false, list) == ["e", "a", "b", "c", "d"])
+    }
+
+    @Test("numbers are still read by value in titles that also have capitals and accents")
+    func numericWithFolding() {
+        let list = [track("a", title: "Étude 10"), track("b", title: "etude 9"), track("c", title: "ÉTUDE 100")]
+        #expect(sorted(.title, list) == ["b", "a", "c"])
+        #expect(sorted(.title, ascending: false, list) == ["c", "a", "b"])
+    }
+
+    @Test("a text sort and a number sort give the same order however often they run on the same songs")
+    func repeatable() {
+        let list = (0..<300).map { track("id\($0)", title: "Tune \(($0 * 37) % 23) é", artist: "Band \($0 % 5)", seconds: ($0 * 13) % 17) }
+        for field in [MusicSortField.title, .artist, .duration] {
+            let sort = MusicPlaylistSort(field: field, ascending: false)
+            #expect(sort.sorted(list) == sort.sorted(list))
+        }
+    }
+
     @Test("songs with no album or no length go last, whichever way it sorts")
     func missingValuesLast() {
         let albums = [track("a", album: nil), track("b", album: "Zed"), track("c", album: ""), track("d", album: "Alpha")]

@@ -47,6 +47,7 @@ struct MusicPlaylistSort: Equatable, Sendable {
 
     /// `tracks` in this order. Text ignores case, accents and width and reads numbers by value; songs that tie
     /// keep the order they had, in both directions; songs with no value for the field go last in both.
+    /// The text of each song is folded once, before the sort, and the comparisons only read numbers by value.
     func sorted(_ tracks: [MusicTrack]) -> [MusicTrack] {
         guard field != .defaultOrder, tracks.count > 1 else { return tracks }
         let keyed = tracks.enumerated().map { Keyed(index: $0.offset, track: $0.element, key: key(of: $0.element)) }
@@ -71,18 +72,14 @@ struct MusicPlaylistSort: Equatable, Sendable {
     }
 
     private enum Key {
+        /// Text with case, accents and width already folded away.
         case text(String)
         case number(Int)
 
         func compare(to other: Key) -> ComparisonResult {
             switch (self, other) {
             case let (.text(left), .text(right)):
-                return left.compare(
-                    right,
-                    options: [.caseInsensitive, .diacriticInsensitive, .numeric, .widthInsensitive],
-                    range: nil,
-                    locale: .current
-                )
+                return left.compare(right, options: [.numeric], range: nil, locale: .current)
             case let (.number(left), .number(right)):
                 return left < right ? .orderedAscending : (left > right ? .orderedDescending : .orderedSame)
             default:
@@ -104,6 +101,6 @@ struct MusicPlaylistSort: Equatable, Sendable {
 
     private static func text(_ value: String?) -> Key? {
         guard let value, !value.isEmpty else { return nil }
-        return .text(value)
+        return .text(value.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current))
     }
 }

@@ -8,6 +8,10 @@ struct MusicQueue: Equatable {
     /// Fetch the next page when this many tracks, or fewer, are left after the current one.
     static let refillThreshold = 3
 
+    /// A shuffled page keeps loading pages until it holds this many tracks, so the mix covers the playlist.
+    /// The playlist sort loads up to the same number.
+    static let fullLoadCap = 2000
+
     /// Where the queue's later pages come from.
     enum Source: Equatable {
         /// The radio seeded from this track; later pages are `moreRadio`.
@@ -48,7 +52,13 @@ struct MusicQueue: Equatable {
     var upcomingCount: Int { upcoming.count }
     var hasNext: Bool { upcomingCount > 0 }
     var hasPrevious: Bool { (currentIndex ?? 0) > 0 }
-    var needsMore: Bool { continuation != nil && upcomingCount <= Self.refillThreshold }
+    var needsMore: Bool {
+        guard continuation != nil else { return false }
+        // A shuffled page loads in full, up to the cap: waiting until three songs are left would mix only
+        // about three songs of each page. A radio has no end, so it keeps the threshold.
+        if isShuffled, case .page = source, tracks.count < Self.fullLoadCap { return true }
+        return upcomingCount <= Self.refillThreshold
+    }
 
     /// A page queue on its last track with no later page to load: a playlist or an album that has run out.
     var hasReachedPageEnd: Bool {
@@ -143,19 +153,38 @@ struct MusicQueue: Equatable {
     /// Loop playlist: back to the first track of the play order.
     @discardableResult
     mutating func wrapToStart() -> MusicTrack? {
-        guard let first = tracks.first else { return nil }
-        currentIndex = 0
-        return first
+        var generator = SystemRandomNumberGenerator()
+        return wrapToStart(using: &generator)
     }
 
-    /// A page queue that has run out carries on as the radio of its last track. The tracks and the position stay,
-    /// later pages are `moreRadio`. Returns the track to seed the radio with, or nil when the queue is not at a page end.
+    /// Loop playlist: back to the first track of the play order. A shuffled queue is mixed again for the new lap,
+    /// and the lap does not open on the track that has just played unless it is the only one.
     @discardableResult
-    mutating func adoptRadioOfLastTrack() -> String? {
-        guard hasReachedPageEnd, let last = tracks.last else { return nil }
-        seedVideoId = last.videoId
-        source = .radio(seedVideoId: last.videoId)
-        return last.videoId
+    mutating func wrapToStart<G: RandomNumberGenerator>(using generator: inout G) -> MusicTrack? {
+        guard !tracks.isEmpty else { return nil }
+        if isShuffled, tracks.count > 1 {
+            let justPlayed = current?.videoId
+            tracks.shuffle(using: &generator)
+            if tracks[0].videoId == justPlayed {
+                tracks.swapAt(0, Int.random(in: 1..<tracks.count, using: &generator))
+            }
+        }
+        currentIndex = 0
+        return tracks[0]
+    }
+
+    /// The track a finished page hands over from: the radio of the last track takes over. Nil unless the queue is a
+    /// page on its last track with no later page to load. Asking changes nothing; the queue switches with `adoptRadio`
+    /// once the radio has answered, so a radio that could not be reached can be asked for again.
+    var radioHandOverSeed: String? {
+        hasReachedPageEnd ? tracks.last?.videoId : nil
+    }
+
+    /// The queue carries on as the radio seeded by `seedVideoId`: the tracks and the position stay, later pages are
+    /// `moreRadio`.
+    mutating func adoptRadio(seedVideoId: String) {
+        self.seedVideoId = seedVideoId
+        source = .radio(seedVideoId: seedVideoId)
     }
 
     /// Mixes what comes after the current track. The tracks before it stay where they are, so Previous still goes

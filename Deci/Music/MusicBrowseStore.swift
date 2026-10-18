@@ -50,8 +50,13 @@ final class MusicBrowseStore {
     /// The sort picked for each playlist this session. A playlist missing here is in its default order.
     private(set) var sorts: [String: MusicPlaylistSort] = [:]
 
-    /// A sort loads songs up to this many, then sorts what it has.
-    static let sortTrackCap = 2000
+    /// A sort loads songs up to this many and sorts the first this-many songs of the playlist. A shuffled queue
+    /// loads up to the same number.
+    static let sortTrackCap = MusicQueue.fullLoadCap
+    /// A sort asks for no more pages than this, whatever they hold.
+    static let sortPageCeiling = 100
+    /// A sort gives up after this many pages in a row that bring no new song.
+    static let sortEmptyPageLimit = 3
 
     @ObservationIgnored private let backend: any MusicBackend
     /// A load names itself with the next number and only lands while it is still the current one for
@@ -353,12 +358,22 @@ final class MusicBrowseStore {
             title: page.title,
             subtitle: page.subtitle,
             thumbnailURL: page.thumbnailURL,
-            tracks: sort.sorted(page.tracks),
+            tracks: sort.sorted(Array(page.tracks.prefix(Self.sortTrackCap))),
             continuation: nil,
             shelves: page.shelves
         )
         sortedPages[browseId] = (sort, sorted)
         return sorted
+    }
+
+    /// How many songs a sort covers when that is only the start of a longer playlist: the loading stopped at the cap,
+    /// or gave up on pages that went nowhere. Nil when the sort covers every song, when there is no sort, and while
+    /// the songs are still loading.
+    func sortedSongLimit(_ browseId: String) -> Int? {
+        guard !sort(for: browseId).isDefault, !loadingAllTracks.contains(browseId),
+              case .loaded(let page)? = pages[browseId] else { return nil }
+        guard page.continuation != nil || page.tracks.count > Self.sortTrackCap else { return nil }
+        return min(page.tracks.count, Self.sortTrackCap)
     }
 
     /// Starts loading what is left of a sorted playlist, unless it is all here already or loading has started.
@@ -374,7 +389,12 @@ final class MusicBrowseStore {
 
     /// Fetches page after page while the playlist is sorted and has more, up to the cap. A page that is already
     /// loading for the list footer is waited for, not asked for twice. A failure goes back to the default order.
+    /// Three more ways end it with what is loaded, so a chain that never ends cannot keep the sort loading: pages
+    /// that bring no new song several times in a row, a continuation that comes round again, and a ceiling on pages.
     private func loadRemainingTracks(_ browseId: String, run: Int) async {
+        var seenTokens = Set<String>()
+        var emptyPagesInARow = 0
+        var pagesAsked = 0
         while pageRuns[browseId] == run, !sort(for: browseId).isDefault,
               case .loaded(let page)? = pages[browseId], let token = page.continuation,
               page.tracks.count < Self.sortTrackCap {
@@ -383,10 +403,18 @@ final class MusicBrowseStore {
                 if loadingMoreTracks.contains(browseId) { break }
                 continue
             }
+            guard pagesAsked < Self.sortPageCeiling, emptyPagesInARow < Self.sortEmptyPageLimit,
+                  seenTokens.insert(token).inserted else { break }
+            pagesAsked += 1
             do {
                 let more = try await backend.moreTracks(browseId: browseId, continuation: token)
                 guard pageRuns[browseId] == run else { return }
                 landMoreTracks(more, browseId: browseId, run: run, token: token)
+                if case .loaded(let landed)? = pages[browseId], landed.tracks.count > page.tracks.count {
+                    emptyPagesInARow = 0
+                } else {
+                    emptyPagesInARow += 1
+                }
             } catch {
                 guard pageRuns[browseId] == run else { return }
                 logger.info("sort load failed: \(MusicService.logDescription(of: error), privacy: .public)")

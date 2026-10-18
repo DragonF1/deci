@@ -142,7 +142,7 @@ actor FakeMusicBackend: MusicBackend {
     func setRadio(seed: String, tracks: [Deci.MusicTrack], continuation: String? = nil) {
         radioPages[seed] = MusicQueuePage(tracks: tracks, continuation: continuation)
     }
-    func setRadioError(seed: String, _ error: any Error) { radioErrors[seed] = error }
+    func setRadioError(seed: String, _ error: (any Error)?) { radioErrors[seed] = error }
     func setRadioGate(seed: String, _ gate: MusicTestGate) { radioGates[seed] = gate }
     func setMoreRadio(seed: String, continuation: String, tracks: [Deci.MusicTrack], next: String? = nil) {
         morePages[MoreRadioCall(seed: seed, continuation: continuation)] = MusicQueuePage(tracks: tracks, continuation: next)

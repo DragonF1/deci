@@ -32,6 +32,7 @@ struct MusicPageView: View {
                         kind: collection.kind,
                         sort: MusicBrowseStore.canSort(page.browseId) ? browse.sort(for: page.browseId) : nil,
                         isLoadingAll: browse.loadingAllTracks.contains(page.browseId),
+                        sortLimit: browse.sortedSongLimit(page.browseId),
                         onPlay: { if let first = page.tracks.first { service.play(first, in: page) } },
                         onShuffle: { service.playShuffled(page) },
                         onPickSort: { browse.pickSort($0, for: page.browseId) }
@@ -126,6 +127,8 @@ struct MusicPageHeader: View {
     var sort: MusicPlaylistSort?
     /// The sort is loading the rest of the songs before it can order them.
     var isLoadingAll = false
+    /// The sort covers only this many songs, the start of a longer playlist. Nil when it covers all of them.
+    var sortLimit: Int?
     let onPlay: () -> Void
     let onShuffle: () -> Void
     var onPickSort: (MusicSortField) -> Void = { _ in }
@@ -187,6 +190,8 @@ struct MusicPageHeader: View {
 
                         if isLoadingAll {
                             loadingAllState
+                        } else if let sortLimit {
+                            sortLimitNote(sortLimit)
                         }
                     }
                     .padding(.top, DesignTokens.Spacing.xs)
@@ -236,6 +241,20 @@ struct MusicPageHeader: View {
     /// Up for ascending and down for descending.
     private static func directionSymbol(_ sort: MusicPlaylistSort) -> String {
         sort.ascending ? "arrow.up" : "arrow.down"
+    }
+
+    /// What the note beside the sort says: the sort did not reach every song of a long playlist.
+    static func sortLimitText(_ count: Int) -> String {
+        count == 1 ? "First song" : "First \(count) songs"
+    }
+
+    private func sortLimitNote(_ count: Int) -> some View {
+        Text(Self.sortLimitText(count))
+            .font(DesignTokens.Typography.caption)
+            .foregroundStyle(DesignTokens.Colors.textTertiary)
+            .lineLimit(1)
+            .layoutPriority(-1)
+            .help("The sort covers only the start of this playlist.")
     }
 
     private var loadingAllState: some View {

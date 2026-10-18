@@ -274,10 +274,15 @@ struct MusicBrowseStoreSortTests {
         let loaded = h.loadedPage("VLBIG")?.tracks.count ?? 0
         #expect(loaded >= MusicBrowseStore.sortTrackCap - 700)
         #expect(loaded < MusicBrowseStore.sortTrackCap + 700)
+        // The sorted list is exactly the first 2000 songs of the playlist, so the note beside the sort is exact.
         let shown = h.store.displayedPage("VLBIG")
         #expect(shown?.continuation == nil)
-        #expect(shown?.tracks.count == loaded)
+        #expect(shown?.tracks.count == MusicBrowseStore.sortTrackCap)
         #expect(shown?.tracks.first?.title.hasPrefix("T") == true)
+        let shownIDs: Set<String> = Set((shown?.tracks ?? []).map { $0.videoId })
+        let firstIDs: Set<String> = Set((h.loadedPage("VLBIG")?.tracks ?? []).prefix(MusicBrowseStore.sortTrackCap).map { $0.videoId })
+        #expect(shownIDs.isSubset(of: firstIDs))
+        #expect(h.store.sortedSongLimit("VLBIG") == MusicBrowseStore.sortTrackCap)
     }
 
     @Test("the cap is 2000 songs")
@@ -298,6 +303,7 @@ struct MusicBrowseStoreSortTests {
         #expect(h.store.displayedPage("VLBIG")?.continuation == nil)
         await h.letLateWorkLand()
         #expect(await h.backend.moreTracksCalls.isEmpty)
+        #expect(h.store.sortedSongLimit("VLBIG") == MusicBrowseStore.sortTrackCap)
     }
 
     @Test("a failed page ends the sort: the songs so far stay in page order and the sort goes back to default")
@@ -436,5 +442,146 @@ struct MusicBrowseStoreSortTests {
         #expect(first?.tracks.first?.videoId == "v1999")
         #expect(first?.tracks.count == MusicBrowseStore.sortTrackCap)
         #expect(h.store.displayedPage("VLBIG") == first)
+        // Exactly 2000 songs and nothing more to load: nothing was left out.
+        #expect(h.store.sortedSongLimit("VLBIG") == nil)
+    }
+
+    // MARK: - Guards on the load-all loop
+
+    @Test("pages that bring no new songs three times in a row end the loading, and the songs so far are sorted")
+    func stopsAfterThreeEmptyPages() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page("VLPL1", tracks: [MusicSamples.track("a", title: "B")], continuation: "t1"))
+        for index in 1...10 {
+            await h.backend.setMoreTracks(
+                browseId: "VLPL1", continuation: "t\(index)",
+                tracks: [MusicSamples.track("a", title: "B")], next: "t\(index + 1)"
+            )
+        }
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        await h.letLateWorkLand()
+
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2", "t3"])
+        #expect(h.store.loadingAllTracks.isEmpty)
+        #expect(h.shownIds("VLPL1") == ["a"])
+        #expect(h.store.sort(for: "VLPL1").field == .title)
+        #expect(h.store.sortedSongLimit("VLPL1") == 1)
+    }
+
+    @Test("a page with new songs resets the count of empty pages")
+    func freshPageResetsTheCount() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page("VLPL1", tracks: [MusicSamples.track("a", title: "Delta")], continuation: "t1"))
+        let dupe = [MusicSamples.track("a", title: "Delta")]
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t1", tracks: dupe, next: "t2")
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t2", tracks: dupe, next: "t3")
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t3", tracks: [MusicSamples.track("b", title: "Alpha")], next: "t4")
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t4", tracks: dupe, next: "t5")
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t5", tracks: dupe, next: "t6")
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t6", tracks: [MusicSamples.track("c", title: "Charlie")], next: nil)
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty && h.shownIds("VLPL1")?.count == 3 })
+
+        #expect(await h.backend.moreTracksCalls.count == 6)
+        #expect(h.shownIds("VLPL1") == ["b", "c", "a"])
+        #expect(h.store.sortedSongLimit("VLPL1") == nil)
+    }
+
+    @Test("a chain of continuations that comes back to one already used ends the loading")
+    func cyclingTokens() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page("VLPL1", tracks: [MusicSamples.track("a", title: "Delta")], continuation: "t1"))
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t1", tracks: [MusicSamples.track("b", title: "Bravo")], next: "t2")
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t2", tracks: [MusicSamples.track("c", title: "Charlie")], next: "t3")
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t3", tracks: [MusicSamples.track("d", title: "Alpha")], next: "t1")
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        await h.letLateWorkLand()
+        h.store.reset()
+
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2", "t3"])
+    }
+
+    @Test("the loading stops at a hard ceiling of pages even when every page has new songs and no token repeats")
+    func pageCeiling() async {
+        let h = SortHarness()
+        let ceiling = MusicBrowseStore.sortPageCeiling
+        await h.backend.setPage(MusicSamples.page("VLPL1", tracks: [MusicSamples.track("a", title: "A")], continuation: "t1"))
+        for index in 1...(ceiling + 20) {
+            await h.backend.setMoreTracks(
+                browseId: "VLPL1", continuation: "t\(index)",
+                tracks: [MusicSamples.track("s\(index)", title: "S\(index)")], next: "t\(index + 1)"
+            )
+        }
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        await h.letLateWorkLand()
+        h.store.reset()
+
+        #expect(ceiling >= 50)
+        #expect(await h.backend.moreTracksCalls.count == ceiling)
+    }
+
+    @Test("a playlist whose pages run out before any guard fires is not marked as cut short")
+    func completePlaylistHasNoLimit() async {
+        let h = SortHarness()
+        await h.openLongPlaylist()
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty && h.shownIds("VLPL1")?.count == 4 })
+        #expect(h.store.sortedSongLimit("VLPL1") == nil)
+    }
+
+    // MARK: - The "first N songs" note
+
+    @Test("with no sort picked there is no limit note, and none while the songs are still loading")
+    func noLimitWithoutSortOrWhileLoading() async {
+        let h = SortHarness()
+        await h.openLongPlaylist()
+        #expect(h.store.sortedSongLimit("VLPL1") == nil)
+
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(h.store.sortedSongLimit("VLPL1") == nil)
+        await gate.open()
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+    }
+
+    @Test("the note reads First 2000 songs, and First song for a single one")
+    func limitText() {
+        #expect(MusicPageHeader.sortLimitText(MusicBrowseStore.sortTrackCap) == "First 2000 songs")
+        #expect(MusicPageHeader.sortLimitText(1) == "First song")
+    }
+
+    @Test("going back to the default order drops the limit note")
+    func defaultOrderDropsTheLimit() async {
+        let h = SortHarness()
+        let first = (0..<700).map { MusicSamples.track("p\($0)", title: "T\(1000 - $0)") }
+        await h.backend.setPage(MusicSamples.page("VLBIG", tracks: first, continuation: "t1"))
+        for (index, token) in ["t1", "t2", "t3"].enumerated() {
+            let page = (0..<700).map { MusicSamples.track("q\(index)_\($0)", title: "U\($0)") }
+            await h.backend.setMoreTracks(browseId: "VLBIG", continuation: token, tracks: page, next: "t\(index + 2)")
+        }
+        h.store.open(MusicSamples.collection("VLBIG"))
+        #expect(await h.until { h.loadedPage("VLBIG") != nil })
+        h.store.pickSort(.title, for: "VLBIG")
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        #expect(h.store.sortedSongLimit("VLBIG") == MusicBrowseStore.sortTrackCap)
+
+        h.store.pickSort(.defaultOrder, for: "VLBIG")
+        #expect(h.store.sortedSongLimit("VLBIG") == nil)
     }
 }
