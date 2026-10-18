@@ -804,7 +804,7 @@ struct MenuBarPopupView: View {
             PermissionBannerView(permission: permission)
         } else if isEditingDevicePriority {
             appEditModeContent
-        } else if audioEngine.displayableApps.isEmpty && chromeManager.chromeTabs.isEmpty {
+        } else if audioEngine.displayableApps.isEmpty && chromeManager.chromeTabs.isEmpty && !showsMusicRow {
             emptyStateView
         } else {
             appsContent(scrollProxy: scrollProxy)
@@ -979,6 +979,12 @@ struct MenuBarPopupView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The YouTube Music row shows only while the Music player has a track loaded. Reading this never creates the
+    /// service, so the Music tab stays lazy until it is first opened.
+    private var showsMusicRow: Bool {
+        musicHost.mixer != nil && musicHost.hasLoadedTrack
+    }
+
     private func appsContent(scrollProxy: ScrollViewProxy) -> some View {
         let presets = audioEngine.settingsManager.getUserPresets()
         let chromeTabs = chromeManager.chromeTabs
@@ -993,11 +999,38 @@ struct MenuBarPopupView: View {
                 }
             }
 
+            if showsMusicRow, let mixer = musicHost.mixer {
+                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
+                    SectionHeader(title: "Music")
+                        .padding(.horizontal, DesignTokens.Spacing.sm)
+                        .padding(.top, audioEngine.displayableApps.isEmpty ? 0 : DesignTokens.Spacing.sm)
+                        .padding(.bottom, 2)
+
+                    MusicMixerRow(
+                        mixer: mixer,
+                        devices: sortedDevices,
+                        deviceIconOverrides: audioEngine.settingsManager.deviceIconOverrides,
+                        defaultDeviceUID: deviceVolumeMonitor.defaultDeviceUID,
+                        isPopupVisible: isPopupVisible,
+                        userPresets: presets,
+                        onSavePreset: { name, settings in
+                            audioEngine.settingsManager.createUserPreset(name: name, settings: settings)
+                        },
+                        onDeleteUserPreset: { id in
+                            audioEngine.settingsManager.deleteUserPreset(id: id)
+                        },
+                        onRenameUserPreset: { id, newName in
+                            audioEngine.settingsManager.updateUserPreset(id: id, name: newName)
+                        }
+                    )
+                }
+            }
+
             if !chromeTabs.isEmpty {
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
                     SectionHeader(title: "Chrome Tabs")
                         .padding(.horizontal, DesignTokens.Spacing.sm)
-                        .padding(.top, audioEngine.displayableApps.isEmpty ? 0 : DesignTokens.Spacing.sm)
+                        .padding(.top, audioEngine.displayableApps.isEmpty && !showsMusicRow ? 0 : DesignTokens.Spacing.sm)
                         .padding(.bottom, 2)
 
                     ForEach(chromeTabs) { tab in

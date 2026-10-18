@@ -105,6 +105,10 @@ final class AudioEngine {
         deviceMonitor.outputDevices
     }
 
+    /// Audio that plays inside Deci's own process (the YouTube Music player), which the process taps never see.
+    /// Told about the global switches and device events below. Weak: the engine does not own it.
+    @ObservationIgnored weak var inProcessAudio: (any InProcessAudioSink)?
+
     func outputVolumeBackend(for deviceID: AudioDeviceID) -> VolumeControlTier {
         deviceVolumeMonitor.outputVolumeBackend(for: deviceID)
     }
@@ -437,6 +441,7 @@ final class AudioEngine {
         deviceVolumeMonitor.onVolumeChanged = { [weak self] deviceID, newVolume in
             guard let self else { return }
             guard let deviceUID = self.deviceMonitor.outputDevices.first(where: { $0.id == deviceID })?.uid else { return }
+            self.inProcessAudio?.deviceVolumeChanged(deviceUID: deviceUID, volume: newVolume)
             let loudnessEnabled = self.settingsManager.appSettings.loudnessCompensationEnabled
             for (_, tap) in self.taps {
                 if tap.currentDeviceUID == deviceUID {
@@ -490,11 +495,13 @@ final class AudioEngine {
 
         deviceMonitor.onDeviceDisconnected = { [weak self] deviceUID, deviceName in
             self?.handleDeviceDisconnected(deviceUID, name: deviceName)
+            self?.inProcessAudio?.outputDevicesChanged()
             self?.bluetoothDeviceMonitor.refresh()
         }
 
         deviceMonitor.onDeviceConnected = { [weak self] deviceUID, deviceName in
             self?.handleDeviceConnected(deviceUID, name: deviceName)
+            self?.inProcessAudio?.outputDevicesChanged()
             self?.bluetoothDeviceMonitor.notifyDeviceAppearedInCoreAudio()
         }
 
@@ -510,6 +517,8 @@ final class AudioEngine {
         }
 
         deviceVolumeMonitor.onDefaultDeviceChanged = { [weak self] newDefaultUID in
+            // Told first and always: the player follows what macOS actually outputs to, whatever the priority logic decides.
+            self?.inProcessAudio?.defaultDeviceChanged(uid: newDefaultUID)
             self?.handleDefaultDeviceChanged(newDefaultUID)
         }
 
@@ -754,6 +763,9 @@ final class AudioEngine {
         // 6. Re-apply from clean settings (re-establishes routing to system default)
         applyPersistedSettings()
 
+        // 7. The in-process player reads the cleared settings back (its own key was cleared in step 1)
+        inProcessAudio?.settingsDidReset()
+
         logger.info("Settings reset: engine state synchronized")
     }
 
@@ -913,12 +925,14 @@ final class AudioEngine {
         for tap in taps.values {
             tap.setAutoEQPreampEnabled(enabled)
         }
+        inProcessAudio?.autoEQPreampChanged(enabled: enabled)
     }
 
     func setLoudnessCompensationEnabled(_ enabled: Bool) {
         for tap in taps.values {
             tap.updateLoudnessCompensation(volume: effectiveLoudnessVolume(for: tap), enabled: enabled)
         }
+        inProcessAudio?.loudnessCompensationChanged(enabled: enabled)
     }
 
     func setLoudnessEqualizationEnabled(_ enabled: Bool) {
@@ -927,14 +941,29 @@ final class AudioEngine {
         for tap in taps.values {
             tap.updateLoudnessEqualization(settings)
         }
+        inProcessAudio?.loudnessEqualizationChanged(enabled: enabled)
     }
 
     /// Apply AutoEQ profile to all taps currently routed to the given device.
     private func applyAutoEQToTaps(for deviceUID: String) {
+        inProcessAudio?.autoEQSelectionChanged(deviceUID: deviceUID)
         for tap in taps.values {
             guard tap.currentDeviceUID == deviceUID else { continue }
             applyAutoEQToTap(tap)
         }
+    }
+
+    /// The AutoEQ profile in effect for audio played on `deviceUID`, from memory. nil when the device does not support
+    /// AutoEQ, has no selection, the selection is off, or the profile is not cached yet (see `resolveActiveAutoEQProfile`).
+    func activeAutoEQProfile(for deviceUID: String) -> AutoEQProfile? {
+        autoEQProfileForActivation(deviceUID: deviceUID)
+    }
+
+    /// Same rules as `activeAutoEQProfile`, but fetches or loads the profile when it is not cached yet.
+    func resolveActiveAutoEQProfile(for deviceUID: String) async -> AutoEQProfile? {
+        guard let device = deviceMonitor.device(for: deviceUID), device.supportsAutoEQ else { return nil }
+        guard let selection = settingsManager.getAutoEQSelection(for: deviceUID), selection.isEnabled else { return nil }
+        return await autoEQProfileManager.resolveProfile(for: selection.profileID)
     }
 
     /// Synchronous in-memory AutoEQ profile lookup. nil = not yet cached.

@@ -18,15 +18,37 @@ final class MusicServiceHost {
         didSet { service?.lyrics.setPopupVisible(isPopupVisible) }
     }
 
+    /// The YouTube Music row's model in the Mixer tab. Lives here, not in the service, so the row's settings load at
+    /// launch and the service stays lazy. nil in tests that do not care about audio.
+    let mixer: MusicMixerState?
+
     @ObservationIgnored private let makeService: @MainActor () -> MusicService
 
     init(
-        makeService: @escaping @MainActor () -> MusicService = {
-            MusicService(backend: MusicBackendLive.live(), lyrics: .live())
-        }
+        mixer: MusicMixerState? = nil,
+        makeService: (@MainActor () -> MusicService)? = nil
     ) {
-        self.makeService = makeService
+        self.mixer = mixer
+        self.makeService = makeService ?? {
+            MusicService(backend: MusicBackendLive.live(), player: MusicServiceHost.makePlayer(mixer: mixer), lyrics: .live())
+        }
         MusicMemoryLog.log("launch")
+    }
+
+    /// The real player. With a mixer its engine runs the mixer's DSP chain and takes its output device, so volume,
+    /// boost, EQ and AutoEQ shape the audio that plays inside Deci's own process.
+    static func makePlayer(mixer: MusicMixerState?) -> MusicPlayer {
+        guard let mixer else { return MusicPlayer() }
+        let engine = AVPlaybackEngine(chain: mixer.chain)
+        mixer.attach(engine: engine)
+        return MusicPlayer(engine: engine)
+    }
+
+    /// A track is loaded in the player, playing or paused, so the Mixer tab shows the YouTube Music row. False before
+    /// the Music tab was ever used: reading it never creates the service.
+    var hasLoadedTrack: Bool {
+        guard let player = service?.player else { return false }
+        return player.nowPlaying != nil && (player.isLoading || player.hasStream)
     }
 
     func loadIfNeeded() {

@@ -339,10 +339,14 @@ final class FakePlaybackEngine: PlaybackEngine {
     private(set) var pauseCount = 0
     private(set) var seeks: [TimeInterval] = []
     private(set) var unloadCount = 0
+    /// Every output device the mixer asked for, in order; nil is the system default.
+    private(set) var outputDevices: [String?] = []
 
     func load(_ stream: ResolvedStream, startAt: TimeInterval, autoplay: Bool) {
         loads.append(Load(stream: stream, startAt: startAt, autoplay: autoplay))
     }
+
+    func setOutputDevice(uid: String?) { outputDevices.append(uid) }
 
     func play() { playCount += 1 }
     func pause() { pauseCount += 1 }

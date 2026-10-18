@@ -1,5 +1,6 @@
 // Deci/Music/Playback/AVPlaybackEngine.swift
 import AVFoundation
+import os
 
 /// What the engine reports back to `MusicPlayer`.
 enum PlaybackEngineEvent: Equatable {
@@ -25,14 +26,39 @@ protocol PlaybackEngine: AnyObject {
     func seek(to seconds: TimeInterval)
     /// Drops the item and every observer.
     func unload()
+    /// Sends the audio to the output device with this UID. nil (or an empty UID) follows the system default output.
+    func setOutputDevice(uid: String?)
 }
 
 /// AVPlayer-backed engine. Observers exist only while an item is loaded.
+///
+/// With a `MusicDSPChain` every item gets an `MTAudioProcessingTap` (volume, boost, EQ, AutoEQ, loudness). The tap is
+/// carried by the item's audio mix, which has to be on the item before the player gets it: an item that is playing
+/// cannot take a mix without a gap, and a sample that skipped the tap would be heard unprocessed. So loading an item
+/// first loads its tracks, builds the mix, and only then hands the item to the player.
 @MainActor
 final class AVPlaybackEngine: PlaybackEngine {
+    /// Builds the audio mix that carries the tap for an asset. nil: the asset cannot be tapped.
+    typealias MixBuilder = @MainActor (AVAsset, MusicDSPChain) async -> AVAudioMix?
+
     var onTick: (@MainActor (TimeInterval, Bool) -> Void)?
     var onEvent: (@MainActor (PlaybackEngineEvent) -> Void)?
 
+    /// Called with the item at the moment it is handed to the player, mix already attached. A test seam.
+    var willInstall: ((AVPlayerItem) -> Void)?
+    /// The item the player holds right now. nil while a load is still building its mix.
+    var currentItem: AVPlayerItem? { player.currentItem }
+    /// How many items played without the tap because it could not be built.
+    private(set) var unprocessedLoadCount = 0
+    /// The output device last asked for. nil is the system default.
+    private(set) var outputDeviceUID: String?
+
+    private static let logger = Logger(subsystem: "com.abraham.Deci", category: "AVPlaybackEngine")
+
+    private let chain: MusicDSPChain?
+    private let makeMix: MixBuilder
+    private var installPending = false
+    private var loggedUnprocessed = false
     private let player = AVPlayer()
     private var timeObserver: Any?
     private var statusObservation: NSKeyValueObservation?
@@ -42,7 +68,15 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var wantsPlay = false
     private var pendingStart: TimeInterval = 0
 
-    init() {
+    /// - Parameters:
+    ///   - chain: The DSP to put on every item. nil plays items as they are (tests, and no mixer).
+    ///   - makeMix: How a mix with the tap is built; replaced in tests.
+    init(
+        chain: MusicDSPChain? = nil,
+        makeMix: @escaping MixBuilder = { asset, chain in await MusicAudioTap.makeAudioMix(for: asset, chain: chain) }
+    ) {
+        self.chain = chain
+        self.makeMix = makeMix
         player.automaticallyWaitsToMinimizeStalling = true
     }
 
@@ -66,7 +100,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         if let userAgent = stream.httpHeaders["User-Agent"] {
             options[AVURLAssetHTTPUserAgentKey] = userAgent
         }
-        let item = AVPlayerItem(asset: AVURLAsset(url: stream.url, options: options))
+        let asset = AVURLAsset(url: stream.url, options: options)
+        let item = AVPlayerItem(asset: asset)
         let knownDuration = Self.knownDuration(of: stream)
         if let knownDuration {
             // Without this the item runs on through the bogus silent half (see `knownDuration(of:)`).
@@ -112,7 +147,43 @@ final class AVPlaybackEngine: PlaybackEngine {
             }
         }
 
+        guard let chain else {
+            install(item)
+            return
+        }
+        installPending = true
+        let makeMix = makeMix
+        Task { @MainActor [weak self] in
+            let mix = await makeMix(asset, chain)
+            // A newer load, an unload or a deinit may have happened while the tracks loaded: that item is dropped.
+            guard let self, self.generation == token else { return }
+            if let mix {
+                item.audioMix = mix
+            } else {
+                self.noteUnprocessed()
+            }
+            self.install(item)
+        }
+    }
+
+    private func install(_ item: AVPlayerItem) {
+        installPending = false
+        willInstall?(item)
         player.replaceCurrentItem(with: item)
+    }
+
+    /// The tap could not be built: the track still plays, without volume, EQ and the rest. Logged once, fixed text.
+    private func noteUnprocessed() {
+        unprocessedLoadCount += 1
+        guard !loggedUnprocessed else { return }
+        loggedUnprocessed = true
+        Self.logger.error("Music audio tap unavailable, playing unprocessed")
+    }
+
+    func setOutputDevice(uid: String?) {
+        let resolved = (uid?.isEmpty ?? true) ? nil : uid
+        outputDeviceUID = resolved
+        player.audioOutputDeviceUniqueID = resolved
     }
 
     /// The stream's own length (YouTube's approxDurationMs, exact to the millisecond), when it has one.
@@ -134,6 +205,11 @@ final class AVPlaybackEngine: PlaybackEngine {
     }
 
     func seek(to seconds: TimeInterval) {
+        if installPending {
+            // The item is not on the player yet: the seek happens when it becomes ready.
+            pendingStart = max(0, seconds)
+            return
+        }
         let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
     }
@@ -172,6 +248,7 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     private func detach() {
         generation += 1
+        installPending = false
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil

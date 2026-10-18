@@ -277,7 +277,11 @@ struct DeciApp: App {
         _menuBarPopupController = State(initialValue: popupController)
         _shortcutsRegistry = State(initialValue: registry)
         _resolver = State(initialValue: resolver)
-        let music = MusicServiceHost()
+        // The YouTube Music row plays inside Deci, where the process taps never reach: the engine tells this model about
+        // the global audio switches and device events instead, and the model shapes the player's own audio.
+        let mixer = MusicMixerState(settings: settings, environment: EngineMusicEnvironment(engine: engine))
+        engine.inProcessAudio = mixer
+        let music = MusicServiceHost(mixer: mixer)
         // Only this boolean reaches Chrome: while Deci plays, the extension stops auto-clicking "Switch".
         music.onNativePlayingChange = { ChromeExtensionManager.shared.setNativeMusicPlaying($0) }
         _musicHost = State(initialValue: music)
