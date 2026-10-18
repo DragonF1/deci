@@ -25,6 +25,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
     private var settingsChangedObserver: NSObjectProtocol?
 
     var hideDelayOverride: Duration?
+    var fullscreenOverride: Bool?
     var frameProvider: () -> NSRect? = { NSScreen.main?.visibleFrame ?? NSScreen.screens.first?.visibleFrame }
     private(set) var showCallCount: Int = 0
     private(set) var showDidUpdatePanel: Bool = false
@@ -74,7 +75,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         showCallCount += 1
         showDidUpdatePanel = false
 
-        guard !isForegroundAppFullscreen() else {
+        guard !(fullscreenOverride ?? isForegroundAppFullscreen()) else {
             logger.debug("Skipping HUD show: foreground app is fullscreen")
             return
         }

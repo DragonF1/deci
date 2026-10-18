@@ -22,7 +22,6 @@ actor InnerTubeClient {
 
     private static let homeURL = URL(string: "https://music.youtube.com/")!
     private static let log = Logger(subsystem: "com.abraham.Deci", category: "MusicClient")
-    private static let signInSuffixes = ["google.com", "youtube.com"]
     private static let trustedHostSuffixes = ["youtube.com"]
 
     private let transport: HTTPTransport
@@ -33,6 +32,9 @@ actor InnerTubeClient {
     private var jar: MusicCookieJar?
     private var cachedSession: (session: InnerTubeSession, fetchedAt: Date)?
     private var bootstrapTask: Task<InnerTubeSession, Error>?
+    /// Bumped by every sign-in and sign-out. A response that left under an older epoch belongs to a
+    /// session that no longer exists, so it must not merge cookies, persist or fill the cache.
+    private var epoch = 0
 
     init(transport: HTTPTransport, secretStore: MusicSecretStore, now: @escaping @Sendable () -> Date = { Date() }) {
         self.transport = transport
@@ -46,16 +48,16 @@ actor InnerTubeClient {
         currentJar().hasSignInCookies
     }
 
-    /// Keeps the Google and YouTube cookies from the sign-in window, stores them, and bootstraps.
-    func signIn(with cookies: [StoredCookie]) async throws {
-        let relevant = cookies.filter { Self.isSignInDomain($0.domain) }
+    /// Keeps only the youtube.com cookies from the sign-in window and stores them. The bootstrap
+    /// runs in the background; a failure there is retried by the first real call.
+    func signIn(with cookies: [StoredCookie]) throws {
+        let relevant = cookies.filter { MusicCookieJar.isYouTubeDomain($0.domain) }
         let newJar = MusicCookieJar(signInCookies: relevant, now: now())
         guard newJar.hasSignInCookies else { throw MusicError.signedOut }
         try secretStore.save(try JSONEncoder().encode(newJar))
         jar = newJar
         resetSession()
-        // Best effort: a failure here is retried by the first real call.
-        _ = try? await session()
+        Task { _ = try? await session() }
     }
 
     func signOut() {
@@ -74,11 +76,12 @@ actor InnerTubeClient {
         if let task = bootstrapTask { return try await task.value }
         let task = Task { try await self.fetchBootstrap() }
         bootstrapTask = task
-        defer { bootstrapTask = nil }
+        defer { if bootstrapTask == task { bootstrapTask = nil } }
         return try await task.value
     }
 
     private func fetchBootstrap() async throws -> InnerTubeSession {
+        let epoch = epoch
         var headers = [
             "User-Agent": MusicAuthHeaders.userAgent,
             "Accept": "text/html,application/xhtml+xml",
@@ -86,7 +89,7 @@ actor InnerTubeClient {
         ]
         if let cookie = currentJar().cookieHeader(for: Self.homeURL, now: now()) { headers["Cookie"] = cookie }
         let response = try await transport.send(HTTPRequest(url: Self.homeURL, method: "GET", headers: headers))
-        absorbCookies(from: response, url: Self.homeURL)
+        absorbCookies(from: response, url: Self.homeURL, epoch: epoch)
         guard (200..<300).contains(response.statusCode) else { throw MusicError.http(response.statusCode) }
 
         let config = InnerTubeParser.bootstrapConfig(fromHTML: String(decoding: response.data, as: UTF8.self))
@@ -95,7 +98,7 @@ actor InnerTubeClient {
             visitorData: config.visitorData,
             playerJSURL: config.playerJSURL
         )
-        if config.clientVersion != nil || config.playerJSURL != nil {
+        if (config.clientVersion != nil || config.playerJSURL != nil), !Task.isCancelled, epoch == self.epoch {
             cachedSession = (session, now())
         }
         Self.log.info("bootstrap ok, client \(session.clientVersion, privacy: .public), player \(session.playerHash ?? "none", privacy: .public)")
@@ -115,6 +118,7 @@ actor InnerTubeClient {
     }
 
     private func resetSession() {
+        epoch += 1
         bootstrapTask?.cancel()
         bootstrapTask = nil
         cachedSession = nil
@@ -162,24 +166,26 @@ actor InnerTubeClient {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         guard Self.isTrusted(trackingURL) else { throw MusicError.parse("tracking url is not an https YouTube url") }
         let session = try await sessionOrFallback()
+        let epoch = epoch
         let url = HistoryURLBuilder.url(trackingURL: trackingURL, cpn: cpn, clientVersion: session.clientVersion)
         guard var headers = authenticatedHeaders(for: url, session: session) else { throw MusicError.signedOut }
         headers["Content-Type"] = nil
         let response = try await transport.send(HTTPRequest(url: url, method: "GET", headers: headers))
-        absorbCookies(from: response, url: url)
+        absorbCookies(from: response, url: url, epoch: epoch)
         guard response.statusCode == 200 || response.statusCode == 204 else { throw Self.error(for: response.statusCode) }
     }
 
     // MARK: - Requests
 
     private func post(_ endpoint: String, session: InnerTubeSession, body: [String: Any]) async throws -> Data {
+        let epoch = epoch
         let url = URL(string: "https://music.youtube.com/youtubei/v1/\(endpoint)?prettyPrint=false")!
         guard let headers = authenticatedHeaders(for: url, session: session) else { throw MusicError.signedOut }
         var payload = body
         payload["context"] = ["client": clientContext(session)]
         let data = try JSONSerialization.data(withJSONObject: payload)
         let response = try await transport.send(HTTPRequest(url: url, method: "POST", headers: headers, body: data))
-        absorbCookies(from: response, url: url)
+        absorbCookies(from: response, url: url, epoch: epoch)
         guard (200..<300).contains(response.statusCode) else { throw Self.error(for: response.statusCode) }
         return response.data
     }
@@ -219,21 +225,18 @@ actor InnerTubeClient {
         return loaded
     }
 
-    private func absorbCookies(from response: HTTPResponse, url: URL) {
+    private func absorbCookies(from response: HTTPResponse, url: URL, epoch: Int) {
+        guard epoch == self.epoch else { return }
         var updated = currentJar()
         guard updated.merge(headerFields: response.headers, for: url, now: now()) else { return }
         jar = updated
+        guard updated.hasSignInCookies else { return }
         do {
             try secretStore.save(try JSONEncoder().encode(updated))
         } catch {
             // The in-memory jar still works for this launch; only the persisted copy is stale.
             Self.log.error("could not persist rotated cookies")
         }
-    }
-
-    private static func isSignInDomain(_ domain: String) -> Bool {
-        let bare = domain.lowercased().drop { $0 == "." }
-        return signInSuffixes.contains { bare == $0 || bare.hasSuffix("." + $0) }
     }
 
     private static func isTrusted(_ url: URL) -> Bool {

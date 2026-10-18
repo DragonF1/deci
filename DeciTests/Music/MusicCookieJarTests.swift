@@ -265,7 +265,7 @@ struct MusicCookieJarTests {
 
     // MARK: - Lookup
 
-    @Test("value(named:) prefers the cookie that matches the URL, then falls back to any domain")
+    @Test("value(named:for:) reads only the cookie that would be sent to the URL")
     func valueLookup() {
         let jar = MusicCookieJar(cookies: [
             cookie("SAPISID", "google", domain: ".google.com"),
@@ -273,9 +273,30 @@ struct MusicCookieJarTests {
             cookie("ONLY_GOOGLE", "g", domain: ".google.com"),
         ])
         #expect(jar.value(named: "SAPISID", for: musicURL, now: now) == "youtube")
-        #expect(jar.value(named: "ONLY_GOOGLE", for: musicURL, now: now) == "g")
-        #expect(jar.value(named: "SAPISID") != nil)
-        #expect(jar.value(named: "missing") == nil)
+        #expect(jar.value(named: "ONLY_GOOGLE", for: musicURL, now: now) == nil)
+        #expect(jar.value(named: "missing", for: musicURL, now: now) == nil)
+    }
+
+    @Test("value(named:) reads only youtube.com cookies")
+    func valueIgnoresGoogleCookies() {
+        let jar = MusicCookieJar(cookies: [
+            cookie("SAPISID", "google", domain: ".google.com"),
+            cookie("ONLY_GOOGLE", "g", domain: "accounts.google.com"),
+            cookie("SAPISID", "music", domain: "music.youtube.com"),
+        ])
+        #expect(jar.value(named: "SAPISID") == "music")
+        #expect(jar.value(named: "ONLY_GOOGLE") == nil)
+        #expect(MusicCookieJar(cookies: [cookie("SAPISID", "google", domain: ".google.com")]).value(named: "SAPISID") == nil)
+    }
+
+    @Test("isYouTubeDomain accepts youtube.com and its subdomains only")
+    func youTubeDomainCheck() {
+        for domain in [".youtube.com", "youtube.com", "music.youtube.com", ".MUSIC.YouTube.com"] {
+            #expect(MusicCookieJar.isYouTubeDomain(domain), "\(domain)")
+        }
+        for domain in [".google.com", "accounts.google.com", "notyoutube.com", ".evil-youtube.com", "youtube.com.evil.net", "", "."] {
+            #expect(!MusicCookieJar.isYouTubeDomain(domain), "\(domain)")
+        }
     }
 
     @Test("value(named:) skips an empty value")
@@ -321,5 +342,12 @@ struct MusicCookieJarTests {
         #expect(!MusicCookieJar(cookies: [cookie("SID", "1")]).hasSignInCookies)
         #expect(MusicCookieJar(cookies: [cookie("SAPISID", "1")]).hasSignInCookies)
         #expect(MusicCookieJar(cookies: [cookie("__Secure-3PAPISID", "1")]).hasSignInCookies)
+    }
+
+    @Test("A SAPISID on google.com is not a sign-in")
+    func googleSapisidIsNotSignedIn() {
+        #expect(!MusicCookieJar(cookies: [cookie("SAPISID", "1", domain: ".google.com")]).hasSignInCookies)
+        #expect(!MusicCookieJar(cookies: [cookie("__Secure-3PAPISID", "1", domain: "accounts.google.com")]).hasSignInCookies)
+        #expect(MusicCookieJar(cookies: [cookie("SAPISID", "1", domain: "music.youtube.com")]).hasSignInCookies)
     }
 }

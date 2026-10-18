@@ -6,8 +6,8 @@ import os
 private let logger = Logger(subsystem: "com.abraham.Deci", category: "Music")
 
 /// The Google sign-in window. The owner types their own credentials into a throwaway web view;
-/// once music.youtube.com is loaded with a session cookie, the Google and YouTube cookies are
-/// handed back and the window closes. Nothing is persisted here.
+/// once music.youtube.com is loaded with a session cookie, the YouTube cookies are handed back
+/// and the window closes. Nothing is persisted here.
 @MainActor
 final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigationDelegate, WKHTTPCookieStoreObserver {
     static let signInURL = URL(string: "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmusic.youtube.com%2F&hl=en")!
@@ -122,19 +122,16 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
         url?.host()?.lowercased() == "music.youtube.com"
     }
 
+    /// The API-hash cookie has to be one that youtube.com owns; a google.com one is no use to the client.
     nonisolated static func hasSessionCookie(_ cookies: [HTTPCookie]) -> Bool {
-        cookies.contains { $0.name == "SAPISID" || $0.name == "__Secure-3PAPISID" }
+        cookies.contains {
+            ($0.name == "SAPISID" || $0.name == "__Secure-3PAPISID") && MusicCookieJar.isYouTubeDomain($0.domain)
+        }
     }
 
-    /// google.com and youtube.com, subdomains included; lookalikes such as notgoogle.com are out.
-    nonisolated static func isRelevantDomain(_ domain: String) -> Bool {
-        var host = domain.lowercased()
-        if host.hasPrefix(".") { host.removeFirst() }
-        return ["google.com", "youtube.com"].contains { host == $0 || host.hasSuffix("." + $0) }
-    }
-
+    /// Only youtube.com cookies leave the window; the Google ones stay in the throwaway web view.
     nonisolated static func harvest(_ cookies: [HTTPCookie]) -> [StoredCookie] {
-        cookies.filter { isRelevantDomain($0.domain) }.map(StoredCookie.init)
+        cookies.filter { MusicCookieJar.isYouTubeDomain($0.domain) }.map(StoredCookie.init)
     }
 
     // MARK: - WKNavigationDelegate

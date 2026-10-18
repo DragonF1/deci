@@ -125,6 +125,8 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var playerJSStatus = 200
         var statsStatus = 204
         var delay: Duration?
+        /// Holds every request until opened. Unlike `delay` it ignores cancellation, like a slow server would.
+        var gate: MusicTestGate?
     }
 
     private struct State {
@@ -154,6 +156,7 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
             return state.config
         }
         if let delay = config.delay { try await Task.sleep(for: delay) }
+        if let gate = config.gate { await gate.wait() }
         let url = request.url
         switch (url.host, url.path) {
         case ("music.youtube.com", "/"):
@@ -215,6 +218,15 @@ nonisolated final class FakeChallengeSolver: ChallengeSolving, @unchecked Sendab
             n: Dictionary(uniqueKeysWithValues: request.nInputs.map { ($0, "N(\($0))") })
         )
     }
+}
+
+/// Polls until `condition` holds, for at most two seconds.
+func eventually(_ condition: () -> Bool) async -> Bool {
+    for _ in 0..<400 {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return condition()
 }
 
 /// A fresh temporary directory for one test.

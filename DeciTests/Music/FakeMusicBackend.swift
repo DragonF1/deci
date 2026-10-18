@@ -86,7 +86,7 @@ actor FakeMusicBackend: MusicBackend {
         resolvedIDs.append(videoId)
         if let gate = resolveGates[videoId] { await gate.wait() }
         if let error = resolveErrors[videoId] { throw error }
-        return streams[videoId] ?? MusicFixtures.stream(videoId: videoId)
+        return streams[videoId] ?? MusicSamples.stream(videoId: videoId)
     }
 
     func reportPlayback(trackingURL: URL, cpn: String) async throws {
@@ -130,7 +130,7 @@ final class FakePlaybackEngine: PlaybackEngine {
     }
 }
 
-nonisolated enum MusicFixtures {
+nonisolated enum MusicSamples {
     static func track(_ id: String = "vid1", title: String = "Song", artist: String = "Artist", seconds: Int? = 200) -> MusicTrack {
         MusicTrack(videoId: id, title: title, artist: artist, album: nil, durationSeconds: seconds, thumbnailURL: nil)
     }

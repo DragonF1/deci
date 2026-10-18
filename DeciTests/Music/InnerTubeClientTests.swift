@@ -3,6 +3,7 @@
 // cookie rotation, session bootstrap and error mapping.
 
 import Foundation
+import os
 import Testing
 @testable import Deci
 
@@ -111,19 +112,43 @@ struct InnerTubeClientTests {
         #expect(await client.isSignedIn() == false)
     }
 
-    @Test("signIn stores the Google and YouTube cookies, drops the rest, and bootstraps")
-    func signInStoresAndBootstraps() async throws {
-        let youtube = FakeYouTube()
+    @Test("signIn stores only the YouTube cookies: no Google ones, nothing unrelated")
+    func signInStoresYouTubeCookiesOnly() async throws {
         let store = MemorySecretStore()
-        let client = makeClient(youtube, store: store)
-        let cookies = MusicTestJar.signedInCookies() + [MusicTestJar.cookie("tracker", "x", domain: ".example.com")]
+        let client = makeClient(store: store)
+        let cookies = MusicTestJar.signedInCookies() + [
+            MusicTestJar.cookie("tracker", "x", domain: ".example.com"),
+            MusicTestJar.cookie("NID", "g", domain: "accounts.google.com"),
+        ]
         try await client.signIn(with: cookies)
 
         #expect(await client.isSignedIn())
         #expect(store.saveCount == 1)
         let saved = try JSONDecoder().decode(MusicCookieJar.self, from: try #require(store.load()))
         #expect(saved.value(named: "SAPISID") == "sapisid-secret")
-        #expect(saved.value(named: "tracker") == nil)
+        #expect(Set(saved.cookies.map(\.name)) == ["SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID"])
+        #expect(saved.cookies.allSatisfy { $0.domain == ".youtube.com" })
+    }
+
+    @Test("signIn starts the bootstrap but returns once the cookies are saved")
+    func signInDoesNotWaitForBootstrap() async throws {
+        let gate = MusicTestGate()
+        let youtube = FakeYouTube { $0.gate = gate }
+        let store = MemorySecretStore()
+        let client = makeClient(youtube, store: store)
+        let returned = OSAllocatedUnfairLock(initialState: false)
+        let signIn = Task {
+            try await client.signIn(with: MusicTestJar.signedInCookies())
+            returned.withLock { $0 = true }
+        }
+
+        let finished = await eventually { returned.withLock { $0 } }
+        await gate.open()
+        try await signIn.value
+
+        #expect(finished)
+        #expect(store.saveCount == 1)
+        _ = try await client.session()
         #expect(youtube.requests(path: "/").count == 1)
     }
 
@@ -133,6 +158,20 @@ struct InnerTubeClientTests {
         let client = makeClient(store: store)
         await #expect(throws: MusicError.signedOut) {
             try await client.signIn(with: [MusicTestJar.cookie("SID", "x", domain: ".google.com")])
+        }
+        #expect(store.saveCount == 0)
+        #expect(await client.isSignedIn() == false)
+    }
+
+    @Test("signIn refuses a SAPISID that only exists on google.com")
+    func signInGoogleOnlySapisid() async {
+        let store = MemorySecretStore()
+        let client = makeClient(store: store)
+        await #expect(throws: MusicError.signedOut) {
+            try await client.signIn(with: [
+                MusicTestJar.cookie("SAPISID", "g", domain: ".google.com"),
+                MusicTestJar.cookie("__Secure-3PAPISID", "g3", domain: "accounts.google.com"),
+            ])
         }
         #expect(store.saveCount == 0)
         #expect(await client.isSignedIn() == false)
@@ -248,6 +287,48 @@ struct InnerTubeClientTests {
         await #expect(throws: MusicError.http(500)) { try await client.session() }
     }
 
+    @Test("A bootstrap that finishes after a sign-out is not cached")
+    func staleBootstrapIsNotCached() async throws {
+        let gate = MusicTestGate()
+        let youtube = FakeYouTube { $0.gate = gate }
+        let client = makeClient(youtube)
+        let stale = Task { try await client.session() }
+        #expect(await eventually { youtube.requests(path: "/").count == 1 })
+
+        await client.signOut()
+        await gate.open()
+        _ = try? await stale.value
+        youtube.update { $0.gate = nil }
+        _ = try await client.session()
+
+        #expect(youtube.requests(path: "/").count == 2)
+    }
+
+    @Test("A stale bootstrap finishing does not hide a newer one in flight")
+    func staleBootstrapKeepsTheNewerTask() async throws {
+        let staleGate = MusicTestGate()
+        let freshGate = MusicTestGate()
+        let youtube = FakeYouTube { $0.gate = staleGate }
+        let client = makeClient(youtube)
+        let stale = Task { try await client.session() }
+        #expect(await eventually { youtube.requests(path: "/").count == 1 })
+
+        await client.signOut()
+        youtube.update { $0.gate = freshGate }
+        let fresh = Task { try await client.session() }
+        #expect(await eventually { youtube.requests(path: "/").count == 2 })
+
+        await staleGate.open()
+        _ = try? await stale.value
+        let joiner = Task { try await client.session() }
+        try await Task.sleep(for: .milliseconds(50))
+        await freshGate.open()
+        _ = try await fresh.value
+        _ = try await joiner.value
+
+        #expect(youtube.requests(path: "/").count == 2)
+    }
+
     // MARK: - Cookie rotation
 
     @Test("Set-Cookie on a response replaces the stored cookie and is persisted")
@@ -298,6 +379,68 @@ struct InnerTubeClientTests {
         let store = MusicTestJar.signedInStore()
         store.failSaves = true
         #expect(try await makeClient(youtube, store: store).search("a").count == 6)
+    }
+
+    private static let rotation = "Domain=.youtube.com; Path=/; Secure; Expires=Wed, 01 Jan 2031 00:00:00 GMT"
+
+    @Test("A response that lands after signOut neither merges its cookies nor persists them")
+    func lateResponseAfterSignOut() async throws {
+        let gate = MusicTestGate()
+        let youtube = FakeYouTube()
+        let store = MusicTestJar.signedInStore()
+        let client = makeClient(youtube, store: store)
+        _ = try await client.session()
+        youtube.update {
+            $0.gate = gate
+            $0.searchHeaders = ["Set-Cookie": "SAPISID=late-rotation; \(Self.rotation)"]
+        }
+        let search = Task { try await client.search("a") }
+        #expect(await eventually { youtube.requests(path: "/youtubei/v1/search").count == 1 })
+
+        await client.signOut()
+        await gate.open()
+        _ = try? await search.value
+
+        #expect(store.load() == nil)
+        #expect(store.saveCount == 0)
+        #expect(await client.isSignedIn() == false)
+    }
+
+    @Test("A response from the previous session cannot overwrite a newer sign-in")
+    func lateResponseAfterSignIn() async throws {
+        let gate = MusicTestGate()
+        let youtube = FakeYouTube()
+        let store = MusicTestJar.signedInStore()
+        let client = makeClient(youtube, store: store)
+        _ = try await client.session()
+        youtube.update {
+            $0.gate = gate
+            $0.searchHeaders = ["Set-Cookie": "SAPISID=old-rotation; \(Self.rotation)"]
+        }
+        let search = Task { try await client.search("a") }
+        #expect(await eventually { youtube.requests(path: "/youtubei/v1/search").count == 1 })
+
+        try await client.signIn(with: [MusicTestJar.cookie("SAPISID", "new-sapisid")])
+        await gate.open()
+        _ = try? await search.value
+
+        let saved = try JSONDecoder().decode(MusicCookieJar.self, from: try #require(store.load()))
+        #expect(saved.value(named: "SAPISID") == "new-sapisid")
+        #expect(store.saveCount == 1)
+    }
+
+    @Test("A jar left without SAPISID or __Secure-3PAPISID is never persisted")
+    func jarWithoutSapisidIsNotPersisted() async throws {
+        let deleted = "Domain=.youtube.com; Path=/; Max-Age=0; Secure"
+        let youtube = FakeYouTube {
+            $0.searchHeaders = ["Set-Cookie": "SAPISID=; \(deleted), __Secure-3PAPISID=; \(deleted)"]
+        }
+        let store = MusicTestJar.signedInStore()
+        _ = try await makeClient(youtube, store: store).search("a")
+
+        #expect(store.saveCount == 0)
+        let stored = try JSONDecoder().decode(MusicCookieJar.self, from: try #require(store.load()))
+        #expect(stored.hasSignInCookies)
     }
 
     // MARK: - Errors

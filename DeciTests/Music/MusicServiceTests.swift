@@ -41,7 +41,7 @@ private struct Harness {
     }
 
     /// Plays `track` and waits until the player has loaded its stream.
-    func startPlaying(_ track: MusicTrack = MusicFixtures.track()) async {
+    func startPlaying(_ track: MusicTrack = MusicSamples.track()) async {
         service.play(track)
         await service.playTask?.value
     }
@@ -97,7 +97,7 @@ struct MusicServiceAuthTests {
     @Test("harvested cookies go to the backend and flip to signedIn")
     func signInSuccess() async {
         let h = Harness(signedIn: false)
-        let cookies = [StoredCookie(MusicFixtures.cookie("SAPISID", domain: ".google.com"))]
+        let cookies = [StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))]
         h.service.signIn()
         h.probe.completion?(cookies)
         await h.service.signInTask?.value
@@ -132,7 +132,7 @@ struct MusicServiceAuthTests {
         let h = Harness(signedIn: false)
         await h.backend.setSignInError(MusicError.http(403))
         h.service.signIn()
-        h.probe.completion?([StoredCookie(MusicFixtures.cookie("SAPISID", domain: ".google.com"))])
+        h.probe.completion?([StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))])
         await h.service.signInTask?.value
 
         #expect(h.service.authState == .signedOut)
@@ -143,7 +143,7 @@ struct MusicServiceAuthTests {
     func signOut() async {
         let h = Harness()
         await h.service.refreshAuth()
-        await h.backend.setSearch("q", results: [MusicFixtures.track()])
+        await h.backend.setSearch("q", results: [MusicSamples.track()])
         h.service.query = "q"
         h.service.search()
         await h.service.searchTask?.value
@@ -181,7 +181,7 @@ struct MusicServiceSearchTests {
     @Test("search fills the results from the backend")
     func searchFillsResults() async {
         let h = Harness()
-        let tracks = [MusicFixtures.track("a", title: "A"), MusicFixtures.track("b", title: "B")]
+        let tracks = [MusicSamples.track("a", title: "A"), MusicSamples.track("b", title: "B")]
         await h.backend.setSearch("daft punk", results: tracks)
 
         h.service.query = "daft punk"
@@ -206,7 +206,7 @@ struct MusicServiceSearchTests {
     @Test("an empty query clears the results and skips the backend")
     func emptyQueryClears() async {
         let h = Harness()
-        await h.backend.setSearch("x", results: [MusicFixtures.track()])
+        await h.backend.setSearch("x", results: [MusicSamples.track()])
         h.service.query = "x"
         h.service.search()
         await h.service.searchTask?.value
@@ -224,8 +224,8 @@ struct MusicServiceSearchTests {
     func newerSearchWins() async {
         let h = Harness()
         let gate = MusicTestGate()
-        let slow = [MusicFixtures.track("slow")]
-        let fast = [MusicFixtures.track("fast")]
+        let slow = [MusicSamples.track("slow")]
+        let fast = [MusicSamples.track("fast")]
         await h.backend.setSearch("one", results: slow)
         await h.backend.setSearchGate("one", gate)
         await h.backend.setSearch("two", results: fast)
@@ -244,7 +244,7 @@ struct MusicServiceSearchTests {
         #expect(h.service.isSearching == false)
     }
 
-    @Test("a signedOut error flips authState and shows no error line")
+    @Test("a signedOut error wipes the backend session, flips authState and shows no error line")
     func searchSignedOut() async {
         let h = Harness()
         await h.service.refreshAuth()
@@ -253,17 +253,38 @@ struct MusicServiceSearchTests {
         h.service.query = "q"
         h.service.search()
         await h.service.searchTask?.value
+        await h.service.signOutTask?.value
 
         #expect(h.service.authState == .signedOut)
         #expect(h.service.lastError == nil)
         #expect(h.service.isSearching == false)
+        #expect(await h.backend.signOutCount == 1)
+        #expect(await h.backend.isSignedIn() == false)
+    }
+
+    @Test("a cancelled search is dropped without an error line")
+    func searchCancelledIsSilent() async {
+        let errors: [any Error] = [CancellationError(), URLError(.cancelled)]
+        for error in errors {
+            let h = Harness()
+            await h.service.refreshAuth()
+            await h.backend.setSearchError("q", error)
+
+            h.service.query = "q"
+            h.service.search()
+            await h.service.searchTask?.value
+
+            #expect(h.service.lastError == nil)
+            #expect(h.service.isSearching == false)
+            #expect(h.service.authState == .signedIn)
+        }
     }
 
     @Test("other errors become one short line and keep the old results")
     func searchFailure() async {
         let h = Harness()
         await h.service.refreshAuth()
-        let tracks = [MusicFixtures.track()]
+        let tracks = [MusicSamples.track()]
         await h.backend.setSearch("ok", results: tracks)
         h.service.query = "ok"
         h.service.search()
@@ -288,7 +309,7 @@ struct MusicServicePlaybackTests {
     @Test("play resolves the stream and hands it to the player")
     func playResolvesAndLoads() async {
         let h = Harness()
-        let track = MusicFixtures.track("abc", title: "Aerodynamic")
+        let track = MusicSamples.track("abc", title: "Aerodynamic")
         h.service.play(track)
         #expect(h.player.nowPlaying == track)
         #expect(h.player.isLoading)
@@ -302,17 +323,61 @@ struct MusicServicePlaybackTests {
         #expect(h.player.nowPlaying == track)
     }
 
-    @Test("a signedOut error from resolve flips authState and stops the player")
+    @Test("a signedOut error from resolve wipes the backend session, flips authState and stops the player")
     func playSignedOut() async {
         let h = Harness()
         await h.service.refreshAuth()
         await h.backend.setResolveError("abc", MusicError.signedOut)
 
-        await h.startPlaying(MusicFixtures.track("abc"))
+        await h.startPlaying(MusicSamples.track("abc"))
+        await h.service.signOutTask?.value
 
         #expect(h.service.authState == .signedOut)
         #expect(h.player.nowPlaying == nil)
         #expect(h.engine.loads.isEmpty)
+        #expect(await h.backend.signOutCount == 1)
+        #expect(await h.backend.isSignedIn() == false)
+    }
+
+    @Test("a signedOut error while the stream is being refreshed signs out too")
+    func refreshSignedOut() async {
+        let h = Harness()
+        await h.service.refreshAuth()
+        await h.startPlaying(MusicSamples.track("abc"))
+        await h.backend.setResolveError("abc", MusicError.signedOut)
+
+        h.engine.emit(.failed)
+        await h.player.refreshTask?.value
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(await h.backend.signOutCount == 1)
+    }
+
+    @Test("a cancelled resolve is dropped without an error line")
+    func playCancelledIsSilent() async {
+        let errors: [any Error] = [CancellationError(), URLError(.cancelled)]
+        for error in errors {
+            let h = Harness()
+            await h.backend.setResolveError("abc", error)
+
+            await h.startPlaying(MusicSamples.track("abc"))
+
+            #expect(h.service.lastError == nil)
+            #expect(h.player.nowPlaying == nil)
+        }
+    }
+
+    @Test("a cancelled stream refresh shows no error line")
+    func refreshCancelledIsSilent() async {
+        let h = Harness()
+        await h.startPlaying(MusicSamples.track("abc"))
+        await h.backend.setResolveError("abc", URLError(.cancelled))
+
+        h.engine.emit(.failed)
+        await h.player.refreshTask?.value
+
+        #expect(h.service.lastError == nil)
     }
 
     @Test("an unplayable track shows YouTube's reason and clears the player")
@@ -320,7 +385,7 @@ struct MusicServicePlaybackTests {
         let h = Harness()
         await h.backend.setResolveError("abc", MusicError.unplayable("This video is private"))
 
-        await h.startPlaying(MusicFixtures.track("abc"))
+        await h.startPlaying(MusicSamples.track("abc"))
 
         #expect(h.service.lastError == "This video is private")
         #expect(h.player.nowPlaying == nil)
@@ -333,9 +398,9 @@ struct MusicServicePlaybackTests {
         let gate = MusicTestGate()
         await h.backend.setResolveGate("old", gate)
 
-        h.service.play(MusicFixtures.track("old"))
+        h.service.play(MusicSamples.track("old"))
         let stale = h.service.playTask
-        await h.startPlaying(MusicFixtures.track("new"))
+        await h.startPlaying(MusicSamples.track("new"))
         await gate.open()
         await stale?.value
 
@@ -347,8 +412,8 @@ struct MusicServicePlaybackTests {
     func historyPingOnce() async {
         let h = Harness()
         let trackingURL = URL(string: "https://music.example.test/stats?ev=7")!
-        await h.backend.setStream(MusicFixtures.stream(videoId: "abc", trackingURL: trackingURL))
-        await h.startPlaying(MusicFixtures.track("abc"))
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: trackingURL))
+        await h.startPlaying(MusicSamples.track("abc"))
 
         h.listen(seconds: 29.5)
         #expect(h.service.reportTask == nil)
@@ -392,10 +457,10 @@ struct MusicServicePlaybackTests {
     @Test("each play gets its own CPN and its own ping")
     func newCPNPerPlay() async {
         let h = Harness()
-        await h.startPlaying(MusicFixtures.track("a"))
+        await h.startPlaying(MusicSamples.track("a"))
         h.listen(seconds: 31)
         await h.service.reportTask?.value
-        await h.startPlaying(MusicFixtures.track("b"))
+        await h.startPlaying(MusicSamples.track("b"))
         h.listen(seconds: 31)
         await h.service.reportTask?.value
 
@@ -408,7 +473,7 @@ struct MusicServicePlaybackTests {
     @Test("replaying the same track starts a fresh session")
     func replayStartsFreshSession() async {
         let h = Harness()
-        let track = MusicFixtures.track("a")
+        let track = MusicSamples.track("a")
         await h.startPlaying(track)
         h.listen(seconds: 20)
         await h.startPlaying(track)
@@ -422,11 +487,54 @@ struct MusicServicePlaybackTests {
     @Test("a stream without a tracking URL sends no ping")
     func noTrackingURL() async {
         let h = Harness()
-        await h.backend.setStream(MusicFixtures.stream(videoId: "abc", trackingURL: nil))
-        await h.startPlaying(MusicFixtures.track("abc"))
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: nil))
+        await h.startPlaying(MusicSamples.track("abc"))
         h.listen(seconds: 60)
         #expect(h.service.reportTask == nil)
         #expect(await h.backend.reportAttempts.isEmpty)
+    }
+
+    @Test("a tracking URL that arrives after 30 s still earns the one ping")
+    func lateTrackingURLPings() async {
+        let h = Harness()
+        let trackingURL = URL(string: "https://music.example.test/stats?ev=9")!
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: nil))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 40)
+        #expect(h.service.reportTask == nil)
+
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: trackingURL))
+        h.engine.emit(.failed)
+        await h.player.refreshTask?.value
+        await h.service.reportTask?.value
+
+        let reports = await h.backend.reportAttempts
+        #expect(reports.count == 1)
+        #expect(reports.first?.url == trackingURL)
+        #expect(isValidCPN(reports.first?.cpn ?? ""))
+
+        h.listen(seconds: 60, from: 40)
+        await h.service.reportTask?.value
+        #expect(await h.backend.reportAttempts.count == 1)
+    }
+
+    @Test("a tracking URL that arrives before 30 s waits for the threshold")
+    func earlyTrackingURLWaits() async {
+        let h = Harness()
+        let trackingURL = URL(string: "https://music.example.test/stats?ev=9")!
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: nil))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 10)
+
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: trackingURL))
+        h.engine.emit(.failed)
+        await h.player.refreshTask?.value
+        #expect(h.service.reportTask == nil)
+
+        h.listen(seconds: 60, from: 10)
+        await h.service.reportTask?.value
+        let reports = await h.backend.reportAttempts
+        #expect(reports.map(\.url) == [trackingURL])
     }
 
     @Test("a failing ping is not retried")
@@ -450,7 +558,7 @@ struct MusicServicePlaybackTests {
     @Test("a dead stream is re-resolved through the backend once")
     func recoveryResolvesAgain() async {
         let h = Harness()
-        await h.startPlaying(MusicFixtures.track("abc"))
+        await h.startPlaying(MusicSamples.track("abc"))
         h.engine.tick(12, playing: true)
 
         h.engine.emit(.failed)
@@ -532,7 +640,7 @@ struct MusicServiceHostTests {
         let host = makeHost(counter)
         host.loadIfNeeded()
         let service = try #require(host.service)
-        service.play(MusicFixtures.track())
+        service.play(MusicSamples.track())
         await service.playTask?.value
         #expect(service.player.nowPlaying != nil)
 
@@ -573,7 +681,7 @@ struct MusicPlayerTests {
         init(fresh: Result<ResolvedStream, any Error>? = nil) {
             let engine = self.engine
             let clock = self.clock
-            let streams = FreshStreams(fresh ?? .success(MusicFixtures.stream(expiresAt: clock.now.addingTimeInterval(3600))))
+            let streams = FreshStreams(fresh ?? .success(MusicSamples.stream(expiresAt: clock.now.addingTimeInterval(3600))))
             self.fresh = streams
             let player = MusicPlayer(engine: engine, now: { clock.now })
             player.onNeedsFreshStream = { track in
@@ -584,8 +692,8 @@ struct MusicPlayerTests {
             self.player = player
         }
 
-        func load(_ track: MusicTrack = MusicFixtures.track(), expiresIn seconds: TimeInterval = 3600) {
-            let stream = MusicFixtures.stream(videoId: track.videoId, expiresAt: clock.now.addingTimeInterval(seconds))
+        func load(_ track: MusicTrack = MusicSamples.track(), expiresIn seconds: TimeInterval = 3600) {
+            let stream = MusicSamples.stream(videoId: track.videoId, expiresAt: clock.now.addingTimeInterval(seconds))
             player.load(stream: stream, track: track)
         }
     }
@@ -618,11 +726,11 @@ struct MusicPlayerTests {
     @Test("beginLoading shows the track and silences the previous one")
     func beginLoading() {
         let rig = Rig()
-        rig.load(MusicFixtures.track("old"))
+        rig.load(MusicSamples.track("old"))
         rig.engine.tick(30, playing: true)
         let before = rig.engine.unloadCount
 
-        rig.player.beginLoading(MusicFixtures.track("next", seconds: 245))
+        rig.player.beginLoading(MusicSamples.track("next", seconds: 245))
 
         #expect(rig.engine.unloadCount == before + 1)
         #expect(rig.player.nowPlaying?.videoId == "next")
@@ -748,11 +856,11 @@ struct MusicPlayerTests {
         let rig = Rig()
         let gate = MusicTestGate()
         rig.fresh.gate = gate
-        rig.load(MusicFixtures.track("old"))
+        rig.load(MusicSamples.track("old"))
         rig.engine.emit(.failed)
         let stale = rig.player.refreshTask
 
-        rig.load(MusicFixtures.track("new"))
+        rig.load(MusicSamples.track("new"))
         await gate.open()
         await stale?.value
 
@@ -897,43 +1005,39 @@ struct MusicSignInHelperTests {
         #expect(Controller.isMusicHost(nil) == false)
     }
 
-    @Test("SAPISID or __Secure-3PAPISID marks a session")
+    @Test("SAPISID or __Secure-3PAPISID on a youtube.com domain marks a session")
     func sessionCookie() {
-        let sapisid = MusicFixtures.cookie("SAPISID", domain: ".google.com")
-        let secure = MusicFixtures.cookie("__Secure-3PAPISID", domain: ".youtube.com")
-        let other = MusicFixtures.cookie("NID", domain: ".google.com")
+        let sapisid = MusicSamples.cookie("SAPISID", domain: ".youtube.com")
+        let secure = MusicSamples.cookie("__Secure-3PAPISID", domain: "music.youtube.com")
+        let other = MusicSamples.cookie("NID", domain: ".youtube.com")
         #expect(Controller.hasSessionCookie([sapisid]))
         #expect(Controller.hasSessionCookie([other, secure]))
         #expect(Controller.hasSessionCookie([other]) == false)
         #expect(Controller.hasSessionCookie([]) == false)
     }
 
-    @Test("domains: google.com and youtube.com with subdomains, nothing lookalike")
-    func relevantDomains() {
-        #expect(Controller.isRelevantDomain(".google.com"))
-        #expect(Controller.isRelevantDomain("google.com"))
-        #expect(Controller.isRelevantDomain("accounts.google.com"))
-        #expect(Controller.isRelevantDomain(".youtube.com"))
-        #expect(Controller.isRelevantDomain("music.youtube.com"))
-        #expect(Controller.isRelevantDomain(".GOOGLE.com"))
-        #expect(Controller.isRelevantDomain("notgoogle.com") == false)
-        #expect(Controller.isRelevantDomain("google.com.evil.test") == false)
-        #expect(Controller.isRelevantDomain(".example.com") == false)
-        #expect(Controller.isRelevantDomain("") == false)
+    @Test("a SAPISID that only exists on google.com is not a session yet")
+    func googleSessionCookieIsNotEnough() {
+        let google = MusicSamples.cookie("SAPISID", domain: ".google.com")
+        let googleSecure = MusicSamples.cookie("__Secure-3PAPISID", domain: "accounts.google.com")
+        #expect(Controller.hasSessionCookie([google, googleSecure]) == false)
+        #expect(Controller.hasSessionCookie([google, MusicSamples.cookie("SAPISID", domain: ".youtube.com")]))
     }
 
-    @Test("harvest keeps only Google and YouTube cookies and maps every field")
+    @Test("harvest keeps only YouTube cookies and maps every field")
     func harvest() throws {
-        let keep = MusicFixtures.cookie("SAPISID", domain: ".google.com")
-        let keepYT = MusicFixtures.cookie("VISITOR_INFO1_LIVE", domain: ".youtube.com")
-        let drop = MusicFixtures.cookie("tracker", domain: ".ads.example.com")
+        let keep = MusicSamples.cookie("SAPISID", domain: ".youtube.com")
+        let keepMusic = MusicSamples.cookie("VISITOR_INFO1_LIVE", domain: "music.youtube.com")
+        let dropGoogle = MusicSamples.cookie("SID", domain: ".google.com")
+        let dropAccounts = MusicSamples.cookie("NID", domain: "accounts.google.com")
+        let drop = MusicSamples.cookie("tracker", domain: ".ads.example.com")
 
-        let stored = Controller.harvest([keep, drop, keepYT])
+        let stored = Controller.harvest([dropGoogle, keep, drop, dropAccounts, keepMusic])
 
         #expect(stored.map(\.name) == ["SAPISID", "VISITOR_INFO1_LIVE"])
         let first = try #require(stored.first)
         #expect(first.value == "v")
-        #expect(first.domain == ".google.com")
+        #expect(first.domain == ".youtube.com")
         #expect(first.path == "/")
     }
 }

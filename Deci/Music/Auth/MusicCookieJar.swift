@@ -1,8 +1,8 @@
 import Foundation
 
-/// The Google sign-in cookies, kept as plain values so they can be Codable, Sendable and
-/// stored as one Keychain item. The jar holds cookies for every domain the sign-in touched
-/// (google.com and youtube.com) and only ever sends the ones that match a request's host.
+/// The YouTube sign-in cookies, kept as plain values so they can be Codable, Sendable and
+/// stored as one Keychain item. Callers keep only youtube.com cookies; the jar sends the ones
+/// that match a request's host.
 struct MusicCookieJar: Codable, Sendable, Equatable {
     private(set) var cookies: [StoredCookie]
 
@@ -30,15 +30,20 @@ struct MusicCookieJar: Codable, Sendable, Equatable {
 
     // MARK: - Lookup
 
-    /// The first non-empty cookie with this name, from any domain.
-    func value(named name: String) -> String? {
-        cookies.first { $0.name == name && !$0.value.isEmpty }?.value
+    /// True for youtube.com and its subdomains, with or without the leading dot.
+    static func isYouTubeDomain(_ domain: String) -> Bool {
+        let domain = domain.lowercased().drop(while: { $0 == "." })
+        return domain == "youtube.com" || domain.hasSuffix(".youtube.com")
     }
 
-    /// Prefers a cookie that would be sent to `url`, then falls back to any domain.
+    /// The first non-empty youtube.com cookie with this name.
+    func value(named name: String) -> String? {
+        cookies.first { Self.isYouTubeDomain($0.domain) && $0.name == name && !$0.value.isEmpty }?.value
+    }
+
+    /// The non-empty cookie with this name that would be sent to `url`.
     func value(named name: String, for url: URL, now: Date) -> String? {
-        let sent = matching(url, now: now).first { $0.name == name && !$0.value.isEmpty }
-        return sent?.value ?? value(named: name)
+        matching(url, now: now).first { $0.name == name && !$0.value.isEmpty }?.value
     }
 
     /// True when the jar holds what the SAPISIDHASH authorization is built from.

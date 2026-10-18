@@ -37,9 +37,7 @@ actor StreamResolver {
         let source = try await playerSource(hash: hash, jsURL: jsURL)
 
         let response = try await client.player(videoId: videoId, signatureTimestamp: source.sts)
-        guard response.status == "OK" else {
-            throw MusicError.unplayable(response.reason ?? response.status)
-        }
+        guard response.status == "OK" else { throw Self.error(for: response) }
         guard let format = FormatPicker.pick(from: response.formats) else { throw MusicError.noAudioFormat }
 
         let plan = try StreamURLBuilder.plan(for: format)
@@ -69,6 +67,14 @@ actor StreamResolver {
             playbackTrackingURL: response.playbackTrackingURL,
             httpHeaders: ["User-Agent": MusicAuthHeaders.userAgent]
         )
+    }
+
+    /// LOGIN_REQUIRED means the session died, unless the reason names an age gate or a private
+    /// video: signing in again would not lift those, so they stay a plain unplayable track.
+    private static func error(for response: PlayerResponse) -> MusicError {
+        let reason = response.reason ?? response.status
+        let isTrackGate = reason.range(of: #"\b(age|private)\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+        return response.status == "LOGIN_REQUIRED" && !isTrackGate ? .signedOut : .unplayable(reason)
     }
 
     /// The cached signatureTimestamp when this build was seen before; otherwise one download of the

@@ -209,7 +209,11 @@ final class MusicService {
     private func resolveFreshStream(for track: MusicTrack) async throws -> ResolvedStream {
         do {
             let stream = try await backend.resolve(videoId: track.videoId)
-            if session?.trackingURL == nil { session?.trackingURL = stream.playbackTrackingURL }
+            if session?.trackingURL == nil, let url = stream.playbackTrackingURL {
+                session?.trackingURL = url
+                // The 30 s may have passed while there was nowhere to send the ping.
+                if session?.accumulator.claim() == true, let cpn = session?.cpn { reportHistory(url: url, cpn: cpn) }
+            }
             return stream
         } catch {
             handle(error)
@@ -222,17 +226,13 @@ final class MusicService {
     /// Fed by the player every 0.5 s. Pings YouTube's history once after 30 s of real listening.
     func handlePlaybackTick(position: TimeInterval, isPlaying: Bool) {
         guard session != nil else { return }
-        guard session?.accumulator.record(position: position, isPlaying: isPlaying) == true,
-              let current = session else { return }
-        reportHistory(current)
+        let url = session?.trackingURL
+        guard session?.accumulator.record(position: position, isPlaying: isPlaying, canFire: url != nil) == true,
+              let url, let cpn = session?.cpn else { return }
+        reportHistory(url: url, cpn: cpn)
     }
 
-    private func reportHistory(_ session: Session) {
-        guard let url = session.trackingURL else {
-            logger.info("history ping skipped: no tracking URL")
-            return
-        }
-        let cpn = session.cpn
+    private func reportHistory(url: URL, cpn: String) {
         reportTask = Task { [backend] in
             do {
                 try await backend.reportPlayback(trackingURL: url, cpn: cpn)
@@ -257,13 +257,20 @@ final class MusicService {
     // MARK: - Errors
 
     private func handle(_ error: any Error) {
+        guard !Self.isCancellation(error) else { return }
         if let musicError = error as? MusicError, case .signedOut = musicError {
+            // The session is dead: forget its cookies so the next launch does not start from them.
             authState = .signedOut
             lastError = nil
+            signOutTask = Task { [backend] in await backend.signOut() }
             return
         }
         logger.error("music request failed: \(Self.logDescription(of: error), privacy: .public)")
         lastError = Self.message(for: error)
+    }
+
+    private static func isCancellation(_ error: any Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     /// The short line shown in the UI.

@@ -164,13 +164,61 @@ struct StreamResolverTests {
 
     @Test("A non-OK playability status is unplayable with YouTube's reason")
     func unplayable() async {
-        let body = (try? MusicFixtures.data("player-login-required.json")) ?? Data()
-        let harness = makeHarness(youtube: FakeYouTube { $0.playerBody = body })
+        let json = #"{"playabilityStatus":{"status":"UNPLAYABLE","reason":"Video unavailable"}}"#
+        let harness = makeHarness(youtube: FakeYouTube { $0.playerBody = Data(json.utf8) })
         defer { finish(harness) }
-        await #expect(throws: MusicError.unplayable("Sign in to confirm you are not a bot")) {
+        await #expect(throws: MusicError.unplayable("Video unavailable")) {
             try await harness.resolver.resolve(videoId: Self.videoId)
         }
         #expect(harness.solver.requests.isEmpty)
+    }
+
+    @Test("LOGIN_REQUIRED means the session is dead")
+    func loginRequiredIsSignedOut() async {
+        let body = (try? MusicFixtures.data("player-login-required.json")) ?? Data()
+        let harness = makeHarness(youtube: FakeYouTube { $0.playerBody = body })
+        defer { finish(harness) }
+        await #expect(throws: MusicError.signedOut) {
+            try await harness.resolver.resolve(videoId: Self.videoId)
+        }
+        #expect(harness.solver.requests.isEmpty)
+    }
+
+    @Test("LOGIN_REQUIRED without a reason is still a dead session")
+    func loginRequiredWithoutReason() async {
+        let json = #"{"playabilityStatus":{"status":"LOGIN_REQUIRED"}}"#
+        let harness = makeHarness(youtube: FakeYouTube { $0.playerBody = Data(json.utf8) })
+        defer { finish(harness) }
+        await #expect(throws: MusicError.signedOut) { try await harness.resolver.resolve(videoId: Self.videoId) }
+    }
+
+    @Test("An age gate stays unplayable: signing in again would not help")
+    func ageGateIsUnplayable() async {
+        for reason in ["Sign in to confirm your age", "This video is age-restricted", "Confirm your AGE to continue"] {
+            let json = #"{"playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"\#(reason)"}}"#
+            let harness = makeHarness(youtube: FakeYouTube { $0.playerBody = Data(json.utf8) })
+            defer { finish(harness) }
+            await #expect(throws: MusicError.unplayable(reason)) {
+                try await harness.resolver.resolve(videoId: Self.videoId)
+            }
+        }
+    }
+
+    @Test("A private video stays unplayable: signing in again would not help")
+    func privateVideoIsUnplayable() async {
+        let reason = "This video is private"
+        let json = #"{"playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"\#(reason)"}}"#
+        let harness = makeHarness(youtube: FakeYouTube { $0.playerBody = Data(json.utf8) })
+        defer { finish(harness) }
+        await #expect(throws: MusicError.unplayable(reason)) { try await harness.resolver.resolve(videoId: Self.videoId) }
+    }
+
+    @Test("Only the word age marks an age gate")
+    func ageInsideAnotherWordIsNotAnAgeGate() async {
+        let json = #"{"playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"Sign in to manage this page"}}"#
+        let harness = makeHarness(youtube: FakeYouTube { $0.playerBody = Data(json.utf8) })
+        defer { finish(harness) }
+        await #expect(throws: MusicError.signedOut) { try await harness.resolver.resolve(videoId: Self.videoId) }
     }
 
     @Test("A response with only WebM audio has no audio format")

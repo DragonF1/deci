@@ -14,8 +14,9 @@ struct PlaybackTimeAccumulator: Equatable {
     private(set) var hasFired = false
     private var lastPosition: TimeInterval?
 
-    /// Feeds one tick. Returns true exactly once per session, on the tick that reaches the threshold.
-    mutating func record(position: TimeInterval, isPlaying: Bool) -> Bool {
+    /// Feeds one tick. Returns true exactly once per session, on the first tick at or past the
+    /// threshold where `canFire` is true. While it is false the one-shot stays unspent.
+    mutating func record(position: TimeInterval, isPlaying: Bool, canFire: Bool = true) -> Bool {
         guard position.isFinite else { return false }
         defer { lastPosition = position }
         guard isPlaying, let last = lastPosition else { return false }
@@ -24,6 +25,11 @@ struct PlaybackTimeAccumulator: Equatable {
         guard delta > 0, delta <= Self.maxDelta else { return false }
 
         playedSeconds += delta
+        return canFire && claim()
+    }
+
+    /// Spends the one-shot when the threshold is already reached. True only the first time.
+    mutating func claim() -> Bool {
         guard !hasFired, playedSeconds >= Self.threshold else { return false }
         hasFired = true
         return true

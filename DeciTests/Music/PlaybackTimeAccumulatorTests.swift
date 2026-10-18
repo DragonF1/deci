@@ -15,13 +15,14 @@ struct PlaybackTimeAccumulatorTests {
         _ accumulator: inout PlaybackTimeAccumulator,
         seconds: TimeInterval,
         from start: TimeInterval = 0,
-        isPlaying: Bool = true
+        isPlaying: Bool = true,
+        canFire: Bool = true
     ) -> (fired: Int, end: TimeInterval) {
         var position = start
         var fired = 0
         for _ in 0..<Int(seconds / 0.5) {
             position += 0.5
-            if accumulator.record(position: position, isPlaying: isPlaying) { fired += 1 }
+            if accumulator.record(position: position, isPlaying: isPlaying, canFire: canFire) { fired += 1 }
         }
         return (fired, position)
     }
@@ -207,5 +208,65 @@ struct PlaybackTimeAccumulatorTests {
         _ = accumulator.record(position: 0, isPlaying: true)
         _ = accumulator.record(position: 0.5, isPlaying: true)
         #expect(accumulator.playedSeconds == 0.5)
+    }
+
+    @Test("crossing the threshold without permission keeps the one-shot")
+    func blockedCrossingKeepsTheShot() {
+        var accumulator = PlaybackTimeAccumulator()
+        _ = accumulator.record(position: 0, isPlaying: true, canFire: false)
+        let result = play(&accumulator, seconds: 40, canFire: false)
+        #expect(result.fired == 0)
+        #expect(accumulator.playedSeconds == 40)
+        #expect(accumulator.hasFired == false)
+    }
+
+    @Test("the next playing tick fires once as soon as permission arrives")
+    func permissionArrivesOnATick() {
+        var accumulator = PlaybackTimeAccumulator()
+        _ = accumulator.record(position: 0, isPlaying: true, canFire: false)
+        let end = play(&accumulator, seconds: 31, canFire: false).end
+        let first = accumulator.record(position: end + 0.5, isPlaying: true)
+        let second = accumulator.record(position: end + 1, isPlaying: true)
+        #expect(first)
+        #expect(second == false)
+        #expect(accumulator.hasFired)
+    }
+
+    @Test("claim is false before the threshold and leaves the shot alone")
+    func claimBeforeThreshold() {
+        var accumulator = PlaybackTimeAccumulator()
+        _ = accumulator.record(position: 0, isPlaying: true)
+        let end = play(&accumulator, seconds: 29.5).end
+        let early = accumulator.claim()
+        let crossed = tick(&accumulator, end + 0.5)
+        #expect(early == false)
+        #expect(crossed)
+    }
+
+    @Test("claim after the threshold is true exactly once and blocks the tick")
+    func claimAfterThreshold() {
+        var accumulator = PlaybackTimeAccumulator()
+        _ = accumulator.record(position: 0, isPlaying: true, canFire: false)
+        let end = play(&accumulator, seconds: 31, canFire: false).end
+        let first = accumulator.claim()
+        let second = accumulator.claim()
+        let tickFired = tick(&accumulator, end + 0.5)
+        #expect(first)
+        #expect(second == false)
+        #expect(tickFired == false)
+    }
+
+    @Test("reset gives claim a fresh shot")
+    func claimAfterReset() {
+        var accumulator = PlaybackTimeAccumulator()
+        _ = accumulator.record(position: 0, isPlaying: true)
+        _ = play(&accumulator, seconds: 31)
+        accumulator.reset()
+        let empty = accumulator.claim()
+        _ = accumulator.record(position: 0, isPlaying: true)
+        _ = play(&accumulator, seconds: 30, canFire: false)
+        let fresh = accumulator.claim()
+        #expect(empty == false)
+        #expect(fresh)
     }
 }
