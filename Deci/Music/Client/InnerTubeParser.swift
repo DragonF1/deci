@@ -5,6 +5,8 @@ struct BootstrapConfig: Sendable, Equatable {
     var clientVersion: String?
     var visitorData: String?
     var playerJSURL: URL?
+    /// Whether the page was served to a brand channel. History pings land on this identity.
+    var isBrandChannel: Bool?
 }
 
 struct PlayerFormat: Sendable, Equatable {
@@ -50,8 +52,16 @@ enum InnerTubeParser {
         return BootstrapConfig(
             clientVersion: string(merged["INNERTUBE_CLIENT_VERSION"]) ?? string(client?["clientVersion"]),
             visitorData: string(merged["VISITOR_DATA"]) ?? string(client?["visitorData"]),
-            playerJSURL: jsPath.flatMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL }
+            playerJSURL: jsPath.flatMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL },
+            isBrandChannel: string(merged["DATASYNC_ID"]).flatMap(isBrandChannel(dataSyncId:))
         )
+    }
+
+    /// `DATASYNC_ID` reads `<brand id>||<user id>` on a brand channel and `<user id>||` on the
+    /// account's own channel. Nil when it is neither shape.
+    static func isBrandChannel(dataSyncId: String) -> Bool? {
+        guard let separator = dataSyncId.range(of: "||"), separator.lowerBound > dataSyncId.startIndex else { return nil }
+        return separator.upperBound < dataSyncId.endIndex
     }
 
     /// The JSON object literal of every `ytcfg.set({...})` call, found by balancing braces

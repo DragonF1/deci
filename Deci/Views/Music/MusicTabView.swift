@@ -173,7 +173,8 @@ private struct MusicSignedInView: View {
                     ForEach(service.results) { track in
                         MusicResultRow(
                             track: track,
-                            isCurrent: service.player.nowPlaying?.videoId == track.videoId
+                            isCurrent: service.player.nowPlaying?.videoId == track.videoId,
+                            isPlaying: service.player.nowPlaying?.videoId == track.videoId && service.player.isPlaying
                         ) {
                             service.play(track)
                         }
@@ -196,7 +197,8 @@ private struct MusicSignedInView: View {
                     ForEach(service.queue.fromCurrent) { track in
                         MusicResultRow(
                             track: track,
-                            isCurrent: service.queue.current?.videoId == track.videoId
+                            isCurrent: service.queue.current?.videoId == track.videoId,
+                            isPlaying: service.queue.current?.videoId == track.videoId && service.player.isPlaying
                         ) {
                             service.jump(to: track)
                         }
@@ -211,12 +213,28 @@ private struct MusicSignedInView: View {
 private struct MusicResultRow: View {
     let track: MusicTrack
     let isCurrent: Bool
+    /// True only on the current row while audio plays, so play and pause redraw one row. The
+    /// speaker animates then and holds still while paused.
+    let isPlaying: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: DesignTokens.Spacing.sm) {
                 MusicThumbnail(url: track.thumbnailURL, size: 40)
+                    .overlay {
+                        if isCurrent {
+                            ZStack {
+                                Color.black.opacity(0.45)
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isPlaying)
+                            }
+                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius))
+                            .accessibilityHidden(true)
+                        }
+                    }
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(track.title)
@@ -241,7 +259,7 @@ private struct MusicResultRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(track.title), \(track.artist)")
+        .accessibilityLabel(isPlaying ? "\(track.title), \(track.artist), playing" : "\(track.title), \(track.artist)")
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 }

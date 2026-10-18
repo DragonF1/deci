@@ -109,14 +109,23 @@ final class JSSolverThread<State>: @unchecked Sendable {
             if !isShutDown, !queue.isEmpty {
                 let item = queue.removeFirst()
                 condition.unlock()
-                process(item, state: &state)
+                // The thread has no run loop, so without a pool every JSValue a job autoreleases
+                // (and the context each one retains) would live until the thread ends.
+                autoreleasepool { process(item, state: &state) }
                 continue
             }
-            // Idle timeout or shutdown: this thread ends, and so does its state.
-            isRunning = false
-            stateAlive = false
+            // Idle timeout or shutdown: the state goes before the thread is marked gone, so a job
+            // that arrives meanwhile never builds a second context while this one is being freed.
             condition.unlock()
-            state = nil
+            autoreleasepool { state = nil }
+            condition.lock()
+            stateAlive = false
+            if !isShutDown, !queue.isEmpty {
+                condition.unlock()
+                continue
+            }
+            isRunning = false
+            condition.unlock()
             return
         }
     }

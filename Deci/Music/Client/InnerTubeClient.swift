@@ -103,6 +103,8 @@ actor InnerTubeClient {
             cachedSession = (session, now())
         }
         Self.log.info("bootstrap ok, client \(session.clientVersion, privacy: .public), player \(session.playerHash ?? "none", privacy: .public)")
+        let identity = config.isBrandChannel.map { $0 ? "brand channel" : "own channel" } ?? "unknown"
+        Self.log.notice("bootstrap identity: \(identity, privacy: .public)")
         return session
     }
 

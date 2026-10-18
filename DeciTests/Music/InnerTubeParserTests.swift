@@ -56,6 +56,21 @@ struct InnerTubeParserTests {
         #expect(config.visitorData == "v{d}")
     }
 
+    @Test("DATASYNC_ID tells a brand channel from the account's own channel")
+    func bootstrapChannelIdentity() {
+        #expect(InnerTubeParser.isBrandChannel(dataSyncId: "brand123||user456") == true)
+        #expect(InnerTubeParser.isBrandChannel(dataSyncId: "user456||") == false)
+        #expect(InnerTubeParser.isBrandChannel(dataSyncId: "user456") == nil)
+        #expect(InnerTubeParser.isBrandChannel(dataSyncId: "||user456") == nil)
+        #expect(InnerTubeParser.isBrandChannel(dataSyncId: "") == nil)
+
+        let html = #"""
+        ytcfg.set({"INNERTUBE_CLIENT_VERSION":"4.4","DATASYNC_ID":"brand123||user456"});
+        """#
+        #expect(InnerTubeParser.bootstrapConfig(fromHTML: html).isBrandChannel == true)
+        #expect(InnerTubeParser.bootstrapConfig(fromHTML: "<html></html>").isBrandChannel == nil)
+    }
+
     // MARK: - Player JS
 
     @Test("The player hash is the path segment after /s/player/")

@@ -239,9 +239,13 @@ final class JSChallengeSolver: ChallengeSolving {
     private let thread: JSSolverThread<SolverSession>
     private let cache: PlayerCache
 
+    /// A live context holds about 40 MB and a warm rebuild from the cached player takes about
+    /// 100 ms, so it goes soon after the last solve instead of lingering through the song.
+    static let defaultIdleTimeout: TimeInterval = 5
+
     init(
         cache: PlayerCache,
-        idleTimeout: TimeInterval = 60,
+        idleTimeout: TimeInterval = JSChallengeSolver.defaultIdleTimeout,
         scripts: @escaping @Sendable () throws -> SolverScripts = { try SolverScripts.bundled() }
     ) {
         self.cache = cache
