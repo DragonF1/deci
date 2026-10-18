@@ -102,18 +102,17 @@ struct MusicTile: View {
                         }
                     }
                     .padding(.bottom, DesignTokens.Spacing.xxs)
+                // Every tile takes two title lines and a subtitle line, short or not: the lazy shelf
+                // sizes its height from the first tiles, so a taller tile further along got cut off.
                 Text(title)
                     .font(DesignTokens.Typography.rowName)
                     .foregroundStyle(isCurrent ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textPrimary)
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(circular ? .center : .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(DesignTokens.Typography.rowDescription)
-                        .foregroundStyle(DesignTokens.Colors.textSecondary)
-                        .lineLimit(1)
-                }
+                Text(subtitle.isEmpty ? " " : subtitle)
+                    .font(DesignTokens.Typography.rowDescription)
+                    .foregroundStyle(DesignTokens.Colors.textSecondary)
+                    .lineLimit(1)
             }
             .frame(width: Self.coverSize, alignment: circular ? .center : .leading)
             .hoverableRow()
