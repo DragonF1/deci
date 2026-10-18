@@ -23,10 +23,12 @@ nonisolated enum MusicFixtures {
     }
 }
 
-/// An in-memory stand-in for the Keychain item.
+/// An in-memory stand-in for the Keychain item. It counts every operation, so a test can say how
+/// often the real item would have prompted.
 nonisolated final class MemorySecretStore: MusicSecretStore, @unchecked Sendable {
     private struct State {
         var data: Data?
+        var loadCount = 0
         var saveCount = 0
         var deleteCount = 0
         var failSaves = false
@@ -38,6 +40,7 @@ nonisolated final class MemorySecretStore: MusicSecretStore, @unchecked Sendable
         state = OSAllocatedUnfairLock(initialState: State(data: data))
     }
 
+    var loadCount: Int { state.withLock { $0.loadCount } }
     var saveCount: Int { state.withLock { $0.saveCount } }
     var deleteCount: Int { state.withLock { $0.deleteCount } }
     var failSaves: Bool {
@@ -45,7 +48,20 @@ nonisolated final class MemorySecretStore: MusicSecretStore, @unchecked Sendable
         set { state.withLock { $0.failSaves = newValue } }
     }
 
-    func load() -> Data? { state.withLock { $0.data } }
+    /// What the item holds right now, without counting as a read.
+    var contents: Data? { state.withLock { $0.data } }
+
+    /// The stored jar, decoded; nil when the item is empty or unreadable. Does not count as a read.
+    var storedJar: MusicCookieJar? {
+        contents.flatMap { try? JSONDecoder().decode(MusicCookieJar.self, from: $0) }
+    }
+
+    func load() -> Data? {
+        state.withLock { state in
+            state.loadCount += 1
+            return state.data
+        }
+    }
 
     func save(_ data: Data) throws {
         try state.withLock { state in
@@ -78,6 +94,74 @@ nonisolated final class MutableClock: @unchecked Sendable {
     }
 }
 
+/// A scheduler that runs nothing by itself: a test moves time forward and the writes that came due
+/// run in order, on the calling thread. It shares the clock the client and persister read.
+nonisolated final class ManualWriteScheduler: MusicWriteScheduler, @unchecked Sendable {
+    private struct Entry {
+        let fireAt: Date
+        let work: @Sendable () -> Void
+        var isCancelled = false
+        var hasRun = false
+    }
+
+    private let clock: MutableClock
+    private let entries = OSAllocatedUnfairLock(initialState: [Entry]())
+
+    init(clock: MutableClock) {
+        self.clock = clock
+    }
+
+    /// Writes scheduled and neither run nor cancelled.
+    var pendingCount: Int { entries.withLock { $0.filter { !$0.isCancelled && !$0.hasRun }.count } }
+
+    /// Seconds from now until the next live entry fires; nil when none is waiting.
+    var nextDelay: TimeInterval? {
+        entries.withLock { $0.filter { !$0.isCancelled && !$0.hasRun }.map(\.fireAt).min() }
+            .map { $0.timeIntervalSince(clock.now) }
+    }
+
+    func schedule(after delay: TimeInterval, _ work: @escaping @Sendable () -> Void) -> @Sendable () -> Void {
+        let index = entries.withLock { entries -> Int in
+            entries.append(Entry(fireAt: clock.now.addingTimeInterval(delay), work: work))
+            return entries.count - 1
+        }
+        return { [entries] in entries.withLock { $0[index].isCancelled = true } }
+    }
+
+    /// Moves the clock forward by `seconds`, running every live entry that comes due on the way, each
+    /// at its own time.
+    func advance(by seconds: TimeInterval) {
+        let target = clock.now.addingTimeInterval(seconds)
+        while let due = nextDue(upTo: target) {
+            let gap = due.fireAt.timeIntervalSince(clock.now)
+            if gap > 0 { clock.advance(by: gap) }
+            due.work()
+        }
+        let rest = target.timeIntervalSince(clock.now)
+        if rest > 0 { clock.advance(by: rest) }
+    }
+
+    /// Runs every entry that never ran, cancelled ones included: a timer that had already started
+    /// when it was cancelled.
+    func fireEverything() {
+        let work = entries.withLock { entries -> [@Sendable () -> Void] in
+            let open = entries.indices.filter { !entries[$0].hasRun }
+            for index in open { entries[index].hasRun = true }
+            return open.map { entries[$0].work }
+        }
+        for item in work { item() }
+    }
+
+    private func nextDue(upTo target: Date) -> Entry? {
+        entries.withLock { entries in
+            let candidates = entries.indices.filter { !entries[$0].isCancelled && !entries[$0].hasRun && entries[$0].fireAt <= target }
+            guard let index = candidates.min(by: { entries[$0].fireAt < entries[$1].fireAt }) else { return nil }
+            entries[index].hasRun = true
+            return entries[index]
+        }
+    }
+}
+
 /// A signed-in jar made of obviously fake cookies.
 nonisolated enum MusicTestJar {
     static let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -102,8 +186,8 @@ nonisolated enum MusicTestJar {
         ]
     }
 
-    static func signedInStore() -> MemorySecretStore {
-        let jar = MusicCookieJar(cookies: signedInCookies())
+    static func signedInStore(adding extra: [StoredCookie] = []) -> MemorySecretStore {
+        let jar = MusicCookieJar(cookies: signedInCookies() + extra)
         return MemorySecretStore(data: try? JSONEncoder().encode(jar))
     }
 }

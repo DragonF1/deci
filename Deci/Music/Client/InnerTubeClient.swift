@@ -14,7 +14,8 @@ struct InnerTubeSession: Sendable, Equatable {
 
 /// The YouTube Music web client (WEB_REMIX, client name 67). It owns the cookie jar: every
 /// request goes out with the matching cookies, every Set-Cookie that comes back is merged in and
-/// persisted, and nothing else reads or writes the jar.
+/// handed to the persister (which decides when the Keychain is written), and nothing else reads or
+/// writes the jar. The jar is read from the Keychain once and lives in memory after that.
 actor InnerTubeClient {
     /// Used when the home page cannot be read; YouTube accepts older WEB_REMIX versions for a long time.
     static let fallbackClientVersion = "1.20260707.12.00"
@@ -28,7 +29,7 @@ actor InnerTubeClient {
     private static let trustedHostSuffixes = ["youtube.com"]
 
     private let transport: HTTPTransport
-    private let secretStore: MusicSecretStore
+    private let persister: MusicJarPersister
     private let now: @Sendable () -> Date
 
     /// Loaded from the secret store on first use, so constructing the client never touches the Keychain.
@@ -39,9 +40,14 @@ actor InnerTubeClient {
     /// session that no longer exists, so it must not merge cookies, persist or fill the cache.
     private var epoch = 0
 
-    init(transport: HTTPTransport, secretStore: MusicSecretStore, now: @escaping @Sendable () -> Date = { Date() }) {
+    init(
+        transport: HTTPTransport,
+        secretStore: MusicSecretStore,
+        now: @escaping @Sendable () -> Date = { Date() },
+        scheduler: MusicWriteScheduler = DispatchWriteScheduler()
+    ) {
         self.transport = transport
-        self.secretStore = secretStore
+        self.persister = MusicJarPersister(store: secretStore, now: now, scheduler: scheduler)
         self.now = now
     }
 
@@ -57,16 +63,23 @@ actor InnerTubeClient {
         let relevant = cookies.filter { MusicCookieJar.isYouTubeDomain($0.domain) }
         let newJar = MusicCookieJar(signInCookies: relevant, now: now())
         guard newJar.hasSignInCookies else { throw MusicError.signedOut }
-        try secretStore.save(try JSONEncoder().encode(newJar))
+        try persister.saveSignedIn(try JSONEncoder().encode(newJar))
         jar = newJar
         resetSession()
         Task { _ = try? await session() }
     }
 
+    /// Deletes the Keychain item and drops every write the persister was holding back.
     func signOut() {
-        secretStore.delete()
+        persister.discard()
         jar = MusicCookieJar()
         resetSession()
+    }
+
+    /// Writes any cookie change that is still held back. Synchronous and callable from any thread (the
+    /// quit path runs it on the main thread right before the process exits); it never waits for the actor.
+    nonisolated func flushNow() {
+        persister.flushNow()
     }
 
     func channelIdentity() async -> Bool? {
@@ -373,23 +386,26 @@ actor InnerTubeClient {
 
     private func currentJar() -> MusicCookieJar {
         if let jar { return jar }
-        var loaded = secretStore.load().flatMap { try? JSONDecoder().decode(MusicCookieJar.self, from: $0) } ?? MusicCookieJar()
+        var loaded = persister.load().flatMap { try? JSONDecoder().decode(MusicCookieJar.self, from: $0) } ?? MusicCookieJar()
         loaded.prune(now: now())
         jar = loaded
         return loaded
     }
 
+    /// Merges a response's Set-Cookie headers into the in-memory jar (always) and hands the new jar to the
+    /// persister, which writes the Keychain at once only when a sign-in cookie changed.
     private func absorbCookies(from response: HTTPResponse, url: URL, epoch: Int) {
         guard epoch == self.epoch else { return }
         var updated = currentJar()
+        let signInBefore = updated.signInSnapshot
         guard updated.merge(headerFields: response.headers, for: url, now: now()) else { return }
         jar = updated
         guard updated.hasSignInCookies else { return }
         do {
-            try secretStore.save(try JSONEncoder().encode(updated))
+            persister.stage(try JSONEncoder().encode(updated), signInChanged: updated.signInSnapshot != signInBefore)
         } catch {
             // The in-memory jar still works for this launch; only the persisted copy is stale.
-            Self.log.error("could not persist rotated cookies")
+            Self.log.error("could not encode rotated cookies")
         }
     }
 

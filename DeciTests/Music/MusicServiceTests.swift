@@ -1614,6 +1614,14 @@ struct MusicServicePlaybackTests {
         #expect(h.player.nowPlaying == nil)
         #expect(h.service.reportTask == nil)
     }
+
+    @Test("stop asks the backend to write the cookies it held back, once")
+    func stopFlushesTheCookies() async {
+        let h = Harness()
+        #expect(h.backend.cookieFlushCount == 0)
+        h.service.stop()
+        #expect(h.backend.cookieFlushCount == 1)
+    }
 }
 
 // MARK: - Queue and radio
@@ -3315,15 +3323,18 @@ struct MusicServiceHostTests {
     private final class Counter {
         var builds = 0
         var engine: FakePlaybackEngine?
+        var backend: FakeMusicBackend?
     }
 
     private func makeHost(_ counter: Counter) -> MusicServiceHost {
         MusicServiceHost(makeService: {
             counter.builds += 1
             let engine = FakePlaybackEngine()
+            let backend = FakeMusicBackend()
             counter.engine = engine
+            counter.backend = backend
             return MusicService(
-                backend: FakeMusicBackend(),
+                backend: backend,
                 player: MusicPlayer(engine: engine),
                 presentSignIn: { _ in },
                 nowPlaying: NowPlayingController(surface: FakeNowPlayingSurface(), fetchArtwork: { _ in nil }),
@@ -3379,6 +3390,16 @@ struct MusicServiceHostTests {
         host.shutdown()
         #expect(host.service == nil)
         #expect(counter.builds == 0)
+    }
+
+    @Test("shutdown flushes the held-back cookies through the service, once per call")
+    func shutdownFlushesTheCookies() {
+        let counter = Counter()
+        let host = makeHost(counter)
+        host.loadIfNeeded()
+        #expect(counter.backend?.cookieFlushCount == 0)
+        host.shutdown()
+        #expect(counter.backend?.cookieFlushCount == 1)
     }
 
     @Test("the native playing callback reaches the host, set before or after the service exists")

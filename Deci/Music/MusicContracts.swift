@@ -224,6 +224,9 @@ protocol MusicBackend: Sendable {
     func signIn(with cookies: [StoredCookie]) async throws
     /// Wipes the Keychain jar and any cached session state.
     func signOut() async
+    /// Writes cookie changes that were held back to the Keychain, synchronously, on the calling
+    /// thread. The quit path calls it; nothing is written when nothing is waiting.
+    func flushCookies()
     /// Whether the session plays as a brand channel (History is kept per channel), or nil when
     /// signed out or the home page doesn't say. Runs the bootstrap if it hasn't run yet.
     func channelIdentity() async -> Bool?

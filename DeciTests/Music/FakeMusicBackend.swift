@@ -3,6 +3,7 @@
 
 import Foundation
 import MediaPlayer
+import os
 @testable import Deci
 
 // MediaPlayer re-exports AudioToolbox, whose `MusicTrack` and `MusicPlayer` clash with ours: spell them `Deci.MusicTrack` in files that import it.
@@ -103,6 +104,11 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var accountCallCount = 0
     private var currentCookies: [StoredCookie] = []
     private(set) var signOutCount = 0
+    /// How many times the quit path asked for the held-back cookies to be written. Counted outside the
+    /// actor, because the real call is synchronous.
+    private nonisolated let cookieFlushes = OSAllocatedUnfairLock(initialState: 0)
+
+    nonisolated var cookieFlushCount: Int { cookieFlushes.withLock { $0 } }
 
     init(signedIn: Bool = true) {
         self.signedIn = signedIn
@@ -196,6 +202,10 @@ actor FakeMusicBackend: MusicBackend {
         signInCookies.append(cookies)
         if let signInError { throw signInError }
         signedIn = true
+    }
+
+    nonisolated func flushCookies() {
+        cookieFlushes.withLock { $0 += 1 }
     }
 
     func signOut() async {

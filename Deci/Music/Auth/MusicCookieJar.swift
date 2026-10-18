@@ -4,6 +4,17 @@ import Foundation
 /// stored as one Keychain item. Callers keep only youtube.com cookies; the jar sends the ones
 /// that match a request's host.
 struct MusicCookieJar: Codable, Sendable, Equatable {
+    /// The cookies that keep the session signed in. A change to one of these is saved to the Keychain
+    /// promptly; every other cookie YouTube rotates (YSC, VISITOR_INFO1_LIVE, the *SIDCC family,
+    /// __Secure-ROLLOUT_TOKEN) only rides along with a later write. See `MusicJarPersister`.
+    static let signInCookieNames: Set<String> = [
+        "SID", "HSID", "SSID", "APISID", "SAPISID",
+        "__Secure-1PSID", "__Secure-3PSID",
+        "__Secure-1PAPISID", "__Secure-3PAPISID",
+        "__Secure-1PSIDTS", "__Secure-3PSIDTS",
+        "LOGIN_INFO",
+    ]
+
     private(set) var cookies: [StoredCookie]
 
     init(cookies: [StoredCookie] = []) {
@@ -49,6 +60,12 @@ struct MusicCookieJar: Codable, Sendable, Equatable {
     /// True when the jar holds what the SAPISIDHASH authorization is built from.
     var hasSignInCookies: Bool {
         value(named: "SAPISID") != nil || value(named: "__Secure-3PAPISID") != nil
+    }
+
+    /// The sign-in cookies as they stand. Two snapshots are equal exactly when no sign-in cookie was
+    /// added, removed or changed (value, expiry or any attribute) in between.
+    var signInSnapshot: Set<StoredCookie> {
+        Set(cookies.filter { Self.signInCookieNames.contains($0.name) })
     }
 
     // MARK: - Sending

@@ -411,12 +411,14 @@ final class MusicService {
         }
     }
 
-    /// Stops playback and pending work. Called when the app quits.
+    /// Stops playback and pending work, and writes any cookie change still held back to the Keychain.
+    /// Called when the app quits.
     func stop() {
         cancelWork()
         endQueue()
         player.stop()
         session = nil
+        backend.flushCookies()
     }
 
     /// A history ping belongs to the session that earned it. After a sign-out or a swap it has nowhere to go:

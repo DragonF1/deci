@@ -34,6 +34,10 @@ actor MusicBackendLive: MusicBackend {
         await client.signOut()
     }
 
+    nonisolated func flushCookies() {
+        client.flushNow()
+    }
+
     func channelIdentity() async -> Bool? {
         await client.channelIdentity()
     }
