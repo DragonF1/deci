@@ -1,0 +1,447 @@
+// DeciTests/Music/InnerTubeClientTests.swift
+// The InnerTube client against a recording fake transport: request shape, auth headers,
+// cookie rotation, session bootstrap and error mapping.
+
+import Foundation
+import Testing
+@testable import Deci
+
+@MainActor
+@Suite("InnerTubeClient")
+struct InnerTubeClientTests {
+
+    private func makeClient(
+        _ youtube: FakeYouTube = FakeYouTube(),
+        store: MemorySecretStore = MusicTestJar.signedInStore(),
+        clock: MutableClock = MutableClock()
+    ) -> InnerTubeClient {
+        InnerTubeClient(transport: youtube, secretStore: store, now: { clock.now })
+    }
+
+    private static func clientObject(_ body: [String: Any]) -> [String: Any]? {
+        (body["context"] as? [String: Any])?["client"] as? [String: Any]
+    }
+
+    // MARK: - Search
+
+    @Test("Search sends a WEB_REMIX songs query with the auth headers and returns the rows")
+    func searchRequestShape() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        let tracks = try await client.search("daft punk")
+        #expect(tracks.count == 6)
+
+        let request = try #require(youtube.requests(path: "/youtubei/v1/search").first)
+        #expect(request.method == "POST")
+        #expect(request.url.absoluteString == "https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
+        let headers = request.headers
+        #expect(headers["Authorization"]?.hasPrefix("SAPISIDHASH 1800000000_") == true)
+        #expect(headers["Authorization"]?.contains("SAPISID1PHASH 1800000000_") == true)
+        #expect(headers["Authorization"]?.contains("SAPISID3PHASH 1800000000_") == true)
+        #expect(headers["X-Goog-AuthUser"] == "0")
+        #expect(headers["X-YouTube-Client-Name"] == "67")
+        #expect(headers["X-YouTube-Client-Version"] == "1.20261013.15.00")
+        #expect(headers["X-Goog-Visitor-Id"] == "SCRUBBED_VISITOR_DATA")
+        #expect(headers["Origin"] == "https://music.youtube.com")
+        #expect(headers["X-Origin"] == "https://music.youtube.com")
+        #expect(headers["Referer"] == "https://music.youtube.com/")
+        #expect(headers["Content-Type"] == "application/json")
+        #expect(headers["User-Agent"] == MusicAuthHeaders.userAgent)
+
+        let body = FakeYouTube.jsonBody(request)
+        let client0 = Self.clientObject(body)
+        #expect(client0?["clientName"] as? String == "WEB_REMIX")
+        #expect(client0?["clientVersion"] as? String == "1.20261013.15.00")
+        #expect(client0?["visitorData"] as? String == "SCRUBBED_VISITOR_DATA")
+        #expect(body["query"] as? String == "daft punk")
+        #expect(body["params"] as? String == "EgWKAQIIAWoMEA4QChADEAQQCRAF")
+    }
+
+    @Test("Only the cookies that match the request host are sent")
+    func searchSendsMatchingCookiesOnly() async throws {
+        let youtube = FakeYouTube()
+        _ = try await makeClient(youtube).search("x")
+        let cookie = try #require(youtube.requests(path: "/youtubei/v1/search").first?.headers["Cookie"])
+        #expect(cookie.contains("SAPISID=sapisid-secret"))
+        #expect(cookie.contains("__Secure-3PAPISID=three-papisid-secret"))
+        #expect(!cookie.contains("sid-google-only"))
+    }
+
+    @Test("A blank query returns nothing and makes no request")
+    func searchBlankQuery() async throws {
+        let youtube = FakeYouTube()
+        #expect(try await makeClient(youtube).search("   \n").isEmpty)
+        #expect(youtube.requests.isEmpty)
+    }
+
+    @Test("Special characters and emoji in the query reach the body intact")
+    func searchUnicodeQuery() async throws {
+        let youtube = FakeYouTube()
+        _ = try await makeClient(youtube).search("夜に駆ける \"quoted\" 🎵 \\ ' --; DROP")
+        let body = FakeYouTube.jsonBody(try #require(youtube.requests(path: "/youtubei/v1/search").first))
+        #expect(body["query"] as? String == "夜に駆ける \"quoted\" 🎵 \\ ' --; DROP")
+    }
+
+    // MARK: - Sign-in state
+
+    @Test("Signed out: search fails with signedOut and touches no network")
+    func searchSignedOut() async {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube, store: MemorySecretStore())
+        await #expect(throws: MusicError.signedOut) { try await client.search("x") }
+        #expect(youtube.requests.isEmpty)
+    }
+
+    @Test("Garbage in the secret store reads as signed out")
+    func corruptStoreIsSignedOut() async {
+        let client = makeClient(store: MemorySecretStore(data: Data("not a jar".utf8)))
+        #expect(await client.isSignedIn() == false)
+    }
+
+    @Test("A stored jar with the sign-in cookies reads as signed in")
+    func storedJarIsSignedIn() async {
+        #expect(await makeClient().isSignedIn())
+    }
+
+    @Test("Expired cookies in the store do not count")
+    func expiredCookiesAreSignedOut() async throws {
+        let expired = MusicTestJar.cookie("SAPISID", "old", expires: Date(timeIntervalSince1970: 1_000_000_000))
+        let data = try JSONEncoder().encode(MusicCookieJar(cookies: [expired]))
+        let client = makeClient(store: MemorySecretStore(data: data))
+        #expect(await client.isSignedIn() == false)
+    }
+
+    @Test("signIn stores the Google and YouTube cookies, drops the rest, and bootstraps")
+    func signInStoresAndBootstraps() async throws {
+        let youtube = FakeYouTube()
+        let store = MemorySecretStore()
+        let client = makeClient(youtube, store: store)
+        let cookies = MusicTestJar.signedInCookies() + [MusicTestJar.cookie("tracker", "x", domain: ".example.com")]
+        try await client.signIn(with: cookies)
+
+        #expect(await client.isSignedIn())
+        #expect(store.saveCount == 1)
+        let saved = try JSONDecoder().decode(MusicCookieJar.self, from: try #require(store.load()))
+        #expect(saved.value(named: "SAPISID") == "sapisid-secret")
+        #expect(saved.value(named: "tracker") == nil)
+        #expect(youtube.requests(path: "/").count == 1)
+    }
+
+    @Test("signIn without a SAPISID cookie is refused and stores nothing")
+    func signInWithoutSapisid() async {
+        let store = MemorySecretStore()
+        let client = makeClient(store: store)
+        await #expect(throws: MusicError.signedOut) {
+            try await client.signIn(with: [MusicTestJar.cookie("SID", "x", domain: ".google.com")])
+        }
+        #expect(store.saveCount == 0)
+        #expect(await client.isSignedIn() == false)
+    }
+
+    @Test("signIn accepts __Secure-3PAPISID alone")
+    func signInWith3PAPISIDOnly() async throws {
+        let client = makeClient(store: MemorySecretStore())
+        try await client.signIn(with: [MusicTestJar.cookie("__Secure-3PAPISID", "three")])
+        #expect(await client.isSignedIn())
+    }
+
+    @Test("A Keychain write failure fails signIn and leaves the client signed out")
+    func signInKeychainFailure() async {
+        let store = MemorySecretStore()
+        store.failSaves = true
+        let client = makeClient(store: store)
+        await #expect(throws: KeychainSecretStore.KeychainError.self) {
+            try await client.signIn(with: MusicTestJar.signedInCookies())
+        }
+        #expect(await client.isSignedIn() == false)
+    }
+
+    @Test("signOut deletes the Keychain item and every later call is signedOut")
+    func signOutWipes() async {
+        let youtube = FakeYouTube()
+        let store = MusicTestJar.signedInStore()
+        let client = makeClient(youtube, store: store)
+        #expect(await client.isSignedIn())
+        await client.signOut()
+        #expect(store.deleteCount == 1)
+        #expect(store.load() == nil)
+        #expect(await client.isSignedIn() == false)
+        await #expect(throws: MusicError.signedOut) { try await client.search("x") }
+    }
+
+    // MARK: - Bootstrap
+
+    @Test("The home page is fetched once and reused for later calls")
+    func bootstrapOnce() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        _ = try await client.search("a")
+        _ = try await client.search("b")
+        #expect(youtube.requests(path: "/").count == 1)
+    }
+
+    @Test("Concurrent first calls share one bootstrap")
+    func bootstrapCoalesced() async throws {
+        let youtube = FakeYouTube { $0.delay = .milliseconds(40) }
+        let client = makeClient(youtube)
+        try await withThrowingTaskGroup(of: Int.self) { group in
+            for index in 0..<6 { group.addTask { try await client.search("q\(index)").count } }
+            for try await _ in group {}
+        }
+        #expect(youtube.requests(path: "/").count == 1)
+    }
+
+    @Test("The session is refreshed after six hours")
+    func bootstrapExpires() async throws {
+        let youtube = FakeYouTube()
+        let clock = MutableClock()
+        let client = makeClient(youtube, clock: clock)
+        _ = try await client.search("a")
+        clock.advance(by: 5 * 3600)
+        _ = try await client.search("b")
+        #expect(youtube.requests(path: "/").count == 1)
+        clock.advance(by: 2 * 3600)
+        _ = try await client.search("c")
+        #expect(youtube.requests(path: "/").count == 2)
+    }
+
+    @Test("The bootstrap request carries the matching cookies")
+    func bootstrapSendsCookies() async throws {
+        let youtube = FakeYouTube()
+        _ = try await makeClient(youtube).search("a")
+        let home = try #require(youtube.requests(path: "/").first)
+        #expect(home.method == "GET")
+        #expect(home.headers["Cookie"]?.contains("SAPISID=") == true)
+        #expect(home.headers["User-Agent"] == MusicAuthHeaders.userAgent)
+    }
+
+    @Test("A home page without ytcfg falls back to the built-in client version")
+    func bootstrapFallbackVersion() async throws {
+        let youtube = FakeYouTube { $0.bootstrapHTML = "<html>consent wall</html>" }
+        _ = try await makeClient(youtube).search("a")
+        let request = try #require(youtube.requests(path: "/youtubei/v1/search").first)
+        #expect(request.headers["X-YouTube-Client-Version"] == InnerTubeClient.fallbackClientVersion)
+        #expect(request.headers["X-Goog-Visitor-Id"] == nil)
+    }
+
+    @Test("A failing home page does not fail search, and is retried next time")
+    func bootstrapFailureIsNotFatal() async throws {
+        let youtube = FakeYouTube { $0.bootstrapStatus = 503 }
+        let client = makeClient(youtube)
+        let tracks = try await client.search("a")
+        #expect(tracks.count == 6)
+        _ = try await client.search("b")
+        #expect(youtube.requests(path: "/").count == 2)
+    }
+
+    @Test("session() exposes the version, visitor id and player JS from the page")
+    func sessionContents() async throws {
+        let session = try await makeClient().session()
+        #expect(session.clientVersion == "1.20261013.15.00")
+        #expect(session.visitorData == "SCRUBBED_VISITOR_DATA")
+        #expect(session.playerHash == "0229cd64")
+    }
+
+    @Test("session() surfaces a bootstrap HTTP error")
+    func sessionHTTPError() async {
+        let client = makeClient(FakeYouTube { $0.bootstrapStatus = 500 })
+        await #expect(throws: MusicError.http(500)) { try await client.session() }
+    }
+
+    // MARK: - Cookie rotation
+
+    @Test("Set-Cookie on a response replaces the stored cookie and is persisted")
+    func setCookiePersisted() async throws {
+        let youtube = FakeYouTube {
+            $0.searchHeaders = ["Set-Cookie": "SAPISID=rotated-value; Domain=.youtube.com; Path=/; Secure; Expires=Wed, 01 Jan 2031 00:00:00 GMT"]
+        }
+        let store = MusicTestJar.signedInStore()
+        let client = makeClient(youtube, store: store)
+        _ = try await client.search("a")
+
+        #expect(store.saveCount == 1)
+        let saved = try JSONDecoder().decode(MusicCookieJar.self, from: try #require(store.load()))
+        #expect(saved.value(named: "SAPISID") == "rotated-value")
+        #expect(saved.value(named: "__Secure-3PAPISID") == "three-papisid-secret")
+
+        youtube.update { $0.searchHeaders = [:] }
+        _ = try await client.search("b")
+        let second = try #require(youtube.requests(path: "/youtubei/v1/search").last)
+        #expect(second.headers["Cookie"]?.contains("SAPISID=rotated-value") == true)
+        #expect(second.headers["Cookie"]?.contains("sapisid-secret") == false)
+        #expect(store.saveCount == 1)
+    }
+
+    @Test("Set-Cookie on the bootstrap response is persisted too")
+    func setCookieOnBootstrap() async throws {
+        let youtube = FakeYouTube {
+            $0.bootstrapHeaders = ["Set-Cookie": "__Secure-1PSIDTS=fresh; Domain=.youtube.com; Path=/; Secure; Expires=Wed, 01 Jan 2031 00:00:00 GMT"]
+        }
+        let store = MusicTestJar.signedInStore()
+        _ = try await makeClient(youtube, store: store).search("a")
+        let saved = try JSONDecoder().decode(MusicCookieJar.self, from: try #require(store.load()))
+        #expect(saved.value(named: "__Secure-1PSIDTS") == "fresh")
+    }
+
+    @Test("A response that changes no cookie does not rewrite the Keychain")
+    func noRewriteWithoutChange() async throws {
+        let store = MusicTestJar.signedInStore()
+        _ = try await makeClient(store: store).search("a")
+        #expect(store.saveCount == 0)
+    }
+
+    @Test("A Keychain write failure while rotating cookies does not fail the request")
+    func rotationSurvivesKeychainFailure() async throws {
+        let youtube = FakeYouTube {
+            $0.searchHeaders = ["Set-Cookie": "SAPISID=rotated; Domain=.youtube.com; Path=/; Secure"]
+        }
+        let store = MusicTestJar.signedInStore()
+        store.failSaves = true
+        #expect(try await makeClient(youtube, store: store).search("a").count == 6)
+    }
+
+    // MARK: - Errors
+
+    @Test("HTTP 401 means the session is gone")
+    func unauthorized() async {
+        let client = makeClient(FakeYouTube { $0.searchStatus = 401 })
+        await #expect(throws: MusicError.signedOut) { try await client.search("a") }
+    }
+
+    @Test("Other HTTP failures carry their status")
+    func httpFailures() async {
+        for status in [403, 429, 500, 503] {
+            let client = makeClient(FakeYouTube { $0.searchStatus = status })
+            await #expect(throws: MusicError.http(status)) { try await client.search("a") }
+        }
+    }
+
+    @Test("A body that is not JSON is a parse error")
+    func parseFailure() async {
+        let client = makeClient(FakeYouTube { $0.searchBody = Data("<html>blocked</html>".utf8) })
+        await #expect(throws: MusicError.self) { try await client.search("a") }
+    }
+
+    // MARK: - Player
+
+    @Test("The player call carries the signatureTimestamp and the content-check flags")
+    func playerRequestShape() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        let response = try await client.player(videoId: "4D7u5KF7SP8", signatureTimestamp: 20739)
+        #expect(response.status == "OK")
+
+        let request = try #require(youtube.requests(path: "/youtubei/v1/player").first)
+        #expect(request.url.absoluteString == "https://music.youtube.com/youtubei/v1/player?prettyPrint=false")
+        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH ") == true)
+        #expect(request.headers["X-YouTube-Client-Name"] == "67")
+        let body = FakeYouTube.jsonBody(request)
+        #expect(body["videoId"] as? String == "4D7u5KF7SP8")
+        #expect(body["racyCheckOk"] as? Bool == true)
+        #expect(body["contentCheckOk"] as? Bool == true)
+        let playback = (body["playbackContext"] as? [String: Any])?["contentPlaybackContext"] as? [String: Any]
+        #expect(playback?["signatureTimestamp"] as? Int == 20739)
+        #expect(Self.clientObject(body)?["clientName"] as? String == "WEB_REMIX")
+    }
+
+    @Test("The player call is refused when signed out")
+    func playerSignedOut() async {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube, store: MemorySecretStore())
+        await #expect(throws: MusicError.signedOut) { try await client.player(videoId: "x", signatureTimestamp: 1) }
+        #expect(youtube.requests.isEmpty)
+    }
+
+    @Test("The player JS is fetched without any credentials")
+    func playerJSHasNoCredentials() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        let url = URL(string: "https://music.youtube.com/s/player/0229cd64/player_es6.vflset/en_US/base.js")!
+        let js = try await client.playerJS(at: url)
+        #expect(js.contains("signatureTimestamp:20739"))
+        let request = try #require(youtube.requests.last)
+        #expect(request.method == "GET")
+        #expect(request.headers["Cookie"] == nil)
+        #expect(request.headers["Authorization"] == nil)
+        #expect(request.headers["X-Goog-AuthUser"] == nil)
+    }
+
+    @Test("A player JS download failure carries its status")
+    func playerJSFailure() async {
+        let client = makeClient(FakeYouTube { $0.playerJSStatus = 404 })
+        let url = URL(string: "https://music.youtube.com/s/player/0229cd64/player_es6.vflset/en_US/base.js")!
+        await #expect(throws: MusicError.http(404)) { try await client.playerJS(at: url) }
+    }
+
+    @Test("The player JS is only fetched from a YouTube host over https")
+    func playerJSHostGuard() async {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        await #expect(throws: MusicError.self) { try await client.playerJS(at: URL(string: "https://evil.example/base.js")!) }
+        await #expect(throws: MusicError.self) { try await client.playerJS(at: URL(string: "http://music.youtube.com/base.js")!) }
+        #expect(youtube.requests.isEmpty)
+    }
+
+    // MARK: - History ping
+
+    private static let trackingURL = URL(string: "https://s.youtube.com/api/stats/playback?cl=1&docid=abc&ei=E&len=370")!
+
+    @Test("reportPlayback GETs the tracking URL with the client parameters and auth headers")
+    func reportPlaybackShape() async throws {
+        let youtube = FakeYouTube()
+        try await makeClient(youtube).reportPlayback(trackingURL: Self.trackingURL, cpn: "AbCd_-0123456789")
+        let request = try #require(youtube.requests.last)
+        #expect(request.method == "GET")
+        #expect(request.body == nil)
+        let components = try #require(URLComponents(url: request.url, resolvingAgainstBaseURL: false))
+        #expect(components.host == "s.youtube.com")
+        #expect(components.path == "/api/stats/playback")
+        let items = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        #expect(items["docid"] == "abc")
+        #expect(items["ver"] == "2")
+        #expect(items["c"] == "WEB_REMIX")
+        #expect(items["cpn"] == "AbCd_-0123456789")
+        #expect(items["cver"] == "1.20261013.15.00")
+        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH ") == true)
+        #expect(request.headers["Cookie"]?.contains("SAPISID=") == true)
+    }
+
+    @Test("Both 200 and 204 count as a recorded play")
+    func reportPlaybackSuccessCodes() async throws {
+        for status in [200, 204] {
+            let youtube = FakeYouTube { $0.statsStatus = status }
+            try await makeClient(youtube).reportPlayback(trackingURL: Self.trackingURL, cpn: "AbCd_-0123456789")
+        }
+    }
+
+    @Test("A failing history ping reports its status")
+    func reportPlaybackFailure() async {
+        let client = makeClient(FakeYouTube { $0.statsStatus = 500 })
+        await #expect(throws: MusicError.http(500)) {
+            try await client.reportPlayback(trackingURL: Self.trackingURL, cpn: "AbCd_-0123456789")
+        }
+    }
+
+    @Test("The history ping is refused when signed out")
+    func reportPlaybackSignedOut() async {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube, store: MemorySecretStore())
+        await #expect(throws: MusicError.signedOut) {
+            try await client.reportPlayback(trackingURL: Self.trackingURL, cpn: "AbCd_-0123456789")
+        }
+        #expect(youtube.requests.isEmpty)
+    }
+
+    @Test("Credentials are never sent to a tracking URL outside YouTube")
+    func reportPlaybackHostGuard() async {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        await #expect(throws: MusicError.self) {
+            try await client.reportPlayback(trackingURL: URL(string: "https://evil.example/api/stats/playback")!, cpn: "AbCd_-0123456789")
+        }
+        await #expect(throws: MusicError.self) {
+            try await client.reportPlayback(trackingURL: URL(string: "http://s.youtube.com/api/stats/playback")!, cpn: "AbCd_-0123456789")
+        }
+        #expect(youtube.requests.isEmpty)
+    }
+}

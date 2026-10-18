@@ -1,0 +1,16 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "playabilityStatus": {
+  "status": "LOGIN_REQUIRED",
+  "reason": "Sign in to confirm you are not a bot",
+  "errorScreen": {
+   "playerErrorMessageRenderer": {
+    "reason": {
+     "simpleText": "Sign in to confirm you are not a bot"
+    }
+   }
+  }
+ }
+}
