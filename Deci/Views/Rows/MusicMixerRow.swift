@@ -1,12 +1,18 @@
 // Deci/Views/Rows/MusicMixerRow.swift
 import SwiftUI
 
-/// The YouTube Music player's row in the Mixer tab: a real peak meter, volume, mute, boost, output device and the
+/// The music player's row in the Mixer tab: a real peak meter, volume, mute, boost, output device and the
 /// 10-band EQ, all acting on the audio the player makes inside Deci through `MusicMixerState`.
 ///
-/// Built like `ChromeTabRow`, with the device picker in single mode: music has one output, not a set of them.
+/// It reads as one more app in the apps list: Deci's own name and icon (`MusicPlayerIdentity`), laid out exactly like
+/// `AppRow`. Built like `ChromeTabRow` underneath, with the device picker in single mode: music has one output, not a
+/// set of them.
 struct MusicMixerRow: View {
     let mixer: MusicMixerState
+    /// What the row calls itself, in the name, the tooltip and the accessibility labels.
+    let name: String
+    /// The icon in the row's 24 pt slot: Deci's own application icon.
+    let icon: NSImage
     let devices: [AudioDevice]
     var deviceIconOverrides: [String: String] = [:]
     let defaultDeviceUID: String?
@@ -23,6 +29,8 @@ struct MusicMixerRow: View {
 
     init(
         mixer: MusicMixerState,
+        name: String = MusicPlayerIdentity.name,
+        icon: NSImage? = nil,
         devices: [AudioDevice],
         deviceIconOverrides: [String: String] = [:],
         defaultDeviceUID: String?,
@@ -34,6 +42,8 @@ struct MusicMixerRow: View {
         isEQExpanded: Bool = false
     ) {
         self.mixer = mixer
+        self.name = name
+        self.icon = icon ?? MusicPlayerIdentity.icon()
         self.devices = devices
         self.deviceIconOverrides = deviceIconOverrides
         self.defaultDeviceUID = defaultDeviceUID
@@ -57,12 +67,13 @@ struct MusicMixerRow: View {
             HStack(spacing: DesignTokens.Spacing.sm) {
                 VUMeter(level: displayLevel, isMuted: mixer.isMuted || mixer.volume == 0)
 
-                iconTile
+                iconImage
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("YouTube Music")
+                    Text(name)
                         .font(DesignTokens.Typography.rowName)
                         .lineLimit(1)
+                        .help(name)
 
                     if mixer.selectedDeviceUID != nil && mixer.outputDeviceUID == nil {
                         Text("Output not found, using default")
@@ -125,24 +136,16 @@ struct MusicMixerRow: View {
         }
     }
 
-    /// The same 24 pt slot an app icon gets, with a music note on the accent gradient.
-    private var iconTile: some View {
-        let size = DesignTokens.Dimensions.rowContentHeight - 4
-        return ZStack {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.accentColor, Color.accentColor.opacity(0.78)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-            Image(systemName: "music.note")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
+    /// The same 24 pt slot an app icon gets in `AppRow`. Not a button: there is nothing to open, the popover is Deci.
+    private var iconImage: some View {
+        Image(nsImage: icon)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(
+                width: DesignTokens.Dimensions.rowContentHeight - 4,
+                height: DesignTokens.Dimensions.rowContentHeight - 4
+            )
+            .accessibilityLabel(name)
     }
 
     // MARK: - Level polling

@@ -979,8 +979,8 @@ struct MenuBarPopupView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The YouTube Music row shows only while the Music player has a track loaded. Reading this never creates the
-    /// service, so the Music tab stays lazy until it is first opened.
+    /// Deci's own music player shows in the apps list (as "Deci") only while it has a track loaded. Reading this never
+    /// creates the service, so the Music tab stays lazy until it is first opened.
     private var showsMusicRow: Bool {
         musicHost.mixer != nil && musicHost.hasLoadedTrack
     }
@@ -988,41 +988,25 @@ struct MenuBarPopupView: View {
     private func appsContent(scrollProxy: ScrollViewProxy) -> some View {
         let presets = audioEngine.settingsManager.getUserPresets()
         let chromeTabs = chromeManager.chromeTabs
+        let entries = MixerAppList.entries(
+            apps: audioEngine.displayableApps,
+            isPinned: { audioEngine.isPinned(identifier: $0.id) },
+            includesMusicPlayer: showsMusicRow
+        )
         return VStack(alignment: .leading, spacing: 0) {
-            ForEach(audioEngine.displayableApps) { displayableApp in
-                switch displayableApp {
-                case .active(let app):
-                    activeAppRow(app: app, displayableApp: displayableApp, userPresets: presets, scrollProxy: scrollProxy)
+            ForEach(entries) { entry in
+                switch entry {
+                case .app(let displayableApp):
+                    switch displayableApp {
+                    case .active(let app):
+                        activeAppRow(app: app, displayableApp: displayableApp, userPresets: presets, scrollProxy: scrollProxy)
 
-                case .pinnedInactive(let info):
-                    inactiveAppRow(info: info, displayableApp: displayableApp, userPresets: presets, scrollProxy: scrollProxy)
-                }
-            }
+                    case .pinnedInactive(let info):
+                        inactiveAppRow(info: info, displayableApp: displayableApp, userPresets: presets, scrollProxy: scrollProxy)
+                    }
 
-            if showsMusicRow, let mixer = musicHost.mixer {
-                VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
-                    SectionHeader(title: "Music")
-                        .padding(.horizontal, DesignTokens.Spacing.sm)
-                        .padding(.top, audioEngine.displayableApps.isEmpty ? 0 : DesignTokens.Spacing.sm)
-                        .padding(.bottom, 2)
-
-                    MusicMixerRow(
-                        mixer: mixer,
-                        devices: sortedDevices,
-                        deviceIconOverrides: audioEngine.settingsManager.deviceIconOverrides,
-                        defaultDeviceUID: deviceVolumeMonitor.defaultDeviceUID,
-                        isPopupVisible: isPopupVisible,
-                        userPresets: presets,
-                        onSavePreset: { name, settings in
-                            audioEngine.settingsManager.createUserPreset(name: name, settings: settings)
-                        },
-                        onDeleteUserPreset: { id in
-                            audioEngine.settingsManager.deleteUserPreset(id: id)
-                        },
-                        onRenameUserPreset: { id, newName in
-                            audioEngine.settingsManager.updateUserPreset(id: id, name: newName)
-                        }
-                    )
+                case .musicPlayer:
+                    musicPlayerRow(userPresets: presets)
                 }
             }
 
@@ -1055,6 +1039,31 @@ struct MenuBarPopupView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Deci's music player as one more row of the apps list. It has no pin, hide or edit-mode ordering, so edit mode
+    /// leaves it out (`appEditModeContent` lists only apps that can be pinned or hidden).
+    @ViewBuilder
+    private func musicPlayerRow(userPresets: [UserEQPreset]) -> some View {
+        if let mixer = musicHost.mixer {
+            MusicMixerRow(
+                mixer: mixer,
+                devices: sortedDevices,
+                deviceIconOverrides: audioEngine.settingsManager.deviceIconOverrides,
+                defaultDeviceUID: deviceVolumeMonitor.defaultDeviceUID,
+                isPopupVisible: isPopupVisible,
+                userPresets: userPresets,
+                onSavePreset: { name, settings in
+                    audioEngine.settingsManager.createUserPreset(name: name, settings: settings)
+                },
+                onDeleteUserPreset: { id in
+                    audioEngine.settingsManager.deleteUserPreset(id: id)
+                },
+                onRenameUserPreset: { id, newName in
+                    audioEngine.settingsManager.updateUserPreset(id: id, name: newName)
+                }
+            )
+        }
     }
 
     /// Row for an active app (currently producing audio)
