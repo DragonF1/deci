@@ -20,6 +20,7 @@ actor InnerTubeClient {
     static let songsSearchParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
     static let sessionLifetime: TimeInterval = 6 * 60 * 60
 
+    private static let emptyPage = MusicQueuePage(tracks: [], continuation: nil)
     private static let homeURL = URL(string: "https://music.youtube.com/")!
     private static let log = Logger(subsystem: "com.abraham.Deci", category: "MusicClient")
     private static let trustedHostSuffixes = ["youtube.com"]
@@ -135,6 +136,37 @@ actor InnerTubeClient {
         let tracks = try InnerTubeParser.searchTracks(from: data)
         Self.log.info("search returned \(tracks.count) rows")
         return tracks
+    }
+
+    /// The first page of the autoplay queue seeded by `seedVideoId`, starting with the seed itself.
+    func radio(seedVideoId: String) async throws -> MusicQueuePage {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let seed = seedVideoId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !seed.isEmpty else { return Self.emptyPage }
+        let session = try await sessionOrFallback()
+        let data = try await post("next", session: session, body: [
+            "videoId": seed,
+            "playlistId": "RDAMVM" + seed,
+            "isAudioOnly": true,
+            "enablePersistentPlaylistPanel": true,
+            "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+        ])
+        let page = try InnerTubeParser.radioPage(from: data)
+        Self.log.info("radio returned \(page.tracks.count) rows")
+        return page
+    }
+
+    /// The token alone names the radio. Sending the seed along would make YouTube answer a stale
+    /// token with the first page again; without it the answer has no continuation and parsing refuses it.
+    func moreRadio(continuation: String) async throws -> MusicQueuePage {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let token = continuation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return Self.emptyPage }
+        let session = try await sessionOrFallback()
+        let data = try await post("next", session: session, body: ["continuation": token])
+        let page = try InnerTubeParser.radioContinuationPage(from: data)
+        Self.log.info("radio continuation returned \(page.tracks.count) rows")
+        return page
     }
 
     func player(videoId: String, signatureTimestamp: Int) async throws -> PlayerResponse {

@@ -174,15 +174,7 @@ enum InnerTubeParser {
     /// Splits "Artist, Artist & Artist • Album • 3:05" into its parts. The bullet runs separate
     /// segments; the artist segment also has comma and ampersand separator runs.
     private static func parseSubtitle(_ runs: [[String: Any]]) -> Subtitle {
-        var segments: [[[String: Any]]] = [[]]
-        for run in runs {
-            if (run["text"] as? String)?.trimmingCharacters(in: .whitespaces) == "\u{2022}" {
-                segments.append([])
-            } else {
-                segments[segments.count - 1].append(run)
-            }
-        }
-        segments.removeAll { $0.isEmpty }
+        var segments = bulletSegments(of: runs)
 
         var result = Subtitle()
         if segments.count > 1, let last = segments.last, let seconds = duration(of: last) {
@@ -194,17 +186,34 @@ enum InnerTubeParser {
             segments.removeFirst()
         }
         if let artistSegment = segments.first {
-            result.artists = artistSegment.compactMap { run in
-                guard let text = (run["text"] as? String)?.trimmingCharacters(in: .whitespaces),
-                      !text.isEmpty, text != ",", text != "&"
-                else { return nil }
-                return text
-            }
+            result.artists = artistNames(in: artistSegment)
         }
         if segments.count > 1, let album = segments.dropFirst().first(where: isAlbumSegment) {
             result.album = text(of: album)
         }
         return result
+    }
+
+    private static func bulletSegments(of runs: [[String: Any]]) -> [[[String: Any]]] {
+        var segments: [[[String: Any]]] = [[]]
+        for run in runs {
+            if (run["text"] as? String)?.trimmingCharacters(in: .whitespaces) == "\u{2022}" {
+                segments.append([])
+            } else {
+                segments[segments.count - 1].append(run)
+            }
+        }
+        segments.removeAll { $0.isEmpty }
+        return segments
+    }
+
+    private static func artistNames(in segment: [[String: Any]]) -> [String] {
+        segment.compactMap { run in
+            guard let text = (run["text"] as? String)?.trimmingCharacters(in: .whitespaces),
+                  !text.isEmpty, text != ",", text != "&"
+            else { return nil }
+            return text
+        }
     }
 
     private static func text(of segment: [[String: Any]]) -> String? {
@@ -235,6 +244,70 @@ enum InnerTubeParser {
             abs((int(lhs["width"]) ?? 1_000) - 120) < abs((int(rhs["width"]) ?? 1_000) - 120)
         }
         return string(best?["url"]).flatMap { URL(string: $0) }
+    }
+
+    // MARK: - Radio queue
+
+    /// The first page of a radio: `next` called with a seed video.
+    static func radioPage(from data: Data) throws -> MusicQueuePage {
+        let root = try jsonObject(data, what: "radio response")
+        let tabs = path(root, "contents", "singleColumnMusicWatchNextResultsRenderer", "tabbedRenderer", "watchNextTabbedResultsRenderer", "tabs") as? [Any]
+        let panel = path(tabs?.first, "tabRenderer", "content", "musicQueueRenderer", "content", "playlistPanelRenderer")
+        return try queuePage(in: panel as? [String: Any], what: "radio response")
+    }
+
+    /// A later page: `next` called with a continuation token.
+    static func radioContinuationPage(from data: Data) throws -> MusicQueuePage {
+        let root = try jsonObject(data, what: "radio continuation")
+        let panel = path(root, "continuationContents", "playlistPanelContinuation")
+        return try queuePage(in: panel as? [String: Any], what: "radio continuation")
+    }
+
+    /// The two parsers each accept only their own shape. A rejected token comes back as a
+    /// first-page-shaped response, and an empty queue would hide that, so a missing panel is an error.
+    private static func queuePage(in panel: [String: Any]?, what: String) throws -> MusicQueuePage {
+        guard let panel else { throw MusicError.parse("\(what) has no queue") }
+        let items = panel["contents"] as? [[String: Any]] ?? []
+        return MusicQueuePage(tracks: items.compactMap(queueTrack(from:)), continuation: queueContinuation(in: panel))
+    }
+
+    private static func queueTrack(from item: [String: Any]) -> MusicTrack? {
+        let wrapped = path(item, "playlistPanelVideoWrapperRenderer", "primaryRenderer", "playlistPanelVideoRenderer")
+        guard let renderer = (item["playlistPanelVideoRenderer"] ?? wrapped) as? [String: Any],
+              let videoId = string(renderer["videoId"]) ?? string(path(renderer, "navigationEndpoint", "watchEndpoint", "videoId"))
+        else { return nil }
+        let title = runs(renderer["title"]).compactMap { $0["text"] as? String }.joined()
+        guard !title.isEmpty else { return nil }
+
+        let segments = bulletSegments(of: runs(renderer["longBylineText"]))
+        return MusicTrack(
+            videoId: videoId,
+            title: title,
+            artist: artistNames(in: segments.first ?? []).joined(separator: ", "),
+            album: segments.dropFirst().first(where: isAlbumSegment).flatMap(text(of:)),
+            durationSeconds: duration(of: runs(renderer["lengthText"])),
+            thumbnailURL: largestThumbnailURL(in: renderer)
+        )
+    }
+
+    private static func queueContinuation(in panel: [String: Any]) -> String? {
+        for entry in panel["continuations"] as? [[String: Any]] ?? [] {
+            for key in ["nextRadioContinuationData", "nextContinuationData"] {
+                if let token = string((entry[key] as? [String: Any])?["continuation"]) { return token }
+            }
+        }
+        return nil
+    }
+
+    /// Queue rows list their thumbnails directly, and the player shows the art large.
+    private static func largestThumbnailURL(in renderer: [String: Any]) -> URL? {
+        let candidates = (renderer["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]] ?? []
+        let best = candidates.max { (int($0["width"]) ?? 0) < (int($1["width"]) ?? 0) }
+        return string(best?["url"]).flatMap { URL(string: $0) }
+    }
+
+    private static func runs(_ text: Any?) -> [[String: Any]] {
+        (text as? [String: Any])?["runs"] as? [[String: Any]] ?? []
     }
 
     // MARK: - Player
@@ -282,6 +355,12 @@ enum InnerTubeParser {
             throw MusicError.parse("\(what) is not a JSON object")
         }
         return object
+    }
+
+    private static func path(_ node: Any?, _ keys: String...) -> Any? {
+        var current = node
+        for key in keys { current = (current as? [String: Any])?[key] }
+        return current
     }
 
     private static func string(_ value: Any?) -> String? {

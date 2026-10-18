@@ -43,11 +43,12 @@ actor MusicBackendLive: MusicBackend {
     }
 
     func radio(seedVideoId: String) async throws -> MusicQueuePage {
-        throw MusicError.parse("radio is not built yet")
+        try await client.radio(seedVideoId: seedVideoId)
     }
 
+    /// The continuation token already carries the seed, so only the token goes out.
     func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage {
-        throw MusicError.parse("radio is not built yet")
+        try await client.moreRadio(continuation: continuation)
     }
 
     func reportPlayback(trackingURL: URL, cpn: String) async throws {

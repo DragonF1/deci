@@ -66,6 +66,59 @@ struct MusicBackendLiveTests {
         #expect(tracks.allSatisfy { !$0.videoId.isEmpty && !$0.title.isEmpty })
     }
 
+    @Test("Radio returns the first queue page, seed first, with its continuation")
+    func radio() async throws {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let page = try await harness.backend.radio(seedVideoId: "4D7u5KF7SP8")
+        #expect(page.tracks.first?.videoId == "4D7u5KF7SP8")
+        #expect(page.tracks.count == 4)
+        #expect(page.continuation != nil)
+        let body = FakeYouTube.jsonBody(try #require(harness.youtube.requests(path: "/youtubei/v1/next").first))
+        #expect(body["playlistId"] as? String == "RDAMVM4D7u5KF7SP8")
+    }
+
+    @Test("moreRadio sends the continuation token and returns the next page")
+    func moreRadio() async throws {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let first = try await harness.backend.radio(seedVideoId: "4D7u5KF7SP8")
+        let token = try #require(first.continuation)
+        let next = try await harness.backend.moreRadio(seedVideoId: "4D7u5KF7SP8", continuation: token)
+        #expect(next.tracks.count == 4)
+        #expect(next.continuation == "SCRUBBED_RADIO_CONTINUATION_3")
+        let sent = FakeYouTube.jsonBody(try #require(harness.youtube.requests(path: "/youtubei/v1/next").last))
+        #expect(sent["continuation"] as? String == token)
+        #expect(sent["videoId"] == nil)
+    }
+
+    @Test("Radio while signed out fails before any network request")
+    func radioSignedOut() async {
+        let harness = makeHarness(signedIn: false)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.radio(seedVideoId: "4D7u5KF7SP8") }
+        await #expect(throws: MusicError.signedOut) {
+            _ = try await harness.backend.moreRadio(seedVideoId: "4D7u5KF7SP8", continuation: "token")
+        }
+        #expect(harness.youtube.requests.isEmpty)
+    }
+
+    @Test("Radio errors map like search: 401 is signedOut, other statuses are http, bad bodies are parse")
+    func radioErrors() async {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update { $0.nextStatus = 401 }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.radio(seedVideoId: "x") }
+        harness.youtube.update { $0.nextStatus = 503 }
+        await #expect(throws: MusicError.http(503)) { _ = try await harness.backend.radio(seedVideoId: "x") }
+        await #expect(throws: MusicError.http(503)) { _ = try await harness.backend.moreRadio(seedVideoId: "x", continuation: "t") }
+        harness.youtube.update {
+            $0.nextStatus = 200
+            $0.nextBody = Data("<html>blocked</html>".utf8)
+        }
+        await #expect(throws: MusicError.self) { _ = try await harness.backend.radio(seedVideoId: "x") }
+    }
+
     @Test("Resolve returns a solved, expiring AAC stream")
     func resolve() async throws {
         let harness = makeHarness(signedIn: true)

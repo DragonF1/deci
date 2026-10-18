@@ -118,6 +118,11 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var searchBody = (try? MusicFixtures.data("search-songs.json")) ?? Data()
         var searchStatus = 200
         var searchHeaders: [String: String] = [:]
+        /// The radio's first page; a request whose body has a `continuation` gets `nextContinuationBody`.
+        var nextBody = (try? MusicFixtures.data("next-radio-first.json")) ?? Data()
+        var nextContinuationBody = (try? MusicFixtures.data("next-radio-continuation.json")) ?? Data()
+        var nextStatus = 200
+        var nextHeaders: [String: String] = [:]
         var playerBody = (try? MusicFixtures.data("player-ok.json")) ?? Data()
         var playerStatus = 200
         var playerHeaders: [String: String] = [:]
@@ -163,6 +168,13 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
             return HTTPResponse(statusCode: config.bootstrapStatus, headers: config.bootstrapHeaders, data: Data(config.bootstrapHTML.utf8))
         case ("music.youtube.com", "/youtubei/v1/search"):
             return HTTPResponse(statusCode: config.searchStatus, headers: config.searchHeaders, data: config.searchBody)
+        case ("music.youtube.com", "/youtubei/v1/next"):
+            let isContinuation = Self.jsonBody(request)["continuation"] != nil
+            return HTTPResponse(
+                statusCode: config.nextStatus,
+                headers: config.nextHeaders,
+                data: isContinuation ? config.nextContinuationBody : config.nextBody
+            )
         case ("music.youtube.com", "/youtubei/v1/player"):
             return HTTPResponse(statusCode: config.playerStatus, headers: config.playerHeaders, data: config.playerBody)
         case ("music.youtube.com", _) where url.path.hasSuffix("/base.js"):
