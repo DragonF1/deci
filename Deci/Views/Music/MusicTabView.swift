@@ -150,6 +150,10 @@ private struct MusicSignedInView: View {
                 service.search()
             }
         }
+        // The queue ended: the next song played must not pop Up next open again.
+        .onChange(of: service.queue.isEmpty) { _, isEmpty in
+            if isEmpty { queueForced = false }
+        }
     }
 
     /// Home or Library from the switch: leaves search and the queue and goes to the tab's root.

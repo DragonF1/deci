@@ -773,9 +773,11 @@ final class MusicService {
     private func handle(_ error: any Error) {
         guard !Self.isCancellation(error) else { return }
         if let musicError = error as? MusicError, case .signedOut = musicError {
-            // The session is dead: forget its cookies so the next launch does not start from them.
+            // The session is dead: forget its cookies so the next launch does not start from them,
+            // and what was loaded under it, so the next account never sees the old library.
             authState = .signedOut
             lastError = nil
+            browse.reset()
             signOutTask = Task { [backend] in await backend.signOut() }
             return
         }
@@ -783,11 +785,9 @@ final class MusicService {
         lastError = Self.message(for: error)
     }
 
-    /// A Home, Library or page request found the session gone: the same sign-out as a dead search,
-    /// and what was loaded under that session goes with it.
+    /// A Home, Library or page request found the session gone: the same sign-out as a dead search.
     private func browseSessionExpired() {
         handle(MusicError.signedOut)
-        browse.reset()
     }
 
     private static func isCancellation(_ error: any Error) -> Bool {

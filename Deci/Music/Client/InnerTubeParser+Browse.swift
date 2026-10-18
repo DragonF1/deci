@@ -362,7 +362,9 @@ extension InnerTubeParser {
     }
 
     private static func collection(_ browse: [String: Any], title: String, subtitle: String?, thumbnail: URL?) -> MusicShelfItem? {
-        guard let browseId = string(browse["browseId"]), let kind = collectionKind(of: browse) else { return nil }
+        guard var browseId = string(browse["browseId"]), let kind = collectionKind(of: browse) else { return nil }
+        // A library artist links to "MPLA" + its channel id; the artist page is the channel id (as ytmusicapi does).
+        if kind == .artist, browseId.hasPrefix("MPLAUC") { browseId.removeFirst(4) }
         return .collection(MusicCollection(browseId: browseId, kind: kind, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail))
     }
 

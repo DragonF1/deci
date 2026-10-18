@@ -438,7 +438,7 @@ struct MusicBrowseStoreTests {
         #expect(await h.backend.pageCalls == ["MPREb1"])
     }
 
-    @Test("Pages stack, back pops one, popToRoot clears, and a loaded page is not fetched again")
+    @Test("Pages stack, back pops one, popToRoot clears, and a closed page is fetched fresh when opened again")
     func pageNavigation() async {
         let h = StoreHarness()
         let first = MusicSamples.collection("VLPL1")
@@ -450,16 +450,19 @@ struct MusicBrowseStoreTests {
 
         h.store.back()
         #expect(h.store.path == [first])
+        #expect(h.store.pageState("MPREb2") == .idle)
+        #expect(loadedPage(h.store, "VLPL1") != nil)
         h.store.open(second)
         #expect(h.store.path == [first, second])
+        #expect(await h.until { h.store.pageState("MPREb2") != .loading })
         h.store.popToRoot()
         #expect(h.store.path.isEmpty)
+        #expect(h.store.pages.isEmpty)
         h.store.back()
         #expect(h.store.path.isEmpty)
 
         await h.letLateWorkLand()
-        #expect(await h.backend.pageCalls.sorted() == ["MPREb2", "VLPL1"])
-        #expect(loadedPage(h.store, "VLPL1") != nil)
+        #expect(await h.backend.pageCalls.sorted() == ["MPREb2", "MPREb2", "VLPL1"])
     }
 
     @Test("A failed page shows a message, and opening it again reloads it without pushing it twice")

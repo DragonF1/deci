@@ -1524,6 +1524,22 @@ struct MusicServiceBrowseTests {
         #expect(h.service.browse.librarySection == .albums)
     }
 
+    @Test("a search that finds the session gone empties Home, Library and the open pages")
+    func deadSessionFromSearchResetsBrowse() async {
+        let h = await loadedHarness()
+        h.service.browse.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.eventually { h.service.browse.pages["VLPL1"] != nil })
+        await h.backend.setSearchError("q", MusicError.signedOut)
+
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(isEmpty(h.service.browse))
+    }
+
     @Test("a loaded Home is not shown again after signing out and back in")
     func signOutThenLoadAgain() async {
         let h = await loadedHarness()

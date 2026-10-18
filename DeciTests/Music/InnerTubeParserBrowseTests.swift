@@ -401,7 +401,7 @@ struct InnerTubeParserBrowseTests {
         #expect(list.continuation == "FIXTURE_LIB_ALBUMS_NEXT")
     }
 
-    @Test("Hand-built artists shelf: rows with a browse endpoint become artists")
+    @Test("Hand-built artists shelf: rows with a browse endpoint become artists, an MPLA id opens the channel")
     func libraryArtists() throws {
         let list = try InnerTubeParser.libraryPage(from: fixture("browse-library-artists.json"))
         #expect(list.items.map(\.browseId) == ["UCfixtureDaftPunk000000000", "UCfixtureJustice0000000000"])

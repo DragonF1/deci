@@ -4,6 +4,7 @@
 // only exist for a real account, so fake cookies cannot stand in here.
 // Skipped unless DECI_MUSIC_LIVE=1 (pass it to xcodebuild as TEST_RUNNER_DECI_MUSIC_LIVE=1).
 // Prints counts only, never titles, ids, tokens, URLs or cookies: the library is the owner's.
+// Checks go through local Bools so a failed #expect cannot print a value either.
 
 import Foundation
 import Testing
@@ -48,19 +49,22 @@ struct MusicLiveBrowseTests {
         let items = home.shelves.flatMap(\.items)
         report("MUSIC_LIVE home shelves=\(home.shelves.count) items=\(items.count) hasContinuation=\(home.continuation != nil)")
         #expect(!home.shelves.isEmpty)
-        #expect(home.shelves.allSatisfy { !$0.title.isEmpty && !$0.items.isEmpty })
-        #expect(items.allSatisfy { item in
+        let shelvesFilled = home.shelves.allSatisfy { !$0.title.isEmpty && !$0.items.isEmpty }
+        let itemsFilled = items.allSatisfy { item in
             switch item {
             case .track(let track): !track.videoId.isEmpty && !track.title.isEmpty
             case .collection(let collection): !collection.browseId.isEmpty && !collection.title.isEmpty
             }
-        })
+        }
+        #expect(shelvesFilled)
+        #expect(itemsFilled)
 
         guard let token = home.continuation else { return report("MUSIC_LIVE home has no continuation") }
         let more = try await backend.moreHome(continuation: token)
         report("MUSIC_LIVE home page2 shelves=\(more.shelves.count) items=\(more.shelves.flatMap(\.items).count) hasContinuation=\(more.continuation != nil)")
+        let tokenMoved = more.continuation != token
         #expect(!more.shelves.isEmpty)
-        #expect(more.continuation != token)
+        #expect(tokenMoved)
     }
 
     @Test("A real Library has playlists with Liked music among them, and albums and artists parse")
@@ -73,21 +77,25 @@ struct MusicLiveBrowseTests {
         let hasLiked = playlists.items.contains { $0.browseId == MusicBrowseStore.likedMusic.browseId }
         report("MUSIC_LIVE library playlists=\(playlists.items.count) hasLikedMusic=\(hasLiked) hasContinuation=\(playlists.continuation != nil)")
         #expect(!playlists.items.isEmpty)
-        #expect(playlists.items.allSatisfy { !$0.browseId.isEmpty && !$0.title.isEmpty })
-        #expect(Set(playlists.items.map(\.browseId)).count == playlists.items.count)
+        let playlistsFilled = playlists.items.allSatisfy { !$0.browseId.isEmpty && !$0.title.isEmpty }
+        let playlistsUnique = Set(playlists.items.map(\.browseId)).count == playlists.items.count
+        #expect(playlistsFilled)
+        #expect(playlistsUnique)
 
         if let token = playlists.continuation {
             let more = try await backend.moreLibrary(.playlists, continuation: token)
             report("MUSIC_LIVE library playlists page2 items=\(more.items.count) hasContinuation=\(more.continuation != nil)")
+            let tokenMoved = more.continuation != token
             #expect(!more.items.isEmpty)
-            #expect(more.continuation != token)
+            #expect(tokenMoved)
         }
 
         // An account can have no saved albums or followed artists, so these only have to parse.
         for section in [MusicLibrarySection.albums, .artists] {
             let list = try await backend.library(section)
             report("MUSIC_LIVE library \(section.rawValue) items=\(list.items.count) hasContinuation=\(list.continuation != nil)")
-            #expect(list.items.allSatisfy { !$0.browseId.isEmpty && !$0.title.isEmpty })
+            let listFilled = list.items.allSatisfy { !$0.browseId.isEmpty && !$0.title.isEmpty }
+            #expect(listFilled)
         }
     }
 
@@ -100,15 +108,18 @@ struct MusicLiveBrowseTests {
         let page = try await backend.page(browseId: "VLLM")
         report("MUSIC_LIVE VLLM tracks=\(page.tracks.count) hasContinuation=\(page.continuation != nil)")
         #expect(!page.tracks.isEmpty)
-        #expect(page.tracks.allSatisfy { !$0.videoId.isEmpty && !$0.title.isEmpty })
-        #expect(Set(page.tracks.map(\.videoId)).count == page.tracks.count)
+        let tracksFilled = page.tracks.allSatisfy { !$0.videoId.isEmpty && !$0.title.isEmpty }
+        let tracksUnique = Set(page.tracks.map(\.videoId)).count == page.tracks.count
+        #expect(tracksFilled)
+        #expect(tracksUnique)
 
         guard let token = page.continuation else { return report("MUSIC_LIVE VLLM has no continuation") }
         let more = try await backend.moreTracks(browseId: "VLLM", continuation: token)
         let fresh = Set(more.tracks.map(\.videoId)).subtracting(page.tracks.map(\.videoId))
         report("MUSIC_LIVE VLLM page2 tracks=\(more.tracks.count) new=\(fresh.count) hasContinuation=\(more.continuation != nil)")
+        let tokenMoved = more.continuation != token
         #expect(!more.tracks.isEmpty)
         #expect(!fresh.isEmpty)
-        #expect(more.continuation != token)
+        #expect(tokenMoved)
     }
 }

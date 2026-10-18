@@ -306,13 +306,25 @@ final class MusicBrowseStore {
 
     /// Back one page.
     func back() {
-        guard !path.isEmpty else { return }
-        path.removeLast()
+        guard let closed = path.popLast() else { return }
+        drop(closed.browseId)
     }
 
     /// Back to the tab's root.
     func popToRoot() {
+        let closed = path
         path.removeAll()
+        for collection in closed { drop(collection.browseId) }
+    }
+
+    /// A closed page is dropped unless it is still further down the path, so opening it again
+    /// fetches it fresh (a song just liked shows in Liked music) and closed pages do not pile up.
+    private func drop(_ browseId: String) {
+        guard !path.contains(where: { $0.browseId == browseId }) else { return }
+        for key in ["page:\(browseId)", "page+:\(browseId)"] { tasks.removeValue(forKey: key)?.cancel() }
+        pageRuns[browseId] = nil
+        pages[browseId] = nil
+        loadingMoreTracks.remove(browseId)
     }
 
     // MARK: - Reset
