@@ -3,7 +3,8 @@ import Foundation
 import os
 
 /// Lyrics from lrclib.net, a free community service: `/api/get` with the exact track, falling back to
-/// `/api/search`, a disk cache in front, and a hard stop on 429.
+/// `/api/search`, a disk cache in front, a hard stop on 429, and a quick second and third try when a request
+/// fails with a blip (a 5xx that is gone a moment later).
 ///
 /// Nothing that identifies the listener ever goes out: no cookies, no auth headers, no video id, only the
 /// song's title, artist, album and length and a User-Agent that names the app. It goes through `HTTPTransport`
@@ -18,8 +19,12 @@ actor LRCLibClient: LyricsProviding {
 
     private static let baseURL = URL(string: "https://lrclib.net/api")!
     private static let defaultWait: TimeInterval = 60
-    /// How long a 500, 502 or 504 holds every request back. Short, and kept in memory only.
-    private static let serverErrorWait: TimeInterval = 30
+    /// How long a 5xx that outlived the inline retries holds every request back. Short, and kept in memory only.
+    private static let serverErrorWait: TimeInterval = 15
+    /// The waits before the second and the third attempt at a request that met a blip.
+    private static let retryDelays: [Duration] = [.seconds(1), .seconds(3)]
+    /// A 503 that names a wait of this many seconds or fewer is a blip too; a longer one is a real busy window.
+    private static let blipRetryAfter: TimeInterval = 5
     private static let minimumWait: TimeInterval = 1
     private static let maximumWait: TimeInterval = 3600
     private static let unreserved = CharacterSet(
@@ -56,18 +61,21 @@ actor LRCLibClient: LyricsProviding {
     private let cache: LyricsDiskCache
     private let userAgent: String
     private let now: @Sendable () -> Date
+    private let sleep: @Sendable (Duration) async throws -> Void
     private var waitUntil: Date?
 
     init(
         transport: any HTTPTransport,
         cache: LyricsDiskCache,
         userAgent: String,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.transport = transport
         self.cache = cache
         self.userAgent = userAgent
         self.now = now
+        self.sleep = sleep
     }
 
     static func live() -> LRCLibClient {
@@ -183,8 +191,9 @@ actor LRCLibClient: LyricsProviding {
 
     // MARK: - Network
 
-    /// The body of a 2xx answer, or nil for a 404. A 429 or 503 opens the busy window and throws; a 500, 502 or 504
-    /// opens a short backoff window and throws. A body over the size cap is a parse failure.
+    /// The body of a 2xx answer, or nil for a 404. A blip (see `isBlip`) is sent again up to twice more, after 1 s and
+    /// then 3 s, before it counts. Then a 429 or a 503 with a long Retry-After opens the busy window and throws; a 5xx
+    /// that is still failing opens a short backoff window and throws. A body over the size cap is a parse failure.
     private func fetch(_ path: String, _ parameters: [(String, String)]) async throws -> Data? {
         var components = URLComponents(url: Self.baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
         // Encoded by hand: URLComponents leaves "+" and "&" alone, which a server reads as a space and a separator.
@@ -194,14 +203,17 @@ actor LRCLibClient: LyricsProviding {
         guard let url = components?.url else { throw LyricsError.parse }
 
         let request = HTTPRequest(url: url, headers: ["User-Agent": userAgent, "Accept": "application/json"])
-        let response: HTTPResponse
-        do {
-            response = try await transport.send(request)
-        } catch let error as URLError where error.code == .cancelled {
-            throw CancellationError()
+        var response = try await send(request, path: path)
+        var delays = Self.retryDelays[...]
+        while isBlip(response), let delay = delays.popFirst() {
+            // A cancelled caller stops here and opens no window: a blip is not a "slow down". The check comes before
+            // the wait and after it, because an injected timer may not notice the cancellation.
+            try Task.checkCancellation()
+            try await sleep(delay)
+            try Task.checkCancellation()
+            response = try await send(request, path: path)
         }
 
-        Self.log.info("lrclib \(path, privacy: .public) answered \(response.statusCode)")
         // The server's "slow down" counts even when this request was cancelled meanwhile: it was sent, and the
         // next song must not walk straight into the same answer. So the window opens before the cancellation check.
         let refusal = openWindow(for: response)
@@ -219,22 +231,49 @@ actor LRCLibClient: LyricsProviding {
         }
     }
 
-    /// A 429 or 503 opens the window Retry-After names; a 500, 502 or 504 opens a short fixed one. Nil for
-    /// every other status. Only memory: nothing about it is written to disk.
+    private func send(_ request: HTTPRequest, path: String) async throws -> HTTPResponse {
+        let response: HTTPResponse
+        do {
+            response = try await transport.send(request)
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        }
+        Self.log.info("lrclib \(path, privacy: .public) answered \(response.statusCode)")
+        return response
+    }
+
+    /// A 500, 502 or 504, or a 503 that names no wait or one of a few seconds: LRCLIB stumbled and is likely fine a
+    /// moment later, so the request is worth sending again inline. A 429 is the server asking us to slow down, and a
+    /// 503 with a longer Retry-After says how long: neither is retried.
+    private func isBlip(_ response: HTTPResponse) -> Bool {
+        switch response.statusCode {
+        case 500, 502, 504:
+            return true
+        case 503:
+            let header = response.header("Retry-After")?.trimmingCharacters(in: .whitespaces) ?? ""
+            return header.isEmpty || Self.wait(retryAfter: header, from: now()) <= Self.blipRetryAfter
+        default:
+            return false
+        }
+    }
+
+    /// A 429, or a 503 that is not a blip, opens the window Retry-After names; any other 5xx that is still failing
+    /// after the retries (a 500, 502, 504, or a blip of a 503) opens a short fixed one. Nil for every other status.
+    /// Only memory: nothing about it is written to disk.
     private func openWindow(for response: HTTPResponse) -> LyricsError? {
         let start = now()
-        switch response.statusCode {
-        case 429, 503:
+        let status = response.statusCode
+        if status == 429 || (status == 503 && !isBlip(response)) {
             let until = start.addingTimeInterval(Self.wait(retryAfter: response.header("Retry-After"), from: start))
             waitUntil = max(waitUntil ?? until, until)
             return .busy(until: until)
-        case 500, 502, 504:
+        }
+        if [500, 502, 503, 504].contains(status) {
             let until = start.addingTimeInterval(Self.serverErrorWait)
             waitUntil = max(waitUntil ?? until, until)
-            return .backoff(status: response.statusCode, until: until)
-        default:
-            return nil
+            return .backoff(status: status, until: until)
         }
+        return nil
     }
 
     // MARK: - Pieces
@@ -280,7 +319,7 @@ actor LRCLibClient: LyricsProviding {
         return min(max(seconds, minimumWait), maximumWait)
     }
 
-    /// "Wed, 21 Oct 2015 07:28:00 GMT". A formatter per call: this only runs on a 429.
+    /// "Wed, 21 Oct 2015 07:28:00 GMT". A formatter per call: this only runs on a 429 or a 503.
     private static func httpDate(_ text: String) -> Date? {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

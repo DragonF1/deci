@@ -8,7 +8,9 @@ import Observation
 ///
 /// Lyrics are fetched only while the panel is open and the popup is on screen, for the current track, and
 /// again when the track changes while it is. A closed panel never touches the network. A track change waits a
-/// moment first (`debounce`), so skipping through a queue sends one request, for the song it stops on.
+/// moment first (`debounce`), so skipping through a queue sends one request, for the song it stops on. When LRCLIB
+/// asks us to wait (busy, or a server-error window), the store asks again by itself as the window ends, but only
+/// while the panel is being watched.
 @MainActor
 @Observable
 final class MusicLyricsStore {
@@ -16,10 +18,11 @@ final class MusicLyricsStore {
         case idle
         case loading
         case loaded(LyricsResult)
-        /// LRCLIB asked us to wait; nothing goes out before the date.
+        /// LRCLIB asked us to wait; nothing goes out before the date, and the store asks again then.
         case busy(until: Date)
         /// A short message for the user; the panel shows it with a Retry button. With `retryAfter` (a server error
-        /// that opened a short window) Retry comes once that date has passed, and nothing goes out before it.
+        /// that opened a short window) Retry comes once that date has passed, nothing goes out before it, and the
+        /// store asks again by itself then.
         case failed(String, retryAfter: Date? = nil)
     }
 
@@ -27,7 +30,7 @@ final class MusicLyricsStore {
     static let debounce: Duration = .milliseconds(300)
 
     /// The panel's words while LRCLIB asks us to wait.
-    static let busyMessage = "Lyrics service is busy. Try again later."
+    static let busyMessage = "Lyrics service is busy. Trying again shortly."
 
     /// The store the app uses: lyrics from LRCLIB.
     static func live() -> MusicLyricsStore {
@@ -73,6 +76,8 @@ final class MusicLyricsStore {
     /// track change, a close or a reset drops a slower earlier answer.
     @ObservationIgnored private var runCounter = 0
     @ObservationIgnored private(set) var loadTask: Task<Void, Never>?
+    /// The timer that asks again when a busy or server-error window ends. At most one, and only while watching.
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
 
     init(
         provider: any LyricsProviding,
@@ -99,11 +104,13 @@ final class MusicLyricsStore {
     }
 
     /// Coming into view: the player's position is read once (ticks were ignored while hidden), so the highlight is
-    /// right at once, and the lyrics are fetched if they are not there. Going out of view drops the fetch.
+    /// right at once, and the lyrics are fetched if they are not there. A window that is still open gets its timer
+    /// back. Going out of view drops the fetch and the timer.
     private func watchingChanged() {
         if isWatching {
             samplePlayer()
             fetchIfNeeded(debounced: false)
+            scheduleAutoRetry()
         } else {
             cancelFetch()
         }
@@ -191,6 +198,8 @@ final class MusicLyricsStore {
         }
         runCounter += 1
         let run = runCounter
+        retryTask?.cancel()
+        retryTask = nil
         state = .loading
         loadTask = Task { [weak self, provider, sleep] in
             if debounced {
@@ -233,21 +242,57 @@ final class MusicLyricsStore {
         guard run == runCounter else { return }
         state = new
         loadTask = nil
+        scheduleAutoRetry()
     }
 
-    /// Drops the fetch in flight: its answer, when it comes, is no longer the current run.
+    /// Drops the fetch in flight and the retry timer: an answer or a wake-up that comes later is no longer the
+    /// current run.
     private func cancelFetch() {
         runCounter += 1
         loadTask?.cancel()
         loadTask = nil
+        retryTask?.cancel()
+        retryTask = nil
         if state == .loading { state = .idle }
+    }
+
+    /// While watching, a busy or server-error window that is still on gets one timer: when the window ends, the fetch
+    /// goes out again with no tap on Retry. The wait is what is left of the window, never negative. Nothing else is
+    /// retried by itself: a failure with no window waits for Retry. The timer belongs to the run it was set in, so
+    /// a track change, a close, a reset or a Retry tap in the meantime drops it even if the sleep does not end early.
+    private func scheduleAutoRetry() {
+        retryTask?.cancel()
+        retryTask = nil
+        guard isWatching, track != nil else { return }
+        let until: Date
+        switch state {
+        case .busy(let date):
+            until = date
+        case .failed(_, let retryAfter):
+            guard let retryAfter else { return }
+            until = retryAfter
+        case .idle, .loading, .loaded:
+            return
+        }
+        let run = runCounter
+        let wait = Duration.seconds(max(until.timeIntervalSince(now()), 0))
+        retryTask = Task { [weak self, sleep] in
+            do { try await sleep(wait) } catch { return }
+            self?.windowEnded(run: run)
+        }
+    }
+
+    private func windowEnded(run: Int) {
+        guard run == runCounter else { return }
+        retryTask = nil
+        fetchIfNeeded(debounced: false)
     }
 
     /// What the panel says about a failure. Never a URL or a piece of the response.
     static func message(for error: any Error) -> String {
         switch error {
         case LyricsError.http(let status): "The lyrics service returned an error (\(status))."
-        case LyricsError.backoff(let status, _): "The lyrics service returned an error (\(status))."
+        case LyricsError.backoff(let status, _): "\(message(for: LyricsError.http(status))) Trying again shortly."
         case LyricsError.parse: "Couldn't read the lyrics response."
         case LyricsError.busy: busyMessage
         case is URLError: "Network problem. Check your connection."

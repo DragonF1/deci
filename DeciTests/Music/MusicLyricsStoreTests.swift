@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicLyricsStoreTests.swift
 // The lyrics store: it fetches only while the panel is open and the popup is showing, only for the
-// current track, drops late answers, honours the busy window, waits out a quick skip and resets on sign-out.
+// current track, drops late answers, honours the busy window and asks again when it ends, waits out a quick skip and
+// resets on sign-out.
 
 import Foundation
 import Testing
@@ -940,7 +941,7 @@ struct MusicLyricsStoreBackoffTests {
         rig.store.setPanelOpen(true)
         rig.store.trackChanged(Rig.track("a"), duration: 200)
         await rig.settle()
-        #expect(rig.store.state == .failed("The lyrics service returned an error (500).", retryAfter: until))
+        #expect(rig.store.state == .failed("The lyrics service returned an error (500). Trying again shortly.", retryAfter: until))
         #expect(!rig.store.canRetry)
 
         rig.clock.advance(by: 10)
@@ -973,7 +974,7 @@ struct MusicLyricsStoreBackoffTests {
         rig.store.setPanelOpen(true)
         await rig.idle()
         #expect(rig.provider.queries.count == 1)
-        #expect(rig.store.state == .failed("The lyrics service returned an error (502).", retryAfter: until))
+        #expect(rig.store.state == .failed("The lyrics service returned an error (502). Trying again shortly.", retryAfter: until))
 
         rig.clock.advance(by: 31)
         rig.provider.setError(nil, for: "a")
@@ -1010,18 +1011,23 @@ struct MusicLyricsStoreBackoffTests {
         #expect(rig.store.canRetry)
     }
 
-    @Test("The busy copy says to try again later")
+    @Test("The busy copy says it is trying again shortly")
     func busyCopy() {
-        #expect(MusicLyricsStore.busyMessage == "Lyrics service is busy. Try again later.")
+        #expect(MusicLyricsStore.busyMessage == "Lyrics service is busy. Trying again shortly.")
         #expect(MusicLyricsStore.message(for: LyricsError.busy(until: Date())) == MusicLyricsStore.busyMessage)
     }
 
-    @Test("A 5xx message carries only the status")
+    @Test("A 5xx message carries only the status, and says it is trying again shortly")
     func backoffMessage() {
         #expect(
             MusicLyricsStore.message(for: LyricsError.backoff(status: 502, until: Date()))
-                == "The lyrics service returned an error (502)."
+                == "The lyrics service returned an error (502). Trying again shortly."
         )
+    }
+
+    @Test("A failure with no window carries only the status and promises no retry")
+    func httpMessage() {
+        #expect(MusicLyricsStore.message(for: LyricsError.http(403)) == "The lyrics service returned an error (403).")
     }
 
     @Test("The live store talks to the LRCLIB client")
@@ -1034,5 +1040,265 @@ struct MusicLyricsStoreBackoffTests {
         let provider = NoLyricsProvider()
         #expect(try await provider.lyrics(for: LyricsSamples.query()) == .notFound)
         #expect(try await provider.lyrics(for: LyricsSamples.query(videoId: "other", duration: nil)) == .notFound)
+    }
+}
+
+// MARK: - Automatic retry
+
+/// While the panel is watching, a busy or backoff window that ends is followed by another try, with no tap. The timer
+/// is the store's injected sleep. The fake ignores cancellation, so a timer that wakes after the panel closed, the
+/// track changed or a reset has to be dropped by the store itself.
+@MainActor
+@Suite("Music lyrics store: automatic retry")
+struct MusicLyricsStoreAutoRetryTests {
+
+    /// Where a watching store stops watching, or loses its track, while its retry timer is waiting.
+    enum Away: CaseIterable, CustomTestStringConvertible {
+        case panelClosed, popupHidden, trackGone, reset
+
+        var testDescription: String {
+            switch self {
+            case .panelClosed: "the panel closed"
+            case .popupHidden: "the popup hid"
+            case .trackGone: "the track went away"
+            case .reset: "a reset"
+            }
+        }
+    }
+
+    /// Opens the panel on track "a" while LRCLIB answers with `error`, and waits until the retry timer is asking to
+    /// sleep. The track is set before the panel opens, so the first fetch is not debounced and the sleeper's first
+    /// request is the retry's.
+    private func land(_ error: any Error, _ rig: Rig, _ sleeper: FakeSleeper) async {
+        rig.provider.setError(error, for: "a")
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        rig.store.setPanelOpen(true)
+        await rig.settle()
+        #expect(await eventually { sleeper.requested.count == 1 })
+    }
+
+    private func answer(_ rig: Rig, with result: LyricsResult, for id: String = "a") {
+        rig.provider.setError(nil, for: id)
+        rig.provider.setResult(result, for: id)
+    }
+
+    // MARK: - Busy and backoff windows
+
+    @Test("A busy window ends in another try by itself, after the window")
+    func busyRetriesByItself() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        let until = rig.clock.now.addingTimeInterval(30)
+        await land(LyricsError.busy(until: until), rig, sleeper)
+        #expect(rig.store.state == .busy(until: until))
+        #expect(sleeper.requested == [.seconds(30)])
+        #expect(rig.provider.queries.count == 1)
+
+        rig.clock.advance(by: 30)
+        answer(rig, with: .plain("From a"))
+        await sleeper.release()
+        #expect(await eventually { rig.store.state == .loaded(.plain("From a")) })
+        #expect(rig.provider.queries.count == 2)
+    }
+
+    @Test("A server-error window ends in another try by itself, and its message says so")
+    func backoffRetriesByItself() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        let until = rig.clock.now.addingTimeInterval(15)
+        await land(LyricsError.backoff(status: 503, until: until), rig, sleeper)
+        #expect(rig.store.state == .failed("The lyrics service returned an error (503). Trying again shortly.", retryAfter: until))
+        #expect(sleeper.requested == [.seconds(15)])
+
+        rig.clock.advance(by: 15)
+        answer(rig, with: .instrumental)
+        await sleeper.release()
+        #expect(await eventually { rig.store.state == .loaded(.instrumental) })
+        #expect(rig.provider.queries.count == 2)
+    }
+
+    @Test("The wait is what is left of the window, never negative")
+    func waitIsWhatIsLeft() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        let gate = MusicTestGate()
+        let until = rig.clock.now.addingTimeInterval(30)
+        rig.provider.setError(LyricsError.busy(until: until), for: "a")
+        rig.provider.setGate(gate, for: "a")
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        rig.store.setPanelOpen(true)
+        // The answer takes a while: 12 s of the window are gone when it lands.
+        #expect(await eventually { rig.provider.queries.count == 1 })
+        rig.clock.advance(by: 12)
+        await gate.open()
+        await rig.settle()
+        #expect(await eventually { sleeper.requested.count == 1 })
+        #expect(sleeper.requested == [.seconds(18)])
+        await sleeper.release()
+    }
+
+    @Test("A window that is already over asks again at once")
+    func overWindowRetriesAtOnce() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        await land(LyricsError.busy(until: rig.clock.now.addingTimeInterval(-5)), rig, sleeper)
+        #expect(sleeper.requested == [.zero])
+
+        answer(rig, with: .plain("From a"))
+        await sleeper.release()
+        #expect(await eventually { rig.store.state == .loaded(.plain("From a")) })
+    }
+
+    @Test("A try that lands busy again schedules the next one")
+    func busyAgainSchedulesAgain() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        await land(LyricsError.busy(until: rig.clock.now.addingTimeInterval(30)), rig, sleeper)
+
+        rig.clock.advance(by: 30)
+        let next = rig.clock.now.addingTimeInterval(30)
+        rig.provider.setError(LyricsError.busy(until: next), for: "a")
+        await sleeper.release()
+        #expect(await eventually { sleeper.requested.count == 2 })
+        #expect(sleeper.requested == [.seconds(30), .seconds(30)])
+        #expect(rig.provider.queries.count == 2)
+        #expect(rig.store.state == .busy(until: next))
+    }
+
+    @Test("Other failures and good answers start no timer")
+    func nothingElseIsRetried() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        let errors: [any Error] = [LyricsError.http(403), LyricsError.parse, URLError(.timedOut)]
+        for (index, error) in errors.enumerated() {
+            let id = "e\(index)"
+            rig.provider.setError(error, for: id)
+            rig.store.trackChanged(Rig.track(id), duration: 200)
+            rig.store.setPanelOpen(true)
+            await rig.settle()
+            rig.store.setPanelOpen(false)
+        }
+        rig.provider.setResult(.plain("From ok"), for: "ok")
+        rig.store.trackChanged(Rig.track("ok"), duration: 200)
+        rig.store.setPanelOpen(true)
+        await rig.settle()
+        await rig.idle()
+        #expect(rig.store.state == .loaded(.plain("From ok")))
+        #expect(sleeper.requested.isEmpty)
+    }
+
+    // MARK: - Out of view
+
+    @Test("A timer that wakes after the panel closed, the popup hid, the track went away or a reset sends nothing", arguments: Away.allCases)
+    func awayDropsTheTimer(away: Away) async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        let until = rig.clock.now.addingTimeInterval(30)
+        await land(LyricsError.busy(until: until), rig, sleeper)
+
+        switch away {
+        case .panelClosed: rig.store.setPanelOpen(false)
+        case .popupHidden: rig.store.setPopupVisible(false)
+        case .trackGone: rig.store.trackChanged(nil, duration: 0)
+        case .reset: rig.store.reset()
+        }
+        rig.clock.advance(by: 31)
+        answer(rig, with: .plain("From a"))
+        await sleeper.release()
+        await rig.idle()
+        #expect(rig.provider.queries.count == 1)
+        #expect(rig.store.state != .loading)
+        #expect(rig.store.state != .loaded(.plain("From a")))
+    }
+
+    @Test("A track change drops the timer and fetches only the new track")
+    func trackChangeDropsTheTimer() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        await land(LyricsError.busy(until: rig.clock.now.addingTimeInterval(30)), rig, sleeper)
+
+        rig.clock.advance(by: 31)
+        answer(rig, with: .plain("From a"))
+        answer(rig, with: .plain("From b"), for: "b")
+        rig.store.trackChanged(Rig.track("b"), duration: 200)
+        #expect(await eventually { sleeper.requested.count == 2 })
+        await sleeper.release()
+        #expect(await eventually { rig.store.state == .loaded(.plain("From b")) })
+        await rig.idle()
+        #expect(rig.provider.videoIds == ["a", "b"])
+    }
+
+    @Test("Coming back after the window asks again at once")
+    func comingBackAfterTheWindow() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        await land(LyricsError.busy(until: rig.clock.now.addingTimeInterval(30)), rig, sleeper)
+
+        rig.store.setPanelOpen(false)
+        rig.clock.advance(by: 31)
+        answer(rig, with: .plain("From a"))
+        rig.store.setPanelOpen(true)
+        #expect(rig.store.state == .loading)
+        await rig.settle()
+        #expect(rig.store.state == .loaded(.plain("From a")))
+
+        // The old timer wakes late and finds nothing to do.
+        await sleeper.release()
+        await rig.idle()
+        #expect(rig.provider.queries.count == 2)
+    }
+
+    @Test("Coming back inside the window sends nothing and waits out what is left")
+    func comingBackInsideTheWindow() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        let until = rig.clock.now.addingTimeInterval(30)
+        await land(LyricsError.busy(until: until), rig, sleeper)
+
+        rig.store.setPopupVisible(false)
+        rig.clock.advance(by: 10)
+        rig.store.setPopupVisible(true)
+        #expect(rig.store.state == .busy(until: until))
+        #expect(await eventually { sleeper.requested.count == 2 })
+        #expect(sleeper.requested == [.seconds(30), .seconds(20)])
+        #expect(rig.provider.queries.count == 1)
+
+        rig.clock.advance(by: 20)
+        answer(rig, with: .plain("From a"))
+        await sleeper.release()
+        #expect(await eventually { rig.store.state == .loaded(.plain("From a")) })
+        #expect(rig.provider.queries.count == 2)
+    }
+
+    @Test("Coming back inside a server-error window waits out what is left too")
+    func comingBackInsideABackoffWindow() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        let until = rig.clock.now.addingTimeInterval(15)
+        await land(LyricsError.backoff(status: 500, until: until), rig, sleeper)
+
+        rig.store.setPanelOpen(false)
+        rig.clock.advance(by: 5)
+        rig.store.setPanelOpen(true)
+        #expect(await eventually { sleeper.requested.count == 2 })
+        #expect(sleeper.requested == [.seconds(15), .seconds(10)])
+        #expect(rig.provider.queries.count == 1)
+    }
+
+    @Test("Tapping Retry after the window drops the timer, so nothing is asked twice")
+    func manualRetryDropsTheTimer() async {
+        let sleeper = FakeSleeper()
+        let rig = Rig(sleeper: sleeper)
+        await land(LyricsError.busy(until: rig.clock.now.addingTimeInterval(30)), rig, sleeper)
+
+        rig.clock.advance(by: 31)
+        answer(rig, with: .plain("From a"))
+        rig.store.retry()
+        await rig.settle()
+        #expect(rig.store.state == .loaded(.plain("From a")))
+
+        await sleeper.release()
+        await rig.idle()
+        #expect(rig.provider.queries.count == 2)
     }
 }

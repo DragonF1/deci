@@ -1,6 +1,7 @@
 // DeciTests/Music/LRCLibClientTests.swift
 // The LRCLIB client against a scripted lrclib.net: request shapes, the get-then-search flow, the
-// duration window, the cleaned-title retry, the 429 window and the disk cache. Made-up lyrics only.
+// duration window, the cleaned-title retry, the 429 window, the inline retries of 5xx blips and the disk cache.
+// Made-up lyrics only.
 
 import Foundation
 import Testing
@@ -17,16 +18,25 @@ struct LRCLibClientTests {
         let transport: FakeLRCLib
         let cache: LyricsDiskCache
         let clock: MutableClock
+        /// Stands in for the wait between inline retries: records it and returns at once.
+        let sleeper: FakeSleeper
         let directory: URL
 
         func cleanUp() { try? FileManager.default.removeItem(at: directory) }
     }
 
-    private func makeRig(_ transport: FakeLRCLib = FakeLRCLib(), clock: MutableClock = MutableClock()) -> Rig {
+    /// `sleep` replaces the recording sleeper for a test that needs the wait to do something (move the clock, block).
+    private func makeRig(
+        _ transport: FakeLRCLib = FakeLRCLib(),
+        clock: MutableClock = MutableClock(),
+        sleeper: FakeSleeper = FakeSleeper(gated: false),
+        sleep: (@Sendable (Duration) async throws -> Void)? = nil
+    ) -> Rig {
         let directory = makeTemporaryDirectory("deci-lrclib")
         let cache = LyricsDiskCache(directory: directory.appendingPathComponent("Lyrics", isDirectory: true), now: { clock.now })
-        let client = LRCLibClient(transport: transport, cache: cache, userAgent: Self.userAgent, now: { clock.now })
-        return Rig(client: client, transport: transport, cache: cache, clock: clock, directory: directory)
+        let wait: @Sendable (Duration) async throws -> Void = sleep ?? { try await sleeper.sleep($0) }
+        let client = LRCLibClient(transport: transport, cache: cache, userAgent: Self.userAgent, now: { clock.now }, sleep: wait)
+        return Rig(client: client, transport: transport, cache: cache, clock: clock, sleeper: sleeper, directory: directory)
     }
 
     private func cut(_ name: String, lines: Int = 6) -> String {
@@ -494,13 +504,44 @@ struct LRCLibClientTests {
         #expect(rig.transport.requests.count == 2)
     }
 
-    @Test("503 with Retry-After is busy as well")
+    @Test("A 503 with a short Retry-After is retried inline, then backs off instead of going busy")
     func overloadedIsBusy() async throws {
         let rig = makeRig(FakeLRCLib(get: [.status(503, headers: ["Retry-After": "1"], body: #"{"name":"ServerOverloaded"}"#)]))
         defer { rig.cleanUp() }
-        await #expect(throws: LyricsError.busy(until: rig.clock.now.addingTimeInterval(1))) {
+        await #expect(throws: LyricsError.backoff(status: 503, until: rig.clock.now.addingTimeInterval(15))) {
             try await rig.client.lyrics(for: LyricsSamples.query())
         }
+        #expect(rig.transport.requests.count == 3)
+    }
+
+    @Test("A 503 whose Retry-After is over 5 s is busy for that long and is not retried")
+    func overloadedWithLongRetryAfterIsBusy() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(503, headers: ["Retry-After": "120"])]))
+        defer { rig.cleanUp() }
+        let until = rig.clock.now.addingTimeInterval(120)
+        await #expect(throws: LyricsError.busy(until: until)) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+        #expect(rig.transport.requests.count == 1)
+        #expect(rig.sleeper.requested.isEmpty)
+        #expect(await rig.client.busyUntil == until)
+    }
+
+    @Test(
+        "A 503 is a blip, retried inline, with no Retry-After or one of 5 s or less; a longer or unreadable one is busy",
+        arguments: [
+            (nil, true), ("", true), ("0", true), ("1", true), ("5", true),
+            ("6", false), ("30", false), ("soon", false), ("Wed, 21 Oct 2015 07:28:00 GMT", true),
+        ] as [(String?, Bool)]
+    )
+    func overloadedRetryAfterBoundary(header: String?, retried: Bool) async throws {
+        let headers = header.map { ["Retry-After": $0] } ?? [:]
+        let rig = makeRig(FakeLRCLib(get: [.status(503, headers: headers)]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.self) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+        #expect(rig.transport.requests.count == (retried ? 3 : 1), "Retry-After \(String(describing: header))")
     }
 
     @Test("A busy answer is not cached")
@@ -565,14 +606,18 @@ struct LRCLibClientTests {
 
     // MARK: - Server errors back off
 
-    @Test("A 500, 502 or 504 opens a 30 s window, reported with its status", arguments: [500, 502, 504])
+    @Test(
+        "After the inline retries a 500, 502, 504 or a 503 with no Retry-After opens a 15 s window, reported with its status",
+        arguments: [500, 502, 503, 504]
+    )
     func serverErrorBacksOff(status: Int) async throws {
         let rig = makeRig(FakeLRCLib(get: [.status(status)]))
         defer { rig.cleanUp() }
-        let until = rig.clock.now.addingTimeInterval(30)
+        let until = rig.clock.now.addingTimeInterval(15)
         await #expect(throws: LyricsError.backoff(status: status, until: until)) {
             try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a"))
         }
+        #expect(rig.transport.requests.count == 3)
         #expect(await rig.client.busyUntil == until)
         #expect(await rig.cache.cached(videoId: "a") == nil)
 
@@ -581,32 +626,185 @@ struct LRCLibClientTests {
         await #expect(throws: LyricsError.busy(until: until)) {
             try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b"))
         }
-        #expect(rig.transport.requests.count == 1)
+        #expect(rig.transport.requests.count == 3)
 
         // Past it the client asks again.
-        rig.clock.advance(by: 21)
+        rig.clock.advance(by: 6)
         rig.transport.setGet(.record(LyricsSamples.record()))
         #expect(try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b")) == .synced(LyricsSamples.syncedLines))
-        #expect(rig.transport.requests.count == 2)
+        #expect(rig.transport.requests.count == 4)
     }
 
-    @Test("A Retry-After on a 500 is ignored: the window is 30 s")
+    @Test("A Retry-After on a 500 is ignored: the window is 15 s")
     func serverErrorIgnoresRetryAfter() async throws {
         let rig = makeRig(FakeLRCLib(get: [.status(500, headers: ["Retry-After": "900"])]))
         defer { rig.cleanUp() }
-        await #expect(throws: LyricsError.backoff(status: 500, until: rig.clock.now.addingTimeInterval(30))) {
+        await #expect(throws: LyricsError.backoff(status: 500, until: rig.clock.now.addingTimeInterval(15))) {
             try await rig.client.lyrics(for: LyricsSamples.query())
         }
     }
 
-    @Test("A server error on the search step backs off too")
+    @Test("A server error on the search step is retried and backs off too")
     func serverErrorOnSearch() async throws {
         let rig = makeRig(FakeLRCLib(get: [.notFound], search: [.status(502)]))
         defer { rig.cleanUp() }
-        await #expect(throws: LyricsError.backoff(status: 502, until: rig.clock.now.addingTimeInterval(30))) {
+        await #expect(throws: LyricsError.backoff(status: 502, until: rig.clock.now.addingTimeInterval(15))) {
             try await rig.client.lyrics(for: LyricsSamples.query())
         }
+        #expect(rig.transport.getRequests.count == 1)
+        #expect(rig.transport.searchRequests.count == 3)
+    }
+
+    // MARK: - Inline retries of transient errors
+
+    @Test("A transient status is retried and the second attempt can succeed, with a 1 s wait and no window", arguments: [500, 502, 503, 504])
+    func transientRecoversOnTheSecondAttempt(status: Int) async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(status), .record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query()) == .synced(LyricsSamples.syncedLines))
         #expect(rig.transport.requests.count == 2)
+        #expect(rig.sleeper.requested == [.seconds(1)])
+        #expect(await rig.client.busyUntil == nil)
+        // The answer is cached like any other.
+        #expect(await rig.cache.cached(videoId: "vid1") == .synced(LyricsSamples.syncedLines))
+    }
+
+    @Test("The third attempt is waited for 3 s and can succeed")
+    func transientRecoversOnTheThirdAttempt() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(503), .status(500), .record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query()) == .synced(LyricsSamples.syncedLines))
+        #expect(rig.transport.requests.count == 3)
+        #expect(rig.sleeper.requested == [.seconds(1), .seconds(3)])
+        #expect(await rig.client.busyUntil == nil)
+    }
+
+    @Test("A retry sends the same request again")
+    func retrySendsTheSameRequest() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(502), .record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        _ = try await rig.client.lyrics(for: LyricsSamples.query())
+        let sent = rig.transport.requests
+        #expect(sent.count == 2)
+        #expect(sent[0] == sent[1])
+    }
+
+    @Test("The search step retries too, and a get that missed is not repeated")
+    func transientOnSearchRecovers() async throws {
+        let rig = makeRig(FakeLRCLib(
+            get: [.notFound],
+            search: [.status(503), .results([LyricsSamples.record(synced: cut("Found"))])]
+        ))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(firstText(result) == "Found 0")
+        #expect(rig.transport.getRequests.count == 1)
+        #expect(rig.transport.searchRequests.count == 2)
+        #expect(rig.sleeper.requested == [.seconds(1)])
+    }
+
+    @Test("Three failed attempts in all, 1 s then 3 s apart, then a 15 s backoff", arguments: [500, 502, 503, 504])
+    func transientGivesUpAfterThreeAttempts(status: Int) async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(status)]))
+        defer { rig.cleanUp() }
+        let until = rig.clock.now.addingTimeInterval(15)
+        await #expect(throws: LyricsError.backoff(status: status, until: until)) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+        #expect(rig.transport.requests.count == 3)
+        #expect(rig.sleeper.requested == [.seconds(1), .seconds(3)])
+        #expect(await rig.client.busyUntil == until)
+        #expect(await rig.cache.cached(videoId: "vid1") == nil)
+    }
+
+    @Test("The window starts when the last attempt fails, not when the first did")
+    func windowStartsAfterTheLastAttempt() async throws {
+        let clock = MutableClock()
+        let start = clock.now
+        let rig = makeRig(FakeLRCLib(get: [.status(500)]), clock: clock, sleep: { duration in
+            clock.advance(by: Double(duration.components.seconds))
+        })
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.backoff(status: 500, until: start.addingTimeInterval(1 + 3 + 15))) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+    }
+
+    @Test(
+        "A 429 is never retried inline, whatever its Retry-After: it stays busy for the window it names",
+        arguments: [(nil, 60.0), ("2", 2.0), ("90", 90.0)] as [(String?, TimeInterval)]
+    )
+    func tooManyRequestsIsNotRetried(header: String?, seconds: TimeInterval) async throws {
+        let headers = header.map { ["Retry-After": $0] } ?? [:]
+        let rig = makeRig(FakeLRCLib(get: [.status(429, headers: headers), .record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.busy(until: rig.clock.now.addingTimeInterval(seconds))) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+        #expect(rig.transport.requests.count == 1)
+        #expect(rig.sleeper.requested.isEmpty)
+    }
+
+    @Test("Other errors and a 404 are not retried either", arguments: [400, 403, 404, 501, 505])
+    func otherStatusesAreNotRetried(status: Int) async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(status), .record(LyricsSamples.record())], search: [.empty]))
+        defer { rig.cleanUp() }
+        _ = try? await rig.client.lyrics(for: LyricsSamples.query())
+        #expect(rig.transport.getRequests.count == 1)
+        #expect(rig.sleeper.requested.isEmpty)
+    }
+
+    @Test("A cancel during the retry wait throws and opens no window, even when the timer ignores cancellation")
+    func cancellationDuringTheRetryWait() async throws {
+        let sleeper = FakeSleeper()
+        let rig = makeRig(FakeLRCLib(get: [.status(503)]), sleeper: sleeper)
+        defer { rig.cleanUp() }
+        let client = rig.client
+        let task = Task { try await client.lyrics(for: LyricsSamples.query(videoId: "a")) }
+        #expect(await eventually { sleeper.requested.count == 1 })
+        task.cancel()
+        await sleeper.release()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(rig.transport.requests.count == 1)
+        #expect(await rig.client.busyUntil == nil)
+
+        // Nothing holds the next song back.
+        rig.transport.setGet(.record(LyricsSamples.record()))
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b")) == .synced(LyricsSamples.syncedLines))
+    }
+
+    @Test("A cancel during a timer that honours it opens no window and sends no more")
+    func cancellationLeavesTheTimerEarly() async throws {
+        let waiting = FakeSleeper(gated: false)
+        let rig = makeRig(FakeLRCLib(get: [.status(500)]), sleep: { duration in
+            try await waiting.sleep(duration)
+            try await Task.sleep(for: .seconds(60))
+        })
+        defer { rig.cleanUp() }
+        let client = rig.client
+        let task = Task { try await client.lyrics(for: LyricsSamples.query()) }
+        #expect(await eventually { waiting.requested.count == 1 })
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(rig.transport.requests.count == 1)
+        #expect(await rig.client.busyUntil == nil)
+    }
+
+    @Test("A request cancelled before its transient answer arrives does not wait or retry")
+    func cancelledBeforeTheTransientAnswer() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(502)]))
+        defer { rig.cleanUp() }
+        let gate = MusicTestGate()
+        rig.transport.setGate(gate)
+        let client = rig.client
+        let task = Task { try await client.lyrics(for: LyricsSamples.query()) }
+        #expect(await eventually { !rig.transport.requests.isEmpty })
+        task.cancel()
+        await gate.open()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(rig.transport.requests.count == 1)
+        #expect(rig.sleeper.requested.isEmpty)
+        #expect(await rig.client.busyUntil == nil)
     }
 
     @Test("The backoff window lives in memory only: a new client over the same cache is not held")
@@ -627,7 +825,8 @@ struct LRCLibClientTests {
         _ = try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a"))
         _ = try? await rig.client.lyrics(for: LyricsSamples.query(videoId: "b"))
         #expect(try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a")) == .synced(LyricsSamples.syncedLines))
-        #expect(rig.transport.requests.count == 2)
+        // One request for "a", three attempts for "b", and none for the cache hit.
+        #expect(rig.transport.requests.count == 4)
     }
 
     // MARK: - Failures

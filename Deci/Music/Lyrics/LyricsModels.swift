@@ -26,10 +26,11 @@ struct LyricsQuery: Sendable, Equatable {
 }
 
 enum LyricsError: Error, Sendable, Equatable {
-    /// LRCLIB asked us to wait (429, or 503 while overloaded): no request goes out before `until`.
+    /// LRCLIB asked us to wait (429, or a 503 with a Retry-After of over 5 s): no request goes out before `until`.
     case busy(until: Date)
-    /// A 500, 502 or 504: LRCLIB is struggling. Like `busy` it holds every request back until `until` (about 30 s,
-    /// in memory only), but the panel reports it as a failure with Retry once the window has passed.
+    /// A 500, 502, 504 or 503 that was still failing after the client's inline retries: LRCLIB is struggling. Like
+    /// `busy` it holds every request back until `until` (about 15 s, in memory only), but the panel reports it as a
+    /// failure and asks again by itself once the window has passed.
     case backoff(status: Int, until: Date)
     case http(Int)
     /// A 200 whose body was not what the API documents.
