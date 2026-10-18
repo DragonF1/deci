@@ -116,10 +116,6 @@ private struct MusicSignedInView: View {
         VStack(spacing: DesignTokens.Spacing.sm) {
             searchRow
 
-            if service.isBrandChannel == false, !service.channelNoticeDismissed {
-                channelNotice
-            }
-
             if let message = service.lastError {
                 Text(message)
                     .font(DesignTokens.Typography.caption)
@@ -301,51 +297,6 @@ private struct MusicSignedInView: View {
     }
 
     private static let searchRowHeight: CGFloat = 28
-
-    /// A channel switch is already open, or the add-account window is: the service would ignore the press.
-    private var channelSwitchIsOff: Bool {
-        service.isSwitchingChannel || service.isAddingAccount
-    }
-
-    /// Plays land in the History of the channel the session is on, and a fresh sign-in is on the
-    /// account's own channel, which is rarely the one used in the browser.
-    private var channelNotice: some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            Image(systemName: "person.crop.circle.badge.exclamationmark")
-                .font(.system(size: 13))
-                .foregroundStyle(DesignTokens.Colors.textSecondary)
-                .accessibilityHidden(true)
-            Text(service.isSwitchingChannel ? "Pick your channel in the window." : "History goes to your account's own channel.")
-                .font(DesignTokens.Typography.caption)
-                .foregroundStyle(DesignTokens.Colors.textSecondary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Switch channel") {
-                service.switchChannel()
-            }
-            .buttonStyle(.plain)
-            .font(DesignTokens.Typography.caption)
-            .foregroundStyle(DesignTokens.Colors.accentPrimary)
-            .opacity(channelSwitchIsOff ? 0.5 : 1)
-            .contentShape(Rectangle())
-            .disabled(channelSwitchIsOff)
-            Button("Hide", systemImage: "xmark") {
-                service.channelNoticeDismissed = true
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.plain)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(DesignTokens.Colors.textTertiary)
-            .frame(width: 20, height: 20)
-            .contentShape(Rectangle())
-        }
-        .padding(.horizontal, DesignTokens.Spacing.sm)
-        .padding(.vertical, DesignTokens.Spacing.xs)
-        .background(
-            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius)
-                .fill(DesignTokens.Colors.glassFill)
-        )
-    }
 
     @ViewBuilder
     private var resultsList: some View {

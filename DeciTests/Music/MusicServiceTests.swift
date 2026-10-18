@@ -379,7 +379,6 @@ struct MusicServiceChannelSwitchTests {
     @Test("switchChannel opens the picker on the current session and keeps the picked one")
     func switchKeepsPick() async {
         let h = await signedInHarness()
-        h.service.channelNoticeDismissed = true
         h.service.switchChannel()
         await h.service.channelSwitchTask?.value
         #expect(h.probe.pickerSessions == [Self.current])
@@ -394,7 +393,6 @@ struct MusicServiceChannelSwitchTests {
         #expect(h.service.authState == .signedIn)
         #expect(h.service.isBrandChannel == true)
         #expect(!h.service.isSwitchingChannel)
-        #expect(!h.service.channelNoticeDismissed)
         #expect(h.service.lastError == nil)
     }
 
@@ -1031,16 +1029,6 @@ struct MusicServiceUseAnotherAccountTests {
         await ping?.value
 
         #expect(await h.backend.reportAttempts.map(\.kind) == [.playback, .watchtime])
-    }
-
-    @Test("the card's notice state resets for the new account")
-    func swapResetsNotice() async {
-        let h = await signedInHarness()
-        h.service.channelNoticeDismissed = true
-        h.service.useAnotherAccount()
-        h.probe.completion?(Self.other)
-        await h.service.addAccountTask?.value
-        #expect(!h.service.channelNoticeDismissed)
     }
 
     @Test("the new session keeps working: Home loads again under it")

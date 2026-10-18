@@ -30,8 +30,6 @@ final class MusicService {
     private(set) var account: MusicAccount?
     /// The sign-in window is open to add another Google account on top of the current session.
     private(set) var isAddingAccount = false
-    /// The own-channel notice was closed. Only for this launch and this sign-in.
-    var channelNoticeDismissed = false
     var query = ""
     private(set) var results: [MusicTrack] = []
     private(set) var isSearching = false
@@ -275,7 +273,6 @@ final class MusicService {
         channelSwitchTask?.cancel()
         isBrandChannel = nil
         isSwitchingChannel = false
-        channelNoticeDismissed = false
         clearAccount()
         endAddAccount()
         // An open picker still holds the old session; it must not sign anyone back in.
@@ -376,7 +373,6 @@ final class MusicService {
         authState = .signedIn
         identityTask?.cancel()
         isBrandChannel = nil
-        channelNoticeDismissed = false
         browse.reset()
         lyrics.reset()
         clearAccount()
@@ -437,10 +433,9 @@ final class MusicService {
             do {
                 try await self.backend.signIn(with: cookies)
                 guard self.authState == .signedIn else { return }
-                // Stay in "switching" until the new identity is known, so the old notice doesn't flash back.
+                // Stay in "switching" until the new identity is known.
                 self.identityTask?.cancel()
                 self.isBrandChannel = nil
-                self.channelNoticeDismissed = false
                 // Home and the library belong to the channel: what is loaded is the old one's.
                 self.browse.reset()
                 // The card shows the channel that was picked, not the one that was left.
