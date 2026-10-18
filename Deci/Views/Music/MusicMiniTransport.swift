@@ -173,9 +173,12 @@ private struct MusicScrubber: View {
 }
 
 /// Small square cover art with a neutral placeholder while it loads or when a track has none.
+/// Artists get a round one.
 struct MusicThumbnail: View {
     let url: URL?
     let size: CGFloat
+    var circular = false
+    var placeholder = "music.note"
 
     var body: some View {
         AsyncImage(url: url) { phase in
@@ -185,13 +188,35 @@ struct MusicThumbnail: View {
             default:
                 ZStack {
                     DesignTokens.Colors.glassFillStrong
-                    Image(systemName: "music.note")
+                    Image(systemName: placeholder)
                         .font(.system(size: size * 0.4))
                         .foregroundStyle(DesignTokens.Colors.textTertiary)
                 }
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius))
+        .clipShape(MusicCoverShape(circular: circular))
+    }
+}
+
+/// The cover clip: the button radius, or a circle for artists.
+struct MusicCoverShape: Shape {
+    let circular: Bool
+
+    func path(in rect: CGRect) -> Path {
+        circular
+            ? Circle().path(in: rect)
+            : RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius).path(in: rect)
+    }
+}
+
+extension MusicCollection.Kind {
+    /// Placeholder symbol while the cover loads or when there is none.
+    var placeholderSymbol: String {
+        switch self {
+        case .playlist: "music.note.list"
+        case .album: "opticaldisc"
+        case .artist: "person.fill"
+        }
     }
 }

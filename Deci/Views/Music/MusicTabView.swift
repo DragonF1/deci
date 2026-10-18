@@ -75,16 +75,32 @@ private struct MusicServiceView: View {
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
     @FocusState private var searchFocused: Bool
-    /// The Up next button forces the queue even while a search is on screen.
+    /// The Up next button shows the queue over whatever is on screen.
     @State private var queueForced = false
+    /// The query last sent with Return, so a search that found nothing still shows its result.
+    @State private var submittedQuery: String?
 
-    private var searchIsEmpty: Bool {
-        service.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private var trimmedQuery: String {
+        service.query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The queue shows when there is one and the search field is empty, or when asked for.
+    private var searchIsEmpty: Bool {
+        trimmedQuery.isEmpty
+    }
+
+    /// The queue shows only when the Up next button asks for it.
     private var showsQueue: Bool {
-        !service.queue.isEmpty && (queueForced || searchIsEmpty)
+        !service.queue.isEmpty && queueForced
+    }
+
+    /// Search results show while there is a query and a search for it is running, has results,
+    /// or came back empty. Otherwise Home, Library or an open page shows.
+    private var showsResults: Bool {
+        !searchIsEmpty && (service.isSearching || !service.results.isEmpty || submittedQuery == trimmedQuery)
+    }
+
+    private var isBrowsing: Bool {
+        !showsQueue && !showsResults
     }
 
     var body: some View {
@@ -102,16 +118,46 @@ private struct MusicSignedInView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if showsQueue {
-                queueList
-            } else {
-                resultsList
+            HStack {
+                MusicSegmentSwitch(segments: MusicBrowseStore.Tab.segments, selection: isBrowsing ? service.browse.tab : nil) {
+                    select($0)
+                }
+                Spacer()
             }
+
+            ZStack {
+                // Stays alive under search and the queue so it keeps its place.
+                MusicBrowseView(service: service)
+                    .opacity(isBrowsing ? 1 : 0)
+                    .allowsHitTesting(isBrowsing)
+                    .accessibilityHidden(!isBrowsing)
+
+                if showsQueue {
+                    queueList
+                } else if showsResults {
+                    resultsList
+                }
+            }
+            .frame(maxHeight: .infinity)
 
             MusicMiniTransport(service: service)
         }
         .task { searchFocused = true }
-        .onChange(of: service.query) { queueForced = false }
+        .onChange(of: service.query) {
+            queueForced = false
+            // An emptied field stops the search and drops its results, back to browsing.
+            if searchIsEmpty, service.isSearching || !service.results.isEmpty {
+                service.search()
+            }
+        }
+    }
+
+    /// Home or Library from the switch: leaves search and the queue and goes to the tab's root.
+    private func select(_ tab: MusicBrowseStore.Tab) {
+        queueForced = false
+        if showsResults { service.query = "" }
+        service.browse.tab = tab
+        service.browse.popToRoot()
     }
 
     private var searchRow: some View {
@@ -126,11 +172,25 @@ private struct MusicSignedInView: View {
                     .focused($searchFocused)
                     .onSubmit {
                         queueForced = false
+                        submittedQuery = trimmedQuery
                         service.search()
                     }
                 if service.isSearching {
                     ProgressView()
                         .controlSize(.mini)
+                }
+                if !service.query.isEmpty {
+                    Button("Clear search", systemImage: "xmark.circle.fill") {
+                        service.query = ""
+                        searchFocused = true
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(DesignTokens.Colors.textTertiary)
+                    .frame(width: 16, height: 20)
+                    .contentShape(Rectangle())
+                    .help("Clear search")
                 }
             }
             .padding(.horizontal, DesignTokens.Spacing.sm)
@@ -207,7 +267,7 @@ private struct MusicSignedInView: View {
     @ViewBuilder
     private var resultsList: some View {
         if service.results.isEmpty {
-            Text(service.isSearching ? "Searching..." : "Type a song or artist and press Return.")
+            Text(emptyResultsText)
                 .font(DesignTokens.Typography.rowDescription)
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -227,6 +287,11 @@ private struct MusicSignedInView: View {
             }
             .scrollIndicators(.never)
         }
+    }
+
+    private var emptyResultsText: String {
+        if service.isSearching { return "Searching..." }
+        return service.lastError == nil ? "No songs found." : "Search failed. Press Return to try again."
     }
 
     private var queueList: some View {
@@ -254,7 +319,8 @@ private struct MusicSignedInView: View {
     }
 }
 
-private struct MusicResultRow: View {
+/// A song row with the playing indicator, for search results, the queue, Quick picks and pages.
+struct MusicResultRow: View {
     let track: MusicTrack
     let isCurrent: Bool
     /// True only on the current row while audio plays, so play and pause redraw one row. The
@@ -268,15 +334,7 @@ private struct MusicResultRow: View {
                 MusicThumbnail(url: track.thumbnailURL, size: 40)
                     .overlay {
                         if isCurrent {
-                            ZStack {
-                                Color.black.opacity(0.45)
-                                Image(systemName: "speaker.wave.2.fill")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isPlaying)
-                            }
-                            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius))
-                            .accessibilityHidden(true)
+                            MusicPlayingOverlay(isPlaying: isPlaying)
                         }
                     }
 
