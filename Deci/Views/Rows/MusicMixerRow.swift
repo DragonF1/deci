@@ -125,6 +125,7 @@ struct MusicMixerRow: View {
                 onDeleteUserPreset: onDeleteUserPreset,
                 onRenameUserPreset: onRenameUserPreset
             )
+            .padding(.top, DesignTokens.Spacing.sm)
         }
         .onAppear {
             if isPopupVisible { startLevelPolling() }
