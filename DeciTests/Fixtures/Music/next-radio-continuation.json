@@ -1,0 +1,538 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "continuationContents": {
+  "playlistPanelContinuation": {
+   "contents": [
+    {
+     "playlistPanelVideoRenderer": {
+      "title": {
+       "runs": [
+        {
+         "text": "What You Know"
+        }
+       ]
+      },
+      "longBylineText": {
+       "runs": [
+        {
+         "text": "Two Door Cinema Club",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "UCNaAQtk0jVa2OXAEY0zF5zw",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "Tourist History",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "MPREb_P2VeLZKEwnn",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "2010"
+        }
+       ]
+      },
+      "thumbnail": {
+       "thumbnails": [
+        {
+         "url": "https://yt3.googleusercontent.com/yn6mDZ5NTw-qi_ALt3lcxqUetUHFS5GW9jtG9FquzQmS6K4IWSaexc_UVRAfksZyxBJS43sY8OQf89M=w60-h60-l90-rj",
+         "width": 60,
+         "height": 60
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/yn6mDZ5NTw-qi_ALt3lcxqUetUHFS5GW9jtG9FquzQmS6K4IWSaexc_UVRAfksZyxBJS43sY8OQf89M=w120-h120-l90-rj",
+         "width": 120,
+         "height": 120
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/yn6mDZ5NTw-qi_ALt3lcxqUetUHFS5GW9jtG9FquzQmS6K4IWSaexc_UVRAfksZyxBJS43sY8OQf89M=w180-h180-l90-rj",
+         "width": 180,
+         "height": 180
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/yn6mDZ5NTw-qi_ALt3lcxqUetUHFS5GW9jtG9FquzQmS6K4IWSaexc_UVRAfksZyxBJS43sY8OQf89M=w226-h226-l90-rj",
+         "width": 226,
+         "height": 226
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/yn6mDZ5NTw-qi_ALt3lcxqUetUHFS5GW9jtG9FquzQmS6K4IWSaexc_UVRAfksZyxBJS43sY8OQf89M=w302-h302-l90-rj",
+         "width": 302,
+         "height": 302
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/yn6mDZ5NTw-qi_ALt3lcxqUetUHFS5GW9jtG9FquzQmS6K4IWSaexc_UVRAfksZyxBJS43sY8OQf89M=w544-h544-l90-rj",
+         "width": 544,
+         "height": 544
+        }
+       ]
+      },
+      "lengthText": {
+       "runs": [
+        {
+         "text": "3:12"
+        }
+       ],
+       "accessibility": {
+        "accessibilityData": {
+         "label": "3 minutes, 12 seconds"
+        }
+       }
+      },
+      "selected": false,
+      "navigationEndpoint": {
+       "watchEndpoint": {
+        "videoId": "noiy7ajORtA",
+        "playlistId": "RDAMVM4D7u5KF7SP8",
+        "index": 50,
+        "watchEndpointMusicSupportedConfigs": {
+         "watchEndpointMusicConfig": {
+          "hasPersistentPlaylistPanel": true,
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+         }
+        }
+       }
+      },
+      "videoId": "noiy7ajORtA",
+      "shortBylineText": {
+       "runs": [
+        {
+         "text": "Two Door Cinema Club"
+        }
+       ]
+      },
+      "canReorder": true
+     }
+    },
+    {
+     "playlistPanelVideoRenderer": {
+      "title": {
+       "runs": [
+        {
+         "text": "Forget Me Nots"
+        }
+       ]
+      },
+      "longBylineText": {
+       "runs": [
+        {
+         "text": "Patrice Rushen",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "UCplqRLGDp08dYycUADvASUw",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "Straight From The Heart",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "MPREb_253t8Zu1Hhw",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "1982"
+        }
+       ]
+      },
+      "thumbnail": {
+       "thumbnails": [
+        {
+         "url": "https://yt3.googleusercontent.com/xZFaG7xNi8Ofpz1oPWXYU4jafdnnrP7y4yCOx5E0Ay-CkgxEq-KS0IGSAzM3bEzN1QmFXep9Q3BHmo4=w60-h60-l90-rj",
+         "width": 60,
+         "height": 60
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/xZFaG7xNi8Ofpz1oPWXYU4jafdnnrP7y4yCOx5E0Ay-CkgxEq-KS0IGSAzM3bEzN1QmFXep9Q3BHmo4=w120-h120-l90-rj",
+         "width": 120,
+         "height": 120
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/xZFaG7xNi8Ofpz1oPWXYU4jafdnnrP7y4yCOx5E0Ay-CkgxEq-KS0IGSAzM3bEzN1QmFXep9Q3BHmo4=w180-h180-l90-rj",
+         "width": 180,
+         "height": 180
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/xZFaG7xNi8Ofpz1oPWXYU4jafdnnrP7y4yCOx5E0Ay-CkgxEq-KS0IGSAzM3bEzN1QmFXep9Q3BHmo4=w226-h226-l90-rj",
+         "width": 226,
+         "height": 226
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/xZFaG7xNi8Ofpz1oPWXYU4jafdnnrP7y4yCOx5E0Ay-CkgxEq-KS0IGSAzM3bEzN1QmFXep9Q3BHmo4=w302-h302-l90-rj",
+         "width": 302,
+         "height": 302
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/xZFaG7xNi8Ofpz1oPWXYU4jafdnnrP7y4yCOx5E0Ay-CkgxEq-KS0IGSAzM3bEzN1QmFXep9Q3BHmo4=w544-h544-l90-rj",
+         "width": 544,
+         "height": 544
+        }
+       ]
+      },
+      "lengthText": {
+       "runs": [
+        {
+         "text": "4:45"
+        }
+       ],
+       "accessibility": {
+        "accessibilityData": {
+         "label": "4 minutes, 45 seconds"
+        }
+       }
+      },
+      "selected": false,
+      "navigationEndpoint": {
+       "watchEndpoint": {
+        "videoId": "vP709vKwkD0",
+        "playlistId": "RDAMVM4D7u5KF7SP8",
+        "index": 51,
+        "watchEndpointMusicSupportedConfigs": {
+         "watchEndpointMusicConfig": {
+          "hasPersistentPlaylistPanel": true,
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+         }
+        }
+       }
+      },
+      "videoId": "vP709vKwkD0",
+      "shortBylineText": {
+       "runs": [
+        {
+         "text": "Patrice Rushen"
+        }
+       ]
+      },
+      "canReorder": true
+     }
+    },
+    {
+     "playlistPanelVideoRenderer": {
+      "title": {
+       "runs": [
+        {
+         "text": "Flower In A Hurricane [from GTAVI] (feat. King Gizzard & the Lizard Wizard)"
+        }
+       ]
+      },
+      "longBylineText": {
+       "runs": [
+        {
+         "text": "Justice",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "UCcJLC91v0A0iD-CMUWdZkig",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": ", "
+        },
+        {
+         "text": "Tame Impala",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "UCGz-eguN8tcic5kUG4s1ZgA",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": ", "
+        },
+        {
+         "text": "SZA",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "UCeKDV9JgivrXehVluw5bKFA",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": " & "
+        },
+        {
+         "text": "Grand Theft Auto VI",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "UCJ97ksybdciBBv7xsFSK6HA",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "Flower In A Hurricane (feat. Tame Impala, SZA, King Gizzard & the Lizard Wizard) [from GTAVI]",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "MPREb_AoD8dkgVD8o",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "2026"
+        }
+       ]
+      },
+      "thumbnail": {
+       "thumbnails": [
+        {
+         "url": "https://yt3.googleusercontent.com/9U8oOKXg5Q9nsqScuWMyqITQc5VxtHkG8ZbVRWZgpjFuBEcmkn2AvohK-SQWRGuLr3Fa2esEIU79RgOK=w60-h60-l90-rj",
+         "width": 60,
+         "height": 60
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/9U8oOKXg5Q9nsqScuWMyqITQc5VxtHkG8ZbVRWZgpjFuBEcmkn2AvohK-SQWRGuLr3Fa2esEIU79RgOK=w120-h120-l90-rj",
+         "width": 120,
+         "height": 120
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/9U8oOKXg5Q9nsqScuWMyqITQc5VxtHkG8ZbVRWZgpjFuBEcmkn2AvohK-SQWRGuLr3Fa2esEIU79RgOK=w180-h180-l90-rj",
+         "width": 180,
+         "height": 180
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/9U8oOKXg5Q9nsqScuWMyqITQc5VxtHkG8ZbVRWZgpjFuBEcmkn2AvohK-SQWRGuLr3Fa2esEIU79RgOK=w226-h226-l90-rj",
+         "width": 226,
+         "height": 226
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/9U8oOKXg5Q9nsqScuWMyqITQc5VxtHkG8ZbVRWZgpjFuBEcmkn2AvohK-SQWRGuLr3Fa2esEIU79RgOK=w302-h302-l90-rj",
+         "width": 302,
+         "height": 302
+        },
+        {
+         "url": "https://yt3.googleusercontent.com/9U8oOKXg5Q9nsqScuWMyqITQc5VxtHkG8ZbVRWZgpjFuBEcmkn2AvohK-SQWRGuLr3Fa2esEIU79RgOK=w544-h544-l90-rj",
+         "width": 544,
+         "height": 544
+        }
+       ]
+      },
+      "lengthText": {
+       "runs": [
+        {
+         "text": "3:45"
+        }
+       ],
+       "accessibility": {
+        "accessibilityData": {
+         "label": "3 minutes, 45 seconds"
+        }
+       }
+      },
+      "selected": false,
+      "navigationEndpoint": {
+       "watchEndpoint": {
+        "videoId": "JWxoRY7AFSw",
+        "playlistId": "RDAMVM4D7u5KF7SP8",
+        "index": 69,
+        "watchEndpointMusicSupportedConfigs": {
+         "watchEndpointMusicConfig": {
+          "hasPersistentPlaylistPanel": true,
+          "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+         }
+        }
+       }
+      },
+      "videoId": "JWxoRY7AFSw",
+      "shortBylineText": {
+       "runs": [
+        {
+         "text": "Justice"
+        },
+        {
+         "text": ", "
+        },
+        {
+         "text": "Tame Impala"
+        },
+        {
+         "text": ", "
+        },
+        {
+         "text": "SZA"
+        },
+        {
+         "text": " & "
+        },
+        {
+         "text": "Grand Theft Auto VI"
+        }
+       ]
+      },
+      "canReorder": true
+     }
+    },
+    {
+     "playlistPanelVideoRenderer": {
+      "title": {
+       "runs": [
+        {
+         "text": "Daft Punk - Get Lucky (bass boosted video)"
+        }
+       ]
+      },
+      "longBylineText": {
+       "runs": [
+        {
+         "text": "Example Uploader",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "UC_SCRUBBED_CHANNEL",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+            }
+           }
+          }
+         }
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "354K views"
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "3K likes"
+        }
+       ]
+      },
+      "thumbnail": {
+       "thumbnails": [
+        {
+         "url": "https://i.ytimg.com/vi/2pzs39z2VMk/hqdefault.jpg?sqp=-oaymwEWCJADEOEBIAQqCggAEOADGC0guwJIWg&rs=AMzJL3mkdjE26LOx2WZnWYAM9oDjFYxstQ",
+         "width": 400,
+         "height": 225
+        },
+        {
+         "url": "https://i.ytimg.com/vi/2pzs39z2VMk/hq720.jpg?sqp=-oaymwEKCKAGEMIDIABIWg&rs=AMzJL3nZeds6Jn8vkcuYc477_LhwCDr8dw",
+         "width": 800,
+         "height": 450
+        },
+        {
+         "url": "https://i.ytimg.com/vi/2pzs39z2VMk/hq720.jpg?sqp=-oaymwEKCNUGEN8DIABIWg&rs=AMzJL3nMeTQjl1cK1GNzlhmoYnJOZ4wIRQ",
+         "width": 853,
+         "height": 479
+        }
+       ]
+      },
+      "lengthText": {
+       "runs": [
+        {
+         "text": "6:43"
+        }
+       ],
+       "accessibility": {
+        "accessibilityData": {
+         "label": "6 minutes, 43 seconds"
+        }
+       }
+      },
+      "selected": false,
+      "navigationEndpoint": {
+       "watchEndpoint": {
+        "videoId": "2pzs39z2VMk",
+        "playlistId": "RDAMVM4D7u5KF7SP8",
+        "index": 70,
+        "watchEndpointMusicSupportedConfigs": {
+         "watchEndpointMusicConfig": {
+          "hasPersistentPlaylistPanel": true,
+          "musicVideoType": "MUSIC_VIDEO_TYPE_OMV"
+         }
+        }
+       }
+      },
+      "videoId": "2pzs39z2VMk",
+      "shortBylineText": {
+       "runs": [
+        {
+         "text": "Example Uploader"
+        }
+       ]
+      },
+      "canReorder": true
+     }
+    }
+   ],
+   "playlistId": "RDAMVM4D7u5KF7SP8",
+   "isInfinite": true,
+   "continuations": [
+    {
+     "nextRadioContinuationData": {
+      "continuation": "SCRUBBED_RADIO_CONTINUATION_3"
+     }
+    }
+   ],
+   "numItemsToShow": 25
+  }
+ }
+}

@@ -465,6 +465,210 @@ struct InnerTubeClientTests {
         await #expect(throws: MusicError.self) { try await client.search("a") }
     }
 
+    // MARK: - Radio
+
+    private static let nextPath = "/youtubei/v1/next"
+
+    @Test("radio POSTs the seed's RDAMVM playlist to next with the auth headers and returns the queue")
+    func radioRequestShape() async throws {
+        let youtube = FakeYouTube()
+        let page = try await makeClient(youtube).radio(seedVideoId: "4D7u5KF7SP8")
+        #expect(page.tracks.count == 4)
+        #expect(page.tracks.first?.videoId == "4D7u5KF7SP8")
+        #expect(page.continuation == "SCRUBBED_RADIO_CONTINUATION_2")
+
+        let request = try #require(youtube.requests(path: Self.nextPath).first)
+        #expect(youtube.requests(path: Self.nextPath).count == 1)
+        #expect(request.method == "POST")
+        #expect(request.url.absoluteString == "https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
+        let headers = request.headers
+        #expect(headers["Authorization"]?.hasPrefix("SAPISIDHASH 1800000000_") == true)
+        #expect(headers["X-Goog-AuthUser"] == "0")
+        #expect(headers["X-YouTube-Client-Name"] == "67")
+        #expect(headers["X-YouTube-Client-Version"] == "1.20261013.15.00")
+        #expect(headers["X-Goog-Visitor-Id"] == "SCRUBBED_VISITOR_DATA")
+        #expect(headers["Origin"] == "https://music.youtube.com")
+        #expect(headers["Content-Type"] == "application/json")
+        #expect(headers["Cookie"]?.contains("SAPISID=sapisid-secret") == true)
+
+        let body = FakeYouTube.jsonBody(request)
+        #expect(body["videoId"] as? String == "4D7u5KF7SP8")
+        #expect(body["playlistId"] as? String == "RDAMVM4D7u5KF7SP8")
+        #expect(body["isAudioOnly"] as? Bool == true)
+        #expect(body["enablePersistentPlaylistPanel"] as? Bool == true)
+        #expect(body["tunerSettingValue"] as? String == "AUTOMIX_SETTING_NORMAL")
+        #expect(body["continuation"] == nil)
+        let client0 = Self.clientObject(body)
+        #expect(client0?["clientName"] as? String == "WEB_REMIX")
+        #expect(client0?["clientVersion"] as? String == "1.20261013.15.00")
+        #expect(client0?["visitorData"] as? String == "SCRUBBED_VISITOR_DATA")
+    }
+
+    @Test("moreRadio sends only the token: a stale one must not be able to restart the radio")
+    func moreRadioRequestShape() async throws {
+        let youtube = FakeYouTube()
+        let page = try await makeClient(youtube).moreRadio(continuation: "TOKEN%3D")
+        #expect(page.tracks.map(\.videoId) == ["noiy7ajORtA", "vP709vKwkD0", "JWxoRY7AFSw", "2pzs39z2VMk"])
+        #expect(page.continuation == "SCRUBBED_RADIO_CONTINUATION_3")
+
+        let request = try #require(youtube.requests(path: Self.nextPath).first)
+        #expect(request.method == "POST")
+        #expect(request.url.absoluteString == "https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
+        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH ") == true)
+        #expect(request.headers["X-YouTube-Client-Name"] == "67")
+        #expect(request.headers["Cookie"]?.contains("SAPISID=") == true)
+
+        let body = FakeYouTube.jsonBody(request)
+        #expect(body["continuation"] as? String == "TOKEN%3D")
+        #expect(body["videoId"] == nil)
+        #expect(body["playlistId"] == nil)
+        #expect(Self.clientObject(body)?["clientName"] as? String == "WEB_REMIX")
+    }
+
+    @Test("A continuation answer that is the first page again is refused, not replayed")
+    func moreRadioRejectedTokenIsAnError() async throws {
+        let first = try MusicFixtures.data("next-radio-first.json")
+        let client = makeClient(FakeYouTube { $0.nextContinuationBody = first })
+        await #expect(throws: MusicError.self) { try await client.moreRadio(continuation: "expired") }
+    }
+
+    @Test("A blank seed or continuation returns an empty page and makes no request")
+    func radioBlankInputs() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        #expect(try await client.radio(seedVideoId: " \n").tracks.isEmpty)
+        #expect(try await client.radio(seedVideoId: "").continuation == nil)
+        #expect(try await client.moreRadio(continuation: "").tracks.isEmpty)
+        #expect(try await client.moreRadio(continuation: "  ").continuation == nil)
+        #expect(youtube.requests.isEmpty)
+    }
+
+    @Test("The seed reaches the body intact, special characters included")
+    func radioSeedIsJSONEncoded() async throws {
+        let youtube = FakeYouTube()
+        _ = try await makeClient(youtube).radio(seedVideoId: "a-b_\"\\ 🎵")
+        let body = FakeYouTube.jsonBody(try #require(youtube.requests(path: Self.nextPath).first))
+        #expect(body["videoId"] as? String == "a-b_\"\\ 🎵")
+        #expect(body["playlistId"] as? String == "RDAMVMa-b_\"\\ 🎵")
+    }
+
+    @Test("Signed out: radio and moreRadio fail with signedOut and touch no network")
+    func radioSignedOut() async {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube, store: MemorySecretStore())
+        await #expect(throws: MusicError.signedOut) { try await client.radio(seedVideoId: "4D7u5KF7SP8") }
+        await #expect(throws: MusicError.signedOut) { try await client.moreRadio(continuation: "token") }
+        #expect(youtube.requests.isEmpty)
+    }
+
+    @Test("Radio shares the home page bootstrap with search")
+    func radioSharesBootstrap() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        _ = try await client.search("a")
+        _ = try await client.radio(seedVideoId: "4D7u5KF7SP8")
+        _ = try await client.moreRadio(continuation: "token")
+        #expect(youtube.requests(path: "/").count == 1)
+    }
+
+    @Test("A failing home page does not fail radio")
+    func radioSurvivesBootstrapFailure() async throws {
+        let youtube = FakeYouTube { $0.bootstrapStatus = 503 }
+        #expect(try await makeClient(youtube).radio(seedVideoId: "4D7u5KF7SP8").tracks.count == 4)
+        let request = try #require(youtube.requests(path: Self.nextPath).first)
+        #expect(request.headers["X-YouTube-Client-Version"] == InnerTubeClient.fallbackClientVersion)
+    }
+
+    @Test("Radio HTTP 401 means the session is gone, other failures carry their status")
+    func radioHTTPErrors() async {
+        let expired = makeClient(FakeYouTube { $0.nextStatus = 401 })
+        await #expect(throws: MusicError.signedOut) { try await expired.radio(seedVideoId: "x") }
+        await #expect(throws: MusicError.signedOut) { try await expired.moreRadio(continuation: "x") }
+        for status in [400, 403, 429, 500, 503] {
+            let client = makeClient(FakeYouTube { $0.nextStatus = status })
+            await #expect(throws: MusicError.http(status)) { try await client.radio(seedVideoId: "x") }
+            await #expect(throws: MusicError.http(status)) { try await client.moreRadio(continuation: "x") }
+        }
+    }
+
+    @Test("A radio body that is not JSON is a parse error")
+    func radioParseFailure() async {
+        let client = makeClient(FakeYouTube {
+            $0.nextBody = Data("<html>blocked</html>".utf8)
+            $0.nextContinuationBody = Data("<html>blocked</html>".utf8)
+        })
+        await #expect(throws: MusicError.self) { try await client.radio(seedVideoId: "x") }
+        await #expect(throws: MusicError.self) { try await client.moreRadio(continuation: "x") }
+    }
+
+    @Test("Set-Cookie on a radio response replaces the stored cookie and is persisted")
+    func radioSetCookiePersisted() async throws {
+        let youtube = FakeYouTube {
+            $0.nextHeaders = ["Set-Cookie": "SAPISID=rotated-by-radio; \(Self.rotation)"]
+        }
+        let store = MusicTestJar.signedInStore()
+        let client = makeClient(youtube, store: store)
+        _ = try await client.radio(seedVideoId: "4D7u5KF7SP8")
+
+        #expect(store.saveCount == 1)
+        let saved = try JSONDecoder().decode(MusicCookieJar.self, from: try #require(store.load()))
+        #expect(saved.value(named: "SAPISID") == "rotated-by-radio")
+        #expect(saved.value(named: "__Secure-3PAPISID") == "three-papisid-secret")
+
+        youtube.update { $0.nextHeaders = [:] }
+        _ = try await client.moreRadio(continuation: "token")
+        let second = try #require(youtube.requests(path: Self.nextPath).last)
+        #expect(second.headers["Cookie"]?.contains("SAPISID=rotated-by-radio") == true)
+        #expect(second.headers["Cookie"]?.contains("sapisid-secret") == false)
+        #expect(store.saveCount == 1)
+    }
+
+    @Test("A radio response that lands after signOut neither merges its cookies nor persists them")
+    func radioLateResponseAfterSignOut() async throws {
+        let gate = MusicTestGate()
+        let youtube = FakeYouTube()
+        let store = MusicTestJar.signedInStore()
+        let client = makeClient(youtube, store: store)
+        _ = try await client.session()
+        youtube.update {
+            $0.gate = gate
+            $0.nextHeaders = ["Set-Cookie": "SAPISID=late-radio; \(Self.rotation)"]
+        }
+        let radio = Task { try await client.radio(seedVideoId: "4D7u5KF7SP8") }
+        #expect(await eventually { youtube.requests(path: Self.nextPath).count == 1 })
+
+        await client.signOut()
+        await gate.open()
+        _ = try? await radio.value
+
+        #expect(store.load() == nil)
+        #expect(store.saveCount == 0)
+        #expect(await client.isSignedIn() == false)
+    }
+
+    @Test("A moreRadio response from the previous session cannot overwrite a newer sign-in")
+    func moreRadioLateResponseAfterSignIn() async throws {
+        let gate = MusicTestGate()
+        let youtube = FakeYouTube()
+        let store = MusicTestJar.signedInStore()
+        let client = makeClient(youtube, store: store)
+        _ = try await client.session()
+        youtube.update {
+            $0.gate = gate
+            $0.nextHeaders = ["Set-Cookie": "SAPISID=old-radio-rotation; \(Self.rotation)"]
+        }
+        let more = Task { try await client.moreRadio(continuation: "token") }
+        #expect(await eventually { youtube.requests(path: Self.nextPath).count == 1 })
+
+        try await client.signIn(with: [MusicTestJar.cookie("SAPISID", "new-sapisid")])
+        await gate.open()
+        _ = try? await more.value
+
+        let saved = try JSONDecoder().decode(MusicCookieJar.self, from: try #require(store.load()))
+        #expect(saved.value(named: "SAPISID") == "new-sapisid")
+        #expect(store.saveCount == 1)
+    }
+
     // MARK: - Player
 
     @Test("The player call carries the signatureTimestamp and the content-check flags")

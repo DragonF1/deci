@@ -274,7 +274,275 @@ struct InnerTubeParserTests {
         #expect(throws: MusicError.self) { try InnerTubeParser.playerResponse(from: Data("nope".utf8)) }
     }
 
+    // MARK: - Radio queue
+
+    @Test("The first radio page fixture parses in order, seed first, with its continuation")
+    func radioFirstPageFixture() throws {
+        let page = try InnerTubeParser.radioPage(from: MusicFixtures.data("next-radio-first.json"))
+        #expect(page.tracks.map(\.videoId) == ["4D7u5KF7SP8", "wU26xVT_vBU", "dJqxQzxLbHM", "tOaWhRATZqk"])
+        #expect(page.continuation == "SCRUBBED_RADIO_CONTINUATION_2")
+
+        let seed = try #require(page.tracks.first)
+        #expect(seed.title == "Get Lucky (feat. Pharrell Williams and Nile Rodgers)")
+        #expect(seed.artist == "Daft Punk, Pharrell Williams, Nile Rodgers")
+        #expect(seed.album == "Random Access Memories")
+        #expect(seed.durationSeconds == 370)
+        #expect(seed.thumbnailURL?.absoluteString.hasSuffix("=w544-h544-l90-rj") == true)
+    }
+
+    @Test("Artists split on the first bullet; an ampersand pair and a single artist both read cleanly")
+    func radioArtistsAndAlbums() throws {
+        let tracks = try InnerTubeParser.radioPage(from: MusicFixtures.data("next-radio-first.json")).tracks
+        #expect(tracks[1].artist == "Daft Punk")
+        #expect(tracks[1].album == "One More Time")
+        #expect(tracks[1].durationSeconds == 321)
+        #expect(tracks[3].artist == "j-hope, Nile Rodgers")
+        #expect(tracks[3].album == "HOPE ON THE STREET VOL.1")
+    }
+
+    @Test("The continuation page fixture parses with its next token")
+    func radioContinuationFixture() throws {
+        let page = try InnerTubeParser.radioContinuationPage(from: MusicFixtures.data("next-radio-continuation.json"))
+        #expect(page.tracks.map(\.videoId) == ["noiy7ajORtA", "vP709vKwkD0", "JWxoRY7AFSw", "2pzs39z2VMk"])
+        #expect(page.continuation == "SCRUBBED_RADIO_CONTINUATION_3")
+        #expect(page.tracks[0].artist == "Two Door Cinema Club")
+        #expect(page.tracks[0].album == "Tourist History")
+        #expect(page.tracks[0].durationSeconds == 192)
+    }
+
+    @Test("Four credited artists stay in order and the album run is still found")
+    func radioManyArtists() throws {
+        let page = try InnerTubeParser.radioContinuationPage(from: MusicFixtures.data("next-radio-continuation.json"))
+        let track = try #require(page.tracks.first { $0.videoId == "JWxoRY7AFSw" })
+        #expect(track.artist == "Justice, Tame Impala, SZA, Grand Theft Auto VI")
+        #expect(track.album?.hasPrefix("Flower In A Hurricane") == true)
+        #expect(track.durationSeconds == 225)
+    }
+
+    @Test("An uploaded video has no album, and its views and likes never become one")
+    func radioVideoRowHasNoAlbum() throws {
+        let page = try InnerTubeParser.radioContinuationPage(from: MusicFixtures.data("next-radio-continuation.json"))
+        let video = try #require(page.tracks.first { $0.videoId == "2pzs39z2VMk" })
+        #expect(video.artist == "Example Uploader")
+        #expect(video.album == nil)
+        #expect(video.durationSeconds == 403)
+        #expect(video.thumbnailURL?.absoluteString.hasSuffix("Qjl1cK1GNzlhmoYnJOZ4wIRQ") == true)
+    }
+
+    @Test("A wrapper item contributes its primary renderer and never the counterpart")
+    func radioWrapperItem() throws {
+        let wrapper: [String: Any] = ["playlistPanelVideoWrapperRenderer": [
+            "primaryRenderer": Self.panelItem(videoId: "audio", title: "Song"),
+            "counterpart": [["counterpartRenderer": Self.panelItem(videoId: "video", title: "Song (Official Video)")]],
+        ]]
+        let json = Self.radioFirstPageJSON(items: [Self.panelItem(videoId: "a", title: "A"), wrapper, Self.panelItem(videoId: "b", title: "B")])
+        let page = try InnerTubeParser.radioPage(from: json)
+        #expect(page.tracks.map(\.videoId) == ["a", "audio", "b"])
+        #expect(page.tracks[1].title == "Song")
+    }
+
+    @Test("Automix previews, unknown renderers and items without a video id are skipped")
+    func radioSkipsOtherItems() throws {
+        let items: [[String: Any]] = [
+            Self.panelItem(videoId: "a", title: "A"),
+            ["automixPreviewVideoRenderer": ["content": ["automixPlaylistVideoRenderer": ["navigationEndpoint": ["watchPlaylistEndpoint": ["playlistId": "RDAMPLx"]]]]]],
+            ["somethingNew": ["videoId": "ghost", "title": ["runs": [["text": "Ghost"]]]]],
+            Self.panelItem(videoId: nil, title: "No id"),
+            ["playlistPanelVideoWrapperRenderer": ["primaryRenderer": [:]]],
+            Self.panelItem(videoId: "b", title: "B"),
+        ]
+        let page = try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items))
+        #expect(page.tracks.map(\.videoId) == ["a", "b"])
+    }
+
+    @Test("A row with an empty title is skipped")
+    func radioSkipsEmptyTitle() throws {
+        let items = [Self.panelItem(videoId: "a", title: ""), Self.panelItem(videoId: "b", title: "B")]
+        #expect(try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items)).tracks.map(\.videoId) == ["b"])
+    }
+
+    @Test("The video id falls back to the watch endpoint")
+    func radioVideoIdFromWatchEndpoint() throws {
+        var renderer = Self.panelRenderer(videoId: nil, title: "Via endpoint")
+        renderer["navigationEndpoint"] = ["watchEndpoint": ["videoId": "fromEndpoint"]]
+        let json = Self.radioFirstPageJSON(items: [["playlistPanelVideoRenderer": renderer]])
+        #expect(try InnerTubeParser.radioPage(from: json).tracks.map(\.videoId) == ["fromEndpoint"])
+    }
+
+    @Test("Durations read as m:ss and h:mm:ss; anything else, or nothing, is nil")
+    func radioDurations() throws {
+        let lengths: [String?] = ["3:45", "1:02:03", "0:59", "10:00", nil, "LIVE", "", "1:2"]
+        let items = lengths.enumerated().map { index, length in Self.panelItem(videoId: "v\(index)", title: "T", length: length) }
+        let tracks = try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items)).tracks
+        #expect(tracks.map(\.durationSeconds) == [225, 3723, 59, 600, nil, nil, nil, nil])
+    }
+
+    @Test("The largest thumbnail wins, and none gives nil")
+    func radioThumbnailPick() throws {
+        let sizes: [[Int]] = [[60, 120, 544, 226], [400, 853], [], [120]]
+        let items = sizes.enumerated().map { index, widths in Self.panelItem(videoId: "v\(index)", title: "T", thumbnailWidths: widths) }
+        let tracks = try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items)).tracks
+        #expect(tracks[0].thumbnailURL?.absoluteString == "https://img.test/544")
+        #expect(tracks[1].thumbnailURL?.absoluteString == "https://img.test/853")
+        #expect(tracks[2].thumbnailURL == nil)
+        #expect(tracks[3].thumbnailURL?.absoluteString == "https://img.test/120")
+    }
+
+    @Test("A byline with only an artist, or none at all, still gives a track")
+    func radioSparseBylines() throws {
+        let alone = Self.panelItem(videoId: "alone", title: "T", byline: [("Solo Artist", "MUSIC_PAGE_TYPE_ARTIST")])
+        let missing = Self.panelItem(videoId: "missing", title: "T", byline: nil)
+        let tracks = try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: [alone, missing])).tracks
+        #expect(tracks[0].artist == "Solo Artist")
+        #expect(tracks[0].album == nil)
+        #expect(tracks[1].artist == "")
+        #expect(tracks[1].album == nil)
+    }
+
+    @Test("Order is kept and a repeated track is not dropped")
+    func radioKeepsOrderAndDuplicates() throws {
+        let items = ["a", "b", "a", "c", "b"].map { Self.panelItem(videoId: $0, title: "T") }
+        #expect(try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items)).tracks.map(\.videoId) == ["a", "b", "a", "c", "b"])
+    }
+
+    @Test("Unicode titles survive parsing")
+    func radioUnicode() throws {
+        let items = [Self.panelItem(videoId: "u1", title: "夜に駆ける 🎵 café", byline: [("YOASOBI", "MUSIC_PAGE_TYPE_ARTIST")])]
+        #expect(try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items)).tracks[0].title == "夜に駆ける 🎵 café")
+    }
+
+    @Test("Large queues parse")
+    func radioManyItems() throws {
+        let items = (0..<2_000).map { Self.panelItem(videoId: "v\($0)", title: "T\($0)") }
+        #expect(try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items)).tracks.count == 2_000)
+    }
+
+    @Test("A page with no continuation entry gives a nil continuation")
+    func radioMissingContinuation() throws {
+        let items = [Self.panelItem(videoId: "a", title: "A")]
+        let variants: [[[String: Any]]?] = [nil, [], [["somethingElse": ["x": 1]]]]
+        for continuations in variants {
+            let first = try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items, continuations: continuations))
+            let next = try InnerTubeParser.radioContinuationPage(from: Self.radioContinuationJSON(items: items, continuations: continuations))
+            #expect(first.tracks.count == 1)
+            #expect(first.continuation == nil)
+            #expect(next.continuation == nil)
+        }
+    }
+
+    @Test("An empty or non-string continuation token counts as no continuation")
+    func radioBlankContinuation() throws {
+        let items = [Self.panelItem(videoId: "a", title: "A")]
+        for token in ["", 5, NSNull()] as [Any] {
+            let continuations: [[String: Any]] = [["nextRadioContinuationData": ["continuation": token]]]
+            #expect(try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items, continuations: continuations)).continuation == nil)
+        }
+    }
+
+    @Test("nextContinuationData is accepted too, and the first usable entry wins")
+    func radioContinuationKinds() throws {
+        let items = [Self.panelItem(videoId: "a", title: "A")]
+        let plain: [[String: Any]] = [["nextContinuationData": ["continuation": "TOKEN_PLAIN"]]]
+        #expect(try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: items, continuations: plain)).continuation == "TOKEN_PLAIN")
+
+        let mixed: [[String: Any]] = [
+            ["reloadContinuationData": ["continuation": "RELOAD"]],
+            ["nextRadioContinuationData": ["continuation": "TOKEN_RADIO"]],
+            ["nextContinuationData": ["continuation": "TOKEN_LATER"]],
+        ]
+        #expect(try InnerTubeParser.radioContinuationPage(from: Self.radioContinuationJSON(items: items, continuations: mixed)).continuation == "TOKEN_RADIO")
+    }
+
+    @Test("A panel with no items is an empty page, not an error")
+    func radioEmptyPanel() throws {
+        let page = try InnerTubeParser.radioPage(from: Self.radioFirstPageJSON(items: []))
+        #expect(page == MusicQueuePage(tracks: [], continuation: nil))
+    }
+
+    @Test("A response without the queue panel is a parse error, so a bad seed is not a silent empty radio")
+    func radioMissingPanel() {
+        let noQueue = #"{"contents":{"singleColumnMusicWatchNextResultsRenderer":{"tabbedRenderer":{"watchNextTabbedResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"musicQueueRenderer":{"hack":true}}}}]}}}}}"#
+        for json in [noQueue, "{}", #"{"contents":{}}"#] {
+            #expect(throws: MusicError.self) { try InnerTubeParser.radioPage(from: Data(json.utf8)) }
+        }
+        #expect(throws: MusicError.self) { try InnerTubeParser.radioContinuationPage(from: Data("{}".utf8)) }
+        #expect(throws: MusicError.self) { try InnerTubeParser.radioContinuationPage(from: Data(#"{"continuationContents":{}}"#.utf8)) }
+    }
+
+    @Test("Each parser only accepts its own page shape, so a rejected token cannot replay the first page")
+    func radioPageShapesAreNotInterchangeable() throws {
+        let first = try MusicFixtures.data("next-radio-first.json")
+        let next = try MusicFixtures.data("next-radio-continuation.json")
+        #expect(throws: MusicError.self) { try InnerTubeParser.radioContinuationPage(from: first) }
+        #expect(throws: MusicError.self) { try InnerTubeParser.radioPage(from: next) }
+    }
+
+    @Test("Radio garbage that is not JSON throws a parse error")
+    func radioInvalidJSON() {
+        #expect(throws: MusicError.self) { try InnerTubeParser.radioPage(from: Data("<html>".utf8)) }
+        #expect(throws: MusicError.self) { try InnerTubeParser.radioPage(from: Data()) }
+        #expect(throws: MusicError.self) { try InnerTubeParser.radioContinuationPage(from: Data("nope".utf8)) }
+        #expect(throws: MusicError.self) { try InnerTubeParser.radioContinuationPage(from: Data()) }
+    }
+
+    // MARK: - Builders for hand-written radio responses
+
+    private static func panelRenderer(
+        videoId: String?,
+        title: String,
+        byline: [(text: String, page: String?)]? = [("A", "MUSIC_PAGE_TYPE_ARTIST")],
+        length: String? = "3:45",
+        thumbnailWidths: [Int] = [60, 120]
+    ) -> [String: Any] {
+        var renderer: [String: Any] = [
+            "title": ["runs": [["text": title]]],
+            "thumbnail": ["thumbnails": thumbnailWidths.map { ["url": "https://img.test/\($0)", "width": $0, "height": $0] as [String: Any] }],
+        ]
+        if let byline { renderer["longBylineText"] = ["runs": byline.map { run($0.text, $0.page) }] }
+        if let length { renderer["lengthText"] = ["runs": [["text": length]]] }
+        if let videoId { renderer["videoId"] = videoId }
+        return renderer
+    }
+
+    private static func panelItem(
+        videoId: String?,
+        title: String,
+        byline: [(text: String, page: String?)]? = [("A", "MUSIC_PAGE_TYPE_ARTIST")],
+        length: String? = "3:45",
+        thumbnailWidths: [Int] = [60, 120]
+    ) -> [String: Any] {
+        ["playlistPanelVideoRenderer": panelRenderer(videoId: videoId, title: title, byline: byline, length: length, thumbnailWidths: thumbnailWidths)]
+    }
+
+    private static func radioPanel(items: [[String: Any]], continuations: [[String: Any]]?) -> [String: Any] {
+        var panel: [String: Any] = ["contents": items]
+        if let continuations { panel["continuations"] = continuations }
+        return panel
+    }
+
+    private static func radioFirstPageJSON(items: [[String: Any]], continuations: [[String: Any]]? = nil) -> Data {
+        let root: [String: Any] = [
+            "contents": ["singleColumnMusicWatchNextResultsRenderer": ["tabbedRenderer": ["watchNextTabbedResultsRenderer": ["tabs": [
+                ["tabRenderer": ["content": ["musicQueueRenderer": ["content": ["playlistPanelRenderer": radioPanel(items: items, continuations: continuations)]]]]],
+            ]]]]],
+        ]
+        return (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
+    }
+
+    private static func radioContinuationJSON(items: [[String: Any]], continuations: [[String: Any]]? = nil) -> Data {
+        let root: [String: Any] = ["continuationContents": ["playlistPanelContinuation": radioPanel(items: items, continuations: continuations)]]
+        return (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
+    }
+
     // MARK: - Builders for hand-written search responses
+
+    private static func run(_ text: String, _ page: String?) -> [String: Any] {
+        guard let page else { return ["text": text] }
+        let endpoint: [String: Any] = page == "MUSIC_PAGE_TYPE_ARTIST" || page == "MUSIC_PAGE_TYPE_ALBUM"
+            ? ["browseEndpoint": ["browseId": "B", "browseEndpointContextSupportedConfigs": ["browseEndpointContextMusicConfig": ["pageType": page]]]]
+            : [:]
+        return ["text": text, "navigationEndpoint": endpoint]
+    }
 
     private static func row(
         videoId: String?,
@@ -282,13 +550,6 @@ struct InnerTubeParserTests {
         subtitleRuns: [(text: String, page: String?)],
         thumbnailWidths: [Int] = [60, 120]
     ) -> [String: Any] {
-        func run(_ text: String, _ page: String?) -> [String: Any] {
-            guard let page else { return ["text": text] }
-            let endpoint: [String: Any] = page == "MUSIC_PAGE_TYPE_ARTIST" || page == "MUSIC_PAGE_TYPE_ALBUM"
-                ? ["browseEndpoint": ["browseId": "B", "browseEndpointContextSupportedConfigs": ["browseEndpointContextMusicConfig": ["pageType": page]]]]
-                : [:]
-            return ["text": text, "navigationEndpoint": endpoint]
-        }
         var renderer: [String: Any] = [
             "thumbnail": ["musicThumbnailRenderer": ["thumbnail": ["thumbnails": thumbnailWidths.map {
                 ["url": "https://img.test/\($0)", "width": $0, "height": $0] as [String: Any]
