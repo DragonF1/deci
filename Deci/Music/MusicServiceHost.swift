@@ -30,7 +30,12 @@ final class MusicServiceHost {
     ) {
         self.mixer = mixer
         self.makeService = makeService ?? {
-            MusicService(backend: MusicBackendLive.live(), player: MusicServiceHost.makePlayer(mixer: mixer), lyrics: .live())
+            MusicService(
+                backend: MusicBackendLive.live(),
+                player: MusicServiceHost.makePlayer(mixer: mixer),
+                lyrics: .live(),
+                listenerLevel: { [weak mixer] in mixer?.watchtimeLevel ?? (WatchtimeTracker.fullVolume, false) }
+            )
         }
         MusicMemoryLog.log("launch")
     }

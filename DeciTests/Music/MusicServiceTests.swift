@@ -23,6 +23,13 @@ private final class SignInProbe {
     var nativeChanges: [Bool] = []
 }
 
+/// The Mixer row's volume and mute as the service sees them, changed by a test mid-listen.
+@MainActor
+private final class ListenerLevelBox {
+    var volume = WatchtimeTracker.fullVolume
+    var muted = false
+}
+
 @MainActor
 private struct Harness {
     let backend: FakeMusicBackend
@@ -31,6 +38,8 @@ private struct Harness {
     let surface = FakeNowPlayingSurface()
     /// The clock the service reads for the watchtime schedule; `listen` runs it on with the ticks.
     let clock = MutableClock()
+    /// The volume and mute the service reports in watchtime pings.
+    let level = ListenerLevelBox()
     let player: MusicPlayer
     let service: MusicService
 
@@ -39,6 +48,7 @@ private struct Harness {
         let engine = self.engine
         let probe = self.probe
         let clock = self.clock
+        let level = self.level
         let player = MusicPlayer(engine: engine)
         self.backend = backend
         self.player = player
@@ -57,6 +67,7 @@ private struct Harness {
             raiseSignInWindow: { probe.windowRaises += 1 },
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
+            listenerLevel: { (level.volume, level.muted) },
             refreshOnCreate: false
         )
         service.onNativePlayingChange = { probe.nativeChanges.append($0) }
@@ -4133,6 +4144,23 @@ struct MusicServiceWatchtimeTests {
         #expect(details.scheduledRealTime == nil)
         #expect(details.isPlaying)
         #expect(!details.isFinal)
+    }
+
+    @Test("a change of the Mixer row's volume or mute cuts a new stretch carrying the new level")
+    func reportsMixerLevel() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 10)
+        h.level.volume = 40
+        h.level.muted = true
+        h.listen(seconds: 20, from: 10)
+
+        let reports = try await sent(h, atLeast: 2)
+        let details = try #require(reports[1].details)
+        #expect(details.segments == [
+            segment(0, 10),
+            WatchtimeSegment(start: 10, end: 30, volume: 40, muted: true),
+        ])
     }
 
     @Test("over 65 s of playing only the opening pair goes out; the next watchtime ping is due at 70 s")

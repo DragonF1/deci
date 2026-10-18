@@ -92,6 +92,8 @@ final class MusicService {
     @ObservationIgnored private let now: () -> Date
     /// When the listener last touched a control: the `lact` of every watchtime ping.
     @ObservationIgnored private var lastActivity: Date
+    /// The player volume (0 to 100) and mute the watchtime pings report: the Mixer tab's YouTube Music row.
+    @ObservationIgnored private let listenerLevel: @MainActor () -> (volume: Int, muted: Bool)
     @ObservationIgnored private var session: Session?
     @ObservationIgnored private var direction = Direction.forward
     @ObservationIgnored private var failureStreak = 0
@@ -145,6 +147,7 @@ final class MusicService {
         // `MusicLyricsStore.live()`, so a service built by a test or a preview never reaches LRCLIB.
         lyrics: MusicLyricsStore = MusicLyricsStore(provider: NoLyricsProvider()),
         now: @escaping () -> Date = Date.init,
+        listenerLevel: @escaping @MainActor () -> (volume: Int, muted: Bool) = { (WatchtimeTracker.fullVolume, false) },
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -157,6 +160,7 @@ final class MusicService {
         self.raiseSignInWindow = raiseSignInWindow
         self.nowPlaying = nowPlaying
         self.now = now
+        self.listenerLevel = listenerLevel
         self.lastActivity = now()
         // The lyrics panel ignores ticks while it is hidden, so it asks for one fresh reading when it comes back.
         lyrics.playbackSampler = { [player] in (player.currentTime, player.isPlaying) }
@@ -939,7 +943,10 @@ final class MusicService {
         // Every tick, so a stretch heard before the playback ping is in the opening watchtime ping. The clock is read
         // first: reading `session` inside the mutating call would overlap its access.
         let clock = sessionClock
-        let due = session?.watchtime.record(position: position, isPlaying: isPlaying, now: clock)
+        let level = listenerLevel()
+        let due = session?.watchtime.record(
+            position: position, isPlaying: isPlaying, now: clock, volume: level.volume, muted: level.muted
+        )
         if earned, let url {
             sendOpeningPings(playback: url, mediaTime: position)
         } else if let due {

@@ -76,6 +76,12 @@ final class MusicMixerState: InProcessAudioSink {
     /// True once an engine was attached. Stays true if that engine goes away: the state is only meaningful per app run.
     private(set) var hasEngine = false
 
+    /// The volume and mute the watchtime pings report, as the web player's 0 to 100 slider: the row's slider
+    /// position, boost left out.
+    var watchtimeLevel: (volume: Int, muted: Bool) {
+        (Int((VolumeMapping.gainToSlider(volume) * 100).rounded()), isMuted)
+    }
+
     @ObservationIgnored private let settings: SettingsManager
     @ObservationIgnored private let environment: any MusicMixerEnvironment
     @ObservationIgnored private weak var engine: (any PlaybackEngine)?
