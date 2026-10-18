@@ -2024,6 +2024,8 @@ struct MusicServicePageQueueTests {
     @Test("next and a track ending walk down the page")
     func nextWalksPage() async {
         let h = Harness()
+        // Autoplay would carry on past the end of the page; these tests are about the page ending.
+        h.service.setAutoplay(false)
         await startPage(h, ["a", "b", "c"])
         h.service.next()
         await h.settle()
@@ -2056,6 +2058,7 @@ struct MusicServicePageQueueTests {
     @Test("the queue stops at the end of the page and nothing else is asked for")
     func stopsAtPageEnd() async {
         let h = Harness()
+        h.service.setAutoplay(false)
         await startPage(h, ["a", "b"], tap: "b")
         #expect(h.service.canGoNext == false)
 
@@ -2072,6 +2075,7 @@ struct MusicServicePageQueueTests {
     @Test("a track ending at the end of the page leaves the player on the finished song")
     func endsAtPageEnd() async {
         let h = Harness()
+        h.service.setAutoplay(false)
         await startPage(h, ["a", "b"], tap: "b")
         h.engine.emit(.ended)
         await h.settle()
@@ -2276,6 +2280,7 @@ struct MusicServicePageQueueTests {
     @Test("tapping another row of the same page restarts the queue on that row")
     func tapAnotherRow() async {
         let h = Harness()
+        h.service.setAutoplay(false)
         await startPage(h, ["a", "b", "c", "d"], tap: "b")
         await startPage(h, ["a", "b", "c", "d"], tap: "d")
 

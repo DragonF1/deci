@@ -379,10 +379,9 @@ private struct MusicSignedInView: View {
 
     private var queueList: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
-            Text("Up next")
-                .font(DesignTokens.Typography.caption)
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            MusicQueueHeader(isAutoplayOn: service.isAutoplayOn) {
+                service.setAutoplay(!service.isAutoplayOn)
+            }
 
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -398,6 +397,32 @@ private struct MusicSignedInView: View {
                 }
             }
             .scrollIndicators(.never)
+        }
+    }
+}
+
+/// "Up next" and the Autoplay toggle: when a playlist or an album ends, recommended songs carry on.
+struct MusicQueueHeader: View {
+    let isAutoplayOn: Bool
+    let onToggleAutoplay: () -> Void
+
+    var body: some View {
+        HStack(spacing: DesignTokens.Spacing.xs) {
+            Text("Up next")
+                .font(DesignTokens.Typography.caption)
+                .foregroundStyle(DesignTokens.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: onToggleAutoplay) {
+                Label("Autoplay", systemImage: "infinity")
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.plain)
+            .font(DesignTokens.Typography.caption)
+            .foregroundStyle(isAutoplayOn ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
+            .contentShape(Rectangle())
+            .accessibilityAddTraits(isAutoplayOn ? .isSelected : [])
+            .help("Keep playing recommended songs after a playlist or an album ends")
         }
     }
 }

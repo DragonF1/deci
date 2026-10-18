@@ -22,12 +22,20 @@ struct MusicPageView: View {
             MusicLoadingView()
         case .failed(let message):
             MusicFailedView(message: message) { browse.reloadPage(collection.browseId) }
-        case .loaded(let page):
+        case .loaded(let loaded):
+            // A sorted playlist shows, and queues, its sorted songs once all of them are loaded.
+            let page = browse.displayedPage(collection.browseId) ?? loaded
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    MusicPageHeader(page: page, kind: collection.kind) {
-                        if let first = page.tracks.first { service.play(first, in: page) }
-                    }
+                    MusicPageHeader(
+                        page: page,
+                        kind: collection.kind,
+                        sort: MusicBrowseStore.canSort(page.browseId) ? browse.sort(for: page.browseId) : nil,
+                        isLoadingAll: browse.loadingAllTracks.contains(page.browseId),
+                        onPlay: { if let first = page.tracks.first { service.play(first, in: page) } },
+                        onShuffle: { service.playShuffled(page) },
+                        onPickSort: { browse.pickSort($0, for: page.browseId) }
+                    )
                     .padding(.bottom, DesignTokens.Spacing.sm)
 
                     tracks(of: page)
@@ -70,7 +78,7 @@ struct MusicPageView: View {
                 }
             }
 
-            let loadingMore = browse.loadingMoreTracks.contains(page.browseId)
+            let loadingMore = browse.loadingMoreTracks.contains(page.browseId) || browse.loadingAllTracks.contains(page.browseId)
             if page.continuation != nil || loadingMore {
                 MusicLoadMoreFooter(isLoading: loadingMore) {
                     guard !browse.loadingMoreTracks.contains(page.browseId) else { return }
@@ -109,11 +117,18 @@ struct MusicPageTopBar: View {
     }
 }
 
-/// Cover, title, subtitle and a Play button that starts the page from its first song.
+/// Cover, title, subtitle, a Play button that starts the page from its first song, Shuffle, and on a playlist
+/// a Sort menu.
 struct MusicPageHeader: View {
     let page: MusicBrowsePage
     let kind: MusicCollection.Kind
+    /// The sort picked for a playlist; nil on a page that cannot be sorted.
+    var sort: MusicPlaylistSort?
+    /// The sort is loading the rest of the songs before it can order them.
+    var isLoadingAll = false
     let onPlay: () -> Void
+    let onShuffle: () -> Void
+    var onPickSort: (MusicSortField) -> Void = { _ in }
 
     static let coverSize: CGFloat = 72
 
@@ -140,16 +155,40 @@ struct MusicPageHeader: View {
                 }
 
                 if !page.tracks.isEmpty {
-                    Button(action: onPlay) {
-                        Label("Play", systemImage: "play.fill")
-                            .labelStyle(.titleAndIcon)
+                    HStack(spacing: DesignTokens.Spacing.xs) {
+                        Button(action: onPlay) {
+                            Label("Play", systemImage: "play.fill")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .font(DesignTokens.Typography.pickerText)
+                        .foregroundStyle(DesignTokens.Colors.textPrimary)
+                        .glassButtonStyle()
+                        .contentShape(Capsule())
+                        .accessibilityLabel("Play \(page.title)")
+
+                        // An artist's page lists top songs, not a collection to shuffle through.
+                        if kind != .artist {
+                            Button(action: onShuffle) {
+                                Label("Shuffle", systemImage: "shuffle")
+                                    .labelStyle(.titleAndIcon)
+                            }
+                            .buttonStyle(.plain)
+                            .font(DesignTokens.Typography.pickerText)
+                            .foregroundStyle(DesignTokens.Colors.textPrimary)
+                            .glassButtonStyle()
+                            .contentShape(Capsule())
+                            .accessibilityLabel("Shuffle \(page.title)")
+                        }
+
+                        if let sort {
+                            sortMenu(sort)
+                        }
+
+                        if isLoadingAll {
+                            loadingAllState
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .font(DesignTokens.Typography.pickerText)
-                    .foregroundStyle(DesignTokens.Colors.textPrimary)
-                    .glassButtonStyle()
-                    .contentShape(Capsule())
-                    .accessibilityLabel("Play \(page.title)")
                     .padding(.top, DesignTokens.Spacing.xs)
                 }
             }
@@ -157,5 +196,58 @@ struct MusicPageHeader: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, DesignTokens.Spacing.sm)
+    }
+
+    /// The options, with a mark on the picked one that shows its direction. Picking it again flips the direction.
+    private func sortMenu(_ sort: MusicPlaylistSort) -> some View {
+        Menu {
+            ForEach(MusicSortField.allCases) { field in
+                Button {
+                    onPickSort(field)
+                } label: {
+                    if field == sort.field {
+                        Label(field.label, systemImage: sort.isDefault ? "checkmark" : Self.directionSymbol(sort))
+                    } else {
+                        Text(field.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: DesignTokens.Spacing.xs) {
+                Image(systemName: "arrow.up.arrow.down")
+                Text(sort.isDefault ? "Sort" : sort.field.label)
+                if !sort.isDefault {
+                    Image(systemName: Self.directionSymbol(sort))
+                        .font(.system(size: 8, weight: .semibold))
+                }
+            }
+        }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .font(DesignTokens.Typography.pickerText)
+        .foregroundStyle(DesignTokens.Colors.textPrimary)
+        .fixedSize()
+        .glassButtonStyle()
+        .contentShape(Capsule())
+        .accessibilityLabel(sort.isDefault ? "Sort" : "Sort: \(sort.field.label), \(sort.ascending ? "ascending" : "descending")")
+    }
+
+    /// Up for ascending and down for descending.
+    private static func directionSymbol(_ sort: MusicPlaylistSort) -> String {
+        sort.ascending ? "arrow.up" : "arrow.down"
+    }
+
+    private var loadingAllState: some View {
+        HStack(spacing: DesignTokens.Spacing.xs) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Loading all songs")
+                .font(DesignTokens.Typography.caption)
+                .foregroundStyle(DesignTokens.Colors.textTertiary)
+                .lineLimit(1)
+        }
+        .layoutPriority(-1)
+        .accessibilityElement(children: .combine)
     }
 }

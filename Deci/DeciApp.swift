@@ -281,7 +281,7 @@ struct DeciApp: App {
         // the global audio switches and device events instead, and the model shapes the player's own audio.
         let mixer = MusicMixerState(settings: settings, environment: EngineMusicEnvironment(engine: engine))
         engine.inProcessAudio = mixer
-        let music = MusicServiceHost(mixer: mixer)
+        let music = MusicServiceHost(mixer: mixer, settings: settings)
         // Only this boolean reaches Chrome: while Deci plays, the extension stops auto-clicking "Switch".
         music.onNativePlayingChange = { ChromeExtensionManager.shared.setNativeMusicPlaying($0) }
         _musicHost = State(initialValue: music)

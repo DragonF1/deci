@@ -80,6 +80,10 @@ struct MusicMiniTransport: View {
 
     private var transportButtons: some View {
         HStack(spacing: DesignTokens.Spacing.xs) {
+            modeButton("Shuffle", systemImage: "shuffle", isOn: service.isShuffleOn) {
+                service.setShuffle(!service.isShuffleOn)
+            }
+
             skipButton("Previous", systemImage: "backward.fill", enabled: true) { service.previous() }
 
             ZStack {
@@ -100,6 +104,10 @@ struct MusicMiniTransport: View {
             .frame(width: 28, height: 28)
 
             skipButton("Next", systemImage: "forward.fill", enabled: service.canGoNext) { service.next() }
+
+            modeButton(service.loopMode.label, systemImage: service.loopMode.systemImage, isOn: service.loopMode != .off) {
+                service.cycleLoopMode()
+            }
         }
     }
 
@@ -112,6 +120,18 @@ struct MusicMiniTransport: View {
             .frame(width: 22, height: 28)
             .contentShape(Rectangle())
             .disabled(!enabled)
+    }
+
+    /// Shuffle and loop: the size of the skip buttons, dim when off and in the accent colour when on.
+    private func modeButton(_ title: String, systemImage: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(title, systemImage: systemImage, action: action)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            .foregroundStyle(isOn ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
+            .frame(width: 22, height: 28)
+            .contentShape(Rectangle())
+            .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 
     private var progressRow: some View {
@@ -217,6 +237,24 @@ struct MusicCoverShape: Shape {
         circular
             ? Circle().path(in: rect)
             : RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius).path(in: rect)
+    }
+}
+
+extension MusicLoopMode {
+    /// What the loop button says it is doing; also its accessibility label.
+    var label: String {
+        switch self {
+        case .off: "Loop off"
+        case .playlist: "Loop playlist"
+        case .song: "Loop song"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .off, .playlist: "repeat"
+        case .song: "repeat.1"
+        }
     }
 }
 

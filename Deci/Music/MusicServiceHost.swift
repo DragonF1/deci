@@ -26,6 +26,7 @@ final class MusicServiceHost {
 
     init(
         mixer: MusicMixerState? = nil,
+        settings: SettingsManager? = nil,
         makeService: (@MainActor () -> MusicService)? = nil
     ) {
         self.mixer = mixer
@@ -34,10 +35,23 @@ final class MusicServiceHost {
                 backend: MusicBackendLive.live(),
                 player: MusicServiceHost.makePlayer(mixer: mixer),
                 lyrics: .live(),
-                listenerLevel: { [weak mixer] in mixer?.watchtimeLevel ?? (WatchtimeTracker.fullVolume, false) }
+                listenerLevel: { [weak mixer] in mixer?.watchtimeLevel ?? (WatchtimeTracker.fullVolume, false) },
+                // Shuffle, loop and Autoplay are remembered in settings.json.
+                preferences: settings?.appSettings.musicPlayback ?? MusicPlaybackPreferences(),
+                savePreferences: MusicServiceHost.savePreferences(to: settings)
             )
         }
         MusicMemoryLog.log("launch")
+    }
+
+    /// Writes the playback options into settings.json, leaving every other setting as it is.
+    static func savePreferences(to settings: SettingsManager?) -> @MainActor (MusicPlaybackPreferences) -> Void {
+        { [weak settings] preferences in
+            guard let settings else { return }
+            var appSettings = settings.appSettings
+            appSettings.musicPlayback = preferences
+            settings.updateAppSettings(appSettings)
+        }
     }
 
     /// The real player. With a mixer its engine runs the mixer's DSP chain and takes its output device, so volume,

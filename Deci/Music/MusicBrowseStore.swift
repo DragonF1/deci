@@ -45,6 +45,13 @@ final class MusicBrowseStore {
     private(set) var path: [MusicCollection] = []
     private(set) var pages: [String: Load<MusicBrowsePage>] = [:]
     private(set) var loadingMoreTracks: Set<String> = []
+    /// Playlists whose sort is loading every remaining page of songs first.
+    private(set) var loadingAllTracks: Set<String> = []
+    /// The sort picked for each playlist this session. A playlist missing here is in its default order.
+    private(set) var sorts: [String: MusicPlaylistSort] = [:]
+
+    /// A sort loads songs up to this many, then sorts what it has.
+    static let sortTrackCap = 2000
 
     @ObservationIgnored private let backend: any MusicBackend
     /// A load names itself with the next number and only lands while it is still the current one for
@@ -56,6 +63,8 @@ final class MusicBrowseStore {
     @ObservationIgnored private var libraryTokens: [MusicLibrarySection: String] = [:]
     @ObservationIgnored private var pageRuns: [String: Int] = [:]
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
+    /// The last sorted page per playlist, so reading it again while a song plays does not sort again.
+    @ObservationIgnored private var sortedPages: [String: (sort: MusicPlaylistSort, page: MusicBrowsePage)] = [:]
     /// Told when a call says the session is gone, so the service can sign out.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
 
@@ -245,6 +254,9 @@ final class MusicBrowseStore {
         pageRuns[browseId] = run
         pages[browseId] = .loading
         loadingMoreTracks.remove(browseId)
+        loadingAllTracks.remove(browseId)
+        sortedPages[browseId] = nil
+        tasks.removeValue(forKey: "page*:\(browseId)")?.cancel()
         launch("page:\(browseId)") { [weak self, backend] in
             do {
                 let page = try await backend.page(browseId: browseId)
@@ -258,7 +270,8 @@ final class MusicBrowseStore {
     /// Loads more tracks of a long playlist when its list scrolls to its end.
     func loadMoreTracks(_ browseId: String) {
         guard case .loaded(let page)? = pages[browseId], let run = pageRuns[browseId],
-              let token = page.continuation, !loadingMoreTracks.contains(browseId) else { return }
+              let token = page.continuation, !loadingMoreTracks.contains(browseId),
+              !loadingAllTracks.contains(browseId) else { return }
         loadingMoreTracks.insert(browseId)
         launch("page+:\(browseId)") { [weak self, backend] in
             do {
@@ -273,6 +286,7 @@ final class MusicBrowseStore {
     private func landPage(_ page: MusicBrowsePage, browseId: String, run: Int) {
         guard pageRuns[browseId] == run else { return }
         pages[browseId] = .loaded(page)
+        loadAllTracksIfSorted(browseId)
     }
 
     private func failPage(_ error: any Error, browseId: String, run: Int) {
@@ -284,6 +298,7 @@ final class MusicBrowseStore {
     private func landMoreTracks(_ more: MusicQueuePage, browseId: String, run: Int, token: String) {
         guard pageRuns[browseId] == run, case .loaded(let page)? = pages[browseId] else { return }
         loadingMoreTracks.remove(browseId)
+        sortedPages[browseId] = nil
         var seen = Set(page.tracks.map(\.videoId))
         let fresh = more.tracks.filter { seen.insert($0.videoId).inserted }
         pages[browseId] = .loaded(MusicBrowsePage(
@@ -304,6 +319,88 @@ final class MusicBrowseStore {
         expireIfSignedOut(error)
     }
 
+    // MARK: - Sorting
+
+    /// Only playlist pages sort; albums keep their track order and artists have no list of songs to sort.
+    static func canSort(_ browseId: String) -> Bool {
+        browseId.hasPrefix("VL")
+    }
+
+    /// The sort picked for this playlist; Default order until one is picked.
+    func sort(for browseId: String) -> MusicPlaylistSort {
+        sorts[browseId] ?? .default
+    }
+
+    /// Picks a sort option for a playlist: a new option sorts ascending, the same one again flips the direction.
+    /// A sort first loads every remaining page of songs (up to `sortTrackCap`), and the list keeps its order until then.
+    func pickSort(_ field: MusicSortField, for browseId: String) {
+        guard Self.canSort(browseId) else { return }
+        let picked = sort(for: browseId).picking(field)
+        sorts[browseId] = picked.isDefault ? nil : picked
+        sortedPages[browseId] = nil
+        loadAllTracksIfSorted(browseId)
+    }
+
+    /// The page as the list shows it and as Play queues it: in the playlist's sort once all its songs are here
+    /// (with no more to load, so a queue made from it ends where the sorted list does), else as loaded.
+    func displayedPage(_ browseId: String) -> MusicBrowsePage? {
+        guard case .loaded(let page)? = pages[browseId] else { return nil }
+        let sort = sort(for: browseId)
+        guard !sort.isDefault, !loadingAllTracks.contains(browseId) else { return page }
+        if let cached = sortedPages[browseId], cached.sort == sort { return cached.page }
+        let sorted = MusicBrowsePage(
+            browseId: page.browseId,
+            title: page.title,
+            subtitle: page.subtitle,
+            thumbnailURL: page.thumbnailURL,
+            tracks: sort.sorted(page.tracks),
+            continuation: nil,
+            shelves: page.shelves
+        )
+        sortedPages[browseId] = (sort, sorted)
+        return sorted
+    }
+
+    /// Starts loading what is left of a sorted playlist, unless it is all here already or loading has started.
+    private func loadAllTracksIfSorted(_ browseId: String) {
+        guard !sort(for: browseId).isDefault, case .loaded(let page)? = pages[browseId], let run = pageRuns[browseId],
+              page.continuation != nil, page.tracks.count < Self.sortTrackCap,
+              !loadingAllTracks.contains(browseId) else { return }
+        loadingAllTracks.insert(browseId)
+        launch("page*:\(browseId)") { [weak self] in
+            await self?.loadRemainingTracks(browseId, run: run)
+        }
+    }
+
+    /// Fetches page after page while the playlist is sorted and has more, up to the cap. A page that is already
+    /// loading for the list footer is waited for, not asked for twice. A failure goes back to the default order.
+    private func loadRemainingTracks(_ browseId: String, run: Int) async {
+        while pageRuns[browseId] == run, !sort(for: browseId).isDefault,
+              case .loaded(let page)? = pages[browseId], let token = page.continuation,
+              page.tracks.count < Self.sortTrackCap {
+            if loadingMoreTracks.contains(browseId) {
+                await tasks["page+:\(browseId)"]?.value
+                if loadingMoreTracks.contains(browseId) { break }
+                continue
+            }
+            do {
+                let more = try await backend.moreTracks(browseId: browseId, continuation: token)
+                guard pageRuns[browseId] == run else { return }
+                landMoreTracks(more, browseId: browseId, run: run, token: token)
+            } catch {
+                guard pageRuns[browseId] == run else { return }
+                logger.info("sort load failed: \(MusicService.logDescription(of: error), privacy: .public)")
+                sorts[browseId] = nil
+                sortedPages[browseId] = nil
+                loadingAllTracks.remove(browseId)
+                expireIfSignedOut(error)
+                return
+            }
+        }
+        guard pageRuns[browseId] == run else { return }
+        loadingAllTracks.remove(browseId)
+    }
+
     /// Back one page.
     func back() {
         guard let closed = path.popLast() else { return }
@@ -321,10 +418,12 @@ final class MusicBrowseStore {
     /// fetches it fresh (a song just liked shows in Liked music) and closed pages do not pile up.
     private func drop(_ browseId: String) {
         guard !path.contains(where: { $0.browseId == browseId }) else { return }
-        for key in ["page:\(browseId)", "page+:\(browseId)"] { tasks.removeValue(forKey: key)?.cancel() }
+        for key in ["page:\(browseId)", "page+:\(browseId)", "page*:\(browseId)"] { tasks.removeValue(forKey: key)?.cancel() }
         pageRuns[browseId] = nil
         pages[browseId] = nil
         loadingMoreTracks.remove(browseId)
+        loadingAllTracks.remove(browseId)
+        sortedPages[browseId] = nil
     }
 
     // MARK: - Reset
@@ -348,6 +447,9 @@ final class MusicBrowseStore {
         path.removeAll()
         pages.removeAll()
         loadingMoreTracks.removeAll()
+        loadingAllTracks.removeAll()
+        sorts.removeAll()
+        sortedPages.removeAll()
     }
 
     // MARK: - Helpers

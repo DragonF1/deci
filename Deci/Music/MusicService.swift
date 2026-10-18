@@ -44,7 +44,14 @@ final class MusicService {
     let browse: MusicBrowseStore
     /// Synced lyrics of the playing track, for the lyrics panel.
     let lyrics: MusicLyricsStore
-    var canGoNext: Bool { queue.hasNext }
+    /// Loop playlist keeps Next on at the last track, where it wraps to the first.
+    var canGoNext: Bool { queue.hasNext || (loopMode == .playlist && !queue.isEmpty) }
+    /// The queue plays in a shuffled order. Remembered across launches.
+    private(set) var isShuffleOn: Bool
+    /// What happens when a track or the queue ends. Remembered across launches.
+    private(set) var loopMode: MusicLoopMode
+    /// Keep playing recommended songs after a playlist or an album has finished. Remembered across launches.
+    private(set) var isAutoplayOn: Bool
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
 
@@ -94,6 +101,9 @@ final class MusicService {
     @ObservationIgnored private var lastActivity: Date
     /// The player volume (0 to 100) and mute the watchtime pings report: the Mixer tab's YouTube Music row.
     @ObservationIgnored private let listenerLevel: @MainActor () -> (volume: Int, muted: Bool)
+    /// Told the three playback options whenever one changes, so the app can keep them in settings.
+    @ObservationIgnored private let savePreferences: @MainActor (MusicPlaybackPreferences) -> Void
+    @ObservationIgnored private var shuffleGenerator: MusicShuffleGenerator
     @ObservationIgnored private var session: Session?
     @ObservationIgnored private var direction = Direction.forward
     @ObservationIgnored private var failureStreak = 0
@@ -148,6 +158,10 @@ final class MusicService {
         lyrics: MusicLyricsStore = MusicLyricsStore(provider: NoLyricsProvider()),
         now: @escaping () -> Date = Date.init,
         listenerLevel: @escaping @MainActor () -> (volume: Int, muted: Bool) = { (WatchtimeTracker.fullVolume, false) },
+        preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(),
+        savePreferences: @escaping @MainActor (MusicPlaybackPreferences) -> Void = { _ in },
+        // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
+        shuffleSeed: UInt64? = nil,
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -161,6 +175,11 @@ final class MusicService {
         self.nowPlaying = nowPlaying
         self.now = now
         self.listenerLevel = listenerLevel
+        self.isShuffleOn = preferences.shuffle
+        self.loopMode = preferences.loop
+        self.isAutoplayOn = preferences.autoplay
+        self.savePreferences = savePreferences
+        self.shuffleGenerator = MusicShuffleGenerator(seed: shuffleSeed ?? UInt64.random(in: .min ... .max))
         self.lastActivity = now()
         // The lyrics panel ignores ticks while it is hidden, so it asks for one fresh reading when it comes back.
         lyrics.playbackSampler = { [player] in (player.currentTime, player.isPlaying) }
@@ -509,6 +528,8 @@ final class MusicService {
     func play(_ track: MusicTrack) {
         noteActivity()
         queue.start(with: track)
+        // The radio's pages are mixed in as they land.
+        if isShuffleOn { queue.shuffle(using: &shuffleGenerator) }
         direction = .forward
         failureStreak = 0
         startRadio(seed: track.videoId)
@@ -522,9 +543,59 @@ final class MusicService {
         // A page is its own order: a radio left over from the last queue must not add to it.
         cancelRadio()
         queue.start(page: page.tracks, playing: track, browseId: page.browseId, continuation: page.continuation)
+        // The row that was tapped plays first; every other row, the ones above it too, is mixed in after it.
+        if isShuffleOn { queue.shuffle(mixingEarlier: true, using: &shuffleGenerator) }
         direction = .forward
         failureStreak = 0
         begin(track)
+    }
+
+    /// "Shuffle" on a playlist or album page: turns shuffle on and starts from a random track of the page.
+    func playShuffled(_ page: MusicBrowsePage) {
+        guard let track = page.tracks.randomElement(using: &shuffleGenerator) else { return }
+        if !isShuffleOn {
+            isShuffleOn = true
+            savePlaybackPreferences()
+        }
+        play(track, in: page)
+    }
+
+    // MARK: - Playback modes
+
+    /// Turning shuffle on mixes what comes after the current track; turning it off puts the whole queue back in
+    /// its natural order and carries on from the current track.
+    func setShuffle(_ on: Bool) {
+        guard on != isShuffleOn else { return }
+        isShuffleOn = on
+        if !queue.isEmpty {
+            if on { queue.shuffle(using: &shuffleGenerator) } else { queue.unshuffle() }
+        }
+        savePlaybackPreferences()
+        topUpQueue()
+    }
+
+    func setLoopMode(_ mode: MusicLoopMode) {
+        guard mode != loopMode else { return }
+        loopMode = mode
+        savePlaybackPreferences()
+        // A queue standing at the end of its page may now hand over to the radio.
+        topUpQueue()
+    }
+
+    /// The loop button: Off, Loop playlist, Loop song, Off.
+    func cycleLoopMode() {
+        setLoopMode(loopMode.next)
+    }
+
+    func setAutoplay(_ on: Bool) {
+        guard on != isAutoplayOn else { return }
+        isAutoplayOn = on
+        savePlaybackPreferences()
+        topUpQueue()
+    }
+
+    private func savePlaybackPreferences() {
+        savePreferences(MusicPlaybackPreferences(shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn))
     }
 
     /// Play/pause for the transport and media keys. A track whose stream never resolved has nothing
@@ -548,7 +619,7 @@ final class MusicService {
         failureStreak = 0
         guard let track = queue.advance() else {
             // The radio may still be loading: keep playing and move on when its page lands.
-            if !awaitRadio(for: .skipped) { stopPlayback() }
+            if !awaitRadio(for: .skipped), !wrapAround() { stopPlayback() }
             return
         }
         begin(track)
@@ -665,13 +736,27 @@ final class MusicService {
         // The session stays (a replay is the same session, with nothing left to send); only its final ping goes.
         sendFinalPing()
         direction = .forward
+        // Loop song: the same track again, as a fresh playback with its own session.
+        if loopMode == .song, let track = queue.current {
+            begin(track)
+            return
+        }
         guard let track = queue.advance() else {
             // At the end of the queue the player stays on the finished track, as with a single song,
-            // unless the radio is still loading: then the next track starts when its page lands.
-            _ = awaitRadio(for: .ended)
+            // unless the radio is still loading (then the next track starts when its page lands)
+            // or the queue loops.
+            if !awaitRadio(for: .ended) { _ = wrapAround() }
             return
         }
         begin(track)
+    }
+
+    /// Loop playlist: starts the queue over from the first track of its play order. False when the queue does not loop.
+    private func wrapAround() -> Bool {
+        guard loopMode == .playlist, let first = queue.wrapToStart() else { return false }
+        direction = .forward
+        begin(first)
+        return true
     }
 
     /// Only a track that cannot be played at all is skipped; a dropped connection or a server hiccup says nothing about it.
@@ -787,9 +872,13 @@ final class MusicService {
         guard let advance = pendingAdvance else { return }
         pendingAdvance = nil
         switch advance {
-        case .ended: break
-        case .skipped: stopPlayback()
-        case .failed: endQueue()
+        case .ended:
+            // The track is still the finished one unless the listener replayed it meanwhile.
+            if player.hasEnded { _ = wrapAround() }
+        case .skipped:
+            if !wrapAround() { stopPlayback() }
+        case .failed:
+            endQueue()
         }
     }
 
@@ -806,8 +895,16 @@ final class MusicService {
     /// Asks for the next page of the radio or of the playlist page when the queue is running low.
     /// One fetch at a time. `emptyPages` counts pages in a row that added nothing after de-duplication.
     private func topUpQueue(emptyPages: Int = 0) {
-        guard radioTask == nil, emptyPages < Self.maxEmptyPages, queue.needsMore,
-              let source = queue.source, let continuation = queue.continuation else { return }
+        guard radioTask == nil, emptyPages < Self.maxEmptyPages else { return }
+        // Autoplay: a playlist or album on its last track carries on as the radio of that track, unless the
+        // queue loops. The radio is asked for while the last track plays, so the hand-over is gapless.
+        if loopMode == .off, isAutoplayOn, let seed = queue.adoptRadioOfLastTrack() {
+            startRadio(seed: seed)
+            return
+        }
+        // Without Autoplay a radio queue stops at the tracks it has; a page still loads its own later pages.
+        if case .radio = queue.source, !isAutoplayOn { return }
+        guard queue.needsMore, let source = queue.source, let continuation = queue.continuation else { return }
         let generation = radioGeneration
         radioTask = Task { [weak self] in
             await self?.fetchQueuePage(source: source, continuation: continuation, generation: generation, emptyPages: emptyPages)
@@ -847,7 +944,7 @@ final class MusicService {
         radioTask = nil
         // Pages overlap heavily: one that adds nothing still has a continuation, so ask again at once,
         // up to `maxEmptyPages` in a row. The next track change starts a fresh attempt.
-        let added = queue.append(page.tracks, continuation: page.continuation)
+        let added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator)
         if added > 0, resumePendingAdvance() { return }
         topUpQueue(emptyPages: added > 0 ? 0 : emptyPages + 1)
         if radioTask == nil { settlePendingAdvance() }
@@ -872,8 +969,10 @@ final class MusicService {
 
     private func prefetchNextIfNeeded(position: TimeInterval) {
         let duration = player.duration
+        // Loop song replays the same track, so that is the stream worth resolving ahead.
+        let target = loopMode == .song ? queue.current : queue.upcoming.first
         guard duration > Self.prefetchLead * 2, duration - position <= Self.prefetchLead,
-              let next = queue.upcoming.first, prefetchAttempt != next.videoId else { return }
+              let next = target, prefetchAttempt != next.videoId else { return }
         prefetchAttempt = next.videoId
         prefetchTask = Task { [weak self, backend] in
             guard let stream = try? await backend.resolve(videoId: next.videoId) else { return }

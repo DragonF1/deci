@@ -61,6 +61,11 @@ nonisolated struct AppSettings: Codable, Equatable {
     var chromeIncognitoEnabled: Bool = false       // Same, for tabs in incognito windows (off by default)
     var chromeYTMusicAutoSwitch: Bool = true       // Click "Switch" when YouTube Music asks to listen on this device
 
+    // Music playback
+    var musicShuffle: Bool = false                 // Shuffle the Music tab's queue
+    var musicLoopMode: MusicLoopMode = .off        // Off, loop the playlist or loop the song
+    var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
+
     init() {}
 
     mutating func setUnifiedLoudnessEnabled(_ enabled: Bool) {
@@ -86,6 +91,22 @@ nonisolated struct AppSettings: Codable, Equatable {
         chromeTabsEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeTabsEnabled) ?? true
         chromeIncognitoEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeIncognitoEnabled) ?? false
         chromeYTMusicAutoSwitch = try c.decodeIfPresent(Bool.self, forKey: .chromeYTMusicAutoSwitch) ?? true
+        musicShuffle = try c.decodeIfPresent(Bool.self, forKey: .musicShuffle) ?? false
+        // A loop mode this build does not know must not cost the listener the rest of their settings.
+        musicLoopMode = (try? c.decodeIfPresent(MusicLoopMode.self, forKey: .musicLoopMode)) ?? .off
+        musicAutoplay = try c.decodeIfPresent(Bool.self, forKey: .musicAutoplay) ?? true
+    }
+}
+
+extension AppSettings {
+    /// The three Music playback options as the player takes them.
+    var musicPlayback: MusicPlaybackPreferences {
+        get { MusicPlaybackPreferences(shuffle: musicShuffle, loop: musicLoopMode, autoplay: musicAutoplay) }
+        set {
+            musicShuffle = newValue.shuffle
+            musicLoopMode = newValue.loop
+            musicAutoplay = newValue.autoplay
+        }
     }
 }
 
