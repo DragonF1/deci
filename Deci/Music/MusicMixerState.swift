@@ -50,7 +50,7 @@ final class EngineMusicEnvironment: MusicMixerEnvironment {
     var autoEQPreampEnabled: Bool { engine.settingsManager.autoEQPreampEnabled }
 }
 
-/// The YouTube Music row's model: volume, mute, boost, EQ and output device, saved under one settings key, pushed into
+/// The music player row's model (the row shows as Deci in the Mixer tab): volume, mute, boost, EQ and output device, saved under one settings key, pushed into
 /// the music `MusicDSPChain` and the playback engine, and kept right when devices come and go.
 ///
 /// It exists before the music service does (the service is created lazily when the Music tab opens): settings load at

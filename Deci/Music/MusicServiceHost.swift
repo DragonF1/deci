@@ -18,7 +18,7 @@ final class MusicServiceHost {
         didSet { service?.lyrics.setPopupVisible(isPopupVisible) }
     }
 
-    /// The YouTube Music row's model in the Mixer tab. Lives here, not in the service, so the row's settings load at
+    /// The music player row's model in the Mixer tab (shown there as Deci). Lives here, not in the service, so the row's settings load at
     /// launch and the service stays lazy. nil in tests that do not care about audio.
     let mixer: MusicMixerState?
 
@@ -63,7 +63,7 @@ final class MusicServiceHost {
         return MusicPlayer(engine: engine)
     }
 
-    /// A track is loaded in the player, playing or paused, so the Mixer tab shows the YouTube Music row. False before
+    /// A track is loaded in the player, playing or paused, so the Mixer tab shows the music player row (as Deci). False before
     /// the Music tab was ever used: reading it never creates the service.
     var hasLoadedTrack: Bool {
         guard let player = service?.player else { return false }

@@ -215,6 +215,10 @@ struct MenuBarPopupView: View {
         .onChange(of: audioEngine.apps) { _, _ in
             syncNavOrder()
         }
+        .onChange(of: showsMusicRow) { _, shown in
+            // The Deci row's EQ panel closes with its row, so it does not reopen with the next song.
+            expandedRowID = EQAccordion.afterListChange(expandedRowID, musicPlayerShown: shown)
+        }
         .onChange(of: isEditingDevicePriority) { _, editing in
             if editing {
                 selectedRow = nil
@@ -376,7 +380,7 @@ struct MenuBarPopupView: View {
         } else if isEditingDevicePriority {
             toggleDevicePriorityEdit()
         } else if expandedRowID != nil {
-            // Collapse any expanded app EQ panel
+            // Collapse any expanded EQ panel (an app's, or the Deci music player row's)
             withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                 expandedRowID = nil
             }
@@ -1006,7 +1010,7 @@ struct MenuBarPopupView: View {
                     }
 
                 case .musicPlayer:
-                    musicPlayerRow(userPresets: presets)
+                    musicPlayerRow(userPresets: presets, scrollProxy: scrollProxy)
                 }
             }
 
@@ -1014,7 +1018,7 @@ struct MenuBarPopupView: View {
                 VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
                     SectionHeader(title: "Chrome Tabs")
                         .padding(.horizontal, DesignTokens.Spacing.sm)
-                        .padding(.top, audioEngine.displayableApps.isEmpty && !showsMusicRow ? 0 : DesignTokens.Spacing.sm)
+                        .padding(.top, entries.isEmpty ? 0 : DesignTokens.Spacing.sm)
                         .padding(.bottom, 2)
 
                     ForEach(chromeTabs) { tab in
@@ -1042,9 +1046,10 @@ struct MenuBarPopupView: View {
     }
 
     /// Deci's music player as one more row of the apps list. It has no pin, hide or edit-mode ordering, so edit mode
-    /// leaves it out (`appEditModeContent` lists only apps that can be pinned or hidden).
+    /// leaves it out (`appEditModeContent` lists only apps that can be pinned or hidden). Its EQ panel is part of the
+    /// same accordion as every app's: one open at a time, Escape closes it, and opening it scrolls it into view.
     @ViewBuilder
-    private func musicPlayerRow(userPresets: [UserEQPreset]) -> some View {
+    private func musicPlayerRow(userPresets: [UserEQPreset], scrollProxy: ScrollViewProxy) -> some View {
         if let mixer = musicHost.mixer {
             MusicMixerRow(
                 mixer: mixer,
@@ -1061,8 +1066,13 @@ struct MenuBarPopupView: View {
                 },
                 onRenameUserPreset: { id, newName in
                     audioEngine.settingsManager.updateUserPreset(id: id, name: newName)
+                },
+                isEQExpanded: expandedRowID == MixerListEntry.musicPlayerID,
+                onEQToggle: {
+                    toggleEQ(for: MixerListEntry.musicPlayerID, scrollProxy: scrollProxy)
                 }
             )
+            .id(PopupKeyboardNavModel.RowID.app(persistenceID: MixerListEntry.musicPlayerID))
         }
     }
 
@@ -1205,18 +1215,14 @@ struct MenuBarPopupView: View {
         .id(PopupKeyboardNavModel.RowID.app(persistenceID: displayableApp.id))
     }
 
-    /// Toggle EQ panel for an app (shared between active and inactive rows)
+    /// Toggle EQ panel for an app (shared between active, inactive and Deci's music player row)
     private func toggleEQ(for appID: String, scrollProxy: ScrollViewProxy) {
         guard !isEQAnimating else { return }
         isEQAnimating = true
 
         let isExpanding = expandedRowID != appID
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-            if expandedRowID == appID {
-                expandedRowID = nil
-            } else {
-                expandedRowID = appID
-            }
+            expandedRowID = EQAccordion.toggled(expandedRowID, tapping: appID)
             if isExpanding {
                 scrollProxy.scrollTo(PopupKeyboardNavModel.RowID.app(persistenceID: appID), anchor: .top)
             }

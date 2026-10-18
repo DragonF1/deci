@@ -277,7 +277,7 @@ struct DeciApp: App {
         _menuBarPopupController = State(initialValue: popupController)
         _shortcutsRegistry = State(initialValue: registry)
         _resolver = State(initialValue: resolver)
-        // The YouTube Music row plays inside Deci, where the process taps never reach: the engine tells this model about
+        // The music player row (shown as Deci) plays inside Deci, where the process taps never reach: the engine tells this model about
         // the global audio switches and device events instead, and the model shapes the player's own audio.
         let mixer = MusicMixerState(settings: settings, environment: EngineMusicEnvironment(engine: engine))
         engine.inProcessAudio = mixer

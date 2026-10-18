@@ -106,7 +106,7 @@ final class MusicService {
     @ObservationIgnored private let now: () -> Date
     /// When the listener last touched a control: the `lact` of every watchtime ping.
     @ObservationIgnored private var lastActivity: Date
-    /// The player volume (0 to 100) and mute the watchtime pings report: the Mixer tab's YouTube Music row.
+    /// The player volume (0 to 100) and mute the watchtime pings report: the Mixer tab's music player row (shown as Deci).
     @ObservationIgnored private let listenerLevel: @MainActor () -> (volume: Int, muted: Bool)
     /// Told the three playback options whenever one changes, so the app can keep them in settings.
     @ObservationIgnored private let savePreferences: @MainActor (MusicPlaybackPreferences) -> Void

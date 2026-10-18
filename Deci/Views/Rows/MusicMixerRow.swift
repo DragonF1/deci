@@ -23,7 +23,11 @@ struct MusicMixerRow: View {
     let onDeleteUserPreset: (UUID) -> Void
     let onRenameUserPreset: (UUID, String) -> Void
 
-    @State private var isEQExpanded: Bool
+    /// Whether the EQ panel is open. Owned by the popup's accordion, like every app row's, so only one panel is open at
+    /// a time and Escape closes it.
+    let isEQExpanded: Bool
+    let onEQToggle: () -> Void
+
     @State private var displayLevel: Float = 0
     @State private var levelTimer: Timer?
 
@@ -39,11 +43,12 @@ struct MusicMixerRow: View {
         onSavePreset: @escaping (String, EQSettings) -> Void = { _, _ in },
         onDeleteUserPreset: @escaping (UUID) -> Void = { _ in },
         onRenameUserPreset: @escaping (UUID, String) -> Void = { _, _ in },
-        isEQExpanded: Bool = false
+        isEQExpanded: Bool = false,
+        onEQToggle: @escaping () -> Void = {}
     ) {
         self.mixer = mixer
         self.name = name
-        self.icon = icon ?? MusicPlayerIdentity.icon()
+        self.icon = icon ?? MusicPlayerIdentity.icon
         self.devices = devices
         self.deviceIconOverrides = deviceIconOverrides
         self.defaultDeviceUID = defaultDeviceUID
@@ -52,7 +57,8 @@ struct MusicMixerRow: View {
         self.onSavePreset = onSavePreset
         self.onDeleteUserPreset = onDeleteUserPreset
         self.onRenameUserPreset = onRenameUserPreset
-        _isEQExpanded = State(initialValue: isEQExpanded)
+        self.isEQExpanded = isEQExpanded
+        self.onEQToggle = onEQToggle
     }
 
     /// The device the music really comes out of: the chosen one while connected, otherwise the default output.
@@ -104,7 +110,7 @@ struct MusicMixerRow: View {
                     onDevicesSelected: { _ in },
                     onDeviceModeChange: { _ in },
                     onSelectFollowDefault: { mixer.followDefaultDevice() },
-                    onEQToggle: { isEQExpanded.toggle() }
+                    onEQToggle: onEQToggle
                 )
             }
             .frame(height: DesignTokens.Dimensions.rowContentHeight)
@@ -136,7 +142,8 @@ struct MusicMixerRow: View {
         }
     }
 
-    /// The same 24 pt slot an app icon gets in `AppRow`. Not a button: there is nothing to open, the popover is Deci.
+    /// The same 24 pt slot an app icon gets in `AppRow`. Not a button (there is nothing to open, the popover is Deci), and
+    /// hidden from VoiceOver: the name beside it already says "Deci".
     private var iconImage: some View {
         Image(nsImage: icon)
             .resizable()
@@ -145,7 +152,7 @@ struct MusicMixerRow: View {
                 width: DesignTokens.Dimensions.rowContentHeight - 4,
                 height: DesignTokens.Dimensions.rowContentHeight - 4
             )
-            .accessibilityLabel(name)
+            .accessibilityHidden(true)
     }
 
     // MARK: - Level polling

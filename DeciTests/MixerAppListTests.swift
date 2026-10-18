@@ -55,21 +55,22 @@ struct MixerAppListTests {
     @Test("the music player wears the icon it is handed: Deci's own application icon")
     func playerIconIsTheApplicationIcon() {
         let appIcon = NSImage(size: NSSize(width: 64, height: 64))
-        #expect(MusicPlayerIdentity.icon(applicationIcon: appIcon) === appIcon)
+        #expect(MusicPlayerIdentity.resolveIcon(applicationIcon: appIcon) === appIcon)
     }
 
     @Test("without an application icon the player still gets a real image")
     func playerIconFallback() {
-        let fallback = MusicPlayerIdentity.icon(applicationIcon: nil)
+        let fallback = MusicPlayerIdentity.resolveIcon(applicationIcon: nil)
         #expect(fallback.size.width > 0)
         #expect(fallback.size.height > 0)
     }
 
-    @Test("by default the icon comes from the running app")
-    func playerIconDefaultsToTheRunningApp() {
-        let icon = MusicPlayerIdentity.icon()
+    @Test("the icon comes from the running app, and is resolved once rather than on every body pass")
+    func playerIconIsCached() {
+        let icon = MusicPlayerIdentity.icon
         #expect(icon.size.width > 0)
         #expect(icon.size.height > 0)
+        #expect(MusicPlayerIdentity.icon === icon, "the same image every time, not a fresh one per row")
     }
 
     // MARK: - Where the row lands
@@ -185,5 +186,46 @@ struct MixerAppListTests {
         // "App 00000" through "App 09999" all sort before "Deci".
         #expect(result.last?.isMusicPlayer == true)
         #expect(elapsed < .seconds(2))
+    }
+
+    // MARK: - The EQ accordion
+
+    @Test("opening the Deci row's EQ opens it, and tapping it again closes it")
+    func accordionOpensAndClosesDeci() {
+        let id = MixerListEntry.musicPlayerID
+        #expect(EQAccordion.toggled(nil, tapping: id) == id)
+        #expect(EQAccordion.toggled(id, tapping: id) == nil)
+    }
+
+    @Test("opening an app's EQ closes Deci's, and the other way round: one panel at a time")
+    func accordionSwaps() {
+        let id = MixerListEntry.musicPlayerID
+        #expect(EQAccordion.toggled(id, tapping: "com.test.Arc") == "com.test.Arc")
+        #expect(EQAccordion.toggled("com.test.Arc", tapping: id) == id)
+        #expect(EQAccordion.toggled("com.test.Arc", tapping: "com.test.Arc") == nil)
+    }
+
+    @Test("Deci's open EQ is forgotten when its row goes away, so it does not reopen with the next song")
+    func accordionForgetsAGoneDeciRow() {
+        let id = MixerListEntry.musicPlayerID
+        #expect(EQAccordion.afterListChange(id, musicPlayerShown: false) == nil)
+        #expect(EQAccordion.afterListChange(id, musicPlayerShown: true) == id)
+    }
+
+    @Test("a list change never touches an app's open EQ or an empty accordion")
+    func accordionLeavesAppsAlone() {
+        #expect(EQAccordion.afterListChange("com.test.Arc", musicPlayerShown: false) == "com.test.Arc")
+        #expect(EQAccordion.afterListChange("com.test.Arc", musicPlayerShown: true) == "com.test.Arc")
+        #expect(EQAccordion.afterListChange(nil, musicPlayerShown: false) == nil)
+        #expect(EQAccordion.afterListChange(nil, musicPlayerShown: true) == nil)
+    }
+
+    @Test("the accordion handles odd ids: empty, Unicode, emoji")
+    func accordionOddIDs() {
+        for id in ["", "name:日本語", "name:🎵 Player"] {
+            #expect(EQAccordion.toggled(nil, tapping: id) == id)
+            #expect(EQAccordion.toggled(id, tapping: id) == nil)
+            #expect(EQAccordion.toggled(id, tapping: MixerListEntry.musicPlayerID) == MixerListEntry.musicPlayerID)
+        }
     }
 }

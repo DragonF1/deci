@@ -6,10 +6,14 @@ import AppKit
 enum MusicPlayerIdentity {
     static let name = "Deci"
 
-    /// Deci's application icon, the one About and the Dock show. `applicationIcon` is injectable for tests; the
-    /// fallback (no running `NSApp`, or an app with no icon set) is whatever Finder shows for this bundle.
+    /// Deci's application icon, the one About and the Dock show. Resolved once, on first use, so a row rebuilt on every
+    /// parent body pass does not ask AppKit for it again.
     @MainActor
-    static func icon(applicationIcon: NSImage? = NSApp?.applicationIconImage) -> NSImage {
+    static let icon: NSImage = resolveIcon(applicationIcon: NSApp?.applicationIconImage)
+
+    /// The seam behind `icon`: the running app's icon when there is one, otherwise whatever Finder shows for this bundle.
+    @MainActor
+    static func resolveIcon(applicationIcon: NSImage?) -> NSImage {
         applicationIcon ?? NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
     }
 }
@@ -67,5 +71,20 @@ enum MixerAppList {
             return !pinned
                 && app.displayName.localizedCaseInsensitiveCompare(MusicPlayerIdentity.name) == .orderedDescending
         } ?? apps.count
+    }
+}
+
+/// The popup's EQ accordion: at most one row's EQ panel is open, named by row id. Apps and Deci's own music player row
+/// share it, so opening one closes the other, and Escape (which clears the id) closes whichever is open.
+enum EQAccordion {
+    /// The open row after `id`'s EQ button is tapped: closed if it was the open one, otherwise the open one swaps to it.
+    static func toggled(_ open: String?, tapping id: String) -> String? {
+        open == id ? nil : id
+    }
+
+    /// The open row after the list changed. The music player row comes and goes with the loaded song; when it goes, its
+    /// open panel must not wait around to reopen with the next song.
+    static func afterListChange(_ open: String?, musicPlayerShown: Bool) -> String? {
+        open == MixerListEntry.musicPlayerID && !musicPlayerShown ? nil : open
     }
 }
