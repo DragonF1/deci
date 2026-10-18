@@ -36,6 +36,8 @@ final class MusicService {
     let player: MusicPlayer
     /// What plays next: the tapped track, then the radio's tracks as they arrive.
     private(set) var queue = MusicQueue()
+    /// Home, Library and the pages opened from them.
+    let browse: MusicBrowseStore
     var canGoNext: Bool { queue.hasNext }
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
@@ -114,6 +116,7 @@ final class MusicService {
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
+        self.browse = MusicBrowseStore(backend: backend)
         self.player = player
         self.presentSignIn = presentSignIn
         self.presentChannelPicker = presentChannelPicker
@@ -325,6 +328,13 @@ final class MusicService {
         failureStreak = 0
         startRadio(seed: track.videoId)
         begin(track)
+    }
+
+    /// Plays `track` with the rest of `page`'s songs queued after it in page order, with no radio.
+    /// More tracks of a long playlist are fetched as the queue runs low; the queue ends with the page.
+    func play(_ track: MusicTrack, in page: MusicBrowsePage) {
+        // Phase 3 contract stub: the backend work replaces this with a page-ordered queue.
+        play(track)
     }
 
     /// Play/pause for the transport and media keys. A track whose stream never resolved has nothing

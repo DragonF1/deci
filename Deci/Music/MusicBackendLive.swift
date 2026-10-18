@@ -59,6 +59,25 @@ actor MusicBackendLive: MusicBackend {
         try await client.moreRadio(continuation: continuation)
     }
 
+    // Phase 3 contract stubs: the backend work replaces these with InnerTubeClient calls.
+    func home() async throws -> MusicHomePage { throw MusicError.parse("home not implemented") }
+
+    func moreHome(continuation: String) async throws -> MusicHomePage { throw MusicError.parse("home not implemented") }
+
+    func library(_ section: MusicLibrarySection) async throws -> MusicCollectionList {
+        throw MusicError.parse("library not implemented")
+    }
+
+    func moreLibrary(_ section: MusicLibrarySection, continuation: String) async throws -> MusicCollectionList {
+        throw MusicError.parse("library not implemented")
+    }
+
+    func page(browseId: String) async throws -> MusicBrowsePage { throw MusicError.parse("page not implemented") }
+
+    func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage {
+        throw MusicError.parse("page not implemented")
+    }
+
     func reportHistory(_ ping: HistoryPing) async throws -> Int {
         try await client.reportHistory(ping)
     }

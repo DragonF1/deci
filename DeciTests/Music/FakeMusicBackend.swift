@@ -121,6 +121,27 @@ actor FakeMusicBackend: MusicBackend {
 
     func sessionCookies() async -> [StoredCookie] { currentCookies }
 
+    // Phase 3 contract stubs: the backend work replaces these with configurable fakes.
+    func home() async throws -> MusicHomePage { MusicHomePage(shelves: [], continuation: nil) }
+
+    func moreHome(continuation: String) async throws -> MusicHomePage { MusicHomePage(shelves: [], continuation: nil) }
+
+    func library(_ section: MusicLibrarySection) async throws -> MusicCollectionList {
+        MusicCollectionList(items: [], continuation: nil)
+    }
+
+    func moreLibrary(_ section: MusicLibrarySection, continuation: String) async throws -> MusicCollectionList {
+        MusicCollectionList(items: [], continuation: nil)
+    }
+
+    func page(browseId: String) async throws -> MusicBrowsePage {
+        MusicBrowsePage(browseId: browseId, title: "", subtitle: nil, thumbnailURL: nil, tracks: [], continuation: nil, shelves: [])
+    }
+
+    func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage {
+        MusicQueuePage(tracks: [], continuation: nil)
+    }
+
     func search(_ query: String) async throws -> [Deci.MusicTrack] {
         searchedQueries.append(query)
         if let gate = searchGates[query] { await gate.wait() }

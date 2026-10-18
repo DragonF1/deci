@@ -113,6 +113,90 @@ struct MusicQueuePage: Sendable, Equatable {
     let continuation: String?
 }
 
+/// An album, playlist (mixes included) or artist, as a tile on Home or a row in Library.
+/// Opening it browses `browseId`.
+struct MusicCollection: Sendable, Hashable, Identifiable {
+    enum Kind: Sendable, Hashable {
+        /// browseId "VL<playlistId>". A mix tile that only has a playlistId is stored as "VL" + it.
+        case playlist
+        /// browseId "MPRE...".
+        case album
+        /// browseId "UC...".
+        case artist
+    }
+
+    let browseId: String
+    let kind: Kind
+    let title: String
+    /// YouTube's own second line, e.g. "Album • Daft Punk • 2013" or "Playlist • 50 songs".
+    let subtitle: String
+    let thumbnailURL: URL?
+
+    var id: String { browseId }
+}
+
+/// One tile or row on a shelf: a song, or something that opens a page.
+enum MusicShelfItem: Sendable, Hashable, Identifiable {
+    case track(MusicTrack)
+    case collection(MusicCollection)
+
+    var id: String {
+        switch self {
+        case .track(let track): "t:" + track.videoId
+        case .collection(let collection): "c:" + collection.browseId
+        }
+    }
+}
+
+/// A titled row of items: "Quick picks", "Listen again", "Mixed for you", an artist's "Albums".
+struct MusicShelf: Sendable, Hashable, Identifiable {
+    let title: String
+    let items: [MusicShelfItem]
+
+    var id: String { title + "|" + (items.first?.id ?? "") }
+}
+
+/// Home (browse FEmusic_home): shelves top to bottom, more on scroll.
+struct MusicHomePage: Sendable, Equatable {
+    let shelves: [MusicShelf]
+    /// Token for more shelves; nil when there are no more.
+    let continuation: String?
+}
+
+/// The library lists Deci shows. Liked songs are the "VLLM" playlist, opened with `page(browseId:)`.
+enum MusicLibrarySection: String, Sendable, Hashable, CaseIterable, Identifiable {
+    /// FEmusic_liked_playlists
+    case playlists
+    /// FEmusic_liked_albums
+    case albums
+    /// FEmusic_library_corpus_track_artists
+    case artists
+
+    var id: String { rawValue }
+}
+
+/// One page of a library list.
+struct MusicCollectionList: Sendable, Equatable {
+    let items: [MusicCollection]
+    let continuation: String?
+}
+
+/// A playlist, album or artist page.
+struct MusicBrowsePage: Sendable, Equatable {
+    let browseId: String
+    let title: String
+    /// e.g. "Album • 2013 • 13 songs", or an artist's subscriber line. Nil when the page has none.
+    let subtitle: String?
+    let thumbnailURL: URL?
+    /// The songs listed on the page: a playlist's or album's tracks, an artist's top songs.
+    /// Album tracks carry the album's artist and cover when the row itself has none.
+    let tracks: [MusicTrack]
+    /// Token for more tracks (long playlists); nil when there are no more.
+    let continuation: String?
+    /// Shelves under the songs (an artist's albums, singles, playlists); empty for playlists and albums.
+    let shelves: [MusicShelf]
+}
+
 enum MusicError: Error, Sendable, Equatable {
     case signedOut
     case http(Int)
@@ -141,6 +225,18 @@ protocol MusicBackend: Sendable {
     func radio(seedVideoId: String) async throws -> MusicQueuePage
     /// The page after `continuation` of the radio seeded by `seedVideoId`.
     func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage
+    /// Home shelves (browse FEmusic_home).
+    func home() async throws -> MusicHomePage
+    /// The shelves after `continuation` on Home.
+    func moreHome(continuation: String) async throws -> MusicHomePage
+    /// First page of a library list. Throws `.signedOut` when YouTube says the session is gone.
+    func library(_ section: MusicLibrarySection) async throws -> MusicCollectionList
+    /// The page after `continuation` of a library list.
+    func moreLibrary(_ section: MusicLibrarySection, continuation: String) async throws -> MusicCollectionList
+    /// A playlist ("VL..."), album ("MPRE...") or artist ("UC...") page.
+    func page(browseId: String) async throws -> MusicBrowsePage
+    /// The tracks after `continuation` on a playlist page.
+    func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage
     /// Sends one history ping and returns the HTTP status YouTube answered with (200 or 204 when
     /// it took the ping). Throws on any other status, when signed out, or when the URL is not YouTube's.
     func reportHistory(_ ping: HistoryPing) async throws -> Int
