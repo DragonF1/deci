@@ -31,6 +31,12 @@ struct MenuBarPopupView: View {
     /// wired in `FineTuneApp.init`.
     let mediaKeyMonitor: MediaKeyMonitor
 
+    /// Owns the Music tab's service; the heavy parts are built when the tab is first opened.
+    let musicHost: MusicServiceHost
+
+    /// Which top-level tab the popup shows. Survives the popup closing and reopening.
+    @State private var popupTab: PopupTab = .mixer
+
     /// Memoized sorted output devices - only recomputed when device list or default changes
     @State private var sortedDevices: [AudioDevice] = []
 
@@ -104,40 +110,56 @@ struct MenuBarPopupView: View {
 
     // MARK: - Resolved Dimensions
 
+    /// The Music tab has a fixed body height, capped by the popup size setting.
+    private static let musicTabHeight: CGFloat = 520
+
     private var popupDimensions: PopupDimensions {
         audioEngine.settingsManager.appSettings.popupSize.dimensions
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
-            HStack(alignment: .top) {
-                deviceTabsHeader
+            HStack(alignment: .center) {
+                PopupTabSwitch(selection: $popupTab)
                 Spacer()
-                if isEditingDevicePriority {
-                    Text("Drag or type a number to set priority")
-                        .font(.system(size: 11))
-                        .foregroundStyle(DesignTokens.Colors.textSecondary)
-                } else {
-                    defaultDevicesStatus
+                if popupTab == .music {
+                    settingsButton
                 }
-                Spacer()
-                editPriorityButton
-                settingsButton
             }
-            .padding(.bottom, DesignTokens.Spacing.xs)
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    mainContent(scrollProxy: proxy)
+            switch popupTab {
+            case .mixer:
+                HStack(alignment: .top) {
+                    deviceTabsHeader
+                    Spacer()
+                    if isEditingDevicePriority {
+                        Text("Drag or type a number to set priority")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DesignTokens.Colors.textSecondary)
+                    } else {
+                        defaultDevicesStatus
+                    }
+                    Spacer()
+                    editPriorityButton
+                    settingsButton
                 }
-                .scrollIndicators(.never)
-                .frame(maxHeight: popupDimensions.maxContentHeight)
-                .onChange(of: selectedRow) { _, newFocus in
-                    guard let newFocus else { return }
-                    withAnimation(DesignTokens.Animation.hover) {
-                        proxy.scrollTo(newFocus, anchor: .center)
+                .padding(.bottom, DesignTokens.Spacing.xs)
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        mainContent(scrollProxy: proxy)
+                    }
+                    .scrollIndicators(.never)
+                    .frame(maxHeight: popupDimensions.maxContentHeight)
+                    .onChange(of: selectedRow) { _, newFocus in
+                        guard let newFocus else { return }
+                        withAnimation(DesignTokens.Animation.hover) {
+                            proxy.scrollTo(newFocus, anchor: .center)
+                        }
                     }
                 }
+            case .music:
+                MusicTabView(host: musicHost, height: min(popupDimensions.maxContentHeight, Self.musicTabHeight))
             }
         }
         .padding(popupDimensions.contentPadding)
@@ -181,6 +203,14 @@ struct MenuBarPopupView: View {
                 selectedRow = navModel.defaultFocus(defaultOutputUID: currentDefaultDeviceUID())
             }
         }
+        .onChange(of: popupTab) { _, tab in
+            exitEditModeSaving()
+            textEntry.buffer = nil
+            hasKeyboardEngaged = false
+            selectedRow = nil
+            anchorFocused = tab == .mixer
+            if tab == .music { musicHost.loadIfNeeded() }
+        }
         .onChange(of: audioEngine.apps) { _, _ in
             syncNavOrder()
         }
@@ -215,8 +245,8 @@ struct MenuBarPopupView: View {
             syncNavOrder()
             hasKeyboardEngaged = false
             selectedRow = nil
-            anchorFocused = true
             textEntry.buffer = nil
+            anchorFocused = popupTab == .mixer
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
             guard let window = notification.object as? NSWindow,
@@ -325,6 +355,11 @@ struct MenuBarPopupView: View {
         // in-progress keyboard entry is cancelled here too.
         if textEntry.buffer != nil {
             textEntry.buffer = nil
+            return
+        }
+        // The mixer's expanded panels are hidden on the Music tab, so Escape just dismisses.
+        if popupTab == .music {
+            NSApp.keyWindow?.resignKey()
             return
         }
         if expandedDeviceUID != nil {
@@ -1328,6 +1363,8 @@ struct MenuBarPopupView: View {
     }
 
     private func handleKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
+        // The Music tab has its own text field and buttons; mixer nav must not eat their keys.
+        if popupTab == .music { return .ignored }
         // `.onKeyPress` also fires for focused descendants; yield while a TextField is editing so its Return commits via onSubmit instead of activating a row.
         if NSApp.keyWindow?.firstResponder is NSTextView { return .ignored }
         // Keyboard entry mode: the popup owns every key so the anchor keeps first responder.

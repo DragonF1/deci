@@ -71,6 +71,7 @@ struct DeciApp: App {
     @State private var menuBarPopupController: MenuBarPopupController
     @State private var shortcutsRegistry: ShortcutsRegistry
     @State private var resolver: TargetAppResolver
+    @State private var musicHost: MusicServiceHost
     @StateObject private var updateManager = UpdateManager()
     @State private var showMenuBarExtra = true
 
@@ -113,7 +114,8 @@ struct DeciApp: App {
             mediaKeyStatus: mediaKeyStatus,
             popupVisibility: popupVisibility,
             hudController: hudController,
-            mediaKeyMonitor: mediaKeyMonitor
+            mediaKeyMonitor: mediaKeyMonitor,
+            musicHost: musicHost
         )
         .task {
             // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
@@ -275,6 +277,8 @@ struct DeciApp: App {
         _menuBarPopupController = State(initialValue: popupController)
         _shortcutsRegistry = State(initialValue: registry)
         _resolver = State(initialValue: resolver)
+        let music = MusicServiceHost()
+        _musicHost = State(initialValue: music)
 
         // Pass engine to AppDelegate
         _appDelegate.wrappedValue.audioEngine = engine
@@ -302,12 +306,13 @@ struct DeciApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, monitor, accessibilityService, hud, coordinator] _ in
+        ) { [settings, monitor, accessibilityService, hud, coordinator, music] _ in
             MainActor.assumeIsolated {
                 coordinator.stop()
                 monitor.stop()
                 accessibilityService.stop()
                 hud.shutdown()
+                music.shutdown()
                 settings.flushSync()
             }
         }
