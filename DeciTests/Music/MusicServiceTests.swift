@@ -17,6 +17,8 @@ private final class SignInProbe {
     var pickerSessions: [[StoredCookie]] = []
     var pickerCompletion: (@MainActor ([StoredCookie]?) -> Void)?
     var windowCloses = 0
+    /// How many times the open sign-in or picker window was asked to come to the front.
+    var windowRaises = 0
     /// Every value `onNativePlayingChange` reported, in order.
     var nativeChanges: [Bool] = []
 }
@@ -49,6 +51,7 @@ private struct Harness {
                 probe.pickerCompletion = completion
             },
             closeSignInWindow: { probe.windowCloses += 1 },
+            raiseSignInWindow: { probe.windowRaises += 1 },
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             refreshOnCreate: false
         )
@@ -91,6 +94,24 @@ private struct Harness {
     func startPlaying(_ track: MusicTrack = MusicSamples.track()) async {
         service.play(track)
         await service.playTask?.value
+    }
+
+    /// Plays a track whose stream has both ping URLs and listens past 30 s, with the playback ping held in flight
+    /// at the returned gate. Opening the gate lets the reporter go on to the watchtime ping, if it still means to.
+    func startPingInFlight() async -> MusicTestGate {
+        let gate = MusicTestGate()
+        await backend.setStream(MusicSamples.stream(
+            videoId: "abc",
+            trackingURL: URL(string: "https://music.example.test/stats/playback?ev=old"),
+            watchtimeURL: URL(string: "https://music.example.test/stats/watchtime?ev=old")
+        ))
+        await backend.setReportGate(gate)
+        await startPlaying(MusicSamples.track("abc"))
+        listen(seconds: 31)
+        let parked = await eventually { await backend.reportAttempts.count == 1 }
+        #expect(parked)
+        #expect(service.reportTask != nil)
+        return gate
     }
 
     /// Feeds the 0.5 s position ticks the player would report: a baseline at `start`, then `seconds` of playback.
@@ -237,6 +258,20 @@ struct MusicServiceAuthTests {
 
         #expect(await h.backend.reportAttempts.isEmpty)
     }
+
+    @Test("a sign-out while the history ping is in flight cancels it: no watchtime ping goes out afterwards")
+    func signOutCancelsPingInFlight() async {
+        let h = Harness()
+        let gate = await h.startPingInFlight()
+        let ping = h.service.reportTask
+
+        h.service.signOut()
+        #expect(h.service.reportTask == nil)
+        await gate.open()
+        await ping?.value
+
+        #expect(await h.backend.reportAttempts.map(\.kind) == [.playback])
+    }
 }
 
 
@@ -300,6 +335,37 @@ struct MusicServiceChannelSwitchTests {
         h.service.switchChannel()
         await h.service.channelSwitchTask?.value
         #expect(h.probe.pickerSessions.count == 1)
+    }
+
+    @Test("a second switchChannel while the picker is open brings the picker forward and opens no second one")
+    func secondSwitchRaisesPicker() async {
+        let h = await signedInHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(h.probe.windowRaises == 0)
+
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(h.probe.pickerSessions.count == 1)
+        #expect(h.probe.windowRaises == 1)
+        #expect(h.probe.windowCloses == 0)
+        #expect(h.service.isSwitchingChannel)
+
+        // The one picker still works: its pick is the one that lands.
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+        #expect(await h.backend.signInCookies == [Self.picked])
+        #expect(!h.service.isSwitchingChannel)
+    }
+
+    @Test("switchChannel while signed out raises nothing")
+    func signedOutSwitchRaisesNothing() async {
+        let h = Harness(signedIn: false)
+        await h.service.refreshAuth()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(h.probe.windowRaises == 0)
+        #expect(h.probe.pickerSessions.isEmpty)
     }
 
     @Test("a failed switch keeps the session and says so")
@@ -667,12 +733,82 @@ struct MusicServiceUseAnotherAccountTests {
         #expect(h.probe.presentCount == 1)
     }
 
+    @Test("opening the window does not also raise it")
+    func openingDoesNotRaise() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        #expect(h.probe.presentCount == 1)
+        #expect(h.probe.windowRaises == 0)
+    }
+
+    @Test("while adding, another call brings the open window forward and opens no second one")
+    func raisesTheOpenWindow() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        h.service.useAnotherAccount()
+        #expect(h.probe.presentCount == 1)
+        #expect(h.probe.windowRaises == 1)
+        h.service.useAnotherAccount()
+        #expect(h.probe.presentCount == 1)
+        #expect(h.probe.windowRaises == 2)
+
+        // The raise changes nothing about the add itself: the window's pick still swaps the session.
+        #expect(h.service.isAddingAccount)
+        #expect(h.probe.windowCloses == 0)
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        #expect(await h.backend.signInCookies == [Self.other])
+        #expect(!h.service.isAddingAccount)
+    }
+
+    @Test("switchChannel during an add does nothing and leaves the add window alone")
+    func switchChannelDuringAdd() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+
+        #expect(h.probe.pickerSessions.isEmpty)
+        #expect(!h.service.isSwitchingChannel)
+        #expect(h.service.isAddingAccount)
+        #expect(h.probe.windowCloses == 0)
+        #expect(h.probe.windowRaises == 0)
+
+        // The add is not cancelled: its pick still lands.
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        #expect(await h.backend.signInCookies == [Self.other])
+        #expect(h.service.authState == .signedIn)
+        #expect(!h.service.isAddingAccount)
+    }
+
+    @Test("useAnotherAccount during a channel switch does nothing and leaves the picker alone")
+    func addDuringChannelSwitch() async {
+        let h = await signedInHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.service.useAnotherAccount()
+
+        #expect(h.probe.presentCount == 0)
+        #expect(!h.service.isAddingAccount)
+        #expect(h.service.isSwitchingChannel)
+        #expect(h.probe.windowCloses == 0)
+        #expect(h.probe.windowRaises == 0)
+
+        // The switch is not cancelled: its pick still lands.
+        h.probe.pickerCompletion?(Self.other)
+        await h.service.channelSwitchTask?.value
+        #expect(await h.backend.signInCookies == [Self.other])
+        #expect(!h.service.isSwitchingChannel)
+    }
+
     @Test("it does nothing while signed out, signing in, or switching channel")
     func guards() async {
         let out = Harness(signedIn: false)
         await out.service.refreshAuth()
         out.service.useAnotherAccount()
         #expect(out.probe.presentCount == 0)
+        #expect(out.probe.windowRaises == 0)
         #expect(!out.service.isAddingAccount)
 
         let signingIn = Harness(signedIn: false)
@@ -727,6 +863,7 @@ struct MusicServiceUseAnotherAccountTests {
         h.probe.completion?(nil)
         h.service.useAnotherAccount()
         #expect(h.probe.presentCount == 2)
+        #expect(h.probe.windowRaises == 0)
         #expect(h.service.isAddingAccount)
     }
 
@@ -776,6 +913,40 @@ struct MusicServiceUseAnotherAccountTests {
         #expect(h.service.results.isEmpty)
         #expect(h.service.query.isEmpty)
         #expect(await h.backend.reportAttempts.isEmpty)
+    }
+
+    @Test("a swap while the history ping is in flight cancels it: the old account's watchtime ping never goes out under the new cookies")
+    func swapCancelsPingInFlight() async {
+        let h = Harness(signedIn: true)
+        await h.service.refreshAuth()
+        let gate = await h.startPingInFlight()
+        let ping = h.service.reportTask
+
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        #expect(h.service.reportTask == nil)
+        await gate.open()
+        await ping?.value
+
+        #expect(await h.backend.reportAttempts.map(\.kind) == [.playback])
+    }
+
+    @Test("a refused swap leaves the ping alone: the session it belongs to is still the one signed in")
+    func refusedSwapKeepsPing() async {
+        let h = Harness(signedIn: true)
+        await h.service.refreshAuth()
+        let gate = await h.startPingInFlight()
+        let ping = h.service.reportTask
+        await h.backend.setSignInError(MusicError.signedOut)
+
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        await gate.open()
+        await ping?.value
+
+        #expect(await h.backend.reportAttempts.map(\.kind) == [.playback, .watchtime])
     }
 
     @Test("the card's notice state resets for the new account")

@@ -186,16 +186,26 @@ struct MusicThumbnail: View {
             case .success(let image):
                 image.resizable().scaledToFill()
             default:
-                ZStack {
-                    DesignTokens.Colors.glassFillStrong
-                    Image(systemName: placeholder)
-                        .font(.system(size: size * 0.4))
-                        .foregroundStyle(DesignTokens.Colors.textTertiary)
-                }
+                MusicCoverPlaceholder(symbol: placeholder, size: size)
             }
         }
         .frame(width: size, height: size)
         .clipShape(MusicCoverShape(circular: circular))
+    }
+}
+
+/// What stands in for a cover or a photo that is still loading, failed, or does not exist.
+struct MusicCoverPlaceholder: View {
+    let symbol: String
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            DesignTokens.Colors.glassFillStrong
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.4))
+                .foregroundStyle(DesignTokens.Colors.textTertiary)
+        }
     }
 }
 

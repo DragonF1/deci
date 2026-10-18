@@ -22,6 +22,40 @@ struct MusicAccountCardContent: Equatable {
     }
 }
 
+/// How the card's action rows look, from which flow is running. Only one flow runs at a time:
+/// its row turns into "Show sign-in window" (it brings the open window forward, for one lost behind
+/// other windows) and the other row is off. Kept apart from the view so each combination is tested.
+struct MusicAccountCardRows: Equatable {
+    struct Row: Equatable {
+        let title: String
+        let symbol: String
+        let isEnabled: Bool
+    }
+
+    let switchChannel: Row
+    let useAnotherAccount: Row
+
+    init(isSwitchingChannel: Bool, isAddingAccount: Bool) {
+        switchChannel = Self.row(
+            "Switch channel", symbol: "arrow.triangle.2.circlepath", isRunning: isSwitchingChannel, otherIsRunning: isAddingAccount
+        )
+        useAnotherAccount = Self.row(
+            "Use another Google account", symbol: "person.badge.plus", isRunning: isAddingAccount, otherIsRunning: isSwitchingChannel
+        )
+    }
+
+    static let signOut = Row(title: "Sign out", symbol: "rectangle.portrait.and.arrow.right", isEnabled: true)
+    static let showWindowTitle = "Show sign-in window"
+    static let showWindowSymbol = "macwindow"
+
+    private static func row(_ title: String, symbol: String, isRunning: Bool, otherIsRunning: Bool) -> Row {
+        // Both at once cannot happen; if it did, neither row is the one to bring a window forward.
+        if otherIsRunning { return Row(title: title, symbol: symbol, isEnabled: false) }
+        if isRunning { return Row(title: showWindowTitle, symbol: showWindowSymbol, isEnabled: true) }
+        return Row(title: title, symbol: symbol, isEnabled: true)
+    }
+}
+
 /// The 20pt round avatar at the end of the search row. Opens and closes the account card.
 struct MusicAccountButton: View {
     let account: MusicAccount?
@@ -30,7 +64,7 @@ struct MusicAccountButton: View {
 
     var body: some View {
         Button(action: action) {
-            MusicThumbnail(url: account?.photoURL, size: Self.size, circular: true, placeholder: "person.fill")
+            MusicAccountAvatar(url: account?.photoURL, size: Self.size)
                 .overlay {
                     Circle()
                         .strokeBorder(
@@ -47,6 +81,31 @@ struct MusicAccountButton: View {
     }
 
     static let size: CGFloat = 20
+}
+
+/// The round account photo, in the search-row button and on the card. It loads through `MusicAvatarModel`,
+/// not `AsyncImage`: the photo URL must stay out of the shared URL cache. The person placeholder shows while
+/// it loads, when it fails and when there is no URL.
+struct MusicAccountAvatar: View {
+    let url: URL?
+    let size: CGFloat
+    @State private var model = MusicAvatarModel()
+
+    var body: some View {
+        Group {
+            if let image = model.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                MusicCoverPlaceholder(symbol: "person.fill", size: size)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        // Starts over when the URL changes (the old photo is dropped first) and is cancelled when the view leaves.
+        .task(id: url) { await model.load(url) }
+    }
 }
 
 /// The account card under the search row: who is signed in, and the three things to do about it.
@@ -66,14 +125,18 @@ struct MusicAccountCard: View {
         MusicAccountCardContent(account: account, isBrandChannel: isBrandChannel)
     }
 
+    private var rows: MusicAccountCardRows {
+        MusicAccountCardRows(isSwitchingChannel: isSwitchingChannel, isAddingAccount: isAddingAccount)
+    }
+
     var body: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
             identity
             Divider()
                 .overlay(DesignTokens.Colors.separator)
-            action("Switch channel", symbol: "arrow.triangle.2.circlepath", isDisabled: isSwitchingChannel, perform: onSwitchChannel)
-            action("Use another Google account", symbol: "person.badge.plus", isDisabled: isAddingAccount, perform: onUseAnotherAccount)
-            action("Sign out", symbol: "rectangle.portrait.and.arrow.right", isDisabled: false, perform: onSignOut)
+            action(rows.switchChannel, perform: onSwitchChannel)
+            action(rows.useAnotherAccount, perform: onUseAnotherAccount)
+            action(MusicAccountCardRows.signOut, perform: onSignOut)
         }
         .padding(DesignTokens.Spacing.sm)
         .frame(width: Self.width)
@@ -95,7 +158,7 @@ struct MusicAccountCard: View {
 
     private var identity: some View {
         HStack(spacing: DesignTokens.Spacing.sm) {
-            MusicThumbnail(url: account?.photoURL, size: 36, circular: true, placeholder: "person.fill")
+            MusicAccountAvatar(url: account?.photoURL, size: 36)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(content.title)
@@ -122,15 +185,15 @@ struct MusicAccountCard: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func action(_ title: String, symbol: String, isDisabled: Bool, perform: @escaping () -> Void) -> some View {
+    private func action(_ row: MusicAccountCardRows.Row, perform: @escaping () -> Void) -> some View {
         Button(action: perform) {
             HStack(spacing: DesignTokens.Spacing.sm) {
-                Image(systemName: symbol)
+                Image(systemName: row.symbol)
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.Colors.textSecondary)
                     .frame(width: 16)
                     .accessibilityHidden(true)
-                Text(title)
+                Text(row.title)
                     .font(DesignTokens.Typography.rowName)
                     .foregroundStyle(DesignTokens.Colors.textPrimary)
                     .lineLimit(1)
@@ -140,7 +203,7 @@ struct MusicAccountCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(isDisabled ? 0.5 : 1)
-        .disabled(isDisabled)
+        .opacity(row.isEnabled ? 1 : 0.5)
+        .disabled(!row.isEnabled)
     }
 }

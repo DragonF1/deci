@@ -271,6 +271,11 @@ private struct MusicSignedInView: View {
 
     private static let searchRowHeight: CGFloat = 28
 
+    /// A channel switch is already open, or the add-account window is: the service would ignore the press.
+    private var channelSwitchIsOff: Bool {
+        service.isSwitchingChannel || service.isAddingAccount
+    }
+
     /// Plays land in the History of the channel the session is on, and a fresh sign-in is on the
     /// account's own channel, which is rarely the one used in the browser.
     private var channelNotice: some View {
@@ -290,9 +295,9 @@ private struct MusicSignedInView: View {
             .buttonStyle(.plain)
             .font(DesignTokens.Typography.caption)
             .foregroundStyle(DesignTokens.Colors.accentPrimary)
-            .opacity(service.isSwitchingChannel ? 0.5 : 1)
+            .opacity(channelSwitchIsOff ? 0.5 : 1)
             .contentShape(Rectangle())
-            .disabled(service.isSwitchingChannel)
+            .disabled(channelSwitchIsOff)
             Button("Hide", systemImage: "xmark") {
                 service.channelNoticeDismissed = true
             }

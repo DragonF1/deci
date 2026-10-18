@@ -76,6 +76,13 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
         active?.finish(with: nil, closeWindow: true)
     }
 
+    /// Brings the open window back in front of everything, for a user who lost it behind other windows.
+    /// Nothing when none is open, or when the open one is already closing.
+    static func bringToFront() {
+        guard let active, !active.closing else { return }
+        active.show()
+    }
+
     private static func open(seed: [StoredCookie]?, completion: @escaping @MainActor ([StoredCookie]?) -> Void) {
         if let active, !active.closing {
             // Only a fresh sign-in window is reused: a picker is tied to the session it was seeded with.
@@ -131,6 +138,8 @@ final class MusicSignInWindowController: NSObject, NSWindowDelegate, WKNavigatio
             keyWindow.resignKey()
         }
         NSApp.activate(ignoringOtherApps: true)
+        // A window the user minimized stays in the Dock until asked back.
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         guard let seed else {
             if webView.url == nil { webView.load(URLRequest(url: Self.signInURL)) }

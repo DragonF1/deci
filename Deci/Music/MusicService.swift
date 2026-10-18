@@ -80,6 +80,7 @@ final class MusicService {
     @ObservationIgnored private let presentSignIn: SignInPresenter
     @ObservationIgnored private let presentChannelPicker: ChannelPickerPresenter
     @ObservationIgnored private let closeSignInWindow: @MainActor () -> Void
+    @ObservationIgnored private let raiseSignInWindow: @MainActor () -> Void
     @ObservationIgnored private let nowPlaying: NowPlayingController
     @ObservationIgnored private var session: Session?
     @ObservationIgnored private var direction = Direction.forward
@@ -123,6 +124,7 @@ final class MusicService {
             MusicSignInWindowController.presentChannelPicker(session: $0, completion: $1)
         },
         closeSignInWindow: @escaping @MainActor () -> Void = { MusicSignInWindowController.cancelActive() },
+        raiseSignInWindow: @escaping @MainActor () -> Void = { MusicSignInWindowController.bringToFront() },
         nowPlaying: NowPlayingController = NowPlayingController(),
         refreshOnCreate: Bool = true
     ) {
@@ -132,6 +134,7 @@ final class MusicService {
         self.presentSignIn = presentSignIn
         self.presentChannelPicker = presentChannelPicker
         self.closeSignInWindow = closeSignInWindow
+        self.raiseSignInWindow = raiseSignInWindow
         self.nowPlaying = nowPlaying
         player.onTick = { [weak self] position, isPlaying in
             self?.handlePlaybackTick(position: position, isPlaying: isPlaying)
@@ -206,6 +209,7 @@ final class MusicService {
 
     func signOut() {
         cancelWork()
+        cancelReport()
         endQueue()
         player.stop()
         session = nil
@@ -265,8 +269,14 @@ final class MusicService {
 
     /// Opens the Google sign-in window without signing out first. A closed window changes nothing;
     /// a sign-in replaces the session the way a first sign-in does (see `installNewSession`).
+    /// While that window is open, calling it again brings the window forward instead of opening another.
     func useAnotherAccount() {
-        guard authState == .signedIn, !isAddingAccount, !isSwitchingChannel else { return }
+        guard authState == .signedIn else { return }
+        if isAddingAccount {
+            raiseSignInWindow()
+            return
+        }
+        guard !isSwitchingChannel else { return }
         isAddingAccount = true
         lastError = nil
         addAccountGeneration += 1
@@ -303,6 +313,7 @@ final class MusicService {
     /// the pages loaded under it and its channel and account details, which are read again.
     private func installNewSession() {
         cancelWork()
+        cancelReport()
         stopPlayback()
         results = []
         query = ""
@@ -336,8 +347,14 @@ final class MusicService {
 
     /// Opens YouTube's channel picker on the current session, so History lands on the channel
     /// picked there. The session stays as it is when the window is closed without a pick.
+    /// While the picker is open, calling it again brings the picker forward instead of opening another;
+    /// during "use another account" it does nothing, so the two windows never replace each other.
     func switchChannel() {
-        guard authState == .signedIn, !isSwitchingChannel else { return }
+        guard authState == .signedIn, !isAddingAccount else { return }
+        if isSwitchingChannel {
+            raiseSignInWindow()
+            return
+        }
         isSwitchingChannel = true
         lastError = nil
         channelSwitchTask = Task { [weak self, backend] in
@@ -390,6 +407,13 @@ final class MusicService {
         endQueue()
         player.stop()
         session = nil
+    }
+
+    /// A history ping belongs to the session that earned it. After a sign-out or a swap it has nowhere to go:
+    /// its tracking URL is the old account's, and the backend would send it with the new account's cookies.
+    private func cancelReport() {
+        reportTask?.cancel()
+        reportTask = nil
     }
 
     private func cancelWork() {
@@ -852,10 +876,12 @@ final class MusicService {
     }
 
     /// Sends the playback ping, then the watchtime ping when there is a URL for it. The two are
-    /// independent: a failure of one never stops the other, and neither is retried.
+    /// independent: a failure of one never stops the other, and neither is retried. A cancel
+    /// (sign-out, account swap) is the exception: it ends both, and the watchtime ping is not sent.
     private func reportHistory(playback: URL, watchtime: URL?, cpn: String, mediaTime: TimeInterval) {
         reportTask = Task { [backend] in
             await Self.send(HistoryPing(kind: .playback, url: playback, cpn: cpn, mediaTime: mediaTime), through: backend)
+            guard !Task.isCancelled else { return }
             if let watchtime {
                 await Self.send(HistoryPing(kind: .watchtime, url: watchtime, cpn: cpn, mediaTime: mediaTime), through: backend)
             }
@@ -870,6 +896,8 @@ final class MusicService {
             let status = try await backend.reportHistory(ping)
             logger.notice("\(name, privacy: .public) ping ok \(status, privacy: .public)")
         } catch {
+            // A ping cut short by a sign-out or a swap is not a failure.
+            guard !isCancellation(error) else { return }
             logger.error("\(name, privacy: .public) ping failed: \(logDescription(of: error), privacy: .public)")
         }
     }

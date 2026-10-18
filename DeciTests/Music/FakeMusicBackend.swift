@@ -58,6 +58,7 @@ actor FakeMusicBackend: MusicBackend {
     private var resolveGates: [String: MusicTestGate] = [:]
     private var reportErrors: [HistoryPing.Kind: any Error] = [:]
     private var reportStatus = 204
+    private var reportGate: MusicTestGate?
     private var radioPages: [String: MusicQueuePage] = [:]
     private var radioErrors: [String: any Error] = [:]
     private var radioGates: [String: MusicTestGate] = [:]
@@ -129,6 +130,8 @@ actor FakeMusicBackend: MusicBackend {
         for each in kind.map({ [$0] }) ?? [.playback, .watchtime] { reportErrors[each] = error }
     }
     func setReportStatus(_ status: Int) { reportStatus = status }
+    /// Holds every history ping at the gate until it is opened, after it has been recorded: a ping in flight. Nil removes it.
+    func setReportGate(_ gate: MusicTestGate?) { reportGate = gate }
     func setRadio(seed: String, tracks: [Deci.MusicTrack], continuation: String? = nil) {
         radioPages[seed] = MusicQueuePage(tracks: tracks, continuation: continuation)
     }
@@ -302,6 +305,7 @@ actor FakeMusicBackend: MusicBackend {
 
     func reportHistory(_ ping: HistoryPing) async throws -> Int {
         reportAttempts.append(Report(kind: ping.kind, url: ping.url, cpn: ping.cpn, mediaTime: ping.mediaTime))
+        if let gate = reportGate { await gate.wait() }
         if let error = reportErrors[ping.kind] { throw error }
         return reportStatus
     }

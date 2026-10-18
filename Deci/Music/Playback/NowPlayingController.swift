@@ -139,8 +139,9 @@ final class NowPlayingController {
         if state?.track.thumbnailURL == url { publish() }
     }
 
-    /// Cover art comes without cookies or a shared cache: it is public and must not carry the account.
-    private nonisolated static let artworkSession: URLSession = {
+    /// Cover art and the account photo come without cookies or a shared cache: cover art is public and must not
+    /// carry the account, and a personal photo URL must never reach `URLCache.shared`'s store on disk.
+    nonisolated static let artworkSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
