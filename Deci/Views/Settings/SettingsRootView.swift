@@ -11,6 +11,8 @@ struct SettingsRootView: View {
     let mediaKeyMonitor: MediaKeyMonitor
     let shortcutsRegistry: ShortcutsRegistry
     @ObservedObject var updateManager: UpdateManager
+    /// Reset all settings, for the parts that live outside the audio engine (the Music tab).
+    var onSettingsReset: () -> Void = {}
 
     enum Section: String, Hashable, CaseIterable, Identifiable {
         case general, audio, shortcuts, about
@@ -26,6 +28,7 @@ struct SettingsRootView: View {
                 onResetAll: {
                     audioEngine.handleSettingsReset()
                     deviceVolumeMonitor.setSystemFollowDefault()
+                    onSettingsReset()
                 }
             )
             .tabItem { Label("General", systemImage: "gearshape") }

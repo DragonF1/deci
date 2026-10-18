@@ -30,6 +30,7 @@ struct MusicPageView: View {
                     MusicPageHeader(
                         page: page,
                         kind: collection.kind,
+                        pin: collection.kind == .artist ? pinControl(for: page) : nil,
                         sort: MusicBrowseStore.canSort(page.browseId) ? browse.sort(for: page.browseId) : nil,
                         isLoadingAll: browse.loadingAllTracks.contains(page.browseId),
                         sortLimit: browse.sortedSongLimit(page.browseId),
@@ -55,6 +56,16 @@ struct MusicPageView: View {
             }
             .scrollIndicators(.never)
         }
+    }
+
+    /// The tile keeps the photo of the collection that opened this page: the square or round avatar.
+    private func pinControl(for page: MusicBrowsePage) -> MusicPageHeader.PinControl {
+        let pins = service.pinnedArtists
+        return MusicPageHeader.PinControl(
+            isPinned: pins.isPinned(page.browseId),
+            isEnabled: pins.canToggle(page.browseId),
+            toggle: { pins.toggle(MusicPinnedArtist(page: page, opener: collection)) }
+        )
     }
 
     @ViewBuilder
@@ -119,10 +130,20 @@ struct MusicPageTopBar: View {
 }
 
 /// Cover, title, subtitle, a Play button that starts the page from its first song, Shuffle, and on a playlist
-/// a Sort menu.
+/// a Sort menu. An artist's page has Pin to Home beside Play instead.
 struct MusicPageHeader: View {
+    /// The Pin to Home button of an artist page.
+    struct PinControl {
+        let isPinned: Bool
+        /// Off while Home is full and this artist is not pinned yet.
+        let isEnabled: Bool
+        let toggle: () -> Void
+    }
+
     let page: MusicBrowsePage
     let kind: MusicCollection.Kind
+    /// The pin button; nil on a page that is not an artist's.
+    var pin: PinControl?
     /// The sort picked for a playlist; nil on a page that cannot be sorted.
     var sort: MusicPlaylistSort?
     /// The sort is loading the rest of the songs before it can order them.
@@ -157,23 +178,11 @@ struct MusicPageHeader: View {
                         .lineLimit(2)
                 }
 
-                if !page.tracks.isEmpty {
+                if !page.tracks.isEmpty || pin != nil {
                     HStack(spacing: DesignTokens.Spacing.xs) {
-                        Button(action: onPlay) {
-                            Label("Play", systemImage: "play.fill")
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.plain)
-                        .font(DesignTokens.Typography.pickerText)
-                        .foregroundStyle(DesignTokens.Colors.textPrimary)
-                        .glassButtonStyle()
-                        .contentShape(Capsule())
-                        .accessibilityLabel("Play \(page.title)")
-
-                        // An artist's page lists top songs, not a collection to shuffle through.
-                        if kind != .artist {
-                            Button(action: onShuffle) {
-                                Label("Shuffle", systemImage: "shuffle")
+                        if !page.tracks.isEmpty {
+                            Button(action: onPlay) {
+                                Label("Play", systemImage: "play.fill")
                                     .labelStyle(.titleAndIcon)
                             }
                             .buttonStyle(.plain)
@@ -181,17 +190,36 @@ struct MusicPageHeader: View {
                             .foregroundStyle(DesignTokens.Colors.textPrimary)
                             .glassButtonStyle()
                             .contentShape(Capsule())
-                            .accessibilityLabel("Shuffle \(page.title)")
+                            .accessibilityLabel("Play \(page.title)")
+
+                            // An artist's page lists top songs, not a collection to shuffle through.
+                            if kind != .artist {
+                                Button(action: onShuffle) {
+                                    Label("Shuffle", systemImage: "shuffle")
+                                        .labelStyle(.titleAndIcon)
+                                }
+                                .buttonStyle(.plain)
+                                .font(DesignTokens.Typography.pickerText)
+                                .foregroundStyle(DesignTokens.Colors.textPrimary)
+                                .glassButtonStyle()
+                                .contentShape(Capsule())
+                                .accessibilityLabel("Shuffle \(page.title)")
+                            }
+
+                            if let sort {
+                                sortMenu(sort)
+                            }
+
+                            if isLoadingAll {
+                                loadingAllState
+                            } else if let sortLimit {
+                                sortLimitNote(sortLimit)
+                            }
                         }
 
-                        if let sort {
-                            sortMenu(sort)
-                        }
-
-                        if isLoadingAll {
-                            loadingAllState
-                        } else if let sortLimit {
-                            sortLimitNote(sortLimit)
+                        // Beside Play, and on an artist with no songs to play, on its own.
+                        if let pin {
+                            pinButton(pin)
                         }
                     }
                     .padding(.top, DesignTokens.Spacing.xs)
@@ -201,6 +229,38 @@ struct MusicPageHeader: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, DesignTokens.Spacing.sm)
+    }
+
+    static func pinLabel(isPinned: Bool) -> String {
+        isPinned ? "Unpin from Home" : "Pin to Home"
+    }
+
+    static func pinSymbol(isPinned: Bool) -> String {
+        isPinned ? "pin.fill" : "pin"
+    }
+
+    /// What the button's tooltip says; when Home is full and the artist is not pinned, it says why the button is off.
+    static func pinHelp(isPinned: Bool, isEnabled: Bool) -> String {
+        if isPinned { return "Take this artist off Home." }
+        return isEnabled
+            ? "Show this artist at the top of Home."
+            : "Home can hold \(MusicPinnedArtists.limit) pinned artists. Unpin one to pin another."
+    }
+
+    private func pinButton(_ pin: PinControl) -> some View {
+        Button(action: pin.toggle) {
+            Label(Self.pinLabel(isPinned: pin.isPinned), systemImage: Self.pinSymbol(isPinned: pin.isPinned))
+                .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(.plain)
+        .font(DesignTokens.Typography.pickerText)
+        .foregroundStyle(DesignTokens.Colors.textPrimary)
+        .glassButtonStyle()
+        .contentShape(Capsule())
+        .opacity(pin.isEnabled ? 1 : 0.5)
+        .disabled(!pin.isEnabled)
+        .help(Self.pinHelp(isPinned: pin.isPinned, isEnabled: pin.isEnabled))
+        .accessibilityLabel(pin.isPinned ? "Unpin \(page.title) from Home" : "Pin \(page.title) to Home")
     }
 
     /// The options, with a mark on the picked one that shows its direction. Picking it again flips the direction.

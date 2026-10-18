@@ -66,6 +66,9 @@ nonisolated struct AppSettings: Codable, Equatable {
     var musicLoopMode: MusicLoopMode = .off        // Off, loop the playlist or loop the song
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
 
+    // Music Home
+    var musicPinnedArtists: [MusicPinnedArtist] = []  // Artists pinned to the top of Home, oldest first
+
     init() {}
 
     mutating func setUnifiedLoudnessEnabled(_ enabled: Bool) {
@@ -95,6 +98,10 @@ nonisolated struct AppSettings: Codable, Equatable {
         // A loop mode this build does not know must not cost the listener the rest of their settings.
         musicLoopMode = (try? c.decodeIfPresent(MusicLoopMode.self, forKey: .musicLoopMode)) ?? .off
         musicAutoplay = try c.decodeIfPresent(Bool.self, forKey: .musicAutoplay) ?? true
+        // Pins this build cannot read must not cost the listener the rest of their settings either, and one
+        // unreadable pin costs only itself.
+        musicPinnedArtists = (try? c.decodeIfPresent([MusicPinnedArtistEntry].self, forKey: .musicPinnedArtists))?
+            .compactMap(\.artist) ?? []
     }
 }
 

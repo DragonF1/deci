@@ -92,7 +92,8 @@ struct DeciApp: App {
                 mediaKeyStatus: mediaKeyStatus,
                 mediaKeyMonitor: mediaKeyMonitor,
                 shortcutsRegistry: shortcutsRegistry,
-                updateManager: updateManager
+                updateManager: updateManager,
+                onSettingsReset: { musicHost.settingsDidReset() }
             )
         }
         FluidMenuBarExtra("Deci", image: launchIconImage) {

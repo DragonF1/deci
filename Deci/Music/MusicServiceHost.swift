@@ -38,7 +38,10 @@ final class MusicServiceHost {
                 listenerLevel: { [weak mixer] in mixer?.watchtimeLevel ?? (WatchtimeTracker.fullVolume, false) },
                 // Shuffle, loop and Autoplay are remembered in settings.json.
                 preferences: settings?.appSettings.musicPlayback ?? MusicPlaybackPreferences(),
-                savePreferences: MusicServiceHost.savePreferences(to: settings)
+                savePreferences: MusicServiceHost.savePreferences(to: settings),
+                // The artists pinned to Home are remembered in settings.json too.
+                pinnedArtists: settings?.appSettings.musicPinnedArtists ?? [],
+                savePinnedArtists: MusicServiceHost.savePinnedArtists(to: settings)
             )
         }
         MusicMemoryLog.log("launch")
@@ -50,6 +53,16 @@ final class MusicServiceHost {
             guard let settings else { return }
             var appSettings = settings.appSettings
             appSettings.musicPlayback = preferences
+            settings.updateAppSettings(appSettings)
+        }
+    }
+
+    /// Writes the pinned artists into settings.json, leaving every other setting as it is.
+    static func savePinnedArtists(to settings: SettingsManager?) -> @MainActor ([MusicPinnedArtist]) -> Void {
+        { [weak settings] artists in
+            guard let settings else { return }
+            var appSettings = settings.appSettings
+            appSettings.musicPinnedArtists = artists
             settings.updateAppSettings(appSettings)
         }
     }
@@ -85,6 +98,12 @@ final class MusicServiceHost {
         guard isAccountCardOpen else { return false }
         isAccountCardOpen = false
         return true
+    }
+
+    /// Reset all settings: the music options and pins held in memory go back to their defaults too. Nothing to do
+    /// before the Music tab was ever used, since a later service starts from the cleared settings.
+    func settingsDidReset() {
+        service?.settingsDidReset()
     }
 
     /// Quit path: stops playback and flushes held-back cookies, if the service was ever created.

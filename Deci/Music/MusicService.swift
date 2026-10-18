@@ -42,6 +42,9 @@ final class MusicService {
     let browse: MusicBrowseStore
     /// Synced lyrics of the playing track, for the lyrics panel.
     let lyrics: MusicLyricsStore
+    /// The artists pinned to the top of Home. Remembered across launches, and kept through sign-out and account
+    /// switches: an artist is a public channel, not part of an account.
+    let pinnedArtists: MusicPinnedArtists
     /// Next is on while a track follows. At the last track it stays on when something can still follow: Loop playlist
     /// wraps to the first track, and Autoplay (with Loop playlist off) waits for the page that is loading or hands the
     /// page over to the radio. A radio that has run out has nothing to go to.
@@ -108,6 +111,8 @@ final class MusicService {
     @ObservationIgnored private let listenerLevel: @MainActor () -> (volume: Int, muted: Bool)
     /// Told the three playback options whenever one changes, so the app can keep them in settings.
     @ObservationIgnored private let savePreferences: @MainActor (MusicPlaybackPreferences) -> Void
+    /// True while a settings reset puts the options back: the file was cleared already, so nothing is written.
+    @ObservationIgnored private var holdsPreferences = false
     @ObservationIgnored private var shuffleGenerator: MusicShuffleGenerator
     @ObservationIgnored private var session: Session?
     @ObservationIgnored private var direction = Direction.forward
@@ -165,6 +170,8 @@ final class MusicService {
         listenerLevel: @escaping @MainActor () -> (volume: Int, muted: Bool) = { (WatchtimeTracker.fullVolume, false) },
         preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(),
         savePreferences: @escaping @MainActor (MusicPlaybackPreferences) -> Void = { _ in },
+        pinnedArtists: [MusicPinnedArtist] = [],
+        savePinnedArtists: @escaping @MainActor ([MusicPinnedArtist]) -> Void = { _ in },
         // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
         shuffleSeed: UInt64? = nil,
         refreshOnCreate: Bool = true
@@ -172,6 +179,7 @@ final class MusicService {
         self.backend = backend
         self.browse = MusicBrowseStore(backend: backend)
         self.lyrics = lyrics
+        self.pinnedArtists = MusicPinnedArtists(artists: pinnedArtists, save: savePinnedArtists)
         self.player = player
         self.presentSignIn = presentSignIn
         self.presentChannelPicker = presentChannelPicker
@@ -200,6 +208,7 @@ final class MusicService {
         player.onStateChange = { [weak self] in self?.playerStateChanged() }
         nowPlaying.onCommand = { [weak self] command in self?.handleRemote(command) }
         browse.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
+        browse.onPageLoaded = { [weak self] page, opener in self?.pageLoaded(page, opener: opener) }
         if refreshOnCreate {
             Task { [weak self] in await self?.refreshAuth() }
         }
@@ -597,7 +606,21 @@ final class MusicService {
     }
 
     private func savePlaybackPreferences() {
+        guard !holdsPreferences else { return }
         savePreferences(MusicPlaybackPreferences(shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn))
+    }
+
+    /// Everything went back to its default. The settings were cleared already, so nothing is written here: the
+    /// playback options go back to theirs the way the buttons change them, and the pins are dropped, so the next
+    /// change cannot write the old ones back.
+    func settingsDidReset() {
+        let defaults = MusicPlaybackPreferences()
+        holdsPreferences = true
+        defer { holdsPreferences = false }
+        setShuffle(defaults.shuffle)
+        setLoopMode(defaults.loop)
+        setAutoplay(defaults.autoplay)
+        pinnedArtists.settingsDidReset()
     }
 
     /// Play/pause for the transport and media keys. A track whose stream never resolved has nothing
@@ -1198,6 +1221,12 @@ final class MusicService {
     /// A Home, Library or page request found the session gone: the same sign-out as a dead search.
     private func browseSessionExpired() {
         handle(MusicError.signedOut)
+    }
+
+    /// An artist page landed: a pinned artist's tile takes the name and photo it shows now.
+    private func pageLoaded(_ page: MusicBrowsePage, opener: MusicCollection?) {
+        guard opener?.kind == .artist else { return }
+        pinnedArtists.refresh(MusicPinnedArtist(page: page, opener: opener))
     }
 
     private static func isCancellation(_ error: any Error) -> Bool {

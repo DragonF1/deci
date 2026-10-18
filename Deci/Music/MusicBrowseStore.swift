@@ -72,6 +72,9 @@ final class MusicBrowseStore {
     @ObservationIgnored private var sortedPages: [String: (sort: MusicPlaylistSort, page: MusicBrowsePage)] = [:]
     /// Told when a call says the session is gone, so the service can sign out.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
+    /// Told when a page lands, with the page and the collection on the path that opened it, so the service can keep a
+    /// pinned artist's name and photo current. Not told for a page that was closed, reloaded or reset before it landed.
+    @ObservationIgnored var onPageLoaded: (@MainActor (MusicBrowsePage, MusicCollection?) -> Void)?
 
     init(backend: any MusicBackend) {
         self.backend = backend
@@ -292,6 +295,7 @@ final class MusicBrowseStore {
         guard pageRuns[browseId] == run else { return }
         pages[browseId] = .loaded(page)
         loadAllTracksIfSorted(browseId)
+        onPageLoaded?(page, path.last { $0.browseId == browseId })
     }
 
     private func failPage(_ error: any Error, browseId: String, run: Int) {
