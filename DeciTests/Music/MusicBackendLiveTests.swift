@@ -119,6 +119,92 @@ struct MusicBackendLiveTests {
         await #expect(throws: MusicError.self) { _ = try await harness.backend.radio(seedVideoId: "x") }
     }
 
+    // MARK: - Browse
+
+    private func makeBrowseHarness(signedIn: Bool = true, _ configure: (inout FakeYouTube.Config) -> Void = { _ in }) -> Harness {
+        let youtube = FakeYouTube { config in
+            config.browseBodies = [
+                "FEmusic_home": (try? MusicFixtures.data("browse-home.json")) ?? Data(),
+                "FEmusic_liked_playlists": (try? MusicFixtures.data("browse-library-playlists.json")) ?? Data(),
+                "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i": (try? MusicFixtures.data("browse-playlist.json")) ?? Data(),
+            ]
+            config.browseContinuationBody = (try? MusicFixtures.data("browse-tracks-continuation-old.json")) ?? Data()
+            configure(&config)
+        }
+        let store = signedIn ? MusicTestJar.signedInStore() : MemorySecretStore()
+        let directory = makeTemporaryDirectory("deci-backend")
+        let client = InnerTubeClient(transport: youtube, secretStore: store, now: { MusicTestJar.now })
+        let cache = PlayerCache(directory: directory)
+        let resolver = StreamResolver(client: client, solver: FakeChallengeSolver(), cache: cache, now: { MusicTestJar.now })
+        return Harness(backend: MusicBackendLive(client: client, resolver: resolver), youtube: youtube, store: store, directory: directory)
+    }
+
+    @Test("home, library and page forward to the client and return what it parsed")
+    func browseForwards() async throws {
+        let harness = makeBrowseHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+
+        let home = try await harness.backend.home()
+        #expect(home.shelves.map(\.title) == ["Quick picks", "Trending community playlists"])
+
+        let library = try await harness.backend.library(.playlists)
+        #expect(library.items.map(\.browseId).contains("VLLM"))
+
+        let page = try await harness.backend.page(browseId: "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i")
+        #expect(page.tracks.map(\.videoId) == ["fcnDmrtj6Sk", "xvT1jH8B9AM", "fRIhCiUVaKs"])
+
+        let ids = harness.youtube.requests(path: "/youtubei/v1/browse").map { FakeYouTube.jsonBody($0)["browseId"] as? String }
+        #expect(ids == ["FEmusic_home", "FEmusic_liked_playlists", "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i"])
+    }
+
+    @Test("moreHome, moreLibrary and moreTracks send their continuation token")
+    func moreBrowseForwards() async throws {
+        let harness = makeBrowseHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+
+        let tracks = try await harness.backend.moreTracks(browseId: "VLPL1", continuation: "FIXTURE_TOKEN")
+        #expect(tracks.tracks.map(\.videoId) == ["fixtureVid0001", "fixtureVid0002"])
+        #expect(tracks.continuation == "q:FIXTURE_TRACKS_NEXT2%3D")
+
+        // The stub answers every continuation with the same body: only the routing is under test here.
+        _ = try? await harness.backend.moreHome(continuation: "FIXTURE_HOME")
+        _ = try? await harness.backend.moreLibrary(.albums, continuation: "FIXTURE_LIBRARY")
+
+        let bodies = harness.youtube.requests(path: "/youtubei/v1/browse").map { FakeYouTube.jsonBody($0) }
+        #expect(bodies.count == 3)
+        #expect(bodies.compactMap { $0["continuation"] as? String } == ["FIXTURE_TOKEN", "FIXTURE_HOME", "FIXTURE_LIBRARY"])
+        #expect(bodies.allSatisfy { $0["browseId"] == nil })
+    }
+
+    @Test("Browse calls while signed out fail before any network request")
+    func browseSignedOut() async {
+        let harness = makeBrowseHarness(signedIn: false)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.home() }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.moreHome(continuation: "t") }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.library(.playlists) }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.moreLibrary(.playlists, continuation: "t") }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.page(browseId: "VLLM") }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.moreTracks(browseId: "VLLM", continuation: "t") }
+        #expect(harness.youtube.requests.isEmpty)
+    }
+
+    @Test("Browse errors map like search: 401 is signedOut, other statuses are http, bad bodies are parse")
+    func browseErrors() async {
+        let harness = makeBrowseHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update { $0.browseStatus = 401 }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.home() }
+        harness.youtube.update { $0.browseStatus = 503 }
+        await #expect(throws: MusicError.http(503)) { _ = try await harness.backend.library(.playlists) }
+        await #expect(throws: MusicError.http(503)) { _ = try await harness.backend.moreTracks(browseId: "VLLM", continuation: "t") }
+        harness.youtube.update {
+            $0.browseStatus = 200
+            $0.browseBodies = ["VLLM": Data("<html>blocked</html>".utf8)]
+        }
+        await #expect(throws: MusicError.self) { _ = try await harness.backend.page(browseId: "VLLM") }
+    }
+
     @Test("Resolve returns a solved, expiring AAC stream")
     func resolve() async throws {
         let harness = makeHarness(signedIn: true)

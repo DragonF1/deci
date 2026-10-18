@@ -183,6 +183,97 @@ actor InnerTubeClient {
         return page
     }
 
+    // MARK: - Browse
+
+    static let homeBrowseId = "FEmusic_home"
+
+    static func browseId(for section: MusicLibrarySection) -> String {
+        switch section {
+        case .playlists: "FEmusic_liked_playlists"
+        case .albums: "FEmusic_liked_albums"
+        case .artists: "FEmusic_library_corpus_track_artists"
+        }
+    }
+
+    func home() async throws -> MusicHomePage {
+        let data = try await browse(browseId: Self.homeBrowseId)
+        let page = try InnerTubeParser.homePage(from: data)
+        Self.log.info("home returned \(page.shelves.count) shelves")
+        return page
+    }
+
+    func moreHome(continuation: String) async throws -> MusicHomePage {
+        guard let data = try await browseContinuation(continuation, browseId: Self.homeBrowseId) else {
+            return MusicHomePage(shelves: [], continuation: nil)
+        }
+        let page = try InnerTubeParser.homeContinuationPage(from: data)
+        Self.log.info("home continuation returned \(page.shelves.count) shelves")
+        return page
+    }
+
+    func library(_ section: MusicLibrarySection) async throws -> MusicCollectionList {
+        let data = try await browse(browseId: Self.browseId(for: section))
+        let list = try InnerTubeParser.libraryPage(from: data)
+        Self.log.info("library \(section.rawValue, privacy: .public) returned \(list.items.count) items")
+        return list
+    }
+
+    func moreLibrary(_ section: MusicLibrarySection, continuation: String) async throws -> MusicCollectionList {
+        guard let data = try await browseContinuation(continuation, browseId: Self.browseId(for: section)) else {
+            return MusicCollectionList(items: [], continuation: nil)
+        }
+        let list = try InnerTubeParser.libraryContinuationPage(from: data)
+        Self.log.info("library \(section.rawValue, privacy: .public) continuation returned \(list.items.count) items")
+        return list
+    }
+
+    /// A playlist ("VL..."), album ("MPRE...") or artist ("UC...") page.
+    func page(browseId: String) async throws -> MusicBrowsePage {
+        let id = browseId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { throw MusicError.parse("page has no browse id") }
+        let data = try await browse(browseId: id)
+        let page = try InnerTubeParser.browsePage(from: data, browseId: id)
+        Self.log.info("page returned \(page.tracks.count) rows and \(page.shelves.count) shelves")
+        return page
+    }
+
+    func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage {
+        guard let data = try await browseContinuation(continuation, browseId: browseId) else { return Self.emptyPage }
+        let page = try InnerTubeParser.tracksContinuationPage(from: data)
+        Self.log.info("page continuation returned \(page.tracks.count) rows")
+        return page
+    }
+
+    private func browse(browseId: String) async throws -> Data {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let session = try await sessionOrFallback()
+        return try await post("browse", session: session, body: ["browseId": browseId])
+    }
+
+    /// Old-style tokens go in the query next to the original `browseId` (what ytmusicapi sends);
+    /// new-style tokens go alone in the body. Nil for a blank token.
+    private func browseContinuation(_ continuation: String, browseId: String) async throws -> Data? {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        guard let token = InnerTubeParser.decodeContinuation(continuation) else { return nil }
+        let session = try await sessionOrFallback()
+        switch token.style {
+        case .body:
+            return try await post("browse", session: session, body: ["continuation": token.value])
+        case .query:
+            // The token is already percent-encoded where it needs to be ("%3D"), so only what a URL
+            // cannot hold at all is escaped and an existing escape is left alone.
+            var allowed = CharacterSet.alphanumerics
+            allowed.insert(charactersIn: "-._~%")
+            let encoded = token.value.addingPercentEncoding(withAllowedCharacters: allowed) ?? token.value
+            return try await post(
+                "browse",
+                session: session,
+                body: ["browseId": browseId],
+                query: "&ctoken=\(encoded)&continuation=\(encoded)"
+            )
+        }
+    }
+
     func player(videoId: String, signatureTimestamp: Int) async throws -> PlayerResponse {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         let session = try await sessionOrFallback()
@@ -226,9 +317,11 @@ actor InnerTubeClient {
 
     // MARK: - Requests
 
-    private func post(_ endpoint: String, session: InnerTubeSession, body: [String: Any]) async throws -> Data {
+    private func post(_ endpoint: String, session: InnerTubeSession, body: [String: Any], query: String = "") async throws -> Data {
         let epoch = epoch
-        let url = URL(string: "https://music.youtube.com/youtubei/v1/\(endpoint)?prettyPrint=false")!
+        guard let url = URL(string: "https://music.youtube.com/youtubei/v1/\(endpoint)?prettyPrint=false\(query)") else {
+            throw MusicError.parse("request url is not valid")
+        }
         guard let headers = authenticatedHeaders(for: url, session: session) else { throw MusicError.signedOut }
         var payload = body
         payload["context"] = ["client": clientContext(session)]

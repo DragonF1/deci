@@ -34,7 +34,7 @@ final class MusicService {
     /// One short human line for the UI; never contains cookies or URLs.
     private(set) var lastError: String?
     let player: MusicPlayer
-    /// What plays next: the tapped track, then the radio's tracks as they arrive.
+    /// What plays next: the tapped track, then the radio's tracks as they arrive, or a page's tracks in page order.
     private(set) var queue = MusicQueue()
     /// Home, Library and the pages opened from them.
     let browse: MusicBrowseStore
@@ -53,7 +53,7 @@ final class MusicService {
 
     private enum Direction { case forward, backward }
 
-    /// An advance the queue could not make because the radio may still add tracks: it waits for the page.
+    /// An advance the queue could not make because the radio or the page may still add tracks: it waits for the next page.
     private enum PendingAdvance {
         /// The track played to its end.
         case ended
@@ -95,7 +95,7 @@ final class MusicService {
     @ObservationIgnored private(set) var signOutTask: Task<Void, Never>?
     @ObservationIgnored private(set) var identityTask: Task<Void, Never>?
     @ObservationIgnored private(set) var channelSwitchTask: Task<Void, Never>?
-    /// The radio fetch in flight (first page or a continuation); nil when none is running.
+    /// The radio or page fetch in flight (first radio page or a continuation); nil when none is running.
     @ObservationIgnored private(set) var radioTask: Task<Void, Never>?
     @ObservationIgnored private(set) var prefetchTask: Task<Void, Never>?
     @ObservationIgnored private var searchGeneration = 0
@@ -133,6 +133,7 @@ final class MusicService {
         player.onFailed = { [weak self] in self?.handlePlayerFailure() }
         player.onStateChange = { [weak self] in self?.playerStateChanged() }
         nowPlaying.onCommand = { [weak self] command in self?.handleRemote(command) }
+        browse.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         if refreshOnCreate {
             Task { [weak self] in await self?.refreshAuth() }
         }
@@ -204,6 +205,7 @@ final class MusicService {
         channelNoticeDismissed = false
         // An open picker still holds the old session; it must not sign anyone back in.
         closeSignInWindow()
+        browse.reset()
         signOutTask = Task { [backend] in await backend.signOut() }
     }
 
@@ -252,6 +254,8 @@ final class MusicService {
                 self.identityTask?.cancel()
                 self.isBrandChannel = nil
                 self.channelNoticeDismissed = false
+                // Home and the library belong to the channel: what is loaded is the old one's.
+                self.browse.reset()
                 let identity = await self.backend.channelIdentity()
                 guard !Task.isCancelled, self.authState == .signedIn else { return }
                 self.isBrandChannel = identity
@@ -333,8 +337,12 @@ final class MusicService {
     /// Plays `track` with the rest of `page`'s songs queued after it in page order, with no radio.
     /// More tracks of a long playlist are fetched as the queue runs low; the queue ends with the page.
     func play(_ track: MusicTrack, in page: MusicBrowsePage) {
-        // Phase 3 contract stub: the backend work replaces this with a page-ordered queue.
-        play(track)
+        // A page is its own order: a radio left over from the last queue must not add to it.
+        cancelRadio()
+        queue.start(page: page.tracks, playing: track, browseId: page.browseId, continuation: page.continuation)
+        direction = .forward
+        failureStreak = 0
+        begin(track)
     }
 
     /// Play/pause for the transport and media keys. A track whose stream never resolved has nothing
@@ -583,40 +591,49 @@ final class MusicService {
         }
     }
 
-    // MARK: - Radio
+    // MARK: - Radio and page paging
 
     private func startRadio(seed: String) {
         cancelRadio()
         let generation = radioGeneration
         radioTask = Task { [weak self] in
-            await self?.fetchRadioPage(seed: seed, continuation: nil, generation: generation)
+            await self?.fetchQueuePage(source: .radio(seedVideoId: seed), continuation: nil, generation: generation)
         }
     }
 
-    /// Asks for the next page when the queue is running low. One fetch at a time.
-    /// `emptyPages` counts pages in a row that added nothing after de-duplication.
+    /// Asks for the next page of the radio or of the playlist page when the queue is running low.
+    /// One fetch at a time. `emptyPages` counts pages in a row that added nothing after de-duplication.
     private func topUpQueue(emptyPages: Int = 0) {
         guard radioTask == nil, emptyPages < Self.maxEmptyPages, queue.needsMore,
-              let seed = queue.seedVideoId, let continuation = queue.continuation else { return }
+              let source = queue.source, let continuation = queue.continuation else { return }
         let generation = radioGeneration
         radioTask = Task { [weak self] in
-            await self?.fetchRadioPage(seed: seed, continuation: continuation, generation: generation, emptyPages: emptyPages)
+            await self?.fetchQueuePage(source: source, continuation: continuation, generation: generation, emptyPages: emptyPages)
         }
     }
 
-    private func fetchRadioPage(seed: String, continuation: String?, generation: Int, emptyPages: Int = 0) async {
+    private func requestQueuePage(source: MusicQueue.Source, continuation: String?) async throws -> MusicQueuePage {
+        switch (source, continuation) {
+        case (.radio(let seed), nil):
+            return try await backend.radio(seedVideoId: seed)
+        case (.radio(let seed), let token?):
+            return try await backend.moreRadio(seedVideoId: seed, continuation: token)
+        case (.page(let browseId), let token?):
+            return try await backend.moreTracks(browseId: browseId, continuation: token)
+        case (.page, nil):
+            return MusicQueuePage(tracks: [], continuation: nil)
+        }
+    }
+
+    private func fetchQueuePage(source: MusicQueue.Source, continuation: String?, generation: Int, emptyPages: Int = 0) async {
         let page: MusicQueuePage
         do {
-            if let continuation {
-                page = try await backend.moreRadio(seedVideoId: seed, continuation: continuation)
-            } else {
-                page = try await backend.radio(seedVideoId: seed)
-            }
+            page = try await requestQueuePage(source: source, continuation: continuation)
         } catch {
-            // No radio is not an error: the song keeps playing, the queue just does not grow.
+            // No more tracks is not an error: the song keeps playing, the queue just does not grow.
             guard generation == radioGeneration else { return }
             radioTask = nil
-            logger.info("radio unavailable: \(Self.logDescription(of: error), privacy: .public)")
+            logger.info("queue page unavailable: \(Self.logDescription(of: error), privacy: .public)")
             // A page that cannot be read or that the server rejects would fail the same way again: stop paging.
             // A dead session is not retried either. Anything else (network, 5xx) keeps the continuation.
             if Self.endsPaging(error) || Self.isSignedOut(error) { queue.clearContinuation() }
@@ -634,7 +651,7 @@ final class MusicService {
         if radioTask == nil { settlePendingAdvance() }
     }
 
-    /// A radio page error that retrying will not fix: an unreadable response or a rejected request.
+    /// A page error that retrying will not fix: an unreadable response or a rejected request.
     private static func endsPaging(_ error: any Error) -> Bool {
         switch error as? MusicError {
         case .parse: true
@@ -764,6 +781,13 @@ final class MusicService {
         }
         logger.error("music request failed: \(Self.logDescription(of: error), privacy: .public)")
         lastError = Self.message(for: error)
+    }
+
+    /// A Home, Library or page request found the session gone: the same sign-out as a dead search,
+    /// and what was loaded under that session goes with it.
+    private func browseSessionExpired() {
+        handle(MusicError.signedOut)
+        browse.reset()
     }
 
     private static func isCancellation(_ error: any Error) -> Bool {

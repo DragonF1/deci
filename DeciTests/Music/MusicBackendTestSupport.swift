@@ -123,6 +123,13 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var nextContinuationBody = (try? MusicFixtures.data("next-radio-continuation.json")) ?? Data()
         var nextStatus = 200
         var nextHeaders: [String: String] = [:]
+        /// browse answers by the `browseId` in the body; an id with no entry gets `browseDefaultBody`.
+        /// A request with a `continuation` in the body or a `ctoken` in the query gets `browseContinuationBody`.
+        var browseBodies: [String: Data] = [:]
+        var browseDefaultBody = Data("{}".utf8)
+        var browseContinuationBody = Data("{}".utf8)
+        var browseStatus = 200
+        var browseHeaders: [String: String] = [:]
         var playerBody = (try? MusicFixtures.data("player-ok.json")) ?? Data()
         var playerStatus = 200
         var playerHeaders: [String: String] = [:]
@@ -174,6 +181,16 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
                 statusCode: config.nextStatus,
                 headers: config.nextHeaders,
                 data: isContinuation ? config.nextContinuationBody : config.nextBody
+            )
+        case ("music.youtube.com", "/youtubei/v1/browse"):
+            let body = Self.jsonBody(request)
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let isContinuation = body["continuation"] != nil || query.contains { $0.name == "ctoken" }
+            let browseId = body["browseId"] as? String ?? ""
+            return HTTPResponse(
+                statusCode: config.browseStatus,
+                headers: config.browseHeaders,
+                data: isContinuation ? config.browseContinuationBody : config.browseBodies[browseId] ?? config.browseDefaultBody
             )
         case ("music.youtube.com", "/youtubei/v1/player"):
             return HTTPResponse(statusCode: config.playerStatus, headers: config.playerHeaders, data: config.playerBody)

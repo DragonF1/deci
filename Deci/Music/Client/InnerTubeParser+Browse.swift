@@ -1,0 +1,430 @@
+// Deci/Music/Client/InnerTubeParser+Browse.swift
+// Home, library and playlist/album/artist pages from the `browse` endpoint, and their continuations.
+import Foundation
+
+extension InnerTubeParser {
+
+    // MARK: - Continuation tokens
+
+    /// How a continuation token goes back to YouTube. The old style (`nextContinuationData`) is sent
+    /// as `ctoken` and `continuation` query parameters next to the original `browseId`; the new style
+    /// (`continuationItemRenderer`) is sent as `continuation` in the body, alone.
+    enum ContinuationStyle: Equatable {
+        case query
+        case body
+    }
+
+    struct ContinuationToken: Equatable {
+        let value: String
+        let style: ContinuationStyle
+    }
+
+    /// The contract passes a continuation around as one opaque string, so the old style carries
+    /// this prefix and a bare token is body style. Real tokens are base64 and never contain a colon.
+    static let queryTokenPrefix = "q:"
+
+    static func encodeContinuation(_ token: String, style: ContinuationStyle) -> String {
+        style == .query ? queryTokenPrefix + token : token
+    }
+
+    /// Nil for a blank token.
+    static func decodeContinuation(_ raw: String) -> ContinuationToken? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix(queryTokenPrefix) {
+            let value = String(trimmed.dropFirst(queryTokenPrefix.count))
+            return value.isEmpty ? nil : ContinuationToken(value: value, style: .query)
+        }
+        return trimmed.isEmpty ? nil : ContinuationToken(value: trimmed, style: .body)
+    }
+
+    /// The token for the page after `items`: the container's `nextContinuationData` (old style) or
+    /// the trailing `continuationItemRenderer` (new style). Pass the shelf or grid that holds the
+    /// items; a page's own section list continues with related shelves, not with more items.
+    static func continuationToken(in container: [String: Any]?, items: [[String: Any]]) -> String? {
+        for entry in container?["continuations"] as? [[String: Any]] ?? [] {
+            for key in ["nextContinuationData", "reloadContinuationData"] {
+                if let token = string((entry[key] as? [String: Any])?["continuation"]) {
+                    return encodeContinuation(token, style: .query)
+                }
+            }
+        }
+        for item in items.reversed() {
+            if let token = string(path(item, "continuationItemRenderer", "continuationEndpoint", "continuationCommand", "token")) {
+                return encodeContinuation(token, style: .body)
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Home
+
+    static func homePage(from data: Data) throws -> MusicHomePage {
+        let root = try jsonObject(data, what: "home response")
+        var lists: [[String: Any]] = []
+        collect("sectionListRenderer", in: root, into: &lists)
+        guard let list = lists.first else { throw MusicError.parse("home response has no shelves") }
+        let contents = list["contents"] as? [[String: Any]] ?? []
+        return MusicHomePage(
+            shelves: contents.compactMap(shelf(from:)),
+            continuation: continuationToken(in: list, items: contents)
+        )
+    }
+
+    static func homeContinuationPage(from data: Data) throws -> MusicHomePage {
+        let root = try jsonObject(data, what: "home continuation")
+        guard let payload = continuationPayload(in: root, keys: ["sectionListContinuation"]) else {
+            throw MusicError.parse("home continuation has no shelves")
+        }
+        return MusicHomePage(
+            shelves: payload.items.compactMap(shelf(from:)),
+            continuation: continuationToken(in: payload.container, items: payload.items)
+        )
+    }
+
+    /// A carousel (or a plain shelf) with a title and at least one item Deci can show.
+    static func shelf(from entry: [String: Any]) -> MusicShelf? {
+        let renderer: [String: Any]
+        let titleRuns: [[String: Any]]
+        if let carousel = (entry["musicCarouselShelfRenderer"] ?? entry["musicImmersiveCarouselShelfRenderer"]) as? [String: Any] {
+            renderer = carousel
+            titleRuns = runs(carouselHeader(of: carousel)?["title"])
+        } else if let list = entry["musicShelfRenderer"] as? [String: Any] {
+            renderer = list
+            titleRuns = runs(list["title"])
+        } else {
+            return nil
+        }
+        guard let title = text(of: titleRuns) else { return nil }
+        let items = uniqueItems((renderer["contents"] as? [[String: Any]] ?? []).compactMap(shelfItem(from:)))
+        return items.isEmpty ? nil : MusicShelf(title: title, items: items)
+    }
+
+    /// The header's single `...ShelfBasicHeaderRenderer`, whichever of the carousel flavours it is.
+    private static func carouselHeader(of carousel: [String: Any]) -> [String: Any]? {
+        let header = carousel["header"] as? [String: Any]
+        for key in ["musicCarouselShelfBasicHeaderRenderer", "musicImmersiveCarouselShelfBasicHeaderRenderer"] {
+            if let match = header?[key] as? [String: Any] { return match }
+        }
+        return header?.values.lazy.compactMap { $0 as? [String: Any] }.first
+    }
+
+    private static func uniqueItems(_ items: [MusicShelfItem]) -> [MusicShelfItem] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0.id).inserted }
+    }
+
+    // MARK: - Library
+
+    /// A library list: playlists and albums are a grid of tiles, artists a shelf of rows, possibly
+    /// inside an item section. An empty library has neither, which is an empty list and not an error.
+    static func libraryPage(from data: Data) throws -> MusicCollectionList {
+        let root = try jsonObject(data, what: "library response")
+        for (key, itemsKey) in [("gridRenderer", "items"), ("musicShelfRenderer", "contents"), ("musicPlaylistShelfRenderer", "contents")] {
+            var found: [[String: Any]] = []
+            collect(key, in: root, into: &found)
+            if let container = found.first {
+                let items = container[itemsKey] as? [[String: Any]] ?? []
+                return MusicCollectionList(
+                    items: collections(in: items),
+                    continuation: continuationToken(in: container, items: items)
+                )
+            }
+        }
+        return MusicCollectionList(items: [], continuation: nil)
+    }
+
+    static func libraryContinuationPage(from data: Data) throws -> MusicCollectionList {
+        let root = try jsonObject(data, what: "library continuation")
+        guard let payload = continuationPayload(in: root, keys: ["gridContinuation", "musicShelfContinuation", "musicPlaylistShelfContinuation"]) else {
+            throw MusicError.parse("library continuation has no items")
+        }
+        return MusicCollectionList(
+            items: collections(in: payload.items),
+            continuation: continuationToken(in: payload.container, items: payload.items)
+        )
+    }
+
+    private static func collections(in items: [[String: Any]]) -> [MusicCollection] {
+        var seen = Set<String>()
+        return items.compactMap { entry -> MusicCollection? in
+            guard case .collection(let collection)? = shelfItem(from: entry) else { return nil }
+            return seen.insert(collection.browseId).inserted ? collection : nil
+        }
+    }
+
+    // MARK: - Pages
+
+    /// A playlist ("VL..."), album ("MPRE...") or artist ("UC...") page, in either the two-column
+    /// layout (`musicResponsiveHeaderRenderer`, tracks in the secondary column) or the older single column.
+    static func browsePage(from data: Data, browseId: String) throws -> MusicBrowsePage {
+        let root = try jsonObject(data, what: "page response")
+        guard let header = pageHeader(in: root) else { throw MusicError.parse("page response has no header") }
+        guard let title = text(of: runs(header.renderer["title"])) else { throw MusicError.parse("page response has no title") }
+
+        let sections = pageSections(in: root)
+        let cover = pickThumbnail(header.renderer["thumbnail"] ?? header.renderer["foregroundThumbnail"], near: nil)
+        let rows = trackShelf(in: sections)
+        var tracks = (rows?["contents"] as? [[String: Any]] ?? [])
+            .compactMap { ($0["musicResponsiveListItemRenderer"] as? [String: Any]).flatMap(browseTrack(from:)) }
+
+        if browseId.hasPrefix("MPRE") {
+            // Album rows leave out what the page already says: the artist, the album and the cover.
+            let artist = headerArtists(of: header.renderer)
+            tracks = tracks.map { track in
+                MusicTrack(
+                    videoId: track.videoId,
+                    title: track.title,
+                    artist: track.artist.isEmpty ? artist : track.artist,
+                    album: track.album ?? title,
+                    durationSeconds: track.durationSeconds,
+                    thumbnailURL: track.thumbnailURL ?? cover
+                )
+            }
+        }
+
+        let shelves = header.isArtist
+            ? uniqueShelves(sections.filter { $0["musicShelfRenderer"] == nil }.compactMap(shelf(from:)))
+            : []
+        return MusicBrowsePage(
+            browseId: browseId,
+            title: title,
+            subtitle: header.isArtist ? artistSubtitle(of: header.renderer) : detailSubtitle(of: header.renderer),
+            thumbnailURL: cover,
+            tracks: uniqueTracks(tracks),
+            continuation: rows.flatMap { continuationToken(in: $0, items: $0["contents"] as? [[String: Any]] ?? []) },
+            shelves: shelves
+        )
+    }
+
+    /// The rows after a page's first track list.
+    static func tracksContinuationPage(from data: Data) throws -> MusicQueuePage {
+        let root = try jsonObject(data, what: "tracks continuation")
+        guard let payload = continuationPayload(in: root, keys: ["musicPlaylistShelfContinuation", "musicShelfContinuation"]) else {
+            throw MusicError.parse("tracks continuation has no rows")
+        }
+        let tracks = payload.items.compactMap { ($0["musicResponsiveListItemRenderer"] as? [String: Any]).flatMap(browseTrack(from:)) }
+        return MusicQueuePage(
+            tracks: uniqueTracks(tracks),
+            continuation: continuationToken(in: payload.container, items: payload.items)
+        )
+    }
+
+    /// A row that plays: not greyed out by YouTube (removed or unavailable songs) and not a podcast episode.
+    static func browseTrack(from renderer: [String: Any]) -> MusicTrack? {
+        guard !isGreyedOut(renderer), !isPodcastEpisode(watchEndpoint(ofRow: renderer)) else { return nil }
+        return track(from: renderer)
+    }
+
+    private static func pageHeader(in root: [String: Any]) -> (renderer: [String: Any], isArtist: Bool)? {
+        let kinds = [
+            ("musicResponsiveHeaderRenderer", false),
+            ("musicDetailHeaderRenderer", false),
+            ("musicImmersiveHeaderRenderer", true),
+            ("musicVisualHeaderRenderer", true),
+        ]
+        for (key, isArtist) in kinds {
+            var found: [[String: Any]] = []
+            collect(key, in: root, into: &found)
+            if let renderer = found.first { return (renderer, isArtist) }
+        }
+        return nil
+    }
+
+    /// The content sections: the secondary column of the two-column layout, or the first tab of the single column.
+    private static func pageSections(in root: [String: Any]) -> [[String: Any]] {
+        let contents = root["contents"] as? [String: Any]
+        let secondary = path(contents, "twoColumnBrowseResultsRenderer", "secondaryContents", "sectionListRenderer", "contents") as? [[String: Any]]
+        let tabs = path(contents, "singleColumnBrowseResultsRenderer", "tabs") as? [[String: Any]]
+        let primary = path(tabs?.first, "tabRenderer", "content", "sectionListRenderer", "contents") as? [[String: Any]]
+        return (secondary ?? []) + (primary ?? [])
+    }
+
+    /// The shelf that lists the page's songs: a playlist's shelf, an album's, an artist's "Top songs".
+    private static func trackShelf(in sections: [[String: Any]]) -> [String: Any]? {
+        for section in sections {
+            if let shelf = (section["musicPlaylistShelfRenderer"] ?? section["musicShelfRenderer"]) as? [String: Any] {
+                return shelf
+            }
+        }
+        return nil
+    }
+
+    /// "Album • 2023 • 12 songs": the header's kind line plus the track count, without the running time.
+    private static func detailSubtitle(of header: [String: Any]) -> String? {
+        var parts = bulletSegments(of: runs(header["subtitle"])).compactMap(text(of:))
+        let counts = bulletSegments(of: runs(header["secondSubtitle"])).compactMap(text(of:))
+        if let count = counts.first(where: { $0.contains("song") || $0.contains("track") }) ?? counts.first {
+            parts.append(count)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{2022} ")
+    }
+
+    private static func artistSubtitle(of header: [String: Any]) -> String? {
+        let subscribers = text(of: runs(path(header, "subscriptionButton", "subscribeButtonRenderer", "longSubscriberCountText")))
+        return subscribers ?? text(of: runs(header["monthlyListenerCount"]))
+    }
+
+    /// The album's artists: the strapline, or the artist links in an older header's subtitle line.
+    private static func headerArtists(of header: [String: Any]) -> String {
+        let strapline = artistNames(in: runs(header["straplineTextOne"]))
+        if !strapline.isEmpty { return strapline.joined(separator: ", ") }
+        let linked = runs(header["subtitle"]).filter { run in
+            let browse = path(run, "navigationEndpoint", "browseEndpoint") as? [String: Any]
+            return browse.flatMap(collectionKind(of:)) == .artist
+        }
+        return artistNames(in: linked).joined(separator: ", ")
+    }
+
+    private static func uniqueTracks(_ tracks: [MusicTrack]) -> [MusicTrack] {
+        var seen = Set<String>()
+        return tracks.filter { seen.insert($0.videoId).inserted }
+    }
+
+    private static func uniqueShelves(_ shelves: [MusicShelf]) -> [MusicShelf] {
+        var seen = Set<String>()
+        return shelves.filter { seen.insert($0.id).inserted }
+    }
+
+    // MARK: - Continuations
+
+    /// The items of a continuation response and the container that holds a further old-style token:
+    /// `continuationContents.<key>` for the old style, `appendContinuationItemsAction` for the new.
+    private static func continuationPayload(in root: [String: Any], keys: [String]) -> (items: [[String: Any]], container: [String: Any]?)? {
+        let contents = root["continuationContents"] as? [String: Any]
+        for key in keys {
+            if let container = contents?[key] as? [String: Any] {
+                return ((container["contents"] ?? container["items"]) as? [[String: Any]] ?? [], container)
+            }
+        }
+        for action in root["onResponseReceivedActions"] as? [[String: Any]] ?? [] {
+            if let items = path(action, "appendContinuationItemsAction", "continuationItems") as? [[String: Any]] {
+                return (items, nil)
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Tiles and rows
+
+    /// One tile or row as Deci shows it. Nil for what Deci cannot open: podcasts, episodes, user
+    /// channels, anything greyed out, a tile with no destination (the library's "New playlist").
+    static func shelfItem(from entry: [String: Any]) -> MusicShelfItem? {
+        if let tile = entry["musicTwoRowItemRenderer"] as? [String: Any] { return tileItem(from: tile) }
+        if let row = entry["musicResponsiveListItemRenderer"] as? [String: Any] { return rowItem(from: row) }
+        return nil
+    }
+
+    private static func tileItem(from tile: [String: Any]) -> MusicShelfItem? {
+        let titleRuns = runs(tile["title"])
+        guard !isGreyedOut(tile), let title = text(of: titleRuns) else { return nil }
+        let endpoint = (tile["navigationEndpoint"] ?? titleRuns.first?["navigationEndpoint"]) as? [String: Any]
+        let subtitleRuns = runs(tile["subtitle"])
+        let thumbnail = pickThumbnail(tile["thumbnailRenderer"], near: 300)
+
+        if let browse = endpoint?["browseEndpoint"] as? [String: Any] {
+            return collection(browse, title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)
+        }
+        if let watch = endpoint?["watchEndpoint"] as? [String: Any] {
+            if let videoId = string(watch["videoId"]) {
+                guard !isPodcastEpisode(watch) else { return nil }
+                let subtitle = parseSubtitle(subtitleRuns)
+                return .track(MusicTrack(
+                    videoId: videoId,
+                    title: title,
+                    artist: subtitle.artists.joined(separator: ", "),
+                    album: subtitle.album,
+                    durationSeconds: subtitle.durationSeconds,
+                    thumbnailURL: thumbnail
+                ))
+            }
+            return mix(playlistId: string(watch["playlistId"]), title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)
+        }
+        let playlistId = string((endpoint?["watchPlaylistEndpoint"] as? [String: Any])?["playlistId"])
+        return mix(playlistId: playlistId, title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)
+    }
+
+    /// A row is a song when it has a video; otherwise a row-level browse endpoint makes it an
+    /// artist, album or playlist (the library's artists are rows).
+    private static func rowItem(from row: [String: Any]) -> MusicShelfItem? {
+        guard !isGreyedOut(row) else { return nil }
+        let columns = flexColumnRuns(of: row)
+        if string(path(row, "playlistItemData", "videoId")) == nil,
+           let browse = path(row, "navigationEndpoint", "browseEndpoint") as? [String: Any] {
+            guard let title = text(of: columns.first ?? []) else { return nil }
+            return collection(
+                browse,
+                title: title,
+                subtitle: text(of: columns.count > 1 ? columns[1] : []),
+                thumbnail: thumbnailURL(in: row)
+            )
+        }
+        return browseTrack(from: row).map { .track($0) }
+    }
+
+    private static func collection(_ browse: [String: Any], title: String, subtitle: String?, thumbnail: URL?) -> MusicShelfItem? {
+        guard let browseId = string(browse["browseId"]), let kind = collectionKind(of: browse) else { return nil }
+        return .collection(MusicCollection(browseId: browseId, kind: kind, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail))
+    }
+
+    /// A mix has no page of its own, only a playlist id: its page is "VL" + that id.
+    private static func mix(playlistId: String?, title: String, subtitle: String?, thumbnail: URL?) -> MusicShelfItem? {
+        guard let playlistId else { return nil }
+        let browseId = playlistId.hasPrefix("VL") ? playlistId : "VL" + playlistId
+        return .collection(MusicCollection(browseId: browseId, kind: .playlist, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail))
+    }
+
+    /// By YouTube's page type. A destination without one is told apart by its id prefix instead;
+    /// a page type Deci does not know (podcast, user channel, audiobook) is nil.
+    private static func collectionKind(of browse: [String: Any]) -> MusicCollection.Kind? {
+        let configs = browse["browseEndpointContextSupportedConfigs"] as? [String: Any]
+        let pageType = string((configs?["browseEndpointContextMusicConfig"] as? [String: Any])?["pageType"])
+        switch pageType {
+        case "MUSIC_PAGE_TYPE_ALBUM": return .album
+        case "MUSIC_PAGE_TYPE_PLAYLIST": return .playlist
+        case "MUSIC_PAGE_TYPE_ARTIST", "MUSIC_PAGE_TYPE_LIBRARY_ARTIST": return .artist
+        case nil:
+            let browseId = string(browse["browseId"]) ?? ""
+            if browseId.hasPrefix("VL") { return .playlist }
+            if browseId.hasPrefix("MPRE") { return .album }
+            return browseId.hasPrefix("UC") ? .artist : nil
+        default: return nil
+        }
+    }
+
+    private static func isGreyedOut(_ renderer: [String: Any]) -> Bool {
+        string(renderer["musicItemRendererDisplayPolicy"]) == "MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT"
+    }
+
+    private static func isPodcastEpisode(_ watch: [String: Any]?) -> Bool {
+        string(path(watch, "watchEndpointMusicSupportedConfigs", "watchEndpointMusicConfig", "musicVideoType")) == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE"
+    }
+
+    /// The row's play target: the title link, or the play button over the cover.
+    private static func watchEndpoint(ofRow row: [String: Any]) -> [String: Any]? {
+        let title = path(flexColumnRuns(of: row).first?.first, "navigationEndpoint", "watchEndpoint")
+        let overlay = path(row, "overlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint", "watchEndpoint")
+        return (title ?? overlay) as? [String: Any]
+    }
+
+    private static func flexColumnRuns(of row: [String: Any]) -> [[[String: Any]]] {
+        (row["flexColumns"] as? [[String: Any]] ?? []).map { column in
+            runs(path(column, "musicResponsiveListItemFlexColumnRenderer", "text"))
+        }
+    }
+
+    /// The thumbnail nearest `target` px wide, or the largest when there is no target.
+    /// `holder` is the object that has the `musicThumbnailRenderer` (or the cropped square one).
+    static func pickThumbnail(_ holder: Any?, near target: Int?) -> URL? {
+        let dictionary = holder as? [String: Any]
+        let renderer = (dictionary?["musicThumbnailRenderer"] ?? dictionary?["croppedSquareThumbnailRenderer"]) as? [String: Any]
+        let candidates = (renderer?["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]] ?? []
+        let width: ([String: Any]) -> Int = { int($0["width"]) ?? 0 }
+        let best: [String: Any]?
+        if let target {
+            best = candidates.min { abs(width($0) - target) < abs(width($1) - target) }
+        } else {
+            best = candidates.max { width($0) < width($1) }
+        }
+        return string(best?["url"]).flatMap { URL(string: $0) }
+    }
+}

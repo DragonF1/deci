@@ -1,0 +1,67 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "continuationContents": {
+  "musicShelfContinuation": {
+   "contents": [
+    {
+     "musicResponsiveListItemRenderer": {
+      "thumbnail": {
+       "musicThumbnailRenderer": {
+        "thumbnail": {
+         "thumbnails": [
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-air=w60-h60-l90-rj",
+           "width": 60,
+           "height": 60
+          },
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-air=w120-h120-l90-rj",
+           "width": 120,
+           "height": 120
+          }
+         ]
+        }
+       }
+      },
+      "flexColumns": [
+       {
+        "musicResponsiveListItemFlexColumnRenderer": {
+         "text": {
+          "runs": [
+           {
+            "text": "Air"
+           }
+          ]
+         }
+        }
+       },
+       {
+        "musicResponsiveListItemFlexColumnRenderer": {
+         "text": {
+          "runs": [
+           {
+            "text": "5 songs"
+           }
+          ]
+         }
+        }
+       }
+      ],
+      "navigationEndpoint": {
+       "browseEndpoint": {
+        "browseId": "UCfixtureAir00000000000000",
+        "browseEndpointContextSupportedConfigs": {
+         "browseEndpointContextMusicConfig": {
+          "pageType": "MUSIC_PAGE_TYPE_LIBRARY_ARTIST"
+         }
+        }
+       }
+      }
+     }
+    }
+   ]
+  }
+ }
+}

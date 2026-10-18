@@ -135,5 +135,118 @@ struct MusicQueueTests {
         var queue = makeQueue(["a", "b"], continuation: "c1")
         queue.clear()
         #expect(queue == MusicQueue())
+        #expect(queue.source == nil)
+    }
+
+    // MARK: - Page source
+
+    private func makePageQueue(
+        _ list: [String],
+        tap: String,
+        browseId: String = "VLPL1",
+        continuation: String? = nil
+    ) -> MusicQueue {
+        var queue = MusicQueue()
+        queue.start(
+            page: list.map { MusicSamples.track($0) },
+            playing: MusicSamples.track(tap),
+            browseId: browseId,
+            continuation: continuation
+        )
+        return queue
+    }
+
+    @Test("a radio queue has a radio source and no source before anything is queued")
+    func radioSource() {
+        #expect(MusicQueue().source == nil)
+        var queue = MusicQueue()
+        queue.start(with: MusicSamples.track("a"))
+        #expect(queue.source == .radio(seedVideoId: "a"))
+    }
+
+    @Test("a page queue keeps the page's order, stands on the tapped track and leaves the earlier ones for Previous")
+    func pageStart() {
+        let queue = makePageQueue(["a", "b", "c", "d"], tap: "c", continuation: "t1")
+        #expect(ids(queue.tracks) == ["a", "b", "c", "d"])
+        #expect(queue.current?.videoId == "c")
+        #expect(ids(queue.upcoming) == ["d"])
+        #expect(queue.hasPrevious)
+        #expect(queue.hasNext)
+        #expect(queue.continuation == "t1")
+        #expect(queue.source == .page(browseId: "VLPL1"))
+        #expect(queue.seedVideoId == nil)
+    }
+
+    @Test("tapping the first row of a page leaves nothing to go back to")
+    func pageStartAtTop() {
+        let queue = makePageQueue(["a", "b"], tap: "a")
+        #expect(queue.current?.videoId == "a")
+        #expect(queue.hasPrevious == false)
+        #expect(queue.continuation == nil)
+    }
+
+    @Test("a tapped track the page does not list goes in front of the page")
+    func pageStartUnlistedTrack() {
+        let queue = makePageQueue(["a", "b"], tap: "z")
+        #expect(ids(queue.tracks) == ["z", "a", "b"])
+        #expect(queue.current?.videoId == "z")
+        #expect(queue.hasPrevious == false)
+    }
+
+    @Test("repeated rows of a page are queued once and the position is the first occurrence")
+    func pageStartDedupes() {
+        let queue = makePageQueue(["a", "b", "a", "c", "b"], tap: "b")
+        #expect(ids(queue.tracks) == ["a", "b", "c"])
+        #expect(queue.current?.videoId == "b")
+    }
+
+    @Test("an empty page still plays the tapped track")
+    func pageStartEmptyPage() {
+        let queue = makePageQueue([], tap: "z")
+        #expect(ids(queue.tracks) == ["z"])
+        #expect(queue.current?.videoId == "z")
+    }
+
+    @Test("starting a page replaces a radio queue completely, and a radio replaces a page")
+    func pageReplacesRadio() {
+        var queue = makeQueue(["r1", "r2", "r3"], continuation: "radio")
+        queue.start(page: MusicSamples.tracks("a", "b"), playing: MusicSamples.track("a"), browseId: "VLPL1", continuation: nil)
+        #expect(ids(queue.tracks) == ["a", "b"])
+        #expect(queue.continuation == nil)
+        #expect(queue.seedVideoId == nil)
+
+        queue.start(with: MusicSamples.track("z"))
+        #expect(queue.source == .radio(seedVideoId: "z"))
+        #expect(ids(queue.tracks) == ["z"])
+    }
+
+    @Test("a page queue asks for more when three or fewer tracks are left and it has a continuation")
+    func pageNeedsMore() {
+        var queue = makePageQueue(["a", "b", "c", "d", "e"], tap: "a", continuation: "t1")
+        #expect(queue.needsMore == false)
+        queue.advance()
+        #expect(queue.needsMore)
+        #expect(makePageQueue(["a", "b"], tap: "a").needsMore == false)
+    }
+
+    @Test("appended page tracks keep the page source and skip what is queued")
+    func pageAppend() {
+        var queue = makePageQueue(["a", "b"], tap: "a", continuation: "t1")
+        let added = queue.append(MusicSamples.tracks("b", "c"), continuation: "t2")
+        #expect(added == 1)
+        #expect(ids(queue.tracks) == ["a", "b", "c"])
+        #expect(queue.continuation == "t2")
+        #expect(queue.source == .page(browseId: "VLPL1"))
+        queue.append(MusicSamples.tracks("d"), continuation: nil)
+        #expect(queue.needsMore == false)
+        #expect(queue.source == .page(browseId: "VLPL1"))
+    }
+
+    @Test("dropping the continuation of a page queue keeps its source")
+    func pageClearContinuation() {
+        var queue = makePageQueue(["a", "b"], tap: "a", continuation: "t1")
+        queue.clearContinuation()
+        #expect(queue.continuation == nil)
+        #expect(queue.source == .page(browseId: "VLPL1"))
     }
 }

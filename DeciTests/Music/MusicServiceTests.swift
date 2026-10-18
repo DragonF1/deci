@@ -1165,6 +1165,468 @@ struct MusicServiceQueueTests {
     }
 }
 
+// MARK: - Page queue
+
+@MainActor
+@Suite("MusicService page queue")
+struct MusicServicePageQueueTests {
+    private static let browseId = "VLPL1"
+
+    private func page(_ ids: [String], continuation: String? = nil, browseId: String = Self.browseId) -> MusicBrowsePage {
+        MusicSamples.page(browseId, tracks: ids.map { MusicSamples.track($0, title: "Song \($0)") }, continuation: continuation)
+    }
+
+    /// Plays `tap` (the first row by default) from a page of `ids` and waits for the queue work.
+    private func startPage(_ h: Harness, _ ids: [String], tap: String? = nil, continuation: String? = nil) async {
+        let id = tap ?? ids[0]
+        h.service.play(MusicSamples.track(id, title: "Song \(id)"), in: page(ids, continuation: continuation))
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+    }
+
+    private func call(_ continuation: String, browseId: String = Self.browseId) -> FakeMusicBackend.MoreTracksCall {
+        FakeMusicBackend.MoreTracksCall(browseId: browseId, continuation: continuation)
+    }
+
+    @Test("a tapped row queues the page in its order, starts on that row and asks for no radio")
+    func pageOrder() async {
+        let h = Harness()
+        await startPage(h, ["a", "b", "c", "d", "e"], tap: "c")
+
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e"])
+        #expect(h.service.queue.current?.videoId == "c")
+        #expect(h.service.queue.source == .page(browseId: Self.browseId))
+        #expect(h.service.queue.seedVideoId == nil)
+        #expect(h.loadedIDs == ["c"])
+        #expect(h.player.nowPlaying?.videoId == "c")
+        #expect(h.service.canGoNext)
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+    }
+
+    @Test("next and a track ending walk down the page")
+    func nextWalksPage() async {
+        let h = Harness()
+        await startPage(h, ["a", "b", "c"])
+        h.service.next()
+        await h.settle()
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.loadedIDs == ["a", "b", "c"])
+        #expect(h.service.queue.current?.videoId == "c")
+        #expect(await h.backend.radioSeeds.isEmpty)
+    }
+
+    @Test("previous goes back into the page rows above the tapped one")
+    func previousGoesBack() async {
+        let h = Harness()
+        await startPage(h, ["a", "b", "c", "d"], tap: "c")
+        #expect(h.service.queue.hasPrevious)
+
+        h.service.previous()
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        h.service.previous()
+        await h.settle()
+
+        #expect(h.loadedIDs == ["c", "b", "a"])
+        #expect(h.service.queue.current?.videoId == "a")
+        #expect(h.service.queue.hasPrevious == false)
+        #expect(h.queuedIDs == ["a", "b", "c", "d"])
+    }
+
+    @Test("the queue stops at the end of the page and nothing else is asked for")
+    func stopsAtPageEnd() async {
+        let h = Harness()
+        await startPage(h, ["a", "b"], tap: "b")
+        #expect(h.service.canGoNext == false)
+
+        h.service.next()
+
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.service.queue.isEmpty)
+        #expect(h.loadedIDs == ["b"])
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+    }
+
+    @Test("a track ending at the end of the page leaves the player on the finished song")
+    func endsAtPageEnd() async {
+        let h = Harness()
+        await startPage(h, ["a", "b"], tap: "b")
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.loadedIDs == ["b"])
+        #expect(h.player.hasEnded)
+        #expect(await h.backend.radioSeeds.isEmpty)
+    }
+
+    @Test("a tapped row the page does not list is played first and the page follows it")
+    func unlistedRow() async {
+        let h = Harness()
+        await startPage(h, ["a", "b"], tap: "z")
+        #expect(h.queuedIDs == ["z", "a", "b"])
+        #expect(h.service.queue.current?.videoId == "z")
+        #expect(h.loadedIDs == ["z"])
+    }
+
+    @Test("more tracks are fetched once three or fewer are left, and not before")
+    func moreTracksAtThree() async {
+        let h = Harness()
+        await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("i", "j", "k"))
+        await startPage(h, ["a", "b", "c", "d", "e", "f", "g", "h"], continuation: "t1")
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+
+        for _ in 0..<3 { h.service.next() }
+        await h.settle()
+        #expect(h.service.queue.upcomingCount == 4)
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+
+        h.service.next()
+        await h.settle()
+
+        #expect(await h.backend.moreTracksCalls == [call("t1")])
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"])
+        #expect(h.service.queue.continuation == nil)
+        #expect(await h.backend.radioSeeds.isEmpty)
+    }
+
+    @Test("a short page with a continuation asks for more tracks at once")
+    func shortPageFetchesAtOnce() async {
+        let h = Harness()
+        await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("d", "e"))
+        await startPage(h, ["a", "b", "c"], continuation: "t1")
+
+        #expect(await h.backend.moreTracksCalls == [call("t1")])
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e"])
+        #expect(h.service.radioTask == nil)
+    }
+
+    @Test("a page without a continuation never asks for more tracks")
+    func noContinuation() async {
+        let h = Harness()
+        await startPage(h, ["a", "b", "c"])
+        h.service.next()
+        h.service.next()
+        await h.settle()
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+        #expect(h.service.radioTask == nil)
+    }
+
+    @Test("a page of repeats is followed by the next page at once, and repeats are not queued twice")
+    func repeatsAreDropped() async {
+        let h = Harness()
+        await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("b", "c"), next: "t2")
+        await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t2", tracks: MusicSamples.tracks("c", "d"))
+        await startPage(h, ["a", "b", "c"], continuation: "t1")
+
+        #expect(await h.backend.moreTracksCalls == [call("t1"), call("t2")])
+        #expect(h.queuedIDs == ["a", "b", "c", "d"])
+        #expect(h.service.queue.continuation == nil)
+    }
+
+    @Test("only one more-tracks fetch runs at a time")
+    func oneFetchAtATime() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: Self.browseId, continuation: "t1", gate)
+        await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("f", "g"))
+        await startPage(h, ["a", "b", "c", "d", "e"], continuation: "t1")
+        #expect(h.service.radioTask == nil)
+
+        h.service.next()
+        let inFlight = h.service.radioTask
+        #expect(inFlight != nil)
+        h.service.next()
+        h.service.next()
+        #expect(h.service.radioTask == inFlight)
+
+        await gate.open()
+        await inFlight?.value
+        await h.settle()
+
+        #expect(await h.backend.moreTracksCalls == [call("t1")])
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "g"])
+    }
+
+    @Test("a page that cannot be read or that the server rejects ends paging")
+    func hopelessPageEndsPaging() async {
+        let errors: [any Error] = [MusicError.parse("x"), MusicError.http(400), MusicError.http(404)]
+        for error in errors {
+            let h = Harness()
+            await h.backend.setMoreTracksError(browseId: Self.browseId, continuation: "t1", error)
+            await startPage(h, ["a", "b", "c"], continuation: "t1")
+            #expect(await h.backend.moreTracksCalls.count == 1)
+            #expect(h.service.queue.continuation == nil)
+
+            h.service.next()
+            await h.settle()
+
+            #expect(await h.backend.moreTracksCalls.count == 1)
+            #expect(h.service.lastError == nil)
+            #expect(h.queuedIDs == ["a", "b", "c"])
+        }
+    }
+
+    @Test("a server error or a dropped connection keeps the continuation for the next track")
+    func transientPageKeepsPaging() async {
+        let errors: [any Error] = [MusicError.http(503), URLError(.timedOut)]
+        for error in errors {
+            let h = Harness()
+            await h.backend.setMoreTracksError(browseId: Self.browseId, continuation: "t1", error)
+            await startPage(h, ["a", "b", "c"], continuation: "t1")
+            #expect(h.service.queue.continuation == "t1")
+
+            h.service.next()
+            await h.settle()
+
+            #expect(await h.backend.moreTracksCalls.count == 2)
+            #expect(h.service.lastError == nil)
+        }
+    }
+
+    @Test("a more-tracks fetch that finds the session dead signs out and stops paging")
+    func signedOutWhilePaging() async {
+        let h = Harness()
+        await h.backend.setMoreTracksError(browseId: Self.browseId, continuation: "t1", MusicError.signedOut)
+        await startPage(h, ["a", "b", "c"], continuation: "t1")
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(await h.backend.signOutCount == 1)
+        #expect(h.service.lastError == nil)
+        #expect(h.service.queue.continuation == nil)
+    }
+
+    @Test("tracks a replaced page was still fetching are ignored")
+    func staleMoreTracksIgnored() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: Self.browseId, continuation: "t1", gate)
+        await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("old1", "old2"))
+
+        h.service.play(MusicSamples.track("a"), in: page(["a", "b", "c"], continuation: "t1"))
+        let stale = h.service.radioTask
+        #expect(stale != nil)
+        h.service.play(MusicSamples.track("x"), in: page(["x", "y"], browseId: "VLPL2"))
+        await h.settle()
+        #expect(h.queuedIDs == ["x", "y"])
+
+        await gate.open()
+        await stale?.value
+
+        #expect(h.queuedIDs == ["x", "y"])
+        #expect(h.service.queue.source == .page(browseId: "VLPL2"))
+        #expect(h.service.queue.continuation == nil)
+    }
+
+    @Test("a radio the last queue was still fetching does not add to a page queue")
+    func staleRadioIgnored() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await h.backend.setRadioGate(seed: "a", gate)
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "r1", "r2"))
+
+        h.service.play(MusicSamples.track("a"))
+        let stale = h.service.radioTask
+        h.service.play(MusicSamples.track("p1"), in: page(["p1", "p2"]))
+        await h.settle()
+
+        await gate.open()
+        await stale?.value
+
+        #expect(h.queuedIDs == ["p1", "p2"])
+        #expect(h.service.queue.source == .page(browseId: Self.browseId))
+    }
+
+    @Test("playing a single track after a page goes back to a radio queue")
+    func radioAfterPage() async {
+        let h = Harness()
+        await h.backend.setRadio(seed: "z", tracks: MusicSamples.tracks("z", "r1"))
+        await startPage(h, ["a", "b", "c"], continuation: "t1")
+
+        h.service.play(MusicSamples.track("z"))
+        await h.settle()
+
+        #expect(h.queuedIDs == ["z", "r1"])
+        #expect(h.service.queue.source == .radio(seedVideoId: "z"))
+        #expect(await h.backend.radioSeeds == ["z"])
+    }
+
+    @Test("tapping another row of the same page restarts the queue on that row")
+    func tapAnotherRow() async {
+        let h = Harness()
+        await startPage(h, ["a", "b", "c", "d"], tap: "b")
+        await startPage(h, ["a", "b", "c", "d"], tap: "d")
+
+        #expect(h.queuedIDs == ["a", "b", "c", "d"])
+        #expect(h.service.queue.current?.videoId == "d")
+        #expect(h.loadedIDs == ["b", "d"])
+        #expect(await h.backend.radioSeeds.isEmpty)
+    }
+}
+
+// MARK: - Browse reset
+
+@MainActor
+@Suite("MusicService browse")
+struct MusicServiceBrowseTests {
+    private static let current = [StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))]
+    private static let picked = [StoredCookie(MusicSamples.cookie("__Secure-3PAPISID", domain: ".youtube.com"))]
+
+    /// A signed-in service whose Home has loaded one shelf and whose Library has opened one page.
+    private func loadedHarness() async -> Harness {
+        let h = Harness(signedIn: true)
+        await h.backend.setSessionCookies(Self.current)
+        await h.backend.setChannelIdentity(false)
+        await h.backend.setHome(shelves: [MusicSamples.shelf("Quick picks", "VLPL1")])
+        await h.backend.setLibrary(.playlists, items: MusicSamples.collections("VLPL2"))
+        await h.service.refreshAuth()
+        await h.service.identityTask?.value
+        h.service.browse.loadHomeIfNeeded()
+        h.service.browse.loadLibraryIfNeeded(.playlists)
+        let loaded = await h.eventually {
+            h.service.browse.home == .loaded([MusicSamples.shelf("Quick picks", "VLPL1")])
+                && h.service.browse.libraryState(.playlists) == .loaded(MusicSamples.collections("VLPL2"))
+        }
+        #expect(loaded)
+        h.service.browse.tab = .library
+        h.service.browse.librarySection = .albums
+        return h
+    }
+
+    private func isEmpty(_ browse: MusicBrowseStore) -> Bool {
+        browse.home == .idle && browse.libraryState(.playlists) == .idle && browse.path.isEmpty && browse.pages.isEmpty
+    }
+
+    @Test("the service owns a store that loads through its backend")
+    func storeLoads() async {
+        let h = await loadedHarness()
+        #expect(await h.backend.homeCallCount == 1)
+        #expect(await h.backend.libraryCalls == [.playlists])
+    }
+
+    @Test("signOut empties Home, Library and the open pages but keeps the chosen tab")
+    func signOutResetsBrowse() async {
+        let h = await loadedHarness()
+        h.service.browse.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.eventually { h.service.browse.pages["VLPL1"] != nil })
+
+        h.service.signOut()
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(isEmpty(h.service.browse))
+        #expect(h.service.browse.tab == .library)
+        #expect(h.service.browse.librarySection == .albums)
+    }
+
+    @Test("a loaded Home is not shown again after signing out and back in")
+    func signOutThenLoadAgain() async {
+        let h = await loadedHarness()
+        h.service.signOut()
+        await h.service.signOutTask?.value
+        await h.backend.setHome(shelves: [MusicSamples.shelf("Other account", "VLPL9")])
+
+        h.service.browse.loadHomeIfNeeded()
+        let reloaded = await h.eventually { h.service.browse.home == .loaded([MusicSamples.shelf("Other account", "VLPL9")]) }
+
+        #expect(reloaded)
+        #expect(await h.backend.homeCallCount == 2)
+    }
+
+    @Test("a channel switch empties what the old channel loaded")
+    func channelSwitchResetsBrowse() async {
+        let h = await loadedHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(isEmpty(h.service.browse) == false)
+
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+        await h.service.identityTask?.value
+
+        #expect(await h.backend.signInCookies == [Self.picked])
+        #expect(h.service.authState == .signedIn)
+        #expect(isEmpty(h.service.browse))
+        #expect(h.service.browse.tab == .library)
+    }
+
+    @Test("a closed channel picker keeps what is loaded")
+    func closedPickerKeepsBrowse() async {
+        let h = await loadedHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(nil)
+        await h.service.channelSwitchTask?.value
+
+        #expect(isEmpty(h.service.browse) == false)
+    }
+
+    @Test("a failed channel switch keeps what is loaded")
+    func failedSwitchKeepsBrowse() async {
+        let h = await loadedHarness()
+        await h.backend.setSignInError(MusicError.signedOut)
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+
+        #expect(h.service.authState == .signedIn)
+        #expect(isEmpty(h.service.browse) == false)
+    }
+
+    @Test("a Home that finds the session dead signs the service out and empties the store")
+    func browseSignedOut() async {
+        let h = await loadedHarness()
+        await h.backend.setHomeError(MusicError.signedOut)
+        h.service.browse.reloadHome()
+        #expect(await h.eventually { h.service.authState == .signedOut })
+        await h.service.signOutTask?.value
+
+        #expect(await h.backend.signOutCount == 1)
+        #expect(h.service.lastError == nil)
+        #expect(isEmpty(h.service.browse))
+    }
+
+    @Test("a Library page that finds the session dead signs the service out too")
+    func libraryPageSignedOut() async {
+        let h = await loadedHarness()
+        await h.backend.setPageError("VLPL1", MusicError.signedOut)
+        h.service.browse.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.eventually { h.service.authState == .signedOut })
+        await h.service.signOutTask?.value
+
+        #expect(isEmpty(h.service.browse))
+    }
+
+    @Test("a Home that fails for any other reason leaves the session and the store's error alone")
+    func otherBrowseErrorKeepsSession() async {
+        let h = await loadedHarness()
+        await h.backend.setHomeError(URLError(.notConnectedToInternet))
+        h.service.browse.reloadHome()
+        #expect(await h.eventually {
+            if case .failed = h.service.browse.home { return true }
+            return false
+        })
+
+        #expect(h.service.authState == .signedIn)
+        #expect(await h.backend.signOutCount == 0)
+        #expect(h.service.browse.libraryState(.playlists) == .loaded(MusicSamples.collections("VLPL2")))
+    }
+
+    @Test("a service with no sign-in never asks the backend for Home on its own")
+    func noAutoLoad() async {
+        let h = Harness(signedIn: false)
+        await h.service.refreshAuth()
+        #expect(await h.backend.homeCallCount == 0)
+        #expect(h.service.browse.home == .idle)
+    }
+}
+
 // MARK: - Waiting for the radio
 
 @MainActor

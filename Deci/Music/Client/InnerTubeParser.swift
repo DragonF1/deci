@@ -139,7 +139,7 @@ enum InnerTubeParser {
         return renderers.compactMap(track(from:))
     }
 
-    private static func collect(_ key: String, in node: Any, into found: inout [[String: Any]]) {
+    static func collect(_ key: String, in node: Any, into found: inout [[String: Any]]) {
         if let dictionary = node as? [String: Any] {
             if let match = dictionary[key] as? [String: Any] {
                 found.append(match)
@@ -151,7 +151,7 @@ enum InnerTubeParser {
         }
     }
 
-    private static func track(from renderer: [String: Any]) -> MusicTrack? {
+    static func track(from renderer: [String: Any]) -> MusicTrack? {
         let columns = (renderer["flexColumns"] as? [[String: Any]] ?? []).map { column in
             ((column["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any])?["text"] as? [String: Any])?["runs"] as? [[String: Any]] ?? []
         }
@@ -160,23 +160,30 @@ enum InnerTubeParser {
         guard !title.isEmpty else { return nil }
 
         let subtitle = parseSubtitle(columns.count > 1 ? columns[1] : [])
+        // Playlist and album rows keep the length in a fixed column and the album in a later flex
+        // column (the third, or the fourth after a play count on an artist page); search rows carry
+        // both in the second column instead.
+        let fixed = (renderer["fixedColumns"] as? [[String: Any]])?.first
+        let fixedRuns = runs(path(fixed, "musicResponsiveListItemFixedColumnRenderer", "text"))
+        let laterColumnAlbum = columns.dropFirst(2).first(where: isAlbumSegment).flatMap(text(of:))
         return MusicTrack(
             videoId: videoId,
             title: title,
             artist: subtitle.artists.joined(separator: ", "),
-            album: subtitle.album,
-            durationSeconds: subtitle.durationSeconds,
+            album: subtitle.album ?? laterColumnAlbum,
+            durationSeconds: subtitle.durationSeconds ?? duration(of: fixedRuns),
             thumbnailURL: thumbnailURL(in: renderer)
         )
     }
 
-    private static func videoId(in renderer: [String: Any], titleRuns: [[String: Any]]) -> String? {
+    static func videoId(in renderer: [String: Any], titleRuns: [[String: Any]]) -> String? {
         if let id = string((renderer["playlistItemData"] as? [String: Any])?["videoId"]) { return id }
         let endpoint = (titleRuns.first?["navigationEndpoint"] as? [String: Any])?["watchEndpoint"] as? [String: Any]
-        return string(endpoint?["videoId"])
+        if let id = string(endpoint?["videoId"]) { return id }
+        return string(path(renderer, "overlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint", "watchEndpoint", "videoId"))
     }
 
-    private struct Subtitle {
+    struct Subtitle {
         var artists: [String] = []
         var album: String?
         var durationSeconds: Int?
@@ -184,7 +191,7 @@ enum InnerTubeParser {
 
     /// Splits "Artist, Artist & Artist • Album • 3:05" into its parts. The bullet runs separate
     /// segments; the artist segment also has comma and ampersand separator runs.
-    private static func parseSubtitle(_ runs: [[String: Any]]) -> Subtitle {
+    static func parseSubtitle(_ runs: [[String: Any]]) -> Subtitle {
         var segments = bulletSegments(of: runs)
 
         var result = Subtitle()
@@ -205,7 +212,7 @@ enum InnerTubeParser {
         return result
     }
 
-    private static func bulletSegments(of runs: [[String: Any]]) -> [[[String: Any]]] {
+    static func bulletSegments(of runs: [[String: Any]]) -> [[[String: Any]]] {
         var segments: [[[String: Any]]] = [[]]
         for run in runs {
             if (run["text"] as? String)?.trimmingCharacters(in: .whitespaces) == "\u{2022}" {
@@ -218,7 +225,7 @@ enum InnerTubeParser {
         return segments
     }
 
-    private static func artistNames(in segment: [[String: Any]]) -> [String] {
+    static func artistNames(in segment: [[String: Any]]) -> [String] {
         segment.compactMap { run in
             guard let text = (run["text"] as? String)?.trimmingCharacters(in: .whitespaces),
                   !text.isEmpty, text != ",", text != "&"
@@ -227,12 +234,12 @@ enum InnerTubeParser {
         }
     }
 
-    private static func text(of segment: [[String: Any]]) -> String? {
+    static func text(of segment: [[String: Any]]) -> String? {
         let joined = segment.compactMap { $0["text"] as? String }.joined().trimmingCharacters(in: .whitespaces)
         return joined.isEmpty ? nil : joined
     }
 
-    private static func isAlbumSegment(_ segment: [[String: Any]]) -> Bool {
+    static func isAlbumSegment(_ segment: [[String: Any]]) -> Bool {
         segment.contains { run in
             let browse = (run["navigationEndpoint"] as? [String: Any])?["browseEndpoint"] as? [String: Any]
             let configs = browse?["browseEndpointContextSupportedConfigs"] as? [String: Any]
@@ -242,13 +249,13 @@ enum InnerTubeParser {
     }
 
     /// "3:05" or "1:02:03" in seconds.
-    private static func duration(of segment: [[String: Any]]) -> Int? {
+    static func duration(of segment: [[String: Any]]) -> Int? {
         guard let text = text(of: segment), text.wholeMatch(of: /\d{1,2}(?::\d{2}){1,2}/) != nil else { return nil }
         return text.split(separator: ":").reduce(0) { $0 * 60 + (Int($1) ?? 0) }
     }
 
     /// The thumbnail nearest 120 px, which is what a list row needs.
-    private static func thumbnailURL(in renderer: [String: Any]) -> URL? {
+    static func thumbnailURL(in renderer: [String: Any]) -> URL? {
         let thumbnail = ((renderer["thumbnail"] as? [String: Any])?["musicThumbnailRenderer"] as? [String: Any])?["thumbnail"] as? [String: Any]
         let candidates = thumbnail?["thumbnails"] as? [[String: Any]] ?? []
         let best = candidates.min { lhs, rhs in
@@ -317,7 +324,7 @@ enum InnerTubeParser {
         return string(best?["url"]).flatMap { URL(string: $0) }
     }
 
-    private static func runs(_ text: Any?) -> [[String: Any]] {
+    static func runs(_ text: Any?) -> [[String: Any]] {
         (text as? [String: Any])?["runs"] as? [[String: Any]] ?? []
     }
 
@@ -367,25 +374,25 @@ enum InnerTubeParser {
 
     // MARK: - JSON helpers
 
-    private static func jsonObject(_ data: Data, what: String) throws -> [String: Any] {
+    static func jsonObject(_ data: Data, what: String) throws -> [String: Any] {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw MusicError.parse("\(what) is not a JSON object")
         }
         return object
     }
 
-    private static func path(_ node: Any?, _ keys: String...) -> Any? {
+    static func path(_ node: Any?, _ keys: String...) -> Any? {
         var current = node
         for key in keys { current = (current as? [String: Any])?[key] }
         return current
     }
 
-    private static func string(_ value: Any?) -> String? {
+    static func string(_ value: Any?) -> String? {
         guard let text = value as? String, !text.isEmpty else { return nil }
         return text
     }
 
-    private static func int(_ value: Any?) -> Int? {
+    static func int(_ value: Any?) -> Int? {
         if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { return number.intValue }
         if let text = value as? String { return Int(text) }
         return nil

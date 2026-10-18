@@ -1,0 +1,153 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "continuationContents": {
+  "musicPlaylistShelfContinuation": {
+   "contents": [
+    {
+     "musicResponsiveListItemRenderer": {
+      "thumbnail": {
+       "musicThumbnailRenderer": {
+        "thumbnail": {
+         "thumbnails": [
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-fixtureVid0001=w60-h60-l90-rj",
+           "width": 60,
+           "height": 60
+          },
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-fixtureVid0001=w226-h226-l90-rj",
+           "width": 226,
+           "height": 226
+          }
+         ]
+        }
+       }
+      },
+      "playlistItemData": {
+       "videoId": "fixtureVid0001"
+      },
+      "flexColumns": [
+       {
+        "musicResponsiveListItemFlexColumnRenderer": {
+         "text": {
+          "runs": [
+           {
+            "text": "One More Time",
+            "navigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "fixtureVid0001"
+             }
+            }
+           }
+          ]
+         }
+        }
+       },
+       {
+        "musicResponsiveListItemFlexColumnRenderer": {
+         "text": {
+          "runs": [
+           {
+            "text": "Daft Punk"
+           }
+          ]
+         }
+        }
+       }
+      ],
+      "fixedColumns": [
+       {
+        "musicResponsiveListItemFixedColumnRenderer": {
+         "text": {
+          "runs": [
+           {
+            "text": "5:20"
+           }
+          ]
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "musicResponsiveListItemRenderer": {
+      "thumbnail": {
+       "musicThumbnailRenderer": {
+        "thumbnail": {
+         "thumbnails": [
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-fixtureVid0002=w60-h60-l90-rj",
+           "width": 60,
+           "height": 60
+          },
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-fixtureVid0002=w226-h226-l90-rj",
+           "width": 226,
+           "height": 226
+          }
+         ]
+        }
+       }
+      },
+      "playlistItemData": {
+       "videoId": "fixtureVid0002"
+      },
+      "flexColumns": [
+       {
+        "musicResponsiveListItemFlexColumnRenderer": {
+         "text": {
+          "runs": [
+           {
+            "text": "Aerodynamic",
+            "navigationEndpoint": {
+             "watchEndpoint": {
+              "videoId": "fixtureVid0002"
+             }
+            }
+           }
+          ]
+         }
+        }
+       },
+       {
+        "musicResponsiveListItemFlexColumnRenderer": {
+         "text": {
+          "runs": [
+           {
+            "text": "Daft Punk"
+           }
+          ]
+         }
+        }
+       }
+      ],
+      "fixedColumns": [
+       {
+        "musicResponsiveListItemFixedColumnRenderer": {
+         "text": {
+          "runs": [
+           {
+            "text": "3:32"
+           }
+          ]
+         }
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "continuations": [
+    {
+     "nextContinuationData": {
+      "continuation": "FIXTURE_TRACKS_NEXT2%3D",
+      "clickTrackingParams": "SCRUBBED"
+     }
+    }
+   ]
+  }
+ }
+}

@@ -38,6 +38,16 @@ actor FakeMusicBackend: MusicBackend {
         let continuation: String
     }
 
+    nonisolated struct MoreLibraryCall: Hashable, Sendable {
+        let section: MusicLibrarySection
+        let continuation: String
+    }
+
+    nonisolated struct MoreTracksCall: Hashable, Sendable {
+        let browseId: String
+        let continuation: String
+    }
+
     private var signedIn: Bool
     private var signInError: (any Error)?
     private var searchResults: [String: [Deci.MusicTrack]] = [:]
@@ -54,9 +64,33 @@ actor FakeMusicBackend: MusicBackend {
     private var morePages: [MoreRadioCall: MusicQueuePage] = [:]
     private var moreErrors: [MoreRadioCall: any Error] = [:]
     private var moreGates: [MoreRadioCall: MusicTestGate] = [:]
+    private var homePage = MusicHomePage(shelves: [], continuation: nil)
+    private var homeError: (any Error)?
+    private var homeGate: MusicTestGate?
+    private var moreHomePages: [String: MusicHomePage] = [:]
+    private var moreHomeErrors: [String: any Error] = [:]
+    private var moreHomeGates: [String: MusicTestGate] = [:]
+    private var libraryLists: [MusicLibrarySection: MusicCollectionList] = [:]
+    private var libraryErrors: [MusicLibrarySection: any Error] = [:]
+    private var libraryGates: [MusicLibrarySection: MusicTestGate] = [:]
+    private var moreLibraryLists: [MoreLibraryCall: MusicCollectionList] = [:]
+    private var moreLibraryErrors: [MoreLibraryCall: any Error] = [:]
+    private var moreLibraryGates: [MoreLibraryCall: MusicTestGate] = [:]
+    private var browsePages: [String: MusicBrowsePage] = [:]
+    private var pageErrors: [String: any Error] = [:]
+    private var pageGates: [String: MusicTestGate] = [:]
+    private var moreTracksPages: [MoreTracksCall: MusicQueuePage] = [:]
+    private var moreTracksErrors: [MoreTracksCall: any Error] = [:]
+    private var moreTracksGates: [MoreTracksCall: MusicTestGate] = [:]
 
     private(set) var radioSeeds: [String] = []
     private(set) var moreRadioCalls: [MoreRadioCall] = []
+    private(set) var homeCallCount = 0
+    private(set) var moreHomeCalls: [String] = []
+    private(set) var libraryCalls: [MusicLibrarySection] = []
+    private(set) var moreLibraryCalls: [MoreLibraryCall] = []
+    private(set) var pageCalls: [String] = []
+    private(set) var moreTracksCalls: [MoreTracksCall] = []
     private(set) var searchedQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
     private(set) var reportAttempts: [Report] = []
@@ -102,6 +136,47 @@ actor FakeMusicBackend: MusicBackend {
         moreGates[MoreRadioCall(seed: seed, continuation: continuation)] = gate
     }
 
+    // Browse scripting. An unscripted call answers with an empty result. A gate holds that call
+    // until it is opened; passing nil removes a gate or an error.
+    func setHome(shelves: [MusicShelf], continuation: String? = nil) {
+        homePage = MusicHomePage(shelves: shelves, continuation: continuation)
+    }
+    func setHomeError(_ error: (any Error)?) { homeError = error }
+    func setHomeGate(_ gate: MusicTestGate?) { homeGate = gate }
+    func setMoreHome(continuation: String, shelves: [MusicShelf], next: String? = nil) {
+        moreHomePages[continuation] = MusicHomePage(shelves: shelves, continuation: next)
+    }
+    func setMoreHomeError(continuation: String, _ error: (any Error)?) { moreHomeErrors[continuation] = error }
+    func setMoreHomeGate(continuation: String, _ gate: MusicTestGate?) { moreHomeGates[continuation] = gate }
+
+    func setLibrary(_ section: MusicLibrarySection, items: [MusicCollection], continuation: String? = nil) {
+        libraryLists[section] = MusicCollectionList(items: items, continuation: continuation)
+    }
+    func setLibraryError(_ section: MusicLibrarySection, _ error: (any Error)?) { libraryErrors[section] = error }
+    func setLibraryGate(_ section: MusicLibrarySection, _ gate: MusicTestGate?) { libraryGates[section] = gate }
+    func setMoreLibrary(_ section: MusicLibrarySection, continuation: String, items: [MusicCollection], next: String? = nil) {
+        moreLibraryLists[MoreLibraryCall(section: section, continuation: continuation)] = MusicCollectionList(items: items, continuation: next)
+    }
+    func setMoreLibraryError(_ section: MusicLibrarySection, continuation: String, _ error: (any Error)?) {
+        moreLibraryErrors[MoreLibraryCall(section: section, continuation: continuation)] = error
+    }
+    func setMoreLibraryGate(_ section: MusicLibrarySection, continuation: String, _ gate: MusicTestGate?) {
+        moreLibraryGates[MoreLibraryCall(section: section, continuation: continuation)] = gate
+    }
+
+    func setPage(_ page: MusicBrowsePage) { browsePages[page.browseId] = page }
+    func setPageError(_ browseId: String, _ error: (any Error)?) { pageErrors[browseId] = error }
+    func setPageGate(_ browseId: String, _ gate: MusicTestGate?) { pageGates[browseId] = gate }
+    func setMoreTracks(browseId: String, continuation: String, tracks: [Deci.MusicTrack], next: String? = nil) {
+        moreTracksPages[MoreTracksCall(browseId: browseId, continuation: continuation)] = MusicQueuePage(tracks: tracks, continuation: next)
+    }
+    func setMoreTracksError(browseId: String, continuation: String, _ error: (any Error)?) {
+        moreTracksErrors[MoreTracksCall(browseId: browseId, continuation: continuation)] = error
+    }
+    func setMoreTracksGate(browseId: String, continuation: String, _ gate: MusicTestGate?) {
+        moreTracksGates[MoreTracksCall(browseId: browseId, continuation: continuation)] = gate
+    }
+
     // MARK: MusicBackend
 
     func isSignedIn() async -> Bool { signedIn }
@@ -121,25 +196,62 @@ actor FakeMusicBackend: MusicBackend {
 
     func sessionCookies() async -> [StoredCookie] { currentCookies }
 
-    // Phase 3 contract stubs: the backend work replaces these with configurable fakes.
-    func home() async throws -> MusicHomePage { MusicHomePage(shelves: [], continuation: nil) }
+    // A browse call answers with what was scripted when it was made, even if a gate holds it while
+    // the test scripts something else: a slow server does not look at the request again.
+    func home() async throws -> MusicHomePage {
+        homeCallCount += 1
+        let gate = homeGate, error = homeError, page = homePage
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return page
+    }
 
-    func moreHome(continuation: String) async throws -> MusicHomePage { MusicHomePage(shelves: [], continuation: nil) }
+    func moreHome(continuation: String) async throws -> MusicHomePage {
+        moreHomeCalls.append(continuation)
+        let gate = moreHomeGates[continuation], error = moreHomeErrors[continuation]
+        let page = moreHomePages[continuation] ?? MusicHomePage(shelves: [], continuation: nil)
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return page
+    }
 
     func library(_ section: MusicLibrarySection) async throws -> MusicCollectionList {
-        MusicCollectionList(items: [], continuation: nil)
+        libraryCalls.append(section)
+        let gate = libraryGates[section], error = libraryErrors[section]
+        let list = libraryLists[section] ?? MusicCollectionList(items: [], continuation: nil)
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return list
     }
 
     func moreLibrary(_ section: MusicLibrarySection, continuation: String) async throws -> MusicCollectionList {
-        MusicCollectionList(items: [], continuation: nil)
+        let call = MoreLibraryCall(section: section, continuation: continuation)
+        moreLibraryCalls.append(call)
+        let gate = moreLibraryGates[call], error = moreLibraryErrors[call]
+        let list = moreLibraryLists[call] ?? MusicCollectionList(items: [], continuation: nil)
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return list
     }
 
     func page(browseId: String) async throws -> MusicBrowsePage {
-        MusicBrowsePage(browseId: browseId, title: "", subtitle: nil, thumbnailURL: nil, tracks: [], continuation: nil, shelves: [])
+        pageCalls.append(browseId)
+        let gate = pageGates[browseId], error = pageErrors[browseId]
+        let page = browsePages[browseId]
+            ?? MusicBrowsePage(browseId: browseId, title: "", subtitle: nil, thumbnailURL: nil, tracks: [], continuation: nil, shelves: [])
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return page
     }
 
     func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage {
-        MusicQueuePage(tracks: [], continuation: nil)
+        let call = MoreTracksCall(browseId: browseId, continuation: continuation)
+        moreTracksCalls.append(call)
+        let gate = moreTracksGates[call], error = moreTracksErrors[call]
+        let page = moreTracksPages[call] ?? MusicQueuePage(tracks: [], continuation: nil)
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return page
     }
 
     func search(_ query: String) async throws -> [Deci.MusicTrack] {
@@ -262,6 +374,41 @@ nonisolated enum MusicSamples {
 
     static func tracks(_ ids: String...) -> [Deci.MusicTrack] {
         ids.map { track($0, title: "Song \($0)") }
+    }
+
+    static func collection(
+        _ browseId: String,
+        kind: MusicCollection.Kind = .playlist,
+        title: String? = nil,
+        subtitle: String = "Playlist"
+    ) -> MusicCollection {
+        MusicCollection(browseId: browseId, kind: kind, title: title ?? "Title \(browseId)", subtitle: subtitle, thumbnailURL: nil)
+    }
+
+    static func collections(_ ids: String...) -> [MusicCollection] {
+        ids.map { collection($0) }
+    }
+
+    static func shelf(_ title: String, _ ids: String...) -> MusicShelf {
+        MusicShelf(title: title, items: ids.map { .collection(collection($0)) })
+    }
+
+    static func page(
+        _ browseId: String,
+        tracks: [Deci.MusicTrack] = [],
+        continuation: String? = nil,
+        title: String = "Page",
+        shelves: [MusicShelf] = []
+    ) -> MusicBrowsePage {
+        MusicBrowsePage(
+            browseId: browseId,
+            title: title,
+            subtitle: nil,
+            thumbnailURL: nil,
+            tracks: tracks,
+            continuation: continuation,
+            shelves: shelves
+        )
     }
 
     static func stream(

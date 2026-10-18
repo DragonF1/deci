@@ -1,0 +1,143 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "continuationContents": {
+  "gridContinuation": {
+   "items": [
+    {
+     "musicTwoRowItemRenderer": {
+      "thumbnailRenderer": {
+       "musicThumbnailRenderer": {
+        "thumbnail": {
+         "thumbnails": [
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-workout=w226-h226-l90-rj",
+           "width": 226,
+           "height": 226
+          },
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-workout=w544-h544-l90-rj",
+           "width": 544,
+           "height": 544
+          }
+         ]
+        }
+       }
+      },
+      "title": {
+       "runs": [
+        {
+         "text": "Workout",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "VLPLfixtureWorkout0000000000000000",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_PLAYLIST"
+            }
+           }
+          }
+         }
+        }
+       ]
+      },
+      "subtitle": {
+       "runs": [
+        {
+         "text": "Playlist"
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "30 songs"
+        }
+       ]
+      },
+      "navigationEndpoint": {
+       "browseEndpoint": {
+        "browseId": "VLPLfixtureWorkout0000000000000000",
+        "browseEndpointContextSupportedConfigs": {
+         "browseEndpointContextMusicConfig": {
+          "pageType": "MUSIC_PAGE_TYPE_PLAYLIST"
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "musicTwoRowItemRenderer": {
+      "thumbnailRenderer": {
+       "musicThumbnailRenderer": {
+        "thumbnail": {
+         "thumbnails": [
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-focus=w226-h226-l90-rj",
+           "width": 226,
+           "height": 226
+          },
+          {
+           "url": "https://lh3.googleusercontent.com/fixture-focus=w544-h544-l90-rj",
+           "width": 544,
+           "height": 544
+          }
+         ]
+        }
+       }
+      },
+      "title": {
+       "runs": [
+        {
+         "text": "Focus",
+         "navigationEndpoint": {
+          "browseEndpoint": {
+           "browseId": "VLPLfixtureFocus00000000000000000000",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_PLAYLIST"
+            }
+           }
+          }
+         }
+        }
+       ]
+      },
+      "subtitle": {
+       "runs": [
+        {
+         "text": "Playlist"
+        },
+        {
+         "text": " • "
+        },
+        {
+         "text": "17 songs"
+        }
+       ]
+      },
+      "navigationEndpoint": {
+       "browseEndpoint": {
+        "browseId": "VLPLfixtureFocus00000000000000000000",
+        "browseEndpointContextSupportedConfigs": {
+         "browseEndpointContextMusicConfig": {
+          "pageType": "MUSIC_PAGE_TYPE_PLAYLIST"
+         }
+        }
+       }
+      }
+     }
+    }
+   ],
+   "continuations": [
+    {
+     "nextContinuationData": {
+      "continuation": "FIXTURE_LIB_PLAYLISTS_NEXT2%3D",
+      "clickTrackingParams": "SCRUBBED"
+     }
+    }
+   ]
+  }
+ }
+}

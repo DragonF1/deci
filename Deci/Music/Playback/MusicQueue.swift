@@ -1,18 +1,29 @@
 // Deci/Music/Playback/MusicQueue.swift
 import Foundation
 
-/// The play order for the Music tab: the tapped track first, then radio pages as they arrive.
+/// The play order for the Music tab: the tapped track first, then radio pages as they arrive,
+/// or a playlist or album page in its own order.
 /// A plain value; `MusicService` decides when to fetch and what to play.
 struct MusicQueue: Equatable {
     /// Fetch the next page when this many tracks, or fewer, are left after the current one.
     static let refillThreshold = 3
 
+    /// Where the queue's later pages come from.
+    enum Source: Equatable {
+        /// The radio seeded from this track; later pages are `moreRadio`.
+        case radio(seedVideoId: String)
+        /// A playlist or album page; later pages are `moreTracks`.
+        case page(browseId: String)
+    }
+
     private(set) var tracks: [MusicTrack] = []
     private(set) var currentIndex: Int?
-    /// Token for the next radio page. Nil before the first page and after the last one.
+    /// Token for the next page. Nil before the first radio page and after the last page of either source.
     private(set) var continuation: String?
-    /// The track the radio was seeded from; every later page is requested against it.
+    /// The track the radio was seeded from; every later page is requested against it. Nil for a page queue.
     private(set) var seedVideoId: String?
+    /// What `continuation` continues. Nil for an empty queue.
+    private(set) var source: Source?
 
     var isEmpty: Bool { tracks.isEmpty }
     var current: MusicTrack? { currentIndex.map { tracks[$0] } }
@@ -40,6 +51,20 @@ struct MusicQueue: Equatable {
         currentIndex = 0
         continuation = nil
         seedVideoId = track.videoId
+        source = .radio(seedVideoId: track.videoId)
+    }
+
+    /// Replaces the queue with a page's tracks in page order, positioned on `track`. The tracks
+    /// before it stay for Previous. A track the page does not list is put in front of it.
+    mutating func start(page list: [MusicTrack], playing track: MusicTrack, browseId: String, continuation: String?) {
+        var seen = Set<String>()
+        var ordered = list.filter { seen.insert($0.videoId).inserted }
+        if !seen.contains(track.videoId) { ordered.insert(track, at: 0) }
+        tracks = ordered
+        currentIndex = ordered.firstIndex { $0.videoId == track.videoId }
+        self.continuation = continuation
+        seedVideoId = nil
+        source = .page(browseId: browseId)
     }
 
     /// Adds the tracks that are not queued yet, in order, and keeps the page's continuation.
