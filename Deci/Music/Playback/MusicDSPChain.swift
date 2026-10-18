@@ -51,6 +51,8 @@ final class MusicDSPChain: @unchecked Sendable {
     private let peakBits = Atomic<UInt32>(0)
     private let frameCount = Atomic<Int>(0)
     private let rateBits: Atomic<UInt64>
+    /// The rate the newest lease asked the processors to be rebuilt for.
+    private let requestedRateBits: Atomic<UInt64>
     private let tokenSource = Atomic<Int>(0)
     private let ownerToken = Atomic<Int>(0)
     private let renderBusy = Atomic<Bool>(false)
@@ -69,6 +71,7 @@ final class MusicDSPChain: @unchecked Sendable {
         loudnessCompensator = LoudnessCompensator(sampleRate: rate)
         loudnessEqualizer = LoudnessEqualizer(settings: LoudnessEqualizerSettings(), sampleRate: Float(rate))
         rateBits = Atomic<UInt64>(rate.bitPattern)
+        requestedRateBits = Atomic<UInt64>(rate.bitPattern)
     }
 
     private static func isUsable(_ rate: Double) -> Bool {
@@ -144,9 +147,16 @@ final class MusicDSPChain: @unchecked Sendable {
 
     /// Asks for the processors to be rebuilt for a stream at `rate`. Never blocks the caller: the rebuild runs on the
     /// main queue, and the renderer bypasses the rate-dependent stages until it has finished.
+    ///
+    /// Every lease asks, even at the rate the processors already have, and a queued rebuild goes to the newest rate
+    /// asked for, not the one that queued it: an item that comes right after one at another rate must not find the
+    /// processors rebuilt for the earlier rate (the rebuild is a no-op when the rate already matches).
     fileprivate func requestRebuild(forRate rate: Double) {
+        requestedRateBits.store(rate.bitPattern, ordering: .releasing)
         DispatchQueue.main.async { [self] in
-            MainActor.assumeIsolated { rebuildProcessors(forRate: rate) }
+            MainActor.assumeIsolated {
+                rebuildProcessors(forRate: Double(bitPattern: requestedRateBits.load(ordering: .acquiring)))
+            }
         }
     }
 
@@ -181,12 +191,14 @@ final class MusicDSPChain: @unchecked Sendable {
         _ = ownerToken.compareExchange(expected: token, desired: 0, ordering: .acquiringAndReleasing)
     }
 
+    #if DEBUG
     /// Test hook: makes every render started inside `body` find the chain busy.
     func holdingRenderLock(_ body: () -> Void) {
         renderBusy.store(true, ordering: .releasing)
         body()
         renderBusy.store(false, ordering: .releasing)
     }
+    #endif
 
     // MARK: - Render (any thread, real-time safe)
 
@@ -390,7 +402,7 @@ final class MusicRenderLease: @unchecked Sendable {
     fileprivate let scratchFrames: Int
 
     /// Stereo planar buffers are interleaved into the scratch, allocated here: `maxFrames * 2` samples.
-    /// A stream whose rate differs from the processors' triggers a rebuild on the main queue (never waited for).
+    /// The processors are rebuilt on the main queue for the stream's rate when it differs (never waited for).
     init(chain: MusicDSPChain, sampleRate: Double, maxFrames: Int) {
         self.chain = chain
         let usable = sampleRate.isFinite && sampleRate > 0
@@ -402,7 +414,7 @@ final class MusicRenderLease: @unchecked Sendable {
         scratch = .allocate(capacity: max(1, scratchFrames * 2))
         scratch.initialize(repeating: 0, count: max(1, scratchFrames * 2))
         token = chain.claimOwnership()
-        if usable && rate != chain.processorSampleRate {
+        if usable {
             chain.requestRebuild(forRate: rate)
         }
     }

@@ -343,11 +343,19 @@ final class FakePlaybackEngine: PlaybackEngine {
     /// Every output device the mixer asked for, in order; nil is the system default.
     private(set) var outputDevices: [String?] = []
 
+    struct FallbackLevel: Equatable {
+        let volume: Float
+        let muted: Bool
+    }
+    /// Every volume and mute the mixer asked the player to fall back to, in order.
+    private(set) var fallbackLevels: [FallbackLevel] = []
+
     func load(_ stream: ResolvedStream, startAt: TimeInterval, autoplay: Bool) {
         loads.append(Load(stream: stream, startAt: startAt, autoplay: autoplay))
     }
 
     func setOutputDevice(uid: String?) { outputDevices.append(uid) }
+    func setFallbackLevel(volume: Float, muted: Bool) { fallbackLevels.append(FallbackLevel(volume: volume, muted: muted)) }
 
     func play() { playCount += 1 }
     func pause() { pauseCount += 1 }

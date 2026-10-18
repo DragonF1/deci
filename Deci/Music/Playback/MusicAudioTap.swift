@@ -13,9 +13,24 @@ enum MusicAudioTap {
 
     /// The audio mix for `asset`'s first audio track with the tap attached, or nil when the asset has no readable audio
     /// track or the tap cannot be created (the caller then plays the item unprocessed).
-    static func makeAudioMix(for asset: AVAsset, chain: MusicDSPChain) async -> AVAudioMix? {
-        guard let track = try? await asset.loadTracks(withMediaType: .audio).first else { return nil }
-        guard let tap = makeTap(chain: chain) else { return nil }
+    ///
+    /// `onPassThrough` is called, from whatever thread Core Audio prepares the tap on, when the tap meets a format it
+    /// cannot process and lets the audio through untouched: the caller then has to apply volume and mute itself.
+    static func makeAudioMix(
+        for asset: AVAsset,
+        chain: MusicDSPChain,
+        onPassThrough: @escaping @Sendable () -> Void = {}
+    ) async -> AVAudioMix? {
+        let track: AVAssetTrack
+        do {
+            guard let first = try await asset.loadTracks(withMediaType: .audio).first else { return nil }
+            track = first
+        } catch {
+            // A cancelled load is a newer track or a timeout taking over, not a failure.
+            if !Task.isCancelled { noteLoadFailure(error) }
+            return nil
+        }
+        guard let tap = makeTap(chain: chain, onPassThrough: onPassThrough) else { return nil }
 
         let parameters = AVMutableAudioMixInputParameters(track: track)
         parameters.audioTapProcessor = tap
@@ -24,8 +39,21 @@ enum MusicAudioTap {
         return mix
     }
 
-    private static func makeTap(chain: MusicDSPChain) -> MTAudioProcessingTap? {
-        let context = Unmanaged.passRetained(MusicTapContext(chain: chain))
+    private static let loggedLoadFailure = OSAllocatedUnfairLock(initialState: false)
+
+    /// Logged once: fixed text and the error's domain and code. Never the error's own text, which can carry the URL.
+    private static func noteLoadFailure(_ error: any Error) {
+        let first = loggedLoadFailure.withLock { logged in
+            defer { logged = true }
+            return !logged
+        }
+        guard first else { return }
+        let nsError = error as NSError
+        logger.error("Loading the audio track for the tap failed: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)")
+    }
+
+    private static func makeTap(chain: MusicDSPChain, onPassThrough: @escaping @Sendable () -> Void) -> MTAudioProcessingTap? {
+        let context = Unmanaged.passRetained(MusicTapContext(chain: chain, onPassThrough: onPassThrough))
         var callbacks = MTAudioProcessingTapCallbacks(
             version: kMTAudioProcessingTapCallbacksVersion_0,
             clientInfo: context.toOpaque(),
@@ -49,17 +77,21 @@ enum MusicAudioTap {
     }
 }
 
-/// What the tap's C callbacks reach through the tap's storage. Holds the chain and nothing else: no player, no
-/// service, no UI. Retained once with `Unmanaged.passRetained` when the tap is made and released in `finalize`.
+/// What the tap's C callbacks reach through the tap's storage. Holds the chain and a pass-through report, nothing else:
+/// no player, no service, no UI. Retained once with `Unmanaged.passRetained` when the tap is made and released in
+/// `finalize`.
 final class MusicTapContext: @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicAudioTap")
 
     let chain: MusicDSPChain
+    /// Told from `prepare` when the format is one the DSP cannot process and the audio goes through untouched.
+    private let onPassThrough: @Sendable () -> Void
     /// Set in prepare, cleared in unprepare. The tap calls prepare, process and unprepare one after another.
     private nonisolated(unsafe) var lease: MusicRenderLease?
 
-    init(chain: MusicDSPChain) {
+    init(chain: MusicDSPChain, onPassThrough: @escaping @Sendable () -> Void = {}) {
         self.chain = chain
+        self.onPassThrough = onPassThrough
     }
 
     func prepare(maxFrames: Int, format: AudioStreamBasicDescription) {
@@ -80,6 +112,7 @@ final class MusicTapContext: @unchecked Sendable {
             // Not something the DSP understands: let the audio through untouched rather than mangle it.
             Self.logger.error("Tap format is not Float32 PCM, passing the audio through")
             lease = nil
+            onPassThrough()
             return
         }
         lease = MusicRenderLease(chain: chain, sampleRate: format.mSampleRate, maxFrames: maxFrames)

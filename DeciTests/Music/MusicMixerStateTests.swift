@@ -218,6 +218,54 @@ struct MusicMixerStateTests {
         #expect(engine.outputDevices == [.some("uid-a")])
     }
 
+    @Test("devices that appear between the mixer's creation and the attach still reach the engine, with their AutoEQ and loudness")
+    func devicesAppearBeforeAttach() {
+        // The mixer is built before the engine's device monitors have run: the list is empty, so the saved device does
+        // not resolve and AutoEQ and loudness have nothing to go on.
+        let settings = makeSettings()
+        settings.setDeviceRouting(for: MusicMixerState.settingsKey, deviceUID: "uid-a")
+        let environment = FakeMusicMixerEnvironment()
+        environment.loudnessCompensationEnabled = true
+        let (state, _, _) = makeState(settings: settings, environment: environment)
+        #expect(state.outputDeviceUID == nil)
+        #expect(state.chain.autoEQProfile == nil)
+        #expect(state.chain.loudnessCompensationVolume == 1)
+
+        // The monitors start, and no device event follows for devices that were already there.
+        environment.outputDevices = [FakeMusicMixerEnvironment.device("uid-a")]
+        environment.autoEQProfiles = ["uid-a": profile("for-a")]
+        environment.deviceVolumes = ["uid-a": 0.5]
+
+        let engine = FakePlaybackEngine()
+        state.attach(engine: engine)
+
+        #expect(engine.outputDevices == [.some("uid-a")], "the engine must get the saved device, not the stale nil")
+        #expect(state.outputDeviceUID == "uid-a")
+        #expect(state.chain.autoEQProfile?.id == "for-a")
+        #expect(abs(state.chain.loudnessCompensationVolume - 0.5) < 1e-6)
+    }
+
+    @Test("devices that appear after the attach are corrected by the engine's device notification")
+    func devicesAppearAfterAttach() {
+        let settings = makeSettings()
+        settings.setDeviceRouting(for: MusicMixerState.settingsKey, deviceUID: "uid-a")
+        let environment = FakeMusicMixerEnvironment()
+        environment.loudnessCompensationEnabled = true
+        let (state, _, _) = makeState(settings: settings, environment: environment)
+        let engine = FakePlaybackEngine()
+        state.attach(engine: engine)
+        #expect(engine.outputDevices == [nil], "nothing is connected yet")
+
+        environment.outputDevices = [FakeMusicMixerEnvironment.device("uid-a")]
+        environment.autoEQProfiles = ["uid-a": profile("for-a")]
+        environment.deviceVolumes = ["uid-a": 0.5]
+        state.outputDevicesChanged()
+
+        #expect(engine.outputDevices == [nil, .some("uid-a")])
+        #expect(state.chain.autoEQProfile?.id == "for-a")
+        #expect(abs(state.chain.loudnessCompensationVolume - 0.5) < 1e-6)
+    }
+
     @Test("a stored device that is not connected is not handed to the engine, and returns when it reappears")
     func missingDeviceFallsBackToDefault() {
         let settings = makeSettings()
@@ -263,6 +311,48 @@ struct MusicMixerStateTests {
         state.outputDevicesChanged()
         state.setVolume(0.5)
         #expect(engine.outputDevices.count == 1)
+    }
+
+    // MARK: - Level without the tap
+
+    @Test("attaching an engine hands it the stored volume and mute, for when the tap is not on the item")
+    func attachHandsOverTheLevel() {
+        let settings = makeSettings()
+        settings.setVolume(for: MusicMixerState.settingsKey, to: 0.4)
+        settings.setMute(for: MusicMixerState.settingsKey, to: true)
+        let (state, _, _) = makeState(settings: settings)
+        let engine = FakePlaybackEngine()
+        state.attach(engine: engine)
+        #expect(engine.fallbackLevels.last == .init(volume: 0.4, muted: true))
+    }
+
+    @Test("volume and mute reach the engine as the player's own level, and boost is left out")
+    func levelReachesTheEngine() {
+        let (state, _, _) = makeState()
+        let engine = FakePlaybackEngine()
+        state.attach(engine: engine)
+
+        state.setVolume(0.5)
+        #expect(engine.fallbackLevels.last == .init(volume: 0.5, muted: false))
+        state.setBoost(.x4)
+        #expect(engine.fallbackLevels.last == .init(volume: 0.5, muted: false), "the player cannot boost: it plays the volume")
+        state.setMuted(true)
+        #expect(engine.fallbackLevels.last == .init(volume: 0.5, muted: true), "mute keeps the volume")
+        state.setMuted(false)
+        #expect(engine.fallbackLevels.last == .init(volume: 0.5, muted: false))
+    }
+
+    @Test("a settings reset puts the player's level back to full and unmuted")
+    func resetReachesTheEnginesLevel() {
+        let (state, settings, _) = makeState()
+        let engine = FakePlaybackEngine()
+        state.attach(engine: engine)
+        state.setVolume(0.3)
+        state.setMuted(true)
+
+        settings.resetAllSettings()
+        state.settingsDidReset()
+        #expect(engine.fallbackLevels.last == .init(volume: 1, muted: false))
     }
 
     // MARK: - AutoEQ

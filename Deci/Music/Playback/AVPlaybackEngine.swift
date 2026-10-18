@@ -28,6 +28,8 @@ protocol PlaybackEngine: AnyObject {
     func unload()
     /// Sends the audio to the output device with this UID. nil (or an empty UID) follows the system default output.
     func setOutputDevice(uid: String?)
+    /// The volume (0...1, boost left out) and mute the player itself applies to an item the tap is not on.
+    func setFallbackLevel(volume: Float, muted: Bool)
 }
 
 /// AVPlayer-backed engine. Observers exist only while an item is loaded.
@@ -35,11 +37,18 @@ protocol PlaybackEngine: AnyObject {
 /// With a `MusicDSPChain` every item gets an `MTAudioProcessingTap` (volume, boost, EQ, AutoEQ, loudness). The tap is
 /// carried by the item's audio mix, which has to be on the item before the player gets it: an item that is playing
 /// cannot take a mix without a gap, and a sample that skipped the tap would be heard unprocessed. So loading an item
-/// first loads its tracks, builds the mix, and only then hands the item to the player.
+/// first loads its tracks, builds the mix, and only then hands the item to the player. That wait is bounded: past
+/// `mixTimeout` the item plays without the tap rather than not at all.
+///
+/// An item without the tap would ignore the row's volume and mute, so then the player's own volume and mute carry the
+/// level (`setFallbackLevel`). With the tap the player stays at unity: the tap already applies it.
 @MainActor
 final class AVPlaybackEngine: PlaybackEngine {
     /// Builds the audio mix that carries the tap for an asset. nil: the asset cannot be tapped.
-    typealias MixBuilder = @MainActor (AVAsset, MusicDSPChain) async -> AVAudioMix?
+    /// `onPassThrough` is for the tap to call, from any thread, if it ends up not processing the audio.
+    typealias MixBuilder = @MainActor (
+        AVAsset, MusicDSPChain, _ onPassThrough: @escaping @Sendable () -> Void
+    ) async -> AVAudioMix?
 
     var onTick: (@MainActor (TimeInterval, Bool) -> Void)?
     var onEvent: (@MainActor (PlaybackEngineEvent) -> Void)?
@@ -57,9 +66,18 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     private let chain: MusicDSPChain?
     private let makeMix: MixBuilder
+    private let mixTimeout: Duration
     private var installPending = false
     private var loggedUnprocessed = false
+    /// Whether the item on the player (or being installed) has a working tap, which applies volume and mute itself.
+    private var itemIsTapped = false
+    private var fallbackVolume: Float = 1
+    private var fallbackMuted = false
+    /// The mix build and its timeout, for the item being loaded.
+    private var loadTasks: [Task<Void, Never>] = []
     private let player = AVPlayer()
+    /// The player itself, for tests to read what the engine really set on it.
+    var avPlayer: AVPlayer { player }
     private var timeObserver: Any?
     private var statusObservation: NSKeyValueObservation?
     private var controlObservation: NSKeyValueObservation?
@@ -71,12 +89,17 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// - Parameters:
     ///   - chain: The DSP to put on every item. nil plays items as they are (tests, and no mixer).
     ///   - makeMix: How a mix with the tap is built; replaced in tests.
+    ///   - mixTimeout: How long an item waits for its mix before it plays without the tap.
     init(
         chain: MusicDSPChain? = nil,
-        makeMix: @escaping MixBuilder = { asset, chain in await MusicAudioTap.makeAudioMix(for: asset, chain: chain) }
+        makeMix: @escaping MixBuilder = { asset, chain, onPassThrough in
+            await MusicAudioTap.makeAudioMix(for: asset, chain: chain, onPassThrough: onPassThrough)
+        },
+        mixTimeout: Duration = .seconds(5)
     ) {
         self.chain = chain
         self.makeMix = makeMix
+        self.mixTimeout = mixTimeout
         player.automaticallyWaitsToMinimizeStalling = true
     }
 
@@ -148,36 +171,87 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
 
         guard let chain else {
-            install(item)
+            install(item, tapped: false)
             return
         }
         installPending = true
         let makeMix = makeMix
-        Task { @MainActor [weak self] in
-            let mix = await makeMix(asset, chain)
-            // A newer load, an unload or a deinit may have happened while the tracks loaded: that item is dropped.
-            guard let self, self.generation == token else { return }
-            if let mix {
-                item.audioMix = mix
-            } else {
-                self.noteUnprocessed()
-            }
-            self.install(item)
+        // Called from the tap's thread: only the hop to the main actor touches the engine.
+        let onPassThrough: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor [weak self] in self?.tapPassesThrough(token: token) }
         }
+        let build = Task { @MainActor [weak self] in
+            let mix = await makeMix(asset, chain, onPassThrough)
+            self?.finishLoad(item, mix: mix, token: token, timedOut: false)
+        }
+        let timeout = Task { @MainActor [weak self, mixTimeout] in
+            try? await Task.sleep(for: mixTimeout)
+            guard !Task.isCancelled else { return }
+            self?.finishLoad(item, mix: nil, token: token, timedOut: true)
+        }
+        loadTasks = [build, timeout]
     }
 
-    private func install(_ item: AVPlayerItem) {
+    /// The mix is built or gave up waiting for. A newer load, an unload or a deinit may have happened meanwhile, and
+    /// whichever of the build and the timeout comes second finds the item installed already: that one is dropped.
+    private func finishLoad(_ item: AVPlayerItem, mix: AVAudioMix?, token: Int, timedOut: Bool) {
+        guard generation == token, installPending else { return }
+        cancelLoadTasks()
+        if let mix {
+            item.audioMix = mix
+        } else {
+            noteUnprocessed(timedOut: timedOut)
+        }
+        install(item, tapped: mix != nil)
+    }
+
+    private func cancelLoadTasks() {
+        for task in loadTasks { task.cancel() }
+        loadTasks = []
+    }
+
+    private func install(_ item: AVPlayerItem, tapped: Bool) {
         installPending = false
+        itemIsTapped = tapped
+        applyPlayerLevel()
         willInstall?(item)
         player.replaceCurrentItem(with: item)
     }
 
-    /// The tap could not be built: the track still plays, without volume, EQ and the rest. Logged once, fixed text.
-    private func noteUnprocessed() {
+    /// The tap met a format it cannot process and lets the audio through untouched. Only the item the report came from
+    /// matters. The report runs from the tap's prepare, before its first buffer, but it reaches the main actor through
+    /// a hop, so a buffer or two can still play at full level.
+    private func tapPassesThrough(token: Int) {
+        guard generation == token, itemIsTapped else { return }
+        itemIsTapped = false
+        noteUnprocessed(timedOut: false)
+        applyPlayerLevel()
+    }
+
+    /// The tap could not be built or did not come in time: the track still plays, without EQ and the rest, at the
+    /// player's own volume and mute. Logged once, fixed text.
+    private func noteUnprocessed(timedOut: Bool) {
         unprocessedLoadCount += 1
         guard !loggedUnprocessed else { return }
         loggedUnprocessed = true
-        Self.logger.error("Music audio tap unavailable, playing unprocessed")
+        if timedOut {
+            Self.logger.error("Music audio tap took too long, playing unprocessed")
+        } else {
+            Self.logger.error("Music audio tap unavailable, playing unprocessed")
+        }
+    }
+
+    func setFallbackLevel(volume: Float, muted: Bool) {
+        if volume.isFinite { fallbackVolume = min(1, max(0, volume)) }
+        fallbackMuted = muted
+        applyPlayerLevel()
+    }
+
+    /// With the tap on the item, the tap does the volume and mute and the player stays out of it, or the level would
+    /// be applied twice. Without it the player's own volume and mute are all there is.
+    private func applyPlayerLevel() {
+        player.volume = itemIsTapped ? 1 : fallbackVolume
+        player.isMuted = itemIsTapped ? false : fallbackMuted
     }
 
     func setOutputDevice(uid: String?) {
@@ -249,6 +323,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     private func detach() {
         generation += 1
         installPending = false
+        cancelLoadTasks()
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
             self.timeObserver = nil

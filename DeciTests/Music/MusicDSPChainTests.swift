@@ -366,6 +366,38 @@ struct MusicDSPChainTests {
         #expect(abs(recovered / reference - 3.98) < 0.2, "got \(recovered / reference)")
     }
 
+    @Test("two items in quick succession: the rebuild queued for the first one's rate never leaves the second one bypassed")
+    func rapidRateChange() async {
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        chain.setEQ(bandGains(5, 12))
+        // The main queue gets no turn between the two: the first item asks for 44.1 kHz, the second is back at the
+        // processors' own rate and so used to ask for nothing, which left the earlier request free to win.
+        _ = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 16_384)
+        let lease = MusicRenderLease(chain: chain, sampleRate: 48_000, maxFrames: 16_384)
+
+        // Anything queued on the main queue ahead of this has run once it returns.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(chain.processorSampleRate == 48_000, "the processors follow the newest item's rate")
+
+        let reference = settledRMS(oneKilohertz[0])
+        let heard = settledRMS(render(lease, oneKilohertz).samples(channel: 0))
+        #expect(abs(heard / reference - 3.98) < 0.2, "the EQ must be on for the second item, got \(heard / reference)")
+    }
+
+    @Test("three rates asked for before the main queue runs: the last one wins")
+    func lastRequestedRateWins() async {
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        _ = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 1_024)
+        _ = MusicRenderLease(chain: chain, sampleRate: 32_000, maxFrames: 1_024)
+        _ = MusicRenderLease(chain: chain, sampleRate: 22_050, maxFrames: 1_024)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(chain.processorSampleRate == 22_050)
+    }
+
     @Test("the gain ramp still runs while the EQ is bypassed for a sample-rate change")
     func gainRunsDuringBypass() {
         let chain = MusicDSPChain(sampleRate: 48_000)
@@ -375,7 +407,7 @@ struct MusicDSPChainTests {
         #expect(output.allSatisfy { abs($0 - 0.2) < 1e-6 })
     }
 
-    @Test("a lease at the processors' own rate triggers no rebuild")
+    @Test("a lease at the processors' own rate leaves them as they are")
     func matchingRate() {
         let chain = MusicDSPChain(sampleRate: 44_100)
         _ = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 1_024)

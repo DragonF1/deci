@@ -4,6 +4,8 @@
 
 import Foundation
 import AVFoundation
+import AudioToolbox
+import os
 import Testing
 @testable import Deci
 
@@ -189,6 +191,68 @@ struct MusicAudioTapTests {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("deci-tap-missing-\(UUID().uuidString).mp4")
         let mix = await MusicAudioTap.makeAudioMix(for: AVURLAsset(url: missing), chain: MusicDSPChain(sampleRate: 48_000))
         #expect(mix == nil)
+    }
+
+    // MARK: - Formats the DSP cannot process
+
+    private func pcmFormat(float: Bool, rate: Double = 48_000) -> AudioStreamBasicDescription {
+        AudioStreamBasicDescription(
+            mSampleRate: rate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: float ? kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked : kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: float ? 8 : 4,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: float ? 8 : 4,
+            mChannelsPerFrame: 2,
+            mBitsPerChannel: float ? 32 : 16,
+            mReserved: 0
+        )
+    }
+
+    /// Counts the pass-through reports, which arrive on the tap's thread.
+    private nonisolated final class PassThroughCounter: @unchecked Sendable {
+        private let count = OSAllocatedUnfairLock(initialState: 0)
+        var value: Int { count.withLock { $0 } }
+        func hit() { count.withLock { $0 += 1 } }
+    }
+
+    @Test("a format the DSP does not understand is reported as pass-through, and the audio is left untouched")
+    func nonFloatFormatReportsPassThrough() {
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        chain.setTargetGain(0, snap: true)
+        let counter = PassThroughCounter()
+        let context = MusicTapContext(chain: chain, onPassThrough: { counter.hit() })
+
+        context.prepare(maxFrames: 1_024, format: pcmFormat(float: false))
+        #expect(counter.value == 1)
+
+        let buffers = TestBufferList(channels: MusicTestSignal.constant(0.5, frames: 64), layout: .interleaved)
+        context.render(buffers.list, frames: 64)
+        #expect(buffers.samples(channel: 0).allSatisfy { $0 == 0.5 }, "no lease: the tap lets the audio through as it is")
+        context.unprepare()
+    }
+
+    @Test("a Float32 format is not reported, and is processed")
+    func floatFormatIsProcessed() {
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        chain.setTargetGain(0.5, snap: true)
+        let counter = PassThroughCounter()
+        let context = MusicTapContext(chain: chain, onPassThrough: { counter.hit() })
+
+        context.prepare(maxFrames: 1_024, format: pcmFormat(float: true))
+        #expect(counter.value == 0)
+
+        let buffers = TestBufferList(channels: MusicTestSignal.constant(0.5, frames: 64), layout: .interleaved)
+        context.render(buffers.list, frames: 64)
+        #expect(abs(buffers.samples(channel: 0)[63] - 0.25) < 1e-4)
+        context.unprepare()
+    }
+
+    @Test("a context made without a callback still handles a non-Float32 format")
+    func passThroughCallbackIsOptional() {
+        let context = MusicTapContext(chain: MusicDSPChain(sampleRate: 48_000))
+        context.prepare(maxFrames: 1_024, format: pcmFormat(float: false))
+        context.unprepare()
     }
 
     // MARK: - Lifetime

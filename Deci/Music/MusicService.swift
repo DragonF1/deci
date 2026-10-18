@@ -1061,6 +1061,10 @@ final class MusicService {
             // and what was loaded under it, so the next account never sees the old library.
             authState = .signedOut
             lastError = nil
+            // What is playing keeps playing, but its pings carry the dead session's tracking URL: they are dropped
+            // and the session ends without a final one, as in `signOut`, so a later sign-in never sends them.
+            cancelReport()
+            session = nil
             browse.reset()
             clearAccount()
             signOutTask = Task { [backend] in await backend.signOut() }

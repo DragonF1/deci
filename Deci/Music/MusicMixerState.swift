@@ -182,12 +182,19 @@ final class MusicMixerState: InProcessAudioSink {
 
     // MARK: - Engine
 
-    /// Binds the playback engine and applies the stored output device to it. Called when the service is built.
+    /// Binds the playback engine and applies the stored output device and level to it. Called when the service is built.
     func attach(engine: any PlaybackEngine) {
         self.engine = engine
         hasEngine = true
+        // The mixer is built before the engine's device monitors have filled in the devices, so what init resolved (no
+        // device, no AutoEQ, a device volume of 1) can be stale by now, and no device event is sent for devices that
+        // were already there. Resolve again before the engine is told anything.
+        resolveOutputDevice()
+        refreshAutoEQ()
+        updateLoudness()
         pushedDeviceUID = nil
         pushOutputDevice()
+        pushLevel()
     }
 
     private func pushOutputDevice() {
@@ -246,7 +253,7 @@ final class MusicMixerState: InProcessAudioSink {
         boost = .x1
         eqSettings = .flat
         selectedDeviceUID = nil
-        chain.setTargetGain(effectiveGain)
+        pushGain()
         chain.setEQ(.flat)
         chain.setAutoEQPreampEnabled(environment.autoEQPreampEnabled)
         chain.setLoudnessEqualization(enabled: environment.loudnessEqualizationEnabled)
@@ -261,6 +268,13 @@ final class MusicMixerState: InProcessAudioSink {
 
     private func pushGain() {
         chain.setTargetGain(effectiveGain)
+        pushLevel()
+    }
+
+    /// What the player itself plays at when the tap is not on the item (it could not be built, or the format is one the
+    /// DSP cannot process): the volume and mute, so a muted row never turns loud. Boost needs the tap and is left out.
+    private func pushLevel() {
+        engine?.setFallbackLevel(volume: volume, muted: isMuted)
     }
 
     private func deviceChoiceChanged() {

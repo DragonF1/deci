@@ -401,13 +401,7 @@ final class AudioEngine {
                 // Start device volume monitor AFTER deviceMonitor.start() populates devices
                 self.deviceVolumeMonitor.start()
 
-                self.applyPersistedSettings()
-                self.registerNewDevicesInPriority()
-                // Seed the confirmed default from whatever macOS has at startup
-                self.lastConfirmedDefaultUID = self.deviceVolumeMonitor.defaultDeviceUID
-                if manager.appSettings.lockInputDevice {
-                    self.restoreLockedInputDevice()
-                }
+                self.finishMonitorStartup()
             }
         }
 
@@ -415,6 +409,20 @@ final class AudioEngine {
         if startMonitorsAutomatically && permission.status != .authorized {
             observePermissionGranted()
         }
+    }
+
+    /// The last step of the monitor startup, once the device monitors have filled in the devices.
+    func finishMonitorStartup() {
+        applyPersistedSettings()
+        registerNewDevicesInPriority()
+        // Seed the confirmed default from whatever macOS has at startup
+        lastConfirmedDefaultUID = deviceVolumeMonitor.defaultDeviceUID
+        if settingsManager.appSettings.lockInputDevice {
+            restoreLockedInputDevice()
+        }
+        // The music mixer is built before the devices are known and no connect event fires for devices that were
+        // already there: tell it the list is real now.
+        inProcessAudio?.outputDevicesChanged()
     }
 
     private func observePermissionGranted() {

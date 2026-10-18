@@ -289,6 +289,73 @@ struct MusicServiceAuthTests {
 
         #expect(await h.backend.reportAttempts.map(\.kind) == [.playback])
     }
+
+    /// Finds the session dead through a search, the way a cookie that expired mid-listen shows up.
+    private func discoverDeadSession(_ h: Harness) async {
+        await h.backend.setSearchError("q", MusicError.signedOut)
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        await h.service.signOutTask?.value
+        #expect(h.service.authState == .signedOut)
+    }
+
+    @Test("a signedOut error cancels the history ping in flight: no watchtime ping goes out afterwards")
+    func signedOutErrorCancelsPingInFlight() async {
+        let h = Harness()
+        let gate = await h.startPingInFlight()
+        let ping = h.service.reportTask
+
+        await discoverDeadSession(h)
+        #expect(h.service.reportTask == nil)
+        await gate.open()
+        await ping?.value
+
+        #expect(await h.backend.reportAttempts.map(\.kind) == [.playback])
+    }
+
+    @Test("after a signedOut error and a new sign-in, the old session earns no ping with its old URL")
+    func noOldPingAfterSignedOutThenSignIn() async {
+        let h = Harness()
+        await h.backend.setStream(MusicSamples.stream(
+            videoId: "abc",
+            trackingURL: URL(string: "https://music.example.test/stats/playback?ev=old"),
+            watchtimeURL: URL(string: "https://music.example.test/stats/watchtime?ev=old")
+        ))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 20)
+
+        await discoverDeadSession(h)
+        h.service.signIn()
+        h.probe.completion?([StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))])
+        await h.service.signInTask?.value
+        #expect(h.service.authState == .signedIn)
+
+        // The track plays on under the new account; its 30 s are up, but they were heard under the old one.
+        h.listen(seconds: 40, from: 20)
+        await h.service.reportTask?.value
+        #expect(await h.backend.reportAttempts.isEmpty, "the old account's tracking URL must not be sent with the new cookies")
+    }
+
+    @Test("a signedOut error sends no final ping for the session it ends")
+    func signedOutErrorSendsNoFinalPing() async {
+        let h = Harness()
+        await h.backend.setStream(MusicSamples.stream(
+            videoId: "abc",
+            trackingURL: URL(string: "https://music.example.test/stats/playback?ev=old"),
+            watchtimeURL: URL(string: "https://music.example.test/stats/watchtime?ev=old")
+        ))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 31)
+        await h.service.reportTask?.value
+        let sentBefore = await h.backend.reportAttempts.count
+        #expect(sentBefore >= 1)
+
+        await discoverDeadSession(h)
+        h.service.stop()
+        await h.service.reportTask?.value
+        #expect(await h.backend.reportAttempts.count == sentBefore, "the dead session has no final ping to send")
+    }
 }
 
 

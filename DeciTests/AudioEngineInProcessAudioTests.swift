@@ -117,6 +117,44 @@ struct AudioEngineInProcessAudioTests {
         #expect(sink.calls.filter { $0 == .devicesChanged }.count == 2)
     }
 
+    @Test("once the engine's monitors have started the sink is told the device list is real now")
+    func monitorStartupTellsTheSink() {
+        let harness = EngineHarness()
+        let sink = RecordingInProcessSink()
+        harness.engine.inProcessAudio = sink
+
+        harness.engine.finishMonitorStartup()
+        #expect(sink.calls.last == .devicesChanged, "no device event fires for devices that were there from the start")
+    }
+
+    @Test("finishing the monitor startup with no sink registered is harmless")
+    func monitorStartupWithoutASink() {
+        let harness = EngineHarness()
+        harness.engine.finishMonitorStartup()
+        #expect(harness.engine.inProcessAudio == nil)
+    }
+
+    @Test("a mixer built before the monitors started picks up its saved device when they have")
+    func monitorStartupCorrectsAnEarlyMixer() {
+        let harness = EngineHarness()
+        let key = MusicMixerState.settingsKey
+        harness.settings.setDeviceRouting(for: key, deviceUID: "uid-late")
+        // Built while the saved device is not in the list yet, as in the app's first moments.
+        let mixer = makeMixer(harness)
+        let player = FakePlaybackEngine()
+        mixer.attach(engine: player)
+        #expect(player.outputDevices == [nil])
+        #expect(mixer.outputDeviceUID == nil)
+
+        harness.deviceMonitor.addOutputDevice(
+            AudioDevice(id: AudioDeviceID(100), uid: "uid-late", name: "Late Output", icon: nil, supportsAutoEQ: false)
+        )
+        harness.engine.finishMonitorStartup()
+
+        #expect(mixer.outputDeviceUID == "uid-late")
+        #expect(player.outputDevices == [nil, .some("uid-late")])
+    }
+
     @Test("a settings reset reaches the sink after the settings were cleared")
     func settingsReset() {
         let harness = EngineHarness()
