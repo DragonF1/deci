@@ -815,6 +815,53 @@ struct InnerTubeClientTests {
         #expect(request.headers["Cookie"]?.contains("SAPISID=") == true)
     }
 
+    @Test("A watchtime ping with details adds only the web player's parameters, to the same host with the same auth, and leaks no credential into the URL")
+    func watchtimeDetailsShapeAndAuth() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        _ = try await client.reportHistory(Self.ping(.watchtime, mediaTime: 70))
+        let plain = try #require(youtube.requests.last)
+
+        var final = Self.ping(.watchtime, mediaTime: 71.5)
+        final.details = WatchtimeDetails(
+            segments: [WatchtimeSegment(start: 30, end: 40, volume: 100, muted: false), WatchtimeSegment(start: 60, end: 71.5, volume: 100, muted: false)],
+            realTime: 72,
+            nextRealTime: nil,
+            scheduledRealTime: 110,
+            idleMilliseconds: 4321,
+            isPlaying: false,
+            isFinal: true
+        )
+        let status = try await client.reportHistory(final)
+        #expect(status == 204)
+        let request = try #require(youtube.requests.last)
+
+        #expect(request.method == "GET")
+        #expect(request.body == nil)
+        #expect(request.url.host == "music.youtube.com")
+        #expect(request.url.path == "/api/stats/watchtime")
+        #expect(Set(request.headers.keys) == Set(plain.headers.keys))
+        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH ") == true)
+        #expect(request.headers["Cookie"] == plain.headers["Cookie"])
+        #expect(request.headers["Origin"] == "https://music.youtube.com")
+
+        let names = { (url: URL) in Set((URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map(\.name)) }
+        let added = names(request.url).subtracting(names(plain.url))
+        #expect(added == ["rt", "rti", "lact", "state", "volume", "muted", "final"])
+        let items = Dictionary(uniqueKeysWithValues: (URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        #expect(items["st"] == "30.000,60.000")
+        #expect(items["et"] == "40.000,71.500")
+        #expect(items["final"] == "1")
+        #expect(items["state"] == "paused")
+        #expect(items["docid"] == "abc")
+
+        let query = request.url.query ?? ""
+        #expect(!query.contains("secret"))
+        #expect(!query.contains("SAPISID"))
+        let hash = request.headers["Authorization"]?.split(separator: "_").last.map(String.init) ?? ""
+        #expect(!hash.isEmpty && !query.contains(hash))
+    }
+
     @Test("Both pings of a session reach music.youtube.com and never s.youtube.com")
     func pingsNeverUseTheOldHost() async throws {
         let youtube = FakeYouTube()

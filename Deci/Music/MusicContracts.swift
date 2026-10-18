@@ -69,6 +69,9 @@ struct HistoryPing: Sendable, Equatable {
     let cpn: String
     /// Position in the song, in seconds, when the ping goes out.
     let mediaTime: TimeInterval
+    /// What the watchtime ping reports about the listening since the previous one. Nil sends the one-segment
+    /// ping (`st=0`, `et=mediaTime`); a playback ping never has it.
+    var details: WatchtimeDetails?
 }
 
 /// One cookie from the Google sign-in, as stored in the Keychain.

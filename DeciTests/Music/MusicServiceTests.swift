@@ -29,6 +29,8 @@ private struct Harness {
     let engine = FakePlaybackEngine()
     let probe = SignInProbe()
     let surface = FakeNowPlayingSurface()
+    /// The clock the service reads for the watchtime schedule; `listen` runs it on with the ticks.
+    let clock = MutableClock()
     let player: MusicPlayer
     let service: MusicService
 
@@ -36,6 +38,7 @@ private struct Harness {
         let backend = FakeMusicBackend(signedIn: signedIn)
         let engine = self.engine
         let probe = self.probe
+        let clock = self.clock
         let player = MusicPlayer(engine: engine)
         self.backend = backend
         self.player = player
@@ -53,6 +56,7 @@ private struct Harness {
             closeSignInWindow: { probe.windowCloses += 1 },
             raiseSignInWindow: { probe.windowRaises += 1 },
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
+            now: { clock.now },
             refreshOnCreate: false
         )
         service.onNativePlayingChange = { probe.nativeChanges.append($0) }
@@ -115,11 +119,13 @@ private struct Harness {
     }
 
     /// Feeds the 0.5 s position ticks the player would report: a baseline at `start`, then `seconds` of playback.
+    /// The clock runs 0.5 s per tick, paused or not, the way wall time does.
     func listen(seconds: TimeInterval, from start: TimeInterval = 0, playing: Bool = true) {
         engine.tick(start, playing: playing)
         var position = start
         for _ in 0..<Int(seconds / 0.5) {
             position += 0.5
+            clock.advance(by: 0.5)
             engine.tick(position, playing: playing)
         }
     }
@@ -1378,7 +1384,8 @@ struct MusicServicePlaybackTests {
         #expect(h.service.reportTask == nil)
         #expect(await h.backend.reportAttempts.isEmpty)
 
-        h.listen(seconds: 90, from: 29.5)
+        // Stops short of the next watchtime ping (40 s after the opening one).
+        h.listen(seconds: 30, from: 29.5)
         await h.service.reportTask?.value
 
         let reports = await h.backend.reportAttempts
@@ -1407,7 +1414,7 @@ struct MusicServicePlaybackTests {
         await h.backend.setStream(MusicSamples.stream(videoId: "abc", watchtimeURL: watchtimeURL))
         await h.backend.setReportError(URLError(.timedOut), kind: .playback)
         await h.startPlaying(MusicSamples.track("abc"))
-        h.listen(seconds: 90)
+        h.listen(seconds: 60)
         await h.service.reportTask?.value
 
         let reports = await h.backend.reportAttempts
@@ -1422,7 +1429,7 @@ struct MusicServicePlaybackTests {
         await h.backend.setStream(MusicSamples.stream(videoId: "abc", watchtimeURL: watchtimeURL))
         await h.backend.setReportError(MusicError.http(500), kind: .watchtime)
         await h.startPlaying(MusicSamples.track("abc"))
-        h.listen(seconds: 120)
+        h.listen(seconds: 60)
         await h.service.reportTask?.value
 
         #expect(await h.backend.reportAttempts.map(\.kind) == [.playback, .watchtime])
@@ -1435,7 +1442,7 @@ struct MusicServicePlaybackTests {
         await h.backend.setStream(MusicSamples.stream(videoId: "abc", watchtimeURL: watchtimeURL))
         await h.backend.setReportError(URLError(.notConnectedToInternet))
         await h.startPlaying(MusicSamples.track("abc"))
-        h.listen(seconds: 120)
+        h.listen(seconds: 60)
         await h.service.reportTask?.value
 
         #expect(await h.backend.reportAttempts.count == 2)
@@ -3009,11 +3016,13 @@ struct MusicServiceSessionTests {
         h.listen(seconds: 31)
         await h.service.reportTask?.value
 
+        // Track a's session closes with its final ping when it ends, before track b's pings.
         let reports = await h.backend.reportAttempts
-        #expect(reports.map(\.kind) == [.playback, .watchtime, .playback, .watchtime])
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime, .playback, .watchtime])
         #expect(reports[0].cpn == reports[1].cpn)
-        #expect(reports[2].cpn == reports[3].cpn)
-        #expect(reports[0].cpn != reports[2].cpn)
+        #expect(reports[1].cpn == reports[2].cpn)
+        #expect(reports[3].cpn == reports[4].cpn)
+        #expect(reports[0].cpn != reports[3].cpn)
     }
 
     @Test("listening time does not carry over to the next track")
@@ -4058,5 +4067,505 @@ struct MusicTimeFormatTests {
         #expect(MusicTimeFormat.remaining(current: 10, duration: 0) == "-0:00")
         #expect(MusicTimeFormat.remaining(current: 200, duration: 187) == "-0:00")
         #expect(MusicTimeFormat.remaining(current: .nan, duration: 187) == "-0:00")
+    }
+}
+
+// MARK: - Watchtime pings
+
+@MainActor
+@Suite("MusicService watchtime")
+struct MusicServiceWatchtimeTests {
+    private static let other = [StoredCookie(MusicSamples.cookie("__Secure-3PAPISID", domain: ".youtube.com"))]
+
+    private func playbackURL(_ id: String) -> URL { URL(string: "https://music.example.test/stats/playback?ev=\(id)")! }
+    private func watchtimeURL(_ id: String) -> URL { URL(string: "https://music.example.test/stats/watchtime?ev=\(id)")! }
+
+    private func segment(_ start: TimeInterval, _ end: TimeInterval) -> WatchtimeSegment {
+        WatchtimeSegment(start: start, end: end, volume: 100, muted: false)
+    }
+
+    /// Gives each id a stream with both ping URLs.
+    private func setStreams(_ h: Harness, _ ids: [String]) async {
+        for id in ids {
+            await h.backend.setStream(MusicSamples.stream(videoId: id, trackingURL: playbackURL(id), watchtimeURL: watchtimeURL(id)))
+        }
+    }
+
+    /// Plays "abc", a stream with both ping URLs, and waits until the player has loaded it.
+    private func startSong(_ h: Harness) async {
+        await setStreams(h, ["abc"])
+        await h.startPlaying(MusicSamples.track("abc"))
+    }
+
+    /// Plays `ids` as a queue, every stream with both ping URLs.
+    private func startQueue(_ h: Harness, _ ids: [String] = ["a", "b"]) async {
+        await setStreams(h, ids)
+        await h.startQueue(ids)
+    }
+
+    /// Waits for every ping queued so far to go out, then returns what the backend saw.
+    /// Fails the test, rather than trapping on an index, when fewer than `atLeast` pings went out.
+    private func sent(_ h: Harness, atLeast count: Int = 0) async throws -> [FakeMusicBackend.Report] {
+        await h.service.reportTask?.value
+        let reports = await h.backend.reportAttempts
+        try #require(reports.count >= count)
+        return reports
+    }
+
+    // MARK: Cadence
+
+    @Test("at 30 s the playback ping carries no details and the watchtime ping opens with everything heard so far")
+    func openingPair() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 30)
+
+        let reports = try await sent(h, atLeast: 2)
+        #expect(reports.map(\.kind) == [.playback, .watchtime])
+        #expect(reports.map(\.url) == [playbackURL("abc"), watchtimeURL("abc")])
+        #expect(Set(reports.map(\.cpn)).count == 1)
+        #expect(reports[0].details == nil)
+        #expect(reports[1].mediaTime == 30)
+        let details = try #require(reports[1].details)
+        #expect(details.segments == [segment(0, 30)])
+        #expect(details.realTime == 30)
+        #expect(details.nextRealTime == 70)
+        #expect(details.scheduledRealTime == nil)
+        #expect(details.isPlaying)
+        #expect(!details.isFinal)
+    }
+
+    @Test("over 65 s of playing only the opening pair goes out; the next watchtime ping is due at 70 s")
+    func cadenceOver65Seconds() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 65)
+        let first = try await sent(h)
+        #expect(first.map(\.kind) == [.playback, .watchtime])
+
+        h.listen(seconds: 5, from: 65)
+        let reports = try await sent(h, atLeast: 3)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        #expect(reports[2].cpn == reports[0].cpn)
+        #expect(reports[2].url == watchtimeURL("abc"))
+        #expect(reports[2].mediaTime == 70)
+        let details = try #require(reports[2].details)
+        #expect(details.segments == [segment(30, 70)])
+        #expect(details.realTime == 70)
+        #expect(details.scheduledRealTime == 70)
+        #expect(details.nextRealTime == 110)
+        #expect(details.isPlaying)
+        #expect(!details.isFinal)
+    }
+
+    @Test("160 s of playing: one playback ping and a watchtime ping every 40 s, each covering only its own stretch")
+    func steadyCadence() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 160)
+
+        let reports = try await sent(h)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime, .watchtime, .watchtime])
+        #expect(Set(reports.map(\.cpn)).count == 1)
+        #expect(reports.dropFirst().map(\.mediaTime) == [30, 70, 110, 150])
+        let details = reports.compactMap(\.details)
+        #expect(details.map(\.segments) == [[segment(0, 30)], [segment(30, 70)], [segment(70, 110)], [segment(110, 150)]])
+        #expect(details.map(\.realTime) == [30, 70, 110, 150])
+        #expect(details.map(\.nextRealTime) == [70, 110, 150, 190])
+        #expect(details.allSatisfy { $0.isPlaying && !$0.isFinal })
+    }
+
+    @Test("a stream whose tracking URLs arrive after 30 s opens with everything heard, then keeps the cadence")
+    func lateClaimOpens() async throws {
+        let h = Harness()
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: nil))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 40)
+        #expect(h.service.reportTask == nil)
+
+        await setStreams(h, ["abc"])
+        h.engine.emit(.failed)
+        await h.player.refreshTask?.value
+        var reports = try await sent(h, atLeast: 2)
+        #expect(reports.map(\.kind) == [.playback, .watchtime])
+        let opening = try #require(reports[1].details)
+        #expect(opening.segments == [segment(0, 40)])
+        #expect(opening.realTime == 40)
+        #expect(opening.nextRealTime == 80)
+
+        h.listen(seconds: 40, from: 40)
+        reports = try await sent(h, atLeast: 3)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        #expect(reports[2].details?.segments == [segment(40, 80)])
+    }
+
+    @Test("a stream without a watchtime URL sends the one playback ping and nothing else, not even a final")
+    func noWatchtimeURLNoWatchtimePings() async throws {
+        let h = Harness()
+        await h.startQueue(["a"])
+        h.listen(seconds: 100)
+        h.service.stop()
+
+        let reports = try await sent(h)
+        #expect(reports.map(\.kind) == [.playback])
+    }
+
+    @Test("a stream without a playback ping URL never sends a watchtime ping either")
+    func noPlaybackURLNoWatchtimePings() async throws {
+        let h = Harness()
+        await h.backend.setStream(MusicSamples.stream(videoId: "abc", trackingURL: nil, watchtimeURL: watchtimeURL("abc")))
+        await h.startPlaying(MusicSamples.track("abc"))
+        h.listen(seconds: 100)
+        h.service.stop()
+
+        #expect(h.service.reportTask == nil)
+        #expect(await h.backend.reportAttempts.isEmpty)
+    }
+
+    // MARK: Seeks
+
+    @Test("a seek in the middle of an interval gives two stretches in the one ping")
+    func seekSplitsTheStretch() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 30)
+        h.listen(seconds: 20, from: 30)
+        h.service.seek(to: 100)
+        h.listen(seconds: 20, from: 100)
+
+        let reports = try await sent(h, atLeast: 3)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        let details = try #require(reports[2].details)
+        #expect(details.segments == [segment(30, 50), segment(100, 120)])
+        #expect(details.realTime == 70)
+        #expect(reports[2].mediaTime == 120)
+    }
+
+    @Test("a seek before 30 s splits the opening ping's stretches and does not count as listening")
+    func seekBeforeTheOpening() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 10)
+        h.service.seek(to: 100)
+        h.listen(seconds: 19.5, from: 100)
+        #expect(h.service.reportTask == nil)
+        h.listen(seconds: 0.5, from: 119.5)
+
+        let reports = try await sent(h, atLeast: 2)
+        #expect(reports.map(\.kind) == [.playback, .watchtime])
+        #expect(reports[1].details?.segments == [segment(0, 10), segment(100, 120)])
+    }
+
+    // MARK: Pause
+
+    @Test("a pause flushes one ping marked paused, nothing goes out while paused, and resuming leaves the pause out of every stretch")
+    func pauseAndResume() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 40)
+        h.engine.tick(40, playing: false)
+
+        var reports = try await sent(h, atLeast: 3)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        let flush = try #require(reports[2].details)
+        #expect(flush.segments == [segment(30, 40)])
+        #expect(flush.realTime == 40)
+        #expect(!flush.isPlaying)
+        #expect(!flush.isFinal)
+        #expect(flush.scheduledRealTime == 70)
+        #expect(flush.nextRealTime == nil)
+
+        // 100 s of pause, with the player still ticking.
+        for _ in 0..<4 {
+            h.clock.advance(by: 25)
+            h.engine.tick(40, playing: false)
+        }
+        reports = try await sent(h)
+        #expect(reports.count == 3)
+
+        // The first tick back is at rt 140, so the next ping is due 40 s on.
+        h.listen(seconds: 40, from: 40)
+        reports = try await sent(h, atLeast: 4)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime, .watchtime])
+        let resumed = try #require(reports[3].details)
+        #expect(resumed.segments == [segment(40, 80)])
+        #expect(resumed.isPlaying)
+        #expect(resumed.realTime == 180)
+        #expect(resumed.scheduledRealTime == 180)
+        #expect(resumed.nextRealTime == 220)
+    }
+
+    @Test("a pause before the 30 s sends nothing")
+    func pauseBeforeTheOpening() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 20)
+        h.engine.tick(20, playing: false)
+        h.listen(seconds: 100, from: 20, playing: false)
+        #expect(h.service.reportTask == nil)
+        #expect(await h.backend.reportAttempts.isEmpty)
+    }
+
+    // MARK: Final ping
+
+    @Test("skipping to the next track sends exactly one final ping for the old session, and nothing for it afterwards")
+    func finalOnSkip() async throws {
+        let h = Harness()
+        await startQueue(h)
+        h.listen(seconds: 35)
+        h.service.next()
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+
+        var reports = try await sent(h, atLeast: 3)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        let cpn = reports[0].cpn
+        let final = reports[2]
+        #expect(final.cpn == cpn)
+        #expect(final.url == watchtimeURL("a"))
+        #expect(final.mediaTime == 35)
+        let details = try #require(final.details)
+        #expect(details.segments == [segment(30, 35)])
+        #expect(details.realTime == 35)
+        #expect(details.scheduledRealTime == 70)
+        #expect(details.nextRealTime == nil)
+        #expect(!details.isPlaying)
+        #expect(details.isFinal)
+
+        // The next track plays on; none of what it sends belongs to the old session.
+        h.listen(seconds: 100)
+        reports = try await sent(h)
+        #expect(reports.filter { $0.cpn == cpn }.count == 3)
+        #expect(reports.filter { $0.details?.isFinal == true }.count == 1)
+        #expect(reports.dropFirst(3).allSatisfy { $0.cpn != cpn && $0.url != playbackURL("a") && $0.url != watchtimeURL("a") })
+    }
+
+    @Test("a track that plays to its end sends one final ping, with the last step heard and the duration as the media time")
+    func finalOnEnd() async throws {
+        let h = Harness()
+        await startQueue(h, ["a"])
+        h.listen(seconds: 199.5)
+        h.engine.emit(.ended)
+
+        var reports = try await sent(h)
+        #expect(reports.map(\.kind) == [.playback] + Array(repeating: .watchtime, count: 6))
+        let final = try #require(reports.last)
+        #expect(final.mediaTime == 200)
+        let details = try #require(final.details)
+        #expect(details.segments == [segment(190, 200)])
+        #expect(details.isFinal)
+        #expect(!details.isPlaying)
+        #expect(reports.filter { $0.details?.isFinal == true }.count == 1)
+
+        // Nothing more for the song, whatever happens to it afterwards.
+        h.service.stop()
+        h.listen(seconds: 100)
+        reports = try await sent(h)
+        #expect(reports.count == 7)
+    }
+
+    @Test("a final ping goes out only once, however many ways the session ends")
+    func finalOnce() async throws {
+        let h = Harness()
+        await startQueue(h, ["a"])
+        h.listen(seconds: 35)
+        h.engine.emit(.ended)
+        h.service.next()
+        h.service.stop()
+        h.engine.emit(.ended)
+
+        let reports = try await sent(h)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        #expect(reports.filter { $0.details?.isFinal == true }.count == 1)
+    }
+
+    @Test("stopping the player sends the final ping, and it is not cancelled with the rest")
+    func finalOnStop() async throws {
+        let h = Harness()
+        await startQueue(h, ["a"])
+        h.listen(seconds: 35)
+        h.service.stop()
+        h.listen(seconds: 100, from: 35)
+
+        let reports = try await sent(h, atLeast: 3)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        #expect(reports[2].details?.isFinal == true)
+        #expect(reports[2].details?.segments == [segment(30, 35)])
+    }
+
+    @Test("the last Next, which stops the player at the end of the queue, sends the final ping")
+    func finalOnEndOfQueue() async throws {
+        let h = Harness()
+        await startQueue(h, ["a"])
+        h.listen(seconds: 35)
+        h.service.next()
+
+        let reports = try await sent(h, atLeast: 3)
+        #expect(h.player.nowPlaying == nil)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        #expect(reports[2].details?.isFinal == true)
+    }
+
+    @Test("playing another track or jumping in the queue closes the old session with a final ping")
+    func finalOnQueueChange() async throws {
+        let h = Harness()
+        await startQueue(h, ["a", "b", "c"])
+        h.listen(seconds: 35)
+        h.service.jump(to: MusicSamples.track("c", title: "Song c"))
+        await h.settle()
+        h.listen(seconds: 35)
+        h.service.play(MusicSamples.track("b", title: "Song b"))
+        await h.settle()
+
+        let reports = try await sent(h, atLeast: 1)
+        let finals = reports.filter { $0.details?.isFinal == true }
+        #expect(finals.map(\.url) == [watchtimeURL("a"), watchtimeURL("c")])
+        #expect(finals.map(\.cpn) == [reports[0].cpn, reports.first { $0.url == playbackURL("c") }?.cpn ?? ""])
+    }
+
+    @Test("a session that never reached 30 s sends nothing when it ends")
+    func shortSessionSendsNothing() async throws {
+        let h = Harness()
+        await startQueue(h)
+        h.listen(seconds: 25)
+        h.service.next()
+        await h.settle()
+        h.engine.emit(.ended)
+        h.service.stop()
+
+        #expect(h.service.reportTask == nil)
+        #expect(await h.backend.reportAttempts.isEmpty)
+    }
+
+    // MARK: Sign-out and account swap
+
+    @Test("a sign-out sends no final ping, and what the old session sends afterwards goes nowhere")
+    func signOutSendsNoFinal() async throws {
+        let h = Harness()
+        await startQueue(h)
+        h.listen(seconds: 35)
+        let before = try await sent(h)
+        #expect(before.map(\.kind) == [.playback, .watchtime])
+
+        h.service.signOut()
+        await h.service.signOutTask?.value
+        h.engine.emit(.ended)
+        h.listen(seconds: 100)
+        await h.service.reportTask?.value
+
+        #expect(await h.backend.reportAttempts == before)
+        #expect(await h.backend.signOutCount == 1)
+    }
+
+    @Test("a sign-out drops the pings still waiting behind the one in flight, final included")
+    func signOutDropsQueuedPings() async throws {
+        let h = Harness()
+        let gate = await h.startPingInFlight()
+        h.listen(seconds: 40, from: 31)
+        let drain = h.service.reportTask
+
+        h.service.signOut()
+        #expect(h.service.reportTask == nil)
+        await gate.open()
+        await drain?.value
+
+        #expect(await h.backend.reportAttempts.map(\.kind) == [.playback])
+    }
+
+    @Test("an account swap sends no final ping for the old account's session")
+    func swapSendsNoFinal() async throws {
+        let h = Harness(signedIn: true)
+        await h.service.refreshAuth()
+        await startSong(h)
+        h.listen(seconds: 35)
+        let before = try await sent(h)
+        #expect(before.map(\.kind) == [.playback, .watchtime])
+
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        h.engine.emit(.ended)
+        h.listen(seconds: 100)
+        await h.service.reportTask?.value
+
+        #expect(h.player.nowPlaying == nil)
+        #expect(await h.backend.reportAttempts == before)
+    }
+
+    @Test("a swap drops the pings still waiting behind the one in flight")
+    func swapDropsQueuedPings() async throws {
+        let h = Harness(signedIn: true)
+        await h.service.refreshAuth()
+        let gate = await h.startPingInFlight()
+        h.listen(seconds: 40, from: 31)
+        let drain = h.service.reportTask
+
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        #expect(h.service.reportTask == nil)
+        await gate.open()
+        await drain?.value
+
+        #expect(await h.backend.reportAttempts.map(\.kind) == [.playback])
+    }
+
+    // MARK: Order and failures
+
+    @Test("pings leave in the order they were earned, even when the one before is still in flight")
+    func pingsKeepTheirOrder() async throws {
+        let h = Harness()
+        let gate = await h.startPingInFlight()
+        h.listen(seconds: 40, from: 31)
+        h.service.stop()
+        await gate.open()
+
+        let reports = try await sent(h)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime, .watchtime])
+        #expect(reports.map { $0.details?.isFinal ?? false } == [false, false, false, true])
+        #expect(reports.map { $0.details?.scheduledRealTime } == [nil, nil, 70, 110])
+        #expect(Set(reports.map(\.cpn)).count == 1)
+    }
+
+    @Test("a failing watchtime ping is not retried, and the pings after it are still sent")
+    func failureIsNotRetried() async throws {
+        let h = Harness()
+        await h.backend.setReportError(MusicError.http(500), kind: .watchtime)
+        await startSong(h)
+        h.listen(seconds: 160)
+        h.service.stop()
+
+        let reports = try await sent(h)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime, .watchtime, .watchtime, .watchtime])
+        let stretches = reports.compactMap(\.details).map(\.segments)
+        #expect(stretches == [[segment(0, 30)], [segment(30, 70)], [segment(70, 110)], [segment(110, 150)], [segment(150, 160)]])
+    }
+
+    @Test("a failing playback ping does not stop the watchtime pings")
+    func playbackFailureKeepsTheCadence() async throws {
+        let h = Harness()
+        await h.backend.setReportError(URLError(.timedOut), kind: .playback)
+        await startSong(h)
+        h.listen(seconds: 80)
+
+        let reports = try await sent(h)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+    }
+
+    // MARK: lact
+
+    @Test("lact is the time since the listener last touched a control")
+    func idleTime() async throws {
+        let h = Harness()
+        await startSong(h)
+        h.listen(seconds: 30)
+        h.service.seek(to: 100)
+        h.listen(seconds: 40, from: 100)
+
+        let reports = try await sent(h, atLeast: 3)
+        #expect(reports.map(\.kind) == [.playback, .watchtime, .watchtime])
+        // Pressed play at 0 s; the opening ping goes out at 30 s. The seek was at 30 s; the next ping is at 70 s.
+        #expect(reports[1].details?.idleMilliseconds == 30_000)
+        #expect(reports[2].details?.idleMilliseconds == 40_000)
     }
 }

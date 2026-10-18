@@ -48,13 +48,17 @@ final class MusicService {
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
 
-    /// One playback session: one CPN, one listening-time count, at most one history ping
-    /// (a playback ping plus, when the stream has a watchtime URL, a watchtime ping with the same CPN).
+    /// One playback session: one CPN, one listening-time count, one playback ping and, when the stream has a
+    /// watchtime URL, the watchtime pings with the same CPN: one with the playback ping, one per 40 s of playing
+    /// after it, one on each pause, and a final one when the session ends.
     private struct Session {
         let cpn: String
+        /// When the session began: the `rt` of its watchtime pings counts from here.
+        let startedAt: Date
         var trackingURL: URL?
         var watchtimeURL: URL?
         var accumulator = PlaybackTimeAccumulator()
+        var watchtime = WatchtimeTracker()
     }
 
     private enum Direction { case forward, backward }
@@ -84,6 +88,10 @@ final class MusicService {
     @ObservationIgnored private let closeSignInWindow: @MainActor () -> Void
     @ObservationIgnored private let raiseSignInWindow: @MainActor () -> Void
     @ObservationIgnored private let nowPlaying: NowPlayingController
+    /// The clock the watchtime schedule and `lact` read.
+    @ObservationIgnored private let now: () -> Date
+    /// When the listener last touched a control: the `lact` of every watchtime ping.
+    @ObservationIgnored private var lastActivity: Date
     @ObservationIgnored private var session: Session?
     @ObservationIgnored private var direction = Direction.forward
     @ObservationIgnored private var failureStreak = 0
@@ -94,6 +102,11 @@ final class MusicService {
     @ObservationIgnored private var radioGeneration = 0
     @ObservationIgnored private var prefetchAttempt: String?
     @ObservationIgnored private var prefetched: ResolvedStream?
+    /// History pings earned and not yet sent. One drain task sends them one at a time, in the order they were earned.
+    @ObservationIgnored private var pendingPings: [HistoryPing] = []
+    @ObservationIgnored private var isSendingPings = false
+    /// Bumped when the pings are dropped (sign-out, account swap): a drain from before it sends nothing more.
+    @ObservationIgnored private var reportGeneration = 0
 
     @ObservationIgnored private(set) var searchTask: Task<Void, Never>?
     @ObservationIgnored private(set) var playTask: Task<Void, Never>?
@@ -131,6 +144,7 @@ final class MusicService {
         // Offline unless the caller says otherwise: only the app's own wiring (MusicServiceHost) passes
         // `MusicLyricsStore.live()`, so a service built by a test or a preview never reaches LRCLIB.
         lyrics: MusicLyricsStore = MusicLyricsStore(provider: NoLyricsProvider()),
+        now: @escaping () -> Date = Date.init,
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -142,6 +156,8 @@ final class MusicService {
         self.closeSignInWindow = closeSignInWindow
         self.raiseSignInWindow = raiseSignInWindow
         self.nowPlaying = nowPlaying
+        self.now = now
+        self.lastActivity = now()
         // The lyrics panel ignores ticks while it is hidden, so it asks for one fresh reading when it comes back.
         lyrics.playbackSampler = { [player] in (player.currentTime, player.isPlaying) }
         player.onTick = { [weak self] position, isPlaying in
@@ -323,7 +339,7 @@ final class MusicService {
     private func installNewSession() {
         cancelWork()
         cancelReport()
-        stopPlayback()
+        stopPlayback(reportFinal: false)
         results = []
         query = ""
         lastError = nil
@@ -416,6 +432,8 @@ final class MusicService {
     func stop() {
         cancelWork()
         endQueue()
+        // Before the player resets its position; the quit path does not wait for it, as the ping is fire and forget.
+        sendFinalPing()
         player.stop()
         session = nil
         backend.flushCookies()
@@ -423,9 +441,14 @@ final class MusicService {
 
     /// A history ping belongs to the session that earned it. After a sign-out or a swap it has nowhere to go:
     /// its tracking URL is the old account's, and the backend would send it with the new account's cookies.
+    /// The pings still waiting are dropped with it, and the session sends no final one: it would have to leave
+    /// before the jar is wiped, and the order between the two is not guaranteed.
     private func cancelReport() {
+        reportGeneration += 1
         reportTask?.cancel()
         reportTask = nil
+        pendingPings = []
+        isSendingPings = false
     }
 
     private func cancelWork() {
@@ -480,6 +503,7 @@ final class MusicService {
 
     /// Plays a tapped track and starts a radio queue behind it.
     func play(_ track: MusicTrack) {
+        noteActivity()
         queue.start(with: track)
         direction = .forward
         failureStreak = 0
@@ -490,6 +514,7 @@ final class MusicService {
     /// Plays `track` with the rest of `page`'s songs queued after it in page order, with no radio.
     /// More tracks of a long playlist are fetched as the queue runs low; the queue ends with the page.
     func play(_ track: MusicTrack, in page: MusicBrowsePage) {
+        noteActivity()
         // A page is its own order: a radio left over from the last queue must not add to it.
         cancelRadio()
         queue.start(page: page.tracks, playing: track, browseId: page.browseId, continuation: page.continuation)
@@ -501,10 +526,12 @@ final class MusicService {
     /// Play/pause for the transport and media keys. A track whose stream never resolved has nothing
     /// to resume, so Play tries it again instead.
     func togglePlayback() {
+        noteActivity()
         if player.isPlaying || player.isLoading { player.toggle() } else { resume() }
     }
 
     func resume() {
+        noteActivity()
         guard let track = player.nowPlaying else { return }
         guard !player.hasStream, !player.isLoading else { return player.play() }
         failureStreak = 0
@@ -512,6 +539,7 @@ final class MusicService {
     }
 
     func next() {
+        noteActivity()
         direction = .forward
         failureStreak = 0
         guard let track = queue.advance() else {
@@ -524,6 +552,7 @@ final class MusicService {
 
     /// Restarts the track once it has played a few seconds (or when it is the first); otherwise goes back one.
     func previous() {
+        noteActivity()
         guard player.nowPlaying != nil else { return }
         if player.currentTime > Self.restartThreshold || !queue.hasPrevious {
             // A track that ended replays through play(), which also rewinds it.
@@ -538,6 +567,7 @@ final class MusicService {
 
     /// Plays a track that is already in the queue.
     func jump(to track: MusicTrack) {
+        noteActivity()
         guard let target = queue.jump(to: track.videoId) else { return }
         direction = .forward
         failureStreak = 0
@@ -546,9 +576,12 @@ final class MusicService {
 
     func seek(to seconds: TimeInterval) {
         guard player.nowPlaying != nil else { return }
+        noteActivity()
         player.seek(to: seconds)
         // The jump is not listening time, however short: restart the count from where it landed.
         _ = session?.accumulator.record(position: player.currentTime, isPlaying: false, canFire: false)
+        // The stretch heard before it and the one after are two stretches of the watchtime ping.
+        session?.watchtime.seek(to: player.currentTime)
     }
 
     /// Starts one queue item as its own playback session.
@@ -560,6 +593,8 @@ final class MusicService {
         pendingAdvance = nil
         refreshError = nil
         lastError = nil
+        // The track that was playing is over, however it got here: its session closes with its final ping.
+        sendFinalPing()
         session = nil
         player.beginLoading(track)
         playTask = Task { [weak self] in
@@ -572,7 +607,12 @@ final class MusicService {
         do {
             let stream = try await streamForPlayback(of: track)
             guard generation == playGeneration, !Task.isCancelled else { return }
-            session = Session(cpn: CPN.make(), trackingURL: stream.playbackTrackingURL, watchtimeURL: stream.watchtimeTrackingURL)
+            session = Session(
+                cpn: CPN.make(),
+                startedAt: now(),
+                trackingURL: stream.playbackTrackingURL,
+                watchtimeURL: stream.watchtimeTrackingURL
+            )
             player.load(stream: stream, track: track)
             scheduleMemoryProbe()
         } catch {
@@ -602,8 +642,8 @@ final class MusicService {
             if session?.trackingURL == nil, let url = stream.playbackTrackingURL {
                 session?.trackingURL = url
                 // The 30 s may have passed while there was nowhere to send the ping.
-                if session?.accumulator.claim() == true, let cpn = session?.cpn {
-                    reportHistory(playback: url, watchtime: session?.watchtimeURL, cpn: cpn, mediaTime: player.currentTime)
+                if session?.accumulator.claim() == true {
+                    sendOpeningPings(playback: url, mediaTime: player.currentTime)
                 }
             }
             return stream
@@ -618,6 +658,8 @@ final class MusicService {
     // MARK: - Queue
 
     private func handleTrackEnded() {
+        // The session stays (a replay is the same session, with nothing left to send); only its final ping goes.
+        sendFinalPing()
         direction = .forward
         guard let track = queue.advance() else {
             // At the end of the queue the player stays on the finished track, as with a single song,
@@ -690,11 +732,14 @@ final class MusicService {
         return true
     }
 
-    private func stopPlayback() {
+    /// Ends playback and the queue. The session's final ping goes first (it reads the player's position),
+    /// unless the account it belongs to is gone.
+    private func stopPlayback(reportFinal: Bool = true) {
         playTask?.cancel()
         playGeneration += 1
         playTask = nil
         endQueue()
+        if reportFinal { sendFinalPing() }
         player.stop()
         session = nil
     }
@@ -870,7 +915,9 @@ final class MusicService {
     private func handleRemote(_ command: NowPlayingCommand) {
         switch command {
         case .play: resume()
-        case .pause: player.pause()
+        case .pause:
+            noteActivity()
+            player.pause()
         case .toggle: togglePlayback()
         case .next: next()
         case .previous: previous()
@@ -880,29 +927,97 @@ final class MusicService {
 
     // MARK: - History
 
-    /// Fed by the player every 0.5 s. Pings YouTube's history once after 30 s of real listening.
+    /// Fed by the player every 0.5 s. Pings YouTube's history once after 30 s of real listening, and from then on
+    /// reports the listening to the watchtime schedule.
     func handlePlaybackTick(position: TimeInterval, isPlaying: Bool) {
         // Before the session guard: the lyrics highlight needs the position whether or not History is tracking.
         lyrics.observePlayback(position: position, isPlaying: isPlaying)
         guard session != nil else { return }
         if isPlaying { prefetchNextIfNeeded(position: position) }
         let url = session?.trackingURL
-        guard session?.accumulator.record(position: position, isPlaying: isPlaying, canFire: url != nil) == true,
-              let url, let cpn = session?.cpn else { return }
-        reportHistory(playback: url, watchtime: session?.watchtimeURL, cpn: cpn, mediaTime: position)
+        let earned = session?.accumulator.record(position: position, isPlaying: isPlaying, canFire: url != nil) == true
+        // Every tick, so a stretch heard before the playback ping is in the opening watchtime ping. The clock is read
+        // first: reading `session` inside the mutating call would overlap its access.
+        let clock = sessionClock
+        let due = session?.watchtime.record(position: position, isPlaying: isPlaying, now: clock)
+        if earned, let url {
+            sendOpeningPings(playback: url, mediaTime: position)
+        } else if let due {
+            sendWatchtimePing(due, mediaTime: position)
+        }
     }
 
-    /// Sends the playback ping, then the watchtime ping when there is a URL for it. The two are
-    /// independent: a failure of one never stops the other, and neither is retried. A cancel
-    /// (sign-out, account swap) is the exception: it ends both, and the watchtime ping is not sent.
-    private func reportHistory(playback: URL, watchtime: URL?, cpn: String, mediaTime: TimeInterval) {
-        reportTask = Task { [backend] in
-            await Self.send(HistoryPing(kind: .playback, url: playback, cpn: cpn, mediaTime: mediaTime), through: backend)
-            guard !Task.isCancelled else { return }
-            if let watchtime {
-                await Self.send(HistoryPing(kind: .watchtime, url: watchtime, cpn: cpn, mediaTime: mediaTime), through: backend)
+    // MARK: - Watchtime
+
+    /// The listener touched a control: `lact` counts from now.
+    private func noteActivity() {
+        lastActivity = now()
+    }
+
+    /// Seconds since the session began, on the injected clock: the `rt` of its watchtime pings.
+    private var sessionClock: TimeInterval {
+        session.map { now().timeIntervalSince($0.startedAt) } ?? 0
+    }
+
+    /// The 30 s are up: the playback ping, then, when the stream has a watchtime URL, the watchtime ping that opens
+    /// the schedule. Watchtime pings wait for the playback ping, so a song under 30 s never touches YouTube.
+    private func sendOpeningPings(playback: URL, mediaTime: TimeInterval) {
+        guard let cpn = session?.cpn else { return }
+        var pings = [HistoryPing(kind: .playback, url: playback, cpn: cpn, mediaTime: mediaTime)]
+        let clock = sessionClock
+        if let url = session?.watchtimeURL,
+           let details = session?.watchtime.open(position: mediaTime, now: clock) {
+            pings.append(HistoryPing(kind: .watchtime, url: url, cpn: cpn, mediaTime: mediaTime, details: stamped(details)))
+        }
+        enqueue(pings)
+    }
+
+    /// A scheduled ping or a pause flush that the tracker says is due.
+    private func sendWatchtimePing(_ details: WatchtimeDetails, mediaTime: TimeInterval) {
+        guard let cpn = session?.cpn, let url = session?.watchtimeURL else { return }
+        enqueue([HistoryPing(kind: .watchtime, url: url, cpn: cpn, mediaTime: mediaTime, details: stamped(details))])
+    }
+
+    /// Closes the session with its one final ping (`final=1`), when it got as far as the playback ping: a session that
+    /// never sent one has told YouTube nothing to close, as in the web player. The position comes from the player,
+    /// so this goes before anything that resets it. Never sent twice for one session.
+    private func sendFinalPing() {
+        guard let cpn = session?.cpn, let url = session?.watchtimeURL else { return }
+        let position = player.currentTime
+        let clock = sessionClock
+        guard let details = session?.watchtime.finish(position: position, now: clock) else { return }
+        enqueue([HistoryPing(kind: .watchtime, url: url, cpn: cpn, mediaTime: position, details: stamped(details))])
+    }
+
+    /// The details with `lact`, the time since the listener last touched a control.
+    private func stamped(_ details: WatchtimeDetails) -> WatchtimeDetails {
+        var stamped = details
+        stamped.idleMilliseconds = max(0, Int((now().timeIntervalSince(lastActivity) * 1000).rounded()))
+        return stamped
+    }
+
+    /// Sends `pings` after any still waiting. They leave one at a time, in the order they were earned. A failed one is
+    /// not retried and does not stop the ones behind it; one that has not left when the session is cancelled never does.
+    private func enqueue(_ pings: [HistoryPing]) {
+        pendingPings += pings
+        guard !isSendingPings else { return }
+        isSendingPings = true
+        let generation = reportGeneration
+        reportTask = Task { [weak self, backend] in
+            while let ping = self?.nextPendingPing(generation: generation) {
+                await Self.send(ping, through: backend)
             }
         }
+    }
+
+    /// The next ping for the drain of `generation`, or nil when it is empty or was cancelled.
+    private func nextPendingPing(generation: Int) -> HistoryPing? {
+        guard generation == reportGeneration else { return nil }
+        guard !pendingPings.isEmpty else {
+            isSendingPings = false
+            return nil
+        }
+        return pendingPings.removeFirst()
     }
 
     /// Logs the outcome at a level that persists. Only the status code or the error kind is public:

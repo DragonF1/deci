@@ -32,6 +32,7 @@ actor FakeMusicBackend: MusicBackend {
         let url: URL
         let cpn: String
         let mediaTime: TimeInterval
+        let details: WatchtimeDetails?
     }
 
     nonisolated struct MoreRadioCall: Hashable, Sendable {
@@ -314,7 +315,7 @@ actor FakeMusicBackend: MusicBackend {
     }
 
     func reportHistory(_ ping: HistoryPing) async throws -> Int {
-        reportAttempts.append(Report(kind: ping.kind, url: ping.url, cpn: ping.cpn, mediaTime: ping.mediaTime))
+        reportAttempts.append(Report(kind: ping.kind, url: ping.url, cpn: ping.cpn, mediaTime: ping.mediaTime, details: ping.details))
         if let gate = reportGate { await gate.wait() }
         if let error = reportErrors[ping.kind] { throw error }
         return reportStatus
