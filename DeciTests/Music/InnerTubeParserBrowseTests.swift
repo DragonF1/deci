@@ -3,6 +3,8 @@
 // playlist, album, artist and playlist-continuation fixtures are anonymous captures from music.youtube.com
 // (visitor data scrubbed, rows trimmed). The library fixtures and the new-style home continuation are
 // built by hand from the renderer shapes ytmusicapi documents, because the library needs a signed-in session.
+// The "signedin", "empty" and Liked music fixtures copy the renderer structure of real signed-in responses,
+// with made-up titles and ids: nothing in them comes from a real library.
 
 import Foundation
 import Testing
@@ -142,6 +144,20 @@ struct InnerTubeParserBrowseTests {
     func homeContinuationWithoutPayload() {
         #expect(throws: MusicError.self) { try InnerTubeParser.homeContinuationPage(from: Data("{}".utf8)) }
         #expect(throws: MusicError.self) { try InnerTubeParser.homeContinuationPage(from: Data("[1]".utf8)) }
+    }
+
+    @Test("A home continuation answered with the bare page skeleton is the end of the feed, not an error")
+    func homeContinuationEndOfFeed() throws {
+        let page = try InnerTubeParser.homeContinuationPage(from: fixture("browse-home-continuation-end.json"))
+        #expect(page.shelves.isEmpty)
+        #expect(page.continuation == nil)
+    }
+
+    @Test("A skeleton that still holds a section list is a malformed continuation, not the end of the feed")
+    func homeContinuationSkeletonWithSectionList() {
+        let json = #"{"contents":{"singleColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"sectionListRenderer":{}}}}]}}}"#
+        #expect(throws: MusicError.self) { try InnerTubeParser.homeContinuationPage(from: Data(json.utf8)) }
+        #expect(throws: MusicError.self) { try InnerTubeParser.homeContinuationPage(from: Data(#"{"contents":{}}"#.utf8)) }
     }
 
     @Test("Home tiles: mixes, a bare playlist id and an unknown destination map by what they open")
@@ -293,6 +309,25 @@ struct InnerTubeParserBrowseTests {
     func tracksContinuationWithoutPayload() {
         #expect(throws: MusicError.self) { try InnerTubeParser.tracksContinuationPage(from: Data("{}".utf8)) }
         #expect(throws: MusicError.self) { try InnerTubeParser.tracksContinuationPage(from: Data("oops".utf8)) }
+    }
+
+    @Test("A tracks continuation answered with the bare page skeleton is the last page")
+    func tracksContinuationEndOfList() throws {
+        let page = try InnerTubeParser.tracksContinuationPage(from: fixture("browse-home-continuation-end.json"))
+        #expect(page.tracks.isEmpty)
+        #expect(page.continuation == nil)
+    }
+
+    @Test("Liked music with no liked songs: the header says 0 songs and the playlist shelf has an empty state, no rows")
+    func likedMusicEmpty() throws {
+        let page = try InnerTubeParser.browsePage(from: fixture("browse-liked-music.json"), browseId: "VLLM")
+        #expect(page.browseId == "VLLM")
+        #expect(page.title == "Liked music")
+        #expect(page.subtitle == "Auto playlist \u{2022} 0 songs")
+        #expect(page.thumbnailURL != nil)
+        #expect(page.tracks.isEmpty)
+        #expect(page.continuation == nil)
+        #expect(page.shelves.isEmpty)
     }
 
     @Test("A page response with no header is a parse error")
@@ -459,6 +494,42 @@ struct InnerTubeParserBrowseTests {
     func libraryContinuationWithoutPayload() {
         #expect(throws: MusicError.self) { try InnerTubeParser.libraryContinuationPage(from: Data("{}".utf8)) }
         #expect(throws: MusicError.self) { try InnerTubeParser.libraryContinuationPage(from: Data("nope".utf8)) }
+    }
+
+    @Test("A library continuation answered with the bare page skeleton is the end of the list")
+    func libraryContinuationEndOfList() throws {
+        let list = try InnerTubeParser.libraryContinuationPage(from: fixture("browse-home-continuation-end.json"))
+        #expect(list.items.isEmpty)
+        #expect(list.continuation == nil)
+    }
+
+    @Test("Signed-in playlists: New playlist and Episodes for later are dropped, and the other tab's reload token is not a next page")
+    func libraryPlaylistsSignedIn() throws {
+        let list = try InnerTubeParser.libraryPage(from: fixture("browse-library-playlists-signedin.json"))
+        #expect(list.items.map(\.browseId) == ["VLPLfixtureSavedRoadMix0000000000000000"])
+        #expect(list.items.first?.kind == .playlist)
+        #expect(list.items.first?.title == "Fixture Road Mix")
+        #expect(list.items.first?.subtitle == "Fixture1 \u{2022} 12 songs")
+        #expect(list.items.first?.thumbnailURL != nil)
+        #expect(list.continuation == nil)
+    }
+
+    @Test("Signed-in albums with none saved: an item section with only the empty-state message is an empty list")
+    func libraryAlbumsEmptyMessage() throws {
+        let list = try InnerTubeParser.libraryPage(from: fixture("browse-library-albums-empty.json"))
+        #expect(list.items.isEmpty)
+        #expect(list.continuation == nil)
+    }
+
+    @Test("Signed-in artists: a LIBRARY_ARTIST row linking to MPLAUC opens the UC channel")
+    func libraryArtistsSignedIn() throws {
+        let list = try InnerTubeParser.libraryPage(from: fixture("browse-library-artists-signedin.json"))
+        #expect(list.items.map(\.browseId) == ["UCfixtureLibraryArtist0"])
+        #expect(list.items.first?.kind == .artist)
+        #expect(list.items.first?.title == "Fixture Artist")
+        #expect(list.items.first?.subtitle == "1 song")
+        #expect(list.items.first?.thumbnailURL != nil)
+        #expect(list.continuation == nil)
     }
 
     // MARK: - Search rows still parse

@@ -18,6 +18,9 @@ import Testing
 )
 struct MusicLiveBrowseTests {
 
+    /// Home pages to walk, the first included: enough to reach the end of a feed without paging forever.
+    private static let homePageLimit = 8
+
     private func report(_ line: String) {
         print(line)
         guard let path = ProcessInfo.processInfo.environment["DECI_MUSIC_LIVE_LOG"],
@@ -39,7 +42,7 @@ struct MusicLiveBrowseTests {
         return MusicBackendLive(client: client, resolver: resolver)
     }
 
-    @Test("A real Home has shelves with titled items, and its continuation returns more")
+    @Test("A real Home has shelves with titled items, and its continuations walk to the end of the feed")
     func homeAgainstTheRealEndpoint() async throws {
         let directory = makeTemporaryDirectory("deci-music-live-browse")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -59,15 +62,25 @@ struct MusicLiveBrowseTests {
         #expect(shelvesFilled)
         #expect(itemsFilled)
 
-        guard let token = home.continuation else { return report("MUSIC_LIVE home has no continuation") }
-        let more = try await backend.moreHome(continuation: token)
-        report("MUSIC_LIVE home page2 shelves=\(more.shelves.count) items=\(more.shelves.flatMap(\.items).count) hasContinuation=\(more.continuation != nil)")
-        let tokenMoved = more.continuation != token
-        #expect(!more.shelves.isEmpty)
-        #expect(tokenMoved)
+        // Walk the feed (bounded). The last token can be answered with a bare page skeleton, which has to
+        // read as the end of the feed and not as a parse error; a token that repeats would loop forever.
+        var token = home.continuation
+        var seenTokens = Set<String>()
+        var tokensFresh = true
+        var pageNumber = 1
+        while let current = token, pageNumber < Self.homePageLimit {
+            tokensFresh = tokensFresh && seenTokens.insert(current).inserted
+            let more = try await backend.moreHome(continuation: current)
+            pageNumber += 1
+            report("MUSIC_LIVE home page\(pageNumber) shelves=\(more.shelves.count) items=\(more.shelves.flatMap(\.items).count) hasContinuation=\(more.continuation != nil)")
+            if pageNumber == 2 { #expect(!more.shelves.isEmpty) }
+            token = more.continuation
+        }
+        report("MUSIC_LIVE home walked pages=\(pageNumber) reachedEnd=\(token == nil)")
+        #expect(tokensFresh)
     }
 
-    @Test("A real Library has playlists with Liked music among them, and albums and artists parse")
+    @Test("A real Library has playlists, and albums and artists parse")
     func libraryAgainstTheRealEndpoint() async throws {
         let directory = makeTemporaryDirectory("deci-music-live-browse")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -90,7 +103,8 @@ struct MusicLiveBrowseTests {
             #expect(tokenMoved)
         }
 
-        // An account can have no saved albums or followed artists, so these only have to parse.
+        // The grid can lack a Liked music tile (the Library view pins its own row), and an account can have no
+        // saved albums or followed artists, so these only have to parse.
         for section in [MusicLibrarySection.albums, .artists] {
             let list = try await backend.library(section)
             report("MUSIC_LIVE library \(section.rawValue) items=\(list.items.count) hasContinuation=\(list.continuation != nil)")
@@ -99,15 +113,18 @@ struct MusicLiveBrowseTests {
         }
     }
 
-    @Test("The real Liked music page has playable rows, and its continuation returns more")
+    @Test("The real Liked music page has playable rows, or YouTube's own header count says there are none")
     func likedMusicAgainstTheRealEndpoint() async throws {
         let directory = makeTemporaryDirectory("deci-music-live-browse")
         defer { try? FileManager.default.removeItem(at: directory) }
         let backend = makeBackend(directory: directory)
 
         let page = try await backend.page(browseId: "VLLM")
-        report("MUSIC_LIVE VLLM tracks=\(page.tracks.count) hasContinuation=\(page.continuation != nil)")
-        #expect(!page.tracks.isEmpty)
+        // No liked songs is an empty page, and the only way to tell that from a parse gap is the header's own count.
+        let headerCountsZero = page.subtitle?.hasSuffix(" \u{2022} 0 songs") == true
+        report("MUSIC_LIVE VLLM tracks=\(page.tracks.count) headerCountsZero=\(headerCountsZero) hasContinuation=\(page.continuation != nil)")
+        let rowsOrZero = !page.tracks.isEmpty || headerCountsZero
+        #expect(rowsOrZero)
         let tracksFilled = page.tracks.allSatisfy { !$0.videoId.isEmpty && !$0.title.isEmpty }
         let tracksUnique = Set(page.tracks.map(\.videoId)).count == page.tracks.count
         #expect(tracksFilled)

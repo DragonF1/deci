@@ -289,6 +289,8 @@ extension InnerTubeParser {
 
     /// The items of a continuation response and the container that holds a further old-style token:
     /// `continuationContents.<key>` for the old style, `appendContinuationItemsAction` for the new.
+    /// A token with nothing after it can be answered with the page's bare skeleton instead of a last
+    /// page; that is the end of the list (no items, no token), and not a response Deci cannot read.
     private static func continuationPayload(in root: [String: Any], keys: [String]) -> (items: [[String: Any]], container: [String: Any]?)? {
         let contents = root["continuationContents"] as? [String: Any]
         for key in keys {
@@ -301,13 +303,23 @@ extension InnerTubeParser {
                 return (items, nil)
             }
         }
-        return nil
+        return isBareSkeleton(root) ? ([], nil) : nil
+    }
+
+    /// A browse response that is only its tab strip: a column renderer with no section list anywhere in it.
+    private static func isBareSkeleton(_ root: [String: Any]) -> Bool {
+        guard let contents = root["contents"] as? [String: Any],
+              contents["singleColumnBrowseResultsRenderer"] != nil || contents["twoColumnBrowseResultsRenderer"] != nil else { return false }
+        var lists: [[String: Any]] = []
+        collect("sectionListRenderer", in: contents, into: &lists)
+        return lists.isEmpty
     }
 
     // MARK: - Tiles and rows
 
-    /// One tile or row as Deci shows it. Nil for what Deci cannot open: podcasts, episodes, user
-    /// channels, anything greyed out, a tile with no destination (the library's "New playlist").
+    /// One tile or row as Deci shows it. Nil for what Deci cannot open: podcasts, episodes (and the
+    /// library's "Episodes for later"), user channels, anything greyed out, a tile with no
+    /// destination (the library's "New playlist").
     static func shelfItem(from entry: [String: Any]) -> MusicShelfItem? {
         if let tile = entry["musicTwoRowItemRenderer"] as? [String: Any] { return tileItem(from: tile) }
         if let row = entry["musicResponsiveListItemRenderer"] as? [String: Any] { return rowItem(from: row) }
@@ -361,8 +373,12 @@ extension InnerTubeParser {
         return browseTrack(from: row).map { .track($0) }
     }
 
+    /// "Episodes for later" (playlist SE) lists podcast episodes only, which Deci cannot play, so its page would be empty.
+    private static let episodesForLaterBrowseId = "VLSE"
+
     private static func collection(_ browse: [String: Any], title: String, subtitle: String?, thumbnail: URL?) -> MusicShelfItem? {
-        guard var browseId = string(browse["browseId"]), let kind = collectionKind(of: browse) else { return nil }
+        guard var browseId = string(browse["browseId"]), browseId != episodesForLaterBrowseId,
+              let kind = collectionKind(of: browse) else { return nil }
         // A library artist links to "MPLA" + its channel id; the artist page is the channel id (as ytmusicapi does).
         if kind == .artist, browseId.hasPrefix("MPLAUC") { browseId.removeFirst(4) }
         return .collection(MusicCollection(browseId: browseId, kind: kind, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail))

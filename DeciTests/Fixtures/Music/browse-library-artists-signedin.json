@@ -1,0 +1,249 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "contents": {
+  "singleColumnBrowseResultsRenderer": {
+   "tabs": [
+    {
+     "tabRenderer": {
+      "title": "Library",
+      "tabIdentifier": "FEmusic_liked_playlists",
+      "selected": true,
+      "trackingParams": "FIXTURE",
+      "endpoint": {
+       "commandExecutorCommand": {
+        "commands": [
+         {
+          "musicLibraryPersistLaunchNavigationCommand": {
+           "command": {
+            "browseEndpoint": {
+             "browseId": "FEmusic_liked_playlists"
+            }
+           }
+          }
+         },
+         {
+          "browseEndpoint": {
+           "browseId": "FEmusic_liked_playlists",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_LIBRARY_CONTENT_LANDING_PAGE"
+            }
+           }
+          }
+         }
+        ]
+       }
+      },
+      "content": {
+       "sectionListRenderer": {
+        "header": {
+         "musicSideAlignedItemRenderer": {
+          "startItems": [
+           {
+            "chipCloudRenderer": {
+             "chips": [
+              {
+               "chipCloudChipRenderer": {
+                "text": {
+                 "runs": [
+                  {
+                   "text": "Recently saved"
+                  }
+                 ]
+                },
+                "isSelected": false,
+                "uniqueId": "FIXTURE",
+                "navigationEndpoint": {
+                 "commandExecutorCommand": {
+                  "commands": [
+                   {
+                    "browseEndpoint": {
+                     "browseId": "FEmusic_liked_playlists",
+                     "browseEndpointContextSupportedConfigs": {
+                      "browseEndpointContextMusicConfig": {
+                       "pageType": "MUSIC_PAGE_TYPE_LIBRARY_CONTENT_LANDING_PAGE"
+                      }
+                     }
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          ],
+          "endItems": [
+           {
+            "musicSortFilterButtonRenderer": {
+             "title": {
+              "runs": [
+               {
+                "text": "Recent activity"
+               }
+              ]
+             },
+             "icon": {
+              "iconType": "CHEVRON_DOWN"
+             },
+             "menu": {
+              "musicMultiSelectMenuRenderer": {
+               "title": {
+                "musicMenuTitleRenderer": {
+                 "primaryText": {
+                  "runs": [
+                   {
+                    "text": "Sort by"
+                   }
+                  ]
+                 }
+                }
+               },
+               "options": []
+              }
+             }
+            }
+           }
+          ]
+         }
+        },
+        "contents": [
+         {
+          "musicShelfRenderer": {
+           "contents": [
+            {
+             "musicResponsiveListItemRenderer": {
+              "flexColumnDisplayStyle": "MUSIC_RESPONSIVE_LIST_ITEM_FLEX_COLUMN_DISPLAY_STYLE_TWO_LINE_STACKED",
+              "itemHeight": "MUSIC_RESPONSIVE_LIST_ITEM_HEIGHT_MEDIUM",
+              "thumbnail": {
+               "musicThumbnailRenderer": {
+                "thumbnail": {
+                 "thumbnails": [
+                  {
+                   "url": "https://lh3.googleusercontent.com/fixture-artist=w60-h60-l90-rj",
+                   "width": 60,
+                   "height": 60
+                  },
+                  {
+                   "url": "https://lh3.googleusercontent.com/fixture-artist=w120-h120-l90-rj",
+                   "width": 120,
+                   "height": 120
+                  }
+                 ]
+                },
+                "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_UNSPECIFIED",
+                "thumbnailScale": "MUSIC_THUMBNAIL_SCALE_ASPECT_FIT"
+               }
+              },
+              "flexColumns": [
+               {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                 "displayPriority": "MUSIC_RESPONSIVE_LIST_ITEM_COLUMN_DISPLAY_PRIORITY_HIGH",
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Fixture Artist"
+                   }
+                  ],
+                  "accessibility": {
+                   "accessibilityData": {
+                    "label": "Fixture Artist"
+                   }
+                  }
+                 }
+                }
+               },
+               {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                 "displayPriority": "MUSIC_RESPONSIVE_LIST_ITEM_COLUMN_DISPLAY_PRIORITY_HIGH",
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "1 song"
+                   }
+                  ]
+                 }
+                }
+               }
+              ],
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "MPLAUCfixtureLibraryArtist0",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_LIBRARY_ARTIST"
+                 }
+                }
+               }
+              },
+              "trackingParams": "FIXTURE"
+             }
+            }
+           ],
+           "shelfDivider": {
+            "musicShelfDividerRenderer": {
+             "hidden": true
+            }
+           }
+          }
+         }
+        ],
+        "trackingParams": "FIXTURE"
+       }
+      }
+     }
+    },
+    {
+     "tabRenderer": {
+      "title": "Downloads",
+      "tabIdentifier": "FEmusic_offline",
+      "selected": false,
+      "trackingParams": "FIXTURE",
+      "endpoint": {
+       "commandExecutorCommand": {
+        "commands": [
+         {
+          "musicLibraryPersistLaunchNavigationCommand": {
+           "command": {
+            "browseEndpoint": {
+             "browseId": "FEmusic_offline"
+            }
+           }
+          }
+         },
+         {
+          "browseEndpoint": {
+           "browseId": "FEmusic_offline",
+           "browseEndpointContextSupportedConfigs": {
+            "browseEndpointContextMusicConfig": {
+             "pageType": "MUSIC_PAGE_TYPE_LIBRARY_CONTENT_LANDING_PAGE"
+            }
+           }
+          }
+         }
+        ]
+       }
+      },
+      "content": {
+       "sectionListRenderer": {
+        "continuations": [
+         {
+          "reloadContinuationData": {
+           "continuation": "FIXTURE_LIB_RELOAD_TOKEN"
+          }
+         }
+        ],
+        "trackingParams": "FIXTURE"
+       }
+      }
+     }
+    }
+   ]
+  }
+ },
+ "trackingParams": "FIXTURE"
+}

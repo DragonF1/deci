@@ -1,0 +1,31 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED",
+  "maxAgeSeconds": 0
+ },
+ "contents": {
+  "singleColumnBrowseResultsRenderer": {
+   "tabs": [
+    {
+     "tabRenderer": {
+      "title": "Home",
+      "tabIdentifier": "FEmusic_home",
+      "selected": true,
+      "icon": {
+       "iconType": "TAB_HOME"
+      },
+      "trackingParams": "FIXTURE",
+      "endpoint": {
+       "clickTrackingParams": "FIXTURE",
+       "browseEndpoint": {
+        "browseId": "FEmusic_home"
+       }
+      }
+     }
+    }
+   ]
+  }
+ },
+ "trackingParams": "FIXTURE",
+ "maxAgeStoreSeconds": 0
+}
