@@ -13,9 +13,13 @@ actor LRCLibClient: LyricsProviding {
     static let durationTolerance: TimeInterval = 2
     /// A record with fewer sung lines than this is the placeholder junk LRCLIB sometimes returns.
     static let minimumLines = 3
+    /// The most of a reply that is read: a real record is a few KB, a longer body is not LRCLIB talking.
+    static let maximumResponseBytes = 2 * 1024 * 1024
 
     private static let baseURL = URL(string: "https://lrclib.net/api")!
     private static let defaultWait: TimeInterval = 60
+    /// How long a 500, 502 or 504 holds every request back. Short, and kept in memory only.
+    private static let serverErrorWait: TimeInterval = 30
     private static let minimumWait: TimeInterval = 1
     private static let maximumWait: TimeInterval = 3600
     private static let unreserved = CharacterSet(
@@ -25,12 +29,16 @@ actor LRCLibClient: LyricsProviding {
 
     /// One LRCLIB record, read leniently: a missing or null field is just absent.
     private struct Record {
+        let trackName: String?
+        let artistName: String?
         let duration: Double?
         let instrumental: Bool
         let plain: String?
         let synced: String?
 
         init(_ object: [String: Any]) {
+            trackName = object["trackName"] as? String
+            artistName = object["artistName"] as? String
             duration = object["duration"] as? Double
             instrumental = object["instrumental"] as? Bool ?? false
             plain = object["plainLyrics"] as? String
@@ -107,7 +115,11 @@ actor LRCLibClient: LyricsProviding {
 
         let result = try await lookup(query)
         try Task.checkCancellation()
-        await cache.store(result, videoId: query.videoId)
+        // Without the exact length the match is a guess (the search takes the first usable record), and a guess
+        // must not stick for 30 days: the store asks again once the player knows the length.
+        if Self.known(query.duration) != nil {
+            await cache.store(result, videoId: query.videoId)
+        }
         return result
     }
 
@@ -152,6 +164,10 @@ actor LRCLibClient: LyricsProviding {
         var best: (answer: Answer, distance: Double)?
         for case let object as [String: Any] in objects {
             let record = Record(object)
+            // A record of another song that happens to be the right length is not an answer.
+            guard LyricsIdentity.matches(
+                recordTitle: record.trackName, recordArtist: record.artistName, title: title, artist: artist
+            ) else { continue }
             var distance = 0.0
             if let target {
                 guard let length = record.duration, abs(length - target) <= Self.durationTolerance else { continue }
@@ -167,7 +183,8 @@ actor LRCLibClient: LyricsProviding {
 
     // MARK: - Network
 
-    /// The body of a 2xx answer, or nil for a 404. A 429 or 503 opens the busy window and throws.
+    /// The body of a 2xx answer, or nil for a 404. A 429 or 503 opens the busy window and throws; a 500, 502 or 504
+    /// opens a short backoff window and throws. A body over the size cap is a parse failure.
     private func fetch(_ path: String, _ parameters: [(String, String)]) async throws -> Data? {
         var components = URLComponents(url: Self.baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
         // Encoded by hand: URLComponents leaves "+" and "&" alone, which a server reads as a space and a separator.
@@ -183,21 +200,40 @@ actor LRCLibClient: LyricsProviding {
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
         }
-        try Task.checkCancellation()
 
         Self.log.info("lrclib \(path, privacy: .public) answered \(response.statusCode)")
+        // The server's "slow down" counts even when this request was cancelled meanwhile: it was sent, and the
+        // next song must not walk straight into the same answer. So the window opens before the cancellation check.
+        let refusal = openWindow(for: response)
+        try Task.checkCancellation()
+        if let refusal { throw refusal }
+
         switch response.statusCode {
         case 200..<300:
+            guard response.data.count <= Self.maximumResponseBytes else { throw LyricsError.parse }
             return response.data
         case 404:
             return nil
-        case 429, 503:
-            let start = now()
-            let until = start.addingTimeInterval(Self.wait(retryAfter: response.header("Retry-After"), from: start))
-            waitUntil = until
-            throw LyricsError.busy(until: until)
         default:
             throw LyricsError.http(response.statusCode)
+        }
+    }
+
+    /// A 429 or 503 opens the window Retry-After names; a 500, 502 or 504 opens a short fixed one. Nil for
+    /// every other status. Only memory: nothing about it is written to disk.
+    private func openWindow(for response: HTTPResponse) -> LyricsError? {
+        let start = now()
+        switch response.statusCode {
+        case 429, 503:
+            let until = start.addingTimeInterval(Self.wait(retryAfter: response.header("Retry-After"), from: start))
+            waitUntil = max(waitUntil ?? until, until)
+            return .busy(until: until)
+        case 500, 502, 504:
+            let until = start.addingTimeInterval(Self.serverErrorWait)
+            waitUntil = max(waitUntil ?? until, until)
+            return .backoff(status: response.statusCode, until: until)
+        default:
+            return nil
         }
     }
 

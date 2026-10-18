@@ -109,13 +109,18 @@ enum LRCParser {
         return TimeInterval(milliseconds) / 1000
     }
 
+    /// The longest time inside a word tag: "mmm:ss.xxx".
+    private static let longestTagInside = 10
+
     /// Removes enhanced-LRC word tags such as "<00:05.40>", which a plain line has no use for.
+    /// The ">" is looked for only as far as a tag can reach, so a line of nothing but "<" costs a few steps per
+    /// character instead of a scan to the end of the line for each one (the body of a hostile reply can be 2 MB).
     private static func stripWordTags(_ text: Substring) -> String {
         guard text.contains("<") else { return String(text) }
         var result = ""
         var index = text.startIndex
         while index < text.endIndex {
-            if text[index] == "<", let close = text[index...].firstIndex(of: ">"),
+            if text[index] == "<", let close = closingBracket(in: text, after: index),
                timestamp(text[text.index(after: index)..<close]) != nil {
                 index = text.index(after: close)
             } else {
@@ -124,5 +129,17 @@ enum LRCParser {
             }
         }
         return String(trimmed(Substring(result)))
+    }
+
+    /// The ">" that could close a word tag opened at `open`; nil when none is within reach.
+    private static func closingBracket(in text: Substring, after open: Substring.Index) -> Substring.Index? {
+        var probe = text.index(after: open)
+        var inside = 0
+        while probe < text.endIndex, inside <= longestTagInside {
+            if text[probe] == ">" { return probe }
+            probe = text.index(after: probe)
+            inside += 1
+        }
+        return nil
     }
 }

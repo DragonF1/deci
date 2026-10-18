@@ -192,3 +192,23 @@ nonisolated final class FakeLyricsProvider: LyricsProviding, @unchecked Sendable
         return result
     }
 }
+
+/// Stands in for `Task.sleep` in the store: records how long it was asked to wait and, when gated, holds every
+/// caller until `release()`. The gate ignores cancellation, like a stuck timer, so a test can prove that a
+/// stale sleeper which wakes up late still sends nothing.
+nonisolated final class FakeSleeper: @unchecked Sendable {
+    private let asked = OSAllocatedUnfairLock(initialState: [Duration]())
+    private let gate = MusicTestGate()
+    private let gated: Bool
+
+    init(gated: Bool = true) { self.gated = gated }
+
+    var requested: [Duration] { asked.withLock { $0 } }
+
+    func sleep(_ duration: Duration) async throws {
+        asked.withLock { $0.append(duration) }
+        if gated { await gate.wait() }
+    }
+
+    func release() async { await gate.open() }
+}

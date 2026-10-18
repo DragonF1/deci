@@ -128,7 +128,9 @@ final class MusicService {
         closeSignInWindow: @escaping @MainActor () -> Void = { MusicSignInWindowController.cancelActive() },
         raiseSignInWindow: @escaping @MainActor () -> Void = { MusicSignInWindowController.bringToFront() },
         nowPlaying: NowPlayingController = NowPlayingController(),
-        lyrics: MusicLyricsStore = MusicLyricsStore(provider: LRCLibClient.live()),
+        // Offline unless the caller says otherwise: only the app's own wiring (MusicServiceHost) passes
+        // `MusicLyricsStore.live()`, so a service built by a test or a preview never reaches LRCLIB.
+        lyrics: MusicLyricsStore = MusicLyricsStore(provider: NoLyricsProvider()),
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -140,6 +142,8 @@ final class MusicService {
         self.closeSignInWindow = closeSignInWindow
         self.raiseSignInWindow = raiseSignInWindow
         self.nowPlaying = nowPlaying
+        // The lyrics panel ignores ticks while it is hidden, so it asks for one fresh reading when it comes back.
+        lyrics.playbackSampler = { [player] in (player.currentTime, player.isPlaying) }
         player.onTick = { [weak self] position, isPlaying in
             self?.handlePlaybackTick(position: position, isPlaying: isPlaying)
         }

@@ -20,7 +20,11 @@ final class MusicServiceHost {
 
     @ObservationIgnored private let makeService: @MainActor () -> MusicService
 
-    init(makeService: @escaping @MainActor () -> MusicService = { MusicService(backend: MusicBackendLive.live()) }) {
+    init(
+        makeService: @escaping @MainActor () -> MusicService = {
+            MusicService(backend: MusicBackendLive.live(), lyrics: .live())
+        }
+    ) {
         self.makeService = makeService
         MusicMemoryLog.log("launch")
     }

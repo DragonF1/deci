@@ -293,11 +293,80 @@ struct LRCLibClientTests {
         #expect(try await rig.client.lyrics(for: LyricsSamples.query(album: nil)) == .notFound)
     }
 
+    // MARK: - Identity of search hits
+
+    @Test("A record in the duration window by another artist is not the song")
+    func wrongArtistIsSkipped() async throws {
+        let other = LyricsSamples.record(artist: "Somebody Else", duration: 200, synced: cut("Wrong"))
+        let rig = makeRig(FakeLRCLib(search: [.results([other])]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(title: "Test Song", artist: "Test Artist", album: nil))
+        #expect(result == .notFound)
+        // Not found is cached like any other answer, so the wrong song is never kept for a month.
+        #expect(await rig.cache.cached(videoId: "vid1") == .notFound)
+    }
+
+    @Test("A generic title by another artist loses to the right one further down the list")
+    func rightArtistWins() async throws {
+        let results = [
+            LyricsSamples.record(id: 1, track: "Stay", artist: "Somebody Else", duration: 200, synced: cut("Wrong")),
+            LyricsSamples.record(id: 2, track: "Stay", artist: "Test Artist", duration: 201, synced: cut("Right")),
+        ]
+        let rig = makeRig(FakeLRCLib(search: [.results(results)]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(title: "Stay", artist: "Test Artist", album: nil))
+        #expect(firstText(result) == "Right 0")
+    }
+
+    @Test("A record by the right artist with a different title is skipped")
+    func wrongTitleIsSkipped() async throws {
+        let other = LyricsSamples.record(track: "Another Song", artist: "Test Artist", synced: cut("Wrong"))
+        let rig = makeRig(FakeLRCLib(search: [.results([other])]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(album: nil)) == .notFound)
+    }
+
+    @Test("A record whose title only adds (Remastered 2011) still matches")
+    func remasteredRecordMatches() async throws {
+        let record = LyricsSamples.record(track: "Test Song (Remastered 2011)", synced: cut("Found"))
+        let rig = makeRig(FakeLRCLib(search: [.results([record])]))
+        defer { rig.cleanUp() }
+        let result = try await rig.client.lyrics(for: LyricsSamples.query(album: nil))
+        #expect(firstText(result) == "Found 0")
+    }
+
+    @Test("Feat. and & variants of the artist still match")
+    func artistVariantsMatch() async throws {
+        let record = LyricsSamples.record(artist: "Test Artist & Guest Person", synced: cut("Found"))
+        let rig = makeRig(FakeLRCLib(search: [.results([record])]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query(artist: "Test Artist feat. Someone", album: nil)
+        #expect(firstText(try await rig.client.lyrics(for: query)) == "Found 0")
+    }
+
+    @Test("A wrong-artist record is skipped on the cleaned retry too")
+    func retryChecksIdentity() async throws {
+        let other = LyricsSamples.record(artist: "Somebody Else", synced: cut("Wrong"))
+        let rig = makeRig(FakeLRCLib(search: [.empty, .results([other])]))
+        defer { rig.cleanUp() }
+        let query = LyricsSamples.query(title: "Test Song (Official Video)", album: nil)
+        #expect(try await rig.client.lyrics(for: query) == .notFound)
+        #expect(rig.transport.searchRequests.count == 2)
+    }
+
+    @Test("An identity miss is not an instrumental answer either")
+    func wrongArtistInstrumentalIsSkipped() async throws {
+        let other = LyricsSamples.record(artist: "Somebody Else", instrumental: true, plain: nil, synced: nil)
+        let rig = makeRig(FakeLRCLib(search: [.results([other])]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(album: nil)) == .notFound)
+    }
+
     // MARK: - Cleaned retry
 
     @Test("When search finds nothing, it retries once with the cleaned title and the first artist")
     func cleanedRetry() async throws {
-        let rig = makeRig(FakeLRCLib(search: [.empty, .results([LyricsSamples.record(synced: cut("Found"))])]))
+        let rig = makeRig(FakeLRCLib(search: [.empty, .results([LyricsSamples.record(artist: "Main Artist", synced: cut("Found"))])]))
         defer { rig.cleanUp() }
         let query = LyricsSamples.query(title: "Test Song (feat. Guest) [Remastered]", artist: "Main Artist, Guest", album: nil)
         let result = try await rig.client.lyrics(for: query)
@@ -442,11 +511,130 @@ struct LRCLibClientTests {
         #expect(await rig.cache.cached(videoId: "vid1") == nil)
     }
 
+    @Test("A 429 that arrives on a cancelled request still opens the busy window")
+    func busyAfterCancellation() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(429, headers: ["Retry-After": "30"])]))
+        defer { rig.cleanUp() }
+        let gate = MusicTestGate()
+        rig.transport.setGate(gate)
+        let client = rig.client
+        let task = Task { try await client.lyrics(for: LyricsSamples.query(videoId: "a")) }
+        #expect(await eventually { !rig.transport.requests.isEmpty })
+        task.cancel()
+        await gate.open()
+        await #expect(throws: CancellationError.self) { try await task.value }
+
+        let until = rig.clock.now.addingTimeInterval(30)
+        #expect(await rig.client.busyUntil == until)
+        // The next song sends nothing inside the window.
+        await #expect(throws: LyricsError.busy(until: until)) {
+            try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b"))
+        }
+        #expect(rig.transport.requests.count == 1)
+    }
+
+    @Test("A 503 that arrives on a cancelled request opens the window too")
+    func overloadedAfterCancellation() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(503, headers: ["Retry-After": "7"])]))
+        defer { rig.cleanUp() }
+        let gate = MusicTestGate()
+        rig.transport.setGate(gate)
+        let client = rig.client
+        let task = Task { try await client.lyrics(for: LyricsSamples.query()) }
+        #expect(await eventually { !rig.transport.requests.isEmpty })
+        task.cancel()
+        await gate.open()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(await rig.client.busyUntil == rig.clock.now.addingTimeInterval(7))
+    }
+
+    @Test("A cancelled request that got a good answer opens no window")
+    func cancelledSuccessOpensNoWindow() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record())]))
+        defer { rig.cleanUp() }
+        let gate = MusicTestGate()
+        rig.transport.setGate(gate)
+        let client = rig.client
+        let task = Task { try await client.lyrics(for: LyricsSamples.query()) }
+        #expect(await eventually { !rig.transport.requests.isEmpty })
+        task.cancel()
+        await gate.open()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(await rig.client.busyUntil == nil)
+    }
+
+    // MARK: - Server errors back off
+
+    @Test("A 500, 502 or 504 opens a 30 s window, reported with its status", arguments: [500, 502, 504])
+    func serverErrorBacksOff(status: Int) async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(status)]))
+        defer { rig.cleanUp() }
+        let until = rig.clock.now.addingTimeInterval(30)
+        await #expect(throws: LyricsError.backoff(status: status, until: until)) {
+            try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a"))
+        }
+        #expect(await rig.client.busyUntil == until)
+        #expect(await rig.cache.cached(videoId: "a") == nil)
+
+        // Inside the window another song sends nothing; it is told to wait.
+        rig.clock.advance(by: 10)
+        await #expect(throws: LyricsError.busy(until: until)) {
+            try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b"))
+        }
+        #expect(rig.transport.requests.count == 1)
+
+        // Past it the client asks again.
+        rig.clock.advance(by: 21)
+        rig.transport.setGet(.record(LyricsSamples.record()))
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(videoId: "b")) == .synced(LyricsSamples.syncedLines))
+        #expect(rig.transport.requests.count == 2)
+    }
+
+    @Test("A Retry-After on a 500 is ignored: the window is 30 s")
+    func serverErrorIgnoresRetryAfter() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(500, headers: ["Retry-After": "900"])]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.backoff(status: 500, until: rig.clock.now.addingTimeInterval(30))) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+    }
+
+    @Test("A server error on the search step backs off too")
+    func serverErrorOnSearch() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.notFound], search: [.status(502)]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.backoff(status: 502, until: rig.clock.now.addingTimeInterval(30))) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+        #expect(rig.transport.requests.count == 2)
+    }
+
+    @Test("The backoff window lives in memory only: a new client over the same cache is not held")
+    func serverErrorWindowIsNotPersisted() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.status(500)]))
+        defer { rig.cleanUp() }
+        _ = try? await rig.client.lyrics(for: LyricsSamples.query())
+        let fresh = FakeLRCLib(get: [.record(LyricsSamples.record())])
+        let other = LRCLibClient(transport: fresh, cache: rig.cache, userAgent: Self.userAgent, now: { rig.clock.now })
+        #expect(try await other.lyrics(for: LyricsSamples.query()) == .synced(LyricsSamples.syncedLines))
+        #expect(fresh.requests.count == 1)
+    }
+
+    @Test("A cache hit is still served inside a server-error window")
+    func cacheServesDuringBackoff() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.record(LyricsSamples.record()), .status(500)]))
+        defer { rig.cleanUp() }
+        _ = try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a"))
+        _ = try? await rig.client.lyrics(for: LyricsSamples.query(videoId: "b"))
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(videoId: "a")) == .synced(LyricsSamples.syncedLines))
+        #expect(rig.transport.requests.count == 2)
+    }
+
     // MARK: - Failures
 
-    @Test("Other HTTP errors are reported with their status and not cached")
+    @Test("Other HTTP errors are reported with their status, open no window and are not cached")
     func httpErrors() async throws {
-        for status in [400, 500, 502] {
+        for status in [400, 401, 403, 501, 505] {
             let rig = makeRig(FakeLRCLib(get: [.status(status)]))
             defer { rig.cleanUp() }
             await #expect(throws: LyricsError.http(status)) {
@@ -504,7 +692,71 @@ struct LRCLibClientTests {
         #expect(await rig.cache.cached(videoId: "vid1") == nil)
     }
 
+    // MARK: - Response size
+
+    /// A valid empty search answer padded with blanks to exactly `bytes` bytes.
+    private func paddedList(bytes: Int) -> Data {
+        Data("[]".utf8) + Data(repeating: UInt8(ascii: " "), count: bytes - 2)
+    }
+
+    @Test("A body of exactly 2 MB is read")
+    func bodyAtTheCap() async throws {
+        #expect(LRCLibClient.maximumResponseBytes == 2 * 1024 * 1024)
+        let rig = makeRig(FakeLRCLib(search: [.ok(paddedList(bytes: LRCLibClient.maximumResponseBytes))]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(album: nil)) == .notFound)
+    }
+
+    @Test("A body over 2 MB is a failure, never parsed or cached")
+    func bodyOverTheCap() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.ok(paddedList(bytes: LRCLibClient.maximumResponseBytes + 1))]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.parse) {
+            try await rig.client.lyrics(for: LyricsSamples.query(album: nil))
+        }
+        #expect(await rig.cache.cached(videoId: "vid1") == nil)
+        #expect(rig.transport.searchRequests.count == 1)
+    }
+
+    @Test("An oversized /api/get body is a failure too")
+    func getBodyOverTheCap() async throws {
+        let rig = makeRig(FakeLRCLib(get: [.ok(Data(repeating: UInt8(ascii: " "), count: LRCLibClient.maximumResponseBytes + 1))]))
+        defer { rig.cleanUp() }
+        await #expect(throws: LyricsError.parse) {
+            try await rig.client.lyrics(for: LyricsSamples.query())
+        }
+    }
+
     // MARK: - Cache
+    @Test("An answer found with no known duration is not cached, so the exact length can be used later")
+    func unknownDurationIsNotCached() async throws {
+        for duration in [nil, 0, -3] as [TimeInterval?] {
+            let rig = makeRig(FakeLRCLib(search: [.results([LyricsSamples.record(synced: cut("Found"))])]))
+            defer { rig.cleanUp() }
+            let query = LyricsSamples.query(album: nil, duration: duration)
+            #expect(firstText(try await rig.client.lyrics(for: query)) == "Found 0")
+            #expect(await rig.cache.cached(videoId: "vid1") == nil, "duration \(String(describing: duration)) was cached")
+            _ = try await rig.client.lyrics(for: query)
+            #expect(rig.transport.searchRequests.count == 2)
+        }
+    }
+
+    @Test("Not-found with no known duration is not cached either")
+    func unknownDurationNotFoundIsNotCached() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.empty]))
+        defer { rig.cleanUp() }
+        #expect(try await rig.client.lyrics(for: LyricsSamples.query(album: nil, duration: nil)) == .notFound)
+        #expect(await rig.cache.cached(videoId: "vid1") == nil)
+    }
+
+    @Test("With a known duration the same lookup is cached")
+    func knownDurationIsCached() async throws {
+        let rig = makeRig(FakeLRCLib(search: [.results([LyricsSamples.record(synced: cut("Found"))])]))
+        defer { rig.cleanUp() }
+        _ = try await rig.client.lyrics(for: LyricsSamples.query(album: nil, duration: 200))
+        #expect(await rig.cache.cached(videoId: "vid1") != nil)
+    }
+
 
     @Test("A second lookup of the same video is served from disk with no request")
     func cacheHit() async throws {

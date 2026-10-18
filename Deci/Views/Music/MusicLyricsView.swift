@@ -31,10 +31,14 @@ struct MusicLyricsView: View {
             }
         case .loading:
             MusicLoadingView()
-        case .failed(let message):
-            MusicFailedView(message: message) { store.retry() }
+        case .failed(let message, let retryAfter):
+            if let retryAfter {
+                MusicLyricsWaitView(message: message, until: retryAfter) { store.retry() }
+            } else {
+                MusicFailedView(message: message) { store.retry() }
+            }
         case .busy(let until):
-            MusicLyricsBusyView(until: until) { store.retry() }
+            MusicLyricsWaitView(message: MusicLyricsStore.busyMessage, until: until) { store.retry() }
         case .loaded(.synced(let lines)):
             MusicSyncedLyricsList(store: store, lines: lines, seek: seek)
         case .loaded(.plain(let text)):
@@ -47,31 +51,41 @@ struct MusicLyricsView: View {
     }
 }
 
-/// LRCLIB asked us to wait. Retry appears once the window has passed; until then nothing is sent.
-private struct MusicLyricsBusyView: View {
+/// LRCLIB asked us to wait (busy, or a server error that opened a short window): the message shows, and Retry
+/// appears once the window has passed. Until then nothing is sent. There is no ticking clock: one timeline entry
+/// just after the end of the window redraws the view once, and a window that is already over shows Retry at once.
+private struct MusicLyricsWaitView: View {
+    let message: String
     let until: Date
     let retry: () -> Void
 
     var body: some View {
-        // Ticks once a second, only while the busy message is on screen.
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(spacing: DesignTokens.Spacing.sm) {
-                Text("Lyrics service is busy. Try again in a minute.")
-                    .font(DesignTokens.Typography.rowDescription)
-                    .foregroundStyle(DesignTokens.Colors.textSecondary)
-                    .multilineTextAlignment(.center)
-                if context.date >= until {
-                    Button("Retry", action: retry)
-                        .buttonStyle(.plain)
-                        .font(DesignTokens.Typography.pickerText)
-                        .foregroundStyle(DesignTokens.Colors.textPrimary)
-                        .glassButtonStyle()
-                        .contentShape(Rectangle())
-                }
+        if until <= Date() {
+            content(canRetry: true)
+        } else {
+            TimelineView(.explicit([until.addingTimeInterval(0.25)])) { _ in
+                content(canRetry: Date() >= until)
             }
-            .padding(.horizontal, DesignTokens.Spacing.xl)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private func content(canRetry: Bool) -> some View {
+        VStack(spacing: DesignTokens.Spacing.sm) {
+            Text(message)
+                .font(DesignTokens.Typography.rowDescription)
+                .foregroundStyle(DesignTokens.Colors.textSecondary)
+                .multilineTextAlignment(.center)
+            if canRetry {
+                Button("Retry", action: retry)
+                    .buttonStyle(.plain)
+                    .font(DesignTokens.Typography.pickerText)
+                    .foregroundStyle(DesignTokens.Colors.textPrimary)
+                    .glassButtonStyle()
+                    .contentShape(Rectangle())
+            }
+        }
+        .padding(.horizontal, DesignTokens.Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -134,6 +148,13 @@ private enum MusicLyricPosition {
     case past, current, upcoming
 }
 
+/// How much the current line is enlarged: a transform, so the text keeps its size and its wrapping.
+private let lyricCurrentScale: CGFloat = 1.08
+
+/// The room kept on the right of every row for the current line's scale: 8% of the row, the same on all rows, so
+/// nothing reflows when the current line changes and the enlarged line stays inside the panel.
+private let lyricTrailingInset: CGFloat = 36
+
 private struct MusicLyricRow: View {
     let text: String
     let position: MusicLyricPosition
@@ -143,19 +164,21 @@ private struct MusicLyricRow: View {
 
     var body: some View {
         Button(action: action) {
-            // An empty timed line is an instrumental gap.
+            // An empty timed line is an instrumental gap. One font size for every row: the current line is
+            // emphasised with weight, colour and a scale, never a size change that would re-lay-out the list.
             Text(text.isEmpty ? "\u{266A}" : text)
-                .font(.system(size: isCurrent ? 15 : 13, weight: isCurrent ? .semibold : .regular))
+                .font(.system(size: 13, weight: isCurrent ? .semibold : .regular))
                 .foregroundStyle(color)
                 .multilineTextAlignment(.leading)
+                .scaleEffect(isCurrent ? lyricCurrentScale : 1, anchor: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, DesignTokens.Spacing.sm)
+                .padding(.leading, DesignTokens.Spacing.sm)
+                .padding(.trailing, DesignTokens.Spacing.sm + lyricTrailingInset)
                 .padding(.vertical, 5)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(text.isEmpty ? "Instrumental break" : text)
-        .accessibilityHint("Jumps to this line")
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 
@@ -180,7 +203,8 @@ private struct MusicSyncedLyricsList: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 0) {
+                // A plain stack: lyrics are a few dozen lines, and a lazy one re-measures rows as they scroll in.
+                VStack(spacing: 0) {
                     ForEach(lines.indices, id: \.self) { index in
                         MusicLyricRow(text: lines[index].text, position: position(of: index)) {
                             seek(lines[index].time)
@@ -196,7 +220,7 @@ private struct MusicSyncedLyricsList: View {
             .background {
                 MusicLyricsPlayheadTracker(store: store, lines: lines, index: $currentIndex)
             }
-            .animation(reduceMotion ? nil : DesignTokens.Animation.quick, value: currentIndex)
+            .accessibilityHint("Select a line to jump to it in the song")
             .onChange(of: currentIndex) { old, new in
                 // The first reading (the panel opens mid-song) jumps; later ones glide.
                 let glide = old != nil && !reduceMotion

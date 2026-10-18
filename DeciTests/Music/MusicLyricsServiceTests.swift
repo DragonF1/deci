@@ -28,7 +28,7 @@ private struct Harness {
         let provider = self.provider
         let clock = self.clock
         let player = MusicPlayer(engine: engine)
-        let lyrics = MusicLyricsStore(provider: provider, now: { clock.now })
+        let lyrics = MusicLyricsStore(provider: provider, now: { clock.now }, sleep: { _ in })
         self.player = player
         self.lyrics = lyrics
         service = MusicService(
@@ -119,6 +119,7 @@ struct MusicLyricsServiceTests {
     @Test("Position ticks feed the playhead, with or without a session")
     func ticksFeedThePlayhead() async {
         let h = Harness()
+        h.lyrics.setPanelOpen(true)
         h.engine.tick(7, playing: true)
         #expect(h.lyrics.playhead.time == 7)
         #expect(h.lyrics.playhead.isPlaying)
@@ -133,9 +134,77 @@ struct MusicLyricsServiceTests {
     @Test("A seek moves the playhead at once")
     func seekMovesThePlayhead() async {
         let h = Harness()
+        h.lyrics.setPanelOpen(true)
         await h.play("a", duration: 200)
         h.service.seek(to: 42)
         #expect(h.lyrics.playhead.time == 42)
+    }
+
+    @Test("A closed panel or a hidden popup does not follow the player")
+    func hiddenIgnoresTicks() async {
+        let h = Harness()
+        await h.play("a", duration: 200)
+        h.engine.tick(20, playing: true)
+        #expect(h.lyrics.playhead == .zero)
+
+        h.lyrics.setPanelOpen(true)
+        h.lyrics.setPopupVisible(false)
+        h.engine.tick(30, playing: true)
+        h.service.seek(to: 40)
+        #expect(h.lyrics.playhead.time == 20)
+    }
+
+    @Test("Opening the panel, or showing the popup, reads the player's position at once")
+    func openingSamplesThePlayer() async {
+        let h = Harness()
+        await h.play("a", duration: 200)
+        h.engine.tick(55, playing: true)
+        #expect(h.lyrics.playhead == .zero)
+
+        h.lyrics.setPanelOpen(true)
+        #expect(h.player.currentTime == 55)
+        #expect(h.lyrics.playhead.time == 55)
+        #expect(h.lyrics.playhead.isPlaying == h.player.isPlaying)
+        #expect(h.lyrics.playhead.observedAt == h.clock.now)
+
+        h.lyrics.setPopupVisible(false)
+        h.engine.tick(90, playing: true)
+        h.clock.advance(by: 12)
+        h.lyrics.setPopupVisible(true)
+        #expect(h.lyrics.playhead.time == 90)
+        #expect(h.lyrics.playhead.observedAt == h.clock.now)
+    }
+
+    @Test("A length that shows up after the lookup is used for one more lookup")
+    func lateDurationRefetches() async {
+        let h = Harness()
+        await h.backend.setStream(MusicSamples.stream(videoId: "a", duration: 0))
+        h.provider.setResult(.plain("From a"), for: "a")
+        h.lyrics.setPanelOpen(true)
+        h.service.play(MusicSamples.track("a", title: "Song a", seconds: nil))
+        await h.service.playTask?.value
+        await h.service.radioTask?.value
+        await h.lyrics.loadTask?.value
+        #expect(h.provider.queries.first?.duration == nil)
+
+        h.lyrics.trackChanged(h.player.nowPlaying, duration: 187.5)
+        await h.lyrics.loadTask?.value
+        #expect(h.provider.queries.map(\.duration) == [nil, 187.5])
+    }
+
+    @Test("A service built with no lyrics store uses the no-op provider, never the network")
+    func defaultStoreIsOffline() {
+        let service = MusicService(
+            backend: FakeMusicBackend(signedIn: true),
+            player: MusicPlayer(engine: FakePlaybackEngine()),
+            presentSignIn: { _ in },
+            presentChannelPicker: { _, _ in },
+            closeSignInWindow: {},
+            raiseSignInWindow: {},
+            nowPlaying: NowPlayingController(surface: FakeNowPlayingSurface(), fetchArtwork: { _ in nil }),
+            refreshOnCreate: false
+        )
+        #expect(service.lyrics.provider is NoLyricsProvider)
     }
 
     @Test("Sign-out clears the lyrics, the open panel and the playhead")

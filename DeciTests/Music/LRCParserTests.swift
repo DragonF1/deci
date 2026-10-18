@@ -189,6 +189,35 @@ struct LRCParserTests {
         #expect(LRCParser.sungLineCount(lines) == 2)
         #expect(LRCParser.sungLineCount([]) == 0)
     }
+
+    // MARK: - Hostile input
+
+    @Test("A line of 200 000 '<' with no '>' parses in linear time and keeps its text")
+    func manyOpenAngleBrackets() {
+        let junk = String(repeating: "<", count: 200_000)
+        let started = ContinuousClock.now
+        let lines = LRCParser.parse("[00:01.00]\(junk)\n[00:02.00]After")
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed < .seconds(2))
+        #expect(lines.count == 2)
+        #expect(lines.last?.text == "After")
+    }
+
+    @Test("Many '<' each followed by far-away '>' parse in linear time")
+    func openAnglesWithFarClose() {
+        let body = String(repeating: "<a", count: 100_000) + ">"
+        let started = ContinuousClock.now
+        let lines = LRCParser.parse("[00:01.00]\(body)")
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed < .seconds(2))
+        #expect(lines.count == 1)
+    }
+
+    @Test("A stray '<' that is not a word tag stays in the text")
+    func strayAngleBracket() {
+        #expect(texts(LRCParser.parse("[00:01.00]1 < 2 and 3 > 2")) == ["1 < 2 and 3 > 2"])
+        #expect(texts(LRCParser.parse("[00:01.00]<3 made up hearts")) == ["<3 made up hearts"])
+    }
 }
 
 @Suite("Current lyric line")
