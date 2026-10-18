@@ -130,6 +130,10 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var browseContinuationBody = Data("{}".utf8)
         var browseStatus = 200
         var browseHeaders: [String: String] = [:]
+        /// The account menu popup (name, handle, avatar).
+        var accountMenuBody = (try? MusicFixtures.data("account-menu.json")) ?? Data()
+        var accountMenuStatus = 200
+        var accountMenuHeaders: [String: String] = [:]
         var playerBody = (try? MusicFixtures.data("player-ok.json")) ?? Data()
         var playerStatus = 200
         var playerHeaders: [String: String] = [:]
@@ -192,6 +196,8 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
                 headers: config.browseHeaders,
                 data: isContinuation ? config.browseContinuationBody : config.browseBodies[browseId] ?? config.browseDefaultBody
             )
+        case ("music.youtube.com", "/youtubei/v1/account/account_menu"):
+            return HTTPResponse(statusCode: config.accountMenuStatus, headers: config.accountMenuHeaders, data: config.accountMenuBody)
         case ("music.youtube.com", "/youtubei/v1/player"):
             return HTTPResponse(statusCode: config.playerStatus, headers: config.playerHeaders, data: config.playerBody)
         case ("music.youtube.com", _) where url.path.hasSuffix("/base.js"):

@@ -341,6 +341,559 @@ struct MusicServiceChannelSwitchTests {
         #expect(!h.service.isSwitchingChannel)
     }
 }
+// MARK: - Account
+
+@MainActor
+@Suite("MusicService account")
+struct MusicServiceAccountTests {
+    private static let alice = MusicAccount(
+        name: "Test Listener", handle: "@testlistener", photoURL: URL(string: "https://photos.example.test/alice")
+    )
+    private static let brand = MusicAccount(name: "Test Brand", handle: "@testbrand", photoURL: nil)
+    private static let current = [StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))]
+    private static let picked = [StoredCookie(MusicSamples.cookie("__Secure-3PAPISID", domain: ".youtube.com"))]
+
+    /// Signed in, with the account menu answering `alice` and everything refreshed.
+    private func signedInHarness(account: MusicAccount? = alice) async -> Harness {
+        let h = Harness(signedIn: true)
+        await h.backend.setSessionCookies(Self.current)
+        await h.backend.setChannelIdentity(false)
+        await h.backend.setAccount(account)
+        await h.service.refreshAuth()
+        await h.service.identityTask?.value
+        await h.service.accountTask?.value
+        #expect(h.service.account == account)
+        return h
+    }
+
+    // MARK: Loading
+
+    @Test("the account loads where the channel identity does: refreshAuth")
+    func loadsOnRefreshAuth() async {
+        let h = Harness(signedIn: true)
+        await h.backend.setAccount(Self.alice)
+        #expect(h.service.account == nil)
+        await h.service.refreshAuth()
+        await h.service.accountTask?.value
+        #expect(h.service.account == Self.alice)
+        #expect(h.service.lastError == nil)
+    }
+
+    @Test("the account loads after a sign-in")
+    func loadsAfterSignIn() async {
+        let h = Harness(signedIn: false)
+        await h.service.refreshAuth()
+        await h.backend.setAccount(Self.alice)
+        h.service.signIn()
+        h.probe.completion?(Self.current)
+        await h.service.signInTask?.value
+        await h.service.accountTask?.value
+        #expect(h.service.account == Self.alice)
+    }
+
+    @Test("signed out never asks for the account")
+    func signedOutAsksNothing() async {
+        let h = Harness(signedIn: false)
+        await h.backend.setAccount(Self.alice)
+        await h.service.refreshAuth()
+        await h.service.accountTask?.value
+        #expect(h.service.account == nil)
+        #expect(await h.backend.accountCallCount == 0)
+    }
+
+    @Test("a menu with no account header leaves the account nil")
+    func nilAccount() async {
+        let h = await signedInHarness(account: nil)
+        #expect(h.service.account == nil)
+        #expect(h.service.lastError == nil)
+        #expect(h.service.authState == .signedIn)
+    }
+
+    // MARK: Failures stay quiet
+
+    @Test("a failed fetch leaves the account nil with no banner, for every kind of error")
+    func failedFetchIsQuiet() async {
+        let errors: [any Error] = [MusicError.http(500), MusicError.parse("x"), MusicError.signedOut, URLError(.notConnectedToInternet)]
+        for error in errors {
+            let h = Harness(signedIn: true)
+            await h.backend.setAccount(Self.alice)
+            await h.backend.setAccountError(error)
+            await h.service.refreshAuth()
+            await h.service.accountTask?.value
+            #expect(h.service.account == nil)
+            #expect(h.service.lastError == nil)
+            #expect(h.service.authState == .signedIn)
+        }
+    }
+
+    @Test("a failed refresh keeps the account that was already loaded")
+    func failedRefreshKeepsAccount() async {
+        let h = await signedInHarness()
+        await h.backend.setAccountError(MusicError.http(503))
+        await h.service.refreshAuth()
+        await h.service.accountTask?.value
+        #expect(h.service.account == Self.alice)
+        #expect(h.service.lastError == nil)
+    }
+
+    // MARK: Switching channel
+
+    @Test("the account reloads after a successful switchChannel")
+    func reloadsAfterChannelSwitch() async {
+        let h = await signedInHarness()
+        #expect(h.service.account == Self.alice)
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        await h.backend.setAccount(Self.brand)
+        await h.backend.setChannelIdentity(true)
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+        await h.service.accountTask?.value
+
+        #expect(h.service.account == Self.brand)
+        #expect(h.service.isBrandChannel == true)
+        #expect(await h.backend.accountCallCount == 2)
+    }
+
+    @Test("after a switch the old channel's account is not shown while the new one is unknown")
+    func switchDropsOldAccountWhenFetchFails() async {
+        let h = await signedInHarness()
+        await h.backend.setAccountError(MusicError.http(500))
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+        await h.service.accountTask?.value
+
+        #expect(h.service.account == nil)
+        #expect(h.service.lastError == nil)
+        #expect(h.service.authState == .signedIn)
+    }
+
+    @Test("closing the channel picker keeps the account as it was")
+    func closedPickerKeepsAccount() async {
+        let h = await signedInHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(nil)
+        #expect(h.service.account == Self.alice)
+        #expect(await h.backend.accountCallCount == 1)
+    }
+
+    @Test("a failed channel switch keeps the account as it was")
+    func failedSwitchKeepsAccount() async {
+        let h = await signedInHarness()
+        await h.backend.setSignInError(MusicError.signedOut)
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+        #expect(h.service.account == Self.alice)
+        #expect(await h.backend.accountCallCount == 1)
+    }
+
+    // MARK: Clearing
+
+    @Test("signOut clears the account")
+    func signOutClears() async {
+        let h = await signedInHarness()
+        h.service.signOut()
+        #expect(h.service.account == nil)
+        await h.service.signOutTask?.value
+        #expect(h.service.account == nil)
+    }
+
+    @Test("a dead session found by any request clears the account")
+    func deadSessionClears() async {
+        let h = await signedInHarness()
+        await h.backend.setSearchError("q", MusicError.signedOut)
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        #expect(h.service.authState == .signedOut)
+        #expect(h.service.account == nil)
+    }
+
+    @Test("a dead session found by Home or Library clears the account too")
+    func deadBrowseSessionClears() async {
+        let h = await signedInHarness()
+        await h.backend.setHomeError(MusicError.signedOut)
+        h.service.browse.loadHomeIfNeeded()
+        let signedOut = await h.eventually { h.service.authState == .signedOut }
+        #expect(signedOut)
+        #expect(h.service.account == nil)
+    }
+
+    // MARK: Stale responses
+
+    @Test("a response that lands after signOut is dropped")
+    func lateAfterSignOut() async {
+        let h = Harness(signedIn: true)
+        let gate = MusicTestGate()
+        await h.backend.setAccount(Self.alice)
+        await h.backend.setAccountGate(gate)
+        await h.service.refreshAuth()
+        let task = h.service.accountTask
+        let called = await h.eventually { await h.backend.accountCallCount == 1 }
+        #expect(called)
+
+        h.service.signOut()
+        await gate.open()
+        await task?.value
+        #expect(h.service.account == nil)
+        #expect(h.service.authState == .signedOut)
+    }
+
+    @Test("a response that lands after a dead session is dropped")
+    func lateAfterDeadSession() async {
+        let h = Harness(signedIn: true)
+        let gate = MusicTestGate()
+        await h.backend.setAccount(Self.alice)
+        await h.backend.setAccountGate(gate)
+        await h.backend.setSearchError("q", MusicError.signedOut)
+        await h.service.refreshAuth()
+        let task = h.service.accountTask
+        let called = await h.eventually { await h.backend.accountCallCount == 1 }
+        #expect(called)
+
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        await gate.open()
+        await task?.value
+        #expect(h.service.account == nil)
+    }
+
+    @Test("the old session's response does not land on the next session")
+    func lateAfterNewSignIn() async {
+        let h = Harness(signedIn: true)
+        let gate = MusicTestGate()
+        await h.backend.setAccount(Self.alice)
+        await h.backend.setAccountGate(gate)
+        await h.service.refreshAuth()
+        let stale = h.service.accountTask
+        let called = await h.eventually { await h.backend.accountCallCount == 1 }
+        #expect(called)
+
+        h.service.signOut()
+        await h.service.signOutTask?.value
+        await h.backend.setAccountGate(nil)
+        await h.backend.setAccount(Self.brand)
+        h.service.signIn()
+        h.probe.completion?(Self.picked)
+        await h.service.signInTask?.value
+        await h.service.accountTask?.value
+        #expect(h.service.account == Self.brand)
+
+        await gate.open()
+        await stale?.value
+        #expect(h.service.account == Self.brand)
+    }
+
+    @Test("a slower earlier refresh never overwrites a newer one")
+    func slowerRefreshLoses() async {
+        let h = Harness(signedIn: true)
+        let gate = MusicTestGate()
+        await h.backend.setAccount(Self.alice)
+        await h.backend.setAccountGate(gate)
+        await h.service.refreshAuth()
+        let first = h.service.accountTask
+        let called = await h.eventually { await h.backend.accountCallCount == 1 }
+        #expect(called)
+
+        await h.backend.setAccountGate(nil)
+        await h.backend.setAccount(Self.brand)
+        await h.service.refreshAuth()
+        await h.service.accountTask?.value
+        #expect(h.service.account == Self.brand)
+
+        await gate.open()
+        await first?.value
+        #expect(h.service.account == Self.brand)
+    }
+}
+
+// MARK: - Use another account
+
+@MainActor
+@Suite("MusicService use another account")
+struct MusicServiceUseAnotherAccountTests {
+    private static let alice = MusicAccount(name: "Test Listener", handle: "@testlistener", photoURL: nil)
+    private static let bob = MusicAccount(name: "Other Person", handle: "@otherperson", photoURL: nil)
+    private static let current = [StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))]
+    private static let other = [StoredCookie(MusicSamples.cookie("__Secure-3PAPISID", domain: ".youtube.com"))]
+
+    /// Signed in as alice, playing a queue, with Home loaded.
+    private func signedInHarness() async -> Harness {
+        let h = Harness(signedIn: true)
+        await h.backend.setSessionCookies(Self.current)
+        await h.backend.setChannelIdentity(false)
+        await h.backend.setAccount(Self.alice)
+        await h.backend.setHome(shelves: [MusicSamples.shelf("Quick picks", "VLPL1")])
+        await h.service.refreshAuth()
+        await h.service.identityTask?.value
+        await h.service.accountTask?.value
+        h.service.browse.loadHomeIfNeeded()
+        let homeLoaded = await h.eventually { h.service.browse.home == .loaded([MusicSamples.shelf("Quick picks", "VLPL1")]) }
+        #expect(homeLoaded)
+        #expect(h.service.account == Self.alice)
+        await h.startQueue(["a", "b", "c"])
+        return h
+    }
+
+    // MARK: Opening
+
+    @Test("it opens the sign-in window and leaves everything else as it was")
+    func opensWindowOnly() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+
+        #expect(h.probe.presentCount == 1)
+        #expect(h.service.isAddingAccount)
+        #expect(h.service.authState == .signedIn)
+        #expect(h.service.account == Self.alice)
+        #expect(await h.backend.signOutCount == 0)
+        #expect(await h.backend.signInCookies.isEmpty)
+        #expect(h.service.browse.home == .loaded([MusicSamples.shelf("Quick picks", "VLPL1")]))
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.queuedIDs == ["a", "b", "c"])
+    }
+
+    @Test("a second call while the window is open is ignored")
+    func notReentrant() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        h.service.useAnotherAccount()
+        #expect(h.probe.presentCount == 1)
+    }
+
+    @Test("it does nothing while signed out, signing in, or switching channel")
+    func guards() async {
+        let out = Harness(signedIn: false)
+        await out.service.refreshAuth()
+        out.service.useAnotherAccount()
+        #expect(out.probe.presentCount == 0)
+        #expect(!out.service.isAddingAccount)
+
+        let signingIn = Harness(signedIn: false)
+        signingIn.service.signIn()
+        signingIn.service.useAnotherAccount()
+        #expect(signingIn.probe.presentCount == 1)
+        #expect(!signingIn.service.isAddingAccount)
+
+        let switching = await signedInHarness()
+        switching.service.switchChannel()
+        await switching.service.channelSwitchTask?.value
+        switching.service.useAnotherAccount()
+        #expect(switching.probe.presentCount == 0)
+        #expect(!switching.service.isAddingAccount)
+    }
+
+    // MARK: Cancelling
+
+    @Test("closing the window leaves the session, account, browse and playback exactly as they were")
+    func cancelChangesNothing() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        h.probe.completion?(nil)
+
+        #expect(!h.service.isAddingAccount)
+        #expect(h.service.authState == .signedIn)
+        #expect(h.service.account == Self.alice)
+        #expect(h.service.isBrandChannel == false)
+        #expect(h.service.lastError == nil)
+        #expect(h.service.browse.home == .loaded([MusicSamples.shelf("Quick picks", "VLPL1")]))
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.queuedIDs == ["a", "b", "c"])
+        #expect(await h.backend.signInCookies.isEmpty)
+        #expect(await h.backend.signOutCount == 0)
+        #expect(await h.backend.accountCallCount == 1)
+    }
+
+    @Test("an empty cookie list counts as closing the window")
+    func emptyCookiesCancel() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        h.probe.completion?([])
+        #expect(!h.service.isAddingAccount)
+        #expect(h.service.account == Self.alice)
+        #expect(await h.backend.signInCookies.isEmpty)
+    }
+
+    @Test("after a cancel the next call opens the window again")
+    func reopenAfterCancel() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        h.probe.completion?(nil)
+        h.service.useAnotherAccount()
+        #expect(h.probe.presentCount == 2)
+        #expect(h.service.isAddingAccount)
+    }
+
+    // MARK: Success
+
+    @Test("a successful sign-in replaces the session: new cookies, Home reset, new account, playback stopped")
+    func swapsTheSession() async {
+        let h = await signedInHarness()
+        await h.backend.setAccount(Self.bob)
+        await h.backend.setChannelIdentity(true)
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        await h.service.identityTask?.value
+        await h.service.accountTask?.value
+
+        #expect(await h.backend.signInCookies == [Self.other])
+        #expect(await h.backend.signOutCount == 0)
+        #expect(h.service.authState == .signedIn)
+        #expect(!h.service.isAddingAccount)
+        #expect(h.service.account == Self.bob)
+        #expect(h.service.isBrandChannel == true)
+        #expect(h.service.browse.home == .idle)
+        #expect(h.service.browse.path.isEmpty)
+        #expect(h.service.lastError == nil)
+        // The old account's playback must not carry on under the new one.
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.service.queue.tracks.isEmpty)
+        #expect(h.service.results.isEmpty)
+    }
+
+    @Test("a swap throws the old account's search away and ticks never reach the history ping")
+    func swapClearsSearchAndPings() async {
+        let h = await signedInHarness()
+        await h.backend.setSearch("q", results: [MusicSamples.track("s1")])
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        #expect(h.service.results.count == 1)
+
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        h.listen(seconds: 40)
+        await h.service.reportTask?.value
+
+        #expect(h.service.results.isEmpty)
+        #expect(h.service.query.isEmpty)
+        #expect(await h.backend.reportAttempts.isEmpty)
+    }
+
+    @Test("the card's notice state resets for the new account")
+    func swapResetsNotice() async {
+        let h = await signedInHarness()
+        h.service.channelNoticeDismissed = true
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        #expect(!h.service.channelNoticeDismissed)
+    }
+
+    @Test("the new session keeps working: Home loads again under it")
+    func homeLoadsAgain() async {
+        let h = await signedInHarness()
+        await h.backend.setHome(shelves: [MusicSamples.shelf("Other account", "VLPL9")])
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        h.service.browse.loadHomeIfNeeded()
+        let loaded = await h.eventually { h.service.browse.home == .loaded([MusicSamples.shelf("Other account", "VLPL9")]) }
+        #expect(loaded)
+    }
+
+    // MARK: Failure
+
+    @Test("a refused sign-in keeps the old session, account and playback, and says so")
+    func failureKeepsSession() async {
+        let h = await signedInHarness()
+        await h.backend.setSignInError(MusicError.signedOut)
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+
+        #expect(h.service.authState == .signedIn)
+        #expect(!h.service.isAddingAccount)
+        #expect(h.service.account == Self.alice)
+        #expect(h.service.browse.home == .loaded([MusicSamples.shelf("Quick picks", "VLPL1")]))
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.queuedIDs == ["a", "b", "c"])
+        #expect(h.service.lastError?.contains("Still signed in as before") == true)
+    }
+
+    // MARK: Races
+
+    @Test("a sign-out while the window is open closes it and drops a late pick")
+    func signOutDropsPick() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        h.service.signOut()
+        #expect(h.probe.windowCloses == 1)
+        #expect(!h.service.isAddingAccount)
+
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        #expect(await h.backend.signInCookies.isEmpty)
+        #expect(h.service.authState == .signedOut)
+        #expect(h.service.account == nil)
+    }
+
+    @Test("a sign-out while the new session is being stored wins")
+    func signOutWinsOverSwap() async {
+        let h = await signedInHarness()
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        h.service.signOut()
+        await h.service.addAccountTask?.value
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(h.service.account == nil)
+        #expect(!h.service.isAddingAccount)
+    }
+
+    @Test("a dead session while the window is open still takes the account that was signed in")
+    func deadSessionStillTakesPick() async {
+        let h = await signedInHarness()
+        await h.backend.setSearchError("q", MusicError.signedOut)
+        h.service.useAnotherAccount()
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        await h.service.signOutTask?.value
+        #expect(h.service.authState == .signedOut)
+
+        await h.backend.setAccount(Self.bob)
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+        await h.service.accountTask?.value
+
+        #expect(h.service.authState == .signedIn)
+        #expect(h.service.account == Self.bob)
+        #expect(!h.service.isAddingAccount)
+        #expect(await h.backend.signInCookies == [Self.other])
+    }
+
+    @Test("a regular sign-in started over an open add-account window takes over from it")
+    func signInTakesOver() async {
+        let h = await signedInHarness()
+        await h.backend.setSearchError("q", MusicError.signedOut)
+        h.service.useAnotherAccount()
+        let staleCompletion = h.probe.completion
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        await h.service.signOutTask?.value
+
+        h.service.signIn()
+        #expect(!h.service.isAddingAccount)
+        #expect(h.service.authState == .signingIn)
+
+        staleCompletion?(Self.other)
+        await h.service.addAccountTask?.value
+        #expect(await h.backend.signInCookies.isEmpty)
+        #expect(h.service.authState == .signingIn)
+    }
+}
+
 // MARK: - Search
 
 @MainActor
@@ -2626,6 +3179,26 @@ struct MusicServiceHostTests {
         #expect(first != nil)
         #expect(host.service === first)
         #expect(counter.builds == 1)
+    }
+
+    @Test("the account card starts closed")
+    func accountCardStartsClosed() {
+        #expect(makeHost(Counter()).isAccountCardOpen == false)
+    }
+
+    @Test("closeAccountCard closes an open card and says it used the key")
+    func closeAccountCardWhenOpen() {
+        let host = makeHost(Counter())
+        host.isAccountCardOpen = true
+        #expect(host.closeAccountCard() == true)
+        #expect(host.isAccountCardOpen == false)
+    }
+
+    @Test("closeAccountCard on a closed card does nothing and lets the key pass")
+    func closeAccountCardWhenClosed() {
+        let host = makeHost(Counter())
+        #expect(host.closeAccountCard() == false)
+        #expect(host.isAccountCardOpen == false)
     }
 
     @Test("shutdown before the tab was ever opened is a no-op")

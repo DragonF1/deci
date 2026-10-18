@@ -96,6 +96,10 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var reportAttempts: [Report] = []
     private(set) var signInCookies: [[StoredCookie]] = []
     private var identity: Bool?
+    private var account: MusicAccount?
+    private var accountError: (any Error)?
+    private var accountGate: MusicTestGate?
+    private(set) var accountCallCount = 0
     private var currentCookies: [StoredCookie] = []
     private(set) var signOutCount = 0
 
@@ -108,6 +112,10 @@ actor FakeMusicBackend: MusicBackend {
     func setSignedIn(_ value: Bool) { signedIn = value }
     func setChannelIdentity(_ value: Bool?) { identity = value }
     func setSessionCookies(_ value: [StoredCookie]) { currentCookies = value }
+    /// What the account menu answers with. A gate holds the call until it is opened; passing nil removes a gate or an error.
+    func setAccount(_ value: MusicAccount?) { account = value }
+    func setAccountError(_ error: (any Error)?) { accountError = error }
+    func setAccountGate(_ gate: MusicTestGate?) { accountGate = gate }
     func setSignInError(_ error: (any Error)?) { signInError = error }
     func setSearch(_ query: String, results: [Deci.MusicTrack]) { searchResults[query] = results }
     func setSearchError(_ query: String, _ error: any Error) { searchErrors[query] = error }
@@ -195,6 +203,15 @@ actor FakeMusicBackend: MusicBackend {
     func channelIdentity() async -> Bool? { signedIn ? identity : nil }
 
     func sessionCookies() async -> [StoredCookie] { currentCookies }
+
+    // Like the browse calls, the answer is what was scripted when the call was made, even if a gate holds it.
+    func accountInfo() async throws -> MusicAccount? {
+        accountCallCount += 1
+        let gate = accountGate, error = accountError, value = signedIn ? account : nil
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return value
+    }
 
     // A browse call answers with what was scripted when it was made, even if a gate holds it while
     // the test scripts something else: a slow server does not look at the request again.

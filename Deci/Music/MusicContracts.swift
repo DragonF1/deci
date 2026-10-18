@@ -197,6 +197,16 @@ struct MusicBrowsePage: Sendable, Equatable {
     let shelves: [MusicShelf]
 }
 
+/// Who the session is signed in as, from YouTube's account menu. Shown on the Music tab's account card.
+struct MusicAccount: Sendable, Equatable {
+    /// The channel or Google account name the menu is headed with.
+    let name: String
+    /// The "@handle" line, when the channel has one.
+    let handle: String?
+    /// The avatar, always https.
+    let photoURL: URL?
+}
+
 enum MusicError: Error, Sendable, Equatable {
     case signedOut
     case http(Int)
@@ -219,6 +229,9 @@ protocol MusicBackend: Sendable {
     func channelIdentity() async -> Bool?
     /// The session's cookies, for the channel picker window to start from.
     func sessionCookies() async -> [StoredCookie]
+    /// Name, handle and avatar of the signed-in channel (account menu). Nil when the menu has no
+    /// account header. Throws `.signedOut` when YouTube says the session is gone.
+    func accountInfo() async throws -> MusicAccount?
     func search(_ query: String) async throws -> [MusicTrack]
     func resolve(videoId: String) async throws -> ResolvedStream
     /// First page of the radio seeded by `seedVideoId` (playlist RDAMVM<seedVideoId>).

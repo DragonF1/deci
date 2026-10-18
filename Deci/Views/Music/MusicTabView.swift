@@ -3,13 +3,13 @@ import SwiftUI
 
 /// The Music tab body. Fixed height so the popup does not jump as results come and go.
 struct MusicTabView: View {
-    let host: MusicServiceHost
+    @Bindable var host: MusicServiceHost
     let height: CGFloat
 
     var body: some View {
         Group {
             if let service = host.service {
-                MusicServiceView(service: service)
+                MusicServiceView(service: service, isAccountCardOpen: $host.isAccountCardOpen)
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -22,6 +22,7 @@ struct MusicTabView: View {
 
 private struct MusicServiceView: View {
     @Bindable var service: MusicService
+    @Binding var isAccountCardOpen: Bool
 
     var body: some View {
         switch service.authState {
@@ -41,7 +42,7 @@ private struct MusicServiceView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .signedIn:
-            MusicSignedInView(service: service)
+            MusicSignedInView(service: service, isAccountCardOpen: $isAccountCardOpen)
         }
     }
 
@@ -74,6 +75,8 @@ private struct MusicServiceView: View {
 
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
+    /// Owned by the host so the popup's Escape key can close the card.
+    @Binding var isAccountCardOpen: Bool
     @FocusState private var searchFocused: Bool
     /// The Up next button shows the queue over whatever is on screen.
     @State private var queueForced = false
@@ -142,6 +145,14 @@ private struct MusicSignedInView: View {
 
             MusicMiniTransport(service: service)
         }
+        .overlay(alignment: .topTrailing) {
+            if isAccountCardOpen {
+                accountCardLayer
+            }
+        }
+        .animation(DesignTokens.Animation.quick, value: isAccountCardOpen)
+        // Leaving the signed-in view (sign out, a dead session, another tab) takes the card with it.
+        .onDisappear { isAccountCardOpen = false }
         .task { searchFocused = true }
         .onChange(of: service.query) {
             queueForced = false
@@ -219,14 +230,46 @@ private struct MusicSignedInView: View {
                 .accessibilityAddTraits(showsQueue ? .isSelected : [])
             }
 
-            Button("Sign out") {
-                service.signOut()
+            MusicAccountButton(account: service.account, isOpen: isAccountCardOpen) {
+                isAccountCardOpen.toggle()
             }
-            .buttonStyle(.plain)
-            .font(DesignTokens.Typography.caption)
-            .foregroundStyle(DesignTokens.Colors.textTertiary)
         }
     }
+
+    /// A transparent layer that swallows the click and closes the card (tap outside), with the card
+    /// at the trailing edge just under the search row. An overlay, not a Menu or popover: this view
+    /// already lives in the menu bar panel, which a nested popover would dismiss.
+    private var accountCardLayer: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { isAccountCardOpen = false }
+                .accessibilityHidden(true)
+
+            MusicAccountCard(
+                account: service.account,
+                isBrandChannel: service.isBrandChannel,
+                isSwitchingChannel: service.isSwitchingChannel,
+                isAddingAccount: service.isAddingAccount,
+                onSwitchChannel: {
+                    isAccountCardOpen = false
+                    service.switchChannel()
+                },
+                onUseAnotherAccount: {
+                    isAccountCardOpen = false
+                    service.useAnotherAccount()
+                },
+                onSignOut: {
+                    isAccountCardOpen = false
+                    service.signOut()
+                }
+            )
+            .padding(.top, Self.searchRowHeight + DesignTokens.Spacing.xs)
+            .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
+        }
+    }
+
+    private static let searchRowHeight: CGFloat = 28
 
     /// Plays land in the History of the channel the session is on, and a fresh sign-in is on the
     /// account's own channel, which is rarely the one used in the browser.

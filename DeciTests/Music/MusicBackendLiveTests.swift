@@ -57,6 +57,25 @@ struct MusicBackendLiveTests {
         #expect(harness.youtube.requests.isEmpty)
     }
 
+    @Test("accountInfo returns the signed-in channel from the account menu")
+    func accountInfo() async throws {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let account = try await harness.backend.accountInfo()
+        #expect(account?.name == "Test Listener")
+        #expect(account?.handle == "@testlistener")
+        #expect(account?.photoURL != nil)
+        #expect(harness.youtube.requests(path: "/youtubei/v1/account/account_menu").count == 1)
+    }
+
+    @Test("accountInfo while signed out fails before any network request")
+    func accountInfoSignedOut() async {
+        let harness = makeHarness(signedIn: false)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.accountInfo() }
+        #expect(harness.youtube.requests.isEmpty)
+    }
+
     @Test("Search returns the parsed songs")
     func search() async throws {
         let harness = makeHarness(signedIn: true)

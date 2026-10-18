@@ -42,6 +42,10 @@ actor MusicBackendLive: MusicBackend {
         await client.sessionCookies()
     }
 
+    func accountInfo() async throws -> MusicAccount? {
+        try await client.accountInfo()
+    }
+
     func search(_ query: String) async throws -> [MusicTrack] {
         try await client.search(query)
     }

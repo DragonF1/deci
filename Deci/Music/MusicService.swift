@@ -26,6 +26,10 @@ final class MusicService {
     /// Whether plays (and so History) land on a brand channel; nil until the home page says.
     private(set) var isBrandChannel: Bool?
     private(set) var isSwitchingChannel = false
+    /// Who the session is signed in as, for the account card; nil until the account menu answers.
+    private(set) var account: MusicAccount?
+    /// The sign-in window is open to add another Google account on top of the current session.
+    private(set) var isAddingAccount = false
     /// The own-channel notice was closed. Only for this launch and this sign-in.
     var channelNoticeDismissed = false
     var query = ""
@@ -95,11 +99,18 @@ final class MusicService {
     @ObservationIgnored private(set) var signOutTask: Task<Void, Never>?
     @ObservationIgnored private(set) var identityTask: Task<Void, Never>?
     @ObservationIgnored private(set) var channelSwitchTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var accountTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var addAccountTask: Task<Void, Never>?
     /// The radio or page fetch in flight (first radio page or a continuation); nil when none is running.
     @ObservationIgnored private(set) var radioTask: Task<Void, Never>?
     @ObservationIgnored private(set) var prefetchTask: Task<Void, Never>?
     @ObservationIgnored private var searchGeneration = 0
     @ObservationIgnored private var playGeneration = 0
+    /// Each account fetch names itself with the next number and only lands while it is still the latest,
+    /// so a slower earlier one, or one that left before a sign-out, can never fill in the wrong account.
+    @ObservationIgnored private var accountGeneration = 0
+    /// Names the current "use another account" window; a pick from an older one is ignored.
+    @ObservationIgnored private var addAccountGeneration = 0
     #if DEBUG
     @ObservationIgnored private var memoryProbe: Task<Void, Never>?
     #endif
@@ -145,6 +156,8 @@ final class MusicService {
         signInTask?.cancel()
         identityTask?.cancel()
         channelSwitchTask?.cancel()
+        accountTask?.cancel()
+        addAccountTask?.cancel()
         radioTask?.cancel()
         prefetchTask?.cancel()
         #if DEBUG
@@ -158,13 +171,15 @@ final class MusicService {
         let signedIn = await backend.isSignedIn()
         guard authState != .signingIn else { return }
         authState = signedIn ? .signedIn : .signedOut
-        if signedIn { refreshChannelIdentity() }
+        if signedIn { refreshIdentity() }
     }
 
     func signIn() {
         guard authState != .signingIn else { return }
         authState = .signingIn
         lastError = nil
+        // A sign-in window left open by "use another account" is the one this reuses: its old pick no longer applies.
+        endAddAccount()
         presentSignIn { [weak self] cookies in
             self?.finishSignIn(with: cookies)
         }
@@ -180,7 +195,7 @@ final class MusicService {
             do {
                 try await self.backend.signIn(with: cookies)
                 self.authState = .signedIn
-                self.refreshChannelIdentity()
+                self.refreshIdentity()
             } catch {
                 logger.error("sign-in failed: \(Self.logDescription(of: error), privacy: .public)")
                 self.authState = .signedOut
@@ -203,10 +218,109 @@ final class MusicService {
         isBrandChannel = nil
         isSwitchingChannel = false
         channelNoticeDismissed = false
+        clearAccount()
+        endAddAccount()
         // An open picker still holds the old session; it must not sign anyone back in.
         closeSignInWindow()
         browse.reset()
         signOutTask = Task { [backend] in await backend.signOut() }
+    }
+
+    // MARK: - Account
+
+    /// The channel identity (History's target) and the account card's data, read together wherever a session starts.
+    private func refreshIdentity() {
+        refreshChannelIdentity()
+        refreshAccount()
+    }
+
+    /// Reads the account menu for the card. Nothing about it is worth a banner: a failed read leaves
+    /// the card on "Signed in", and whatever was loaded before stays.
+    private func refreshAccount() {
+        accountTask?.cancel()
+        accountGeneration += 1
+        let generation = accountGeneration
+        accountTask = Task { [weak self, backend] in
+            let fetched: MusicAccount?
+            do {
+                fetched = try await backend.accountInfo()
+            } catch {
+                if !Self.isCancellation(error) {
+                    logger.error("account info failed: \(Self.logDescription(of: error), privacy: .public)")
+                }
+                return
+            }
+            guard let self, !Task.isCancelled, generation == self.accountGeneration, self.authState == .signedIn else { return }
+            self.account = fetched
+        }
+    }
+
+    /// Forgets the account and drops any fetch still on its way: it belongs to a session that is gone or replaced.
+    private func clearAccount() {
+        accountTask?.cancel()
+        accountTask = nil
+        accountGeneration += 1
+        account = nil
+    }
+
+    /// Opens the Google sign-in window without signing out first. A closed window changes nothing;
+    /// a sign-in replaces the session the way a first sign-in does (see `installNewSession`).
+    func useAnotherAccount() {
+        guard authState == .signedIn, !isAddingAccount, !isSwitchingChannel else { return }
+        isAddingAccount = true
+        lastError = nil
+        addAccountGeneration += 1
+        let generation = addAccountGeneration
+        presentSignIn { [weak self] cookies in
+            self?.finishAddAccount(with: cookies, generation: generation)
+        }
+    }
+
+    private func finishAddAccount(with cookies: [StoredCookie]?, generation: Int) {
+        guard isAddingAccount, generation == addAccountGeneration else { return }
+        guard let cookies, !cookies.isEmpty else {
+            isAddingAccount = false
+            return
+        }
+        addAccountTask = Task { [weak self] in
+            // A sign-out or a new sign-in since the pick bumps the generation: the pick must not sign anyone back in.
+            guard let self, !Task.isCancelled, generation == self.addAccountGeneration else { return }
+            do {
+                try await self.backend.signIn(with: cookies)
+                guard !Task.isCancelled, generation == self.addAccountGeneration else { return }
+                self.installNewSession()
+            } catch {
+                guard generation == self.addAccountGeneration else { return }
+                logger.error("adding an account failed: \(Self.logDescription(of: error), privacy: .public)")
+                self.lastError = "Couldn't add the account. Still signed in as before."
+            }
+            self.isAddingAccount = false
+        }
+    }
+
+    /// The backend now holds the new account's cookies. Everything that belonged to the old one goes: playback
+    /// and its queue (a track left playing would keep filing History under the wrong account), the search,
+    /// the pages loaded under it and its channel and account details, which are read again.
+    private func installNewSession() {
+        cancelWork()
+        stopPlayback()
+        results = []
+        query = ""
+        lastError = nil
+        authState = .signedIn
+        identityTask?.cancel()
+        isBrandChannel = nil
+        channelNoticeDismissed = false
+        browse.reset()
+        clearAccount()
+        refreshIdentity()
+    }
+
+    /// Closes the books on "use another account": no pick of the current window counts any more.
+    private func endAddAccount() {
+        addAccountGeneration += 1
+        addAccountTask?.cancel()
+        isAddingAccount = false
     }
 
     // MARK: - Channel
@@ -256,6 +370,9 @@ final class MusicService {
                 self.channelNoticeDismissed = false
                 // Home and the library belong to the channel: what is loaded is the old one's.
                 self.browse.reset()
+                // The card shows the channel that was picked, not the one that was left.
+                self.clearAccount()
+                self.refreshAccount()
                 let identity = await self.backend.channelIdentity()
                 guard !Task.isCancelled, self.authState == .signedIn else { return }
                 self.isBrandChannel = identity
@@ -778,6 +895,7 @@ final class MusicService {
             authState = .signedOut
             lastError = nil
             browse.reset()
+            clearAccount()
             signOutTask = Task { [backend] in await backend.signOut() }
             return
         }

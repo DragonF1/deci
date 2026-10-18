@@ -209,6 +209,7 @@ struct MenuBarPopupView: View {
             hasKeyboardEngaged = false
             selectedRow = nil
             anchorFocused = tab == .mixer
+            musicHost.isAccountCardOpen = false
             if tab == .music { musicHost.loadIfNeeded() }
         }
         .onChange(of: audioEngine.apps) { _, _ in
@@ -256,6 +257,8 @@ struct MenuBarPopupView: View {
             popupVisibility.isVisible = false
             hasKeyboardEngaged = false
             selectedRow = nil
+            // A card left open must not greet the next open of the popup.
+            musicHost.isAccountCardOpen = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             // SwiftUI Menu tracking (e.g. sample-rate picker in the device
@@ -357,8 +360,10 @@ struct MenuBarPopupView: View {
             textEntry.buffer = nil
             return
         }
-        // The mixer's expanded panels are hidden on the Music tab, so Escape just dismisses.
+        // The mixer's expanded panels are hidden on the Music tab, so Escape closes the account
+        // card if it is open and otherwise just dismisses.
         if popupTab == .music {
+            if musicHost.closeAccountCard() { return }
             NSApp.keyWindow?.resignKey()
             return
         }

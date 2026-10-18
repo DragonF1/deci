@@ -1,0 +1,233 @@
+{
+  "responseContext": {
+    "visitorData": "synthetic-visitor-data",
+    "serviceTrackingParams": [
+      {
+        "service": "GFEEDBACK",
+        "params": [
+          {
+            "key": "logged_in",
+            "value": "1"
+          }
+        ]
+      }
+    ]
+  },
+  "actions": [
+    {
+      "openPopupAction": {
+        "popup": {
+          "multiPageMenuRenderer": {
+            "header": {
+              "activeAccountHeaderRenderer": {
+                "accountName": {
+                  "runs": [
+                    {
+                      "text": "Test Listener"
+                    }
+                  ]
+                },
+                "accountPhoto": {
+                  "thumbnails": [
+                    {
+                      "url": "https://photos.example.test/avatar=s48-c-k-c0x00ffffff-no-rj",
+                      "width": 48,
+                      "height": 48
+                    },
+                    {
+                      "url": "https://photos.example.test/avatar=s512-c-k-c0x00ffffff-no-rj",
+                      "width": 512,
+                      "height": 512
+                    },
+                    {
+                      "url": "https://photos.example.test/avatar=s88-c-k-c0x00ffffff-no-rj",
+                      "width": 88,
+                      "height": 88
+                    }
+                  ]
+                },
+                "channelHandle": {
+                  "runs": [
+                    {
+                      "text": "@testlistener"
+                    }
+                  ]
+                },
+                "manageAccountTitle": {
+                  "runs": [
+                    {
+                      "text": "Google Account",
+                      "navigationEndpoint": {
+                        "clickTrackingParams": "synthetic-click-tracking",
+                        "urlEndpoint": {
+                          "url": "https://accounts.example.test/manage",
+                          "target": "TARGET_NEW_WINDOW"
+                        }
+                      }
+                    }
+                  ]
+                },
+                "settingsEndpoint": {
+                  "clickTrackingParams": "synthetic-click-tracking",
+                  "applicationSettingsEndpoint": {
+                    "hack": true
+                  }
+                },
+                "trackingParams": "synthetic-tracking"
+              }
+            },
+            "sections": [
+              {
+                "multiPageMenuSectionRenderer": {
+                  "items": [
+                    {
+                      "compactLinkRenderer": {
+                        "icon": {
+                          "iconType": "ACCOUNT_CIRCLE"
+                        },
+                        "title": {
+                          "runs": [
+                            {
+                              "text": "Your channel"
+                            }
+                          ]
+                        },
+                        "navigationEndpoint": {
+                          "clickTrackingParams": "synthetic-click-tracking",
+                          "browseEndpoint": {
+                            "browseId": "UCsyntheticchannelid0000",
+                            "canonicalBaseUrl": "/@testlistener",
+                            "browseEndpointContextSupportedConfigs": {
+                              "browseEndpointContextMusicConfig": {
+                                "pageType": "MUSIC_PAGE_TYPE_USER_CHANNEL"
+                              }
+                            }
+                          }
+                        },
+                        "trackingParams": "synthetic-tracking"
+                      }
+                    },
+                    {
+                      "compactLinkRenderer": {
+                        "icon": {
+                          "iconType": "ACCOUNT_SWITCH"
+                        },
+                        "secondaryIcon": {
+                          "iconType": "CHEVRON_RIGHT"
+                        },
+                        "title": {
+                          "runs": [
+                            {
+                              "text": "Switch account"
+                            }
+                          ]
+                        },
+                        "serviceEndpoint": {
+                          "clickTrackingParams": "synthetic-click-tracking",
+                          "getAccountSwitcherEndpoint": {
+                            "hack": true
+                          }
+                        },
+                        "trackingParams": "synthetic-tracking"
+                      }
+                    },
+                    {
+                      "compactLinkRenderer": {
+                        "icon": {
+                          "iconType": "SETTINGS"
+                        },
+                        "title": {
+                          "runs": [
+                            {
+                              "text": "Settings"
+                            }
+                          ]
+                        },
+                        "navigationEndpoint": {
+                          "clickTrackingParams": "synthetic-click-tracking",
+                          "applicationSettingsEndpoint": {
+                            "hack": true
+                          }
+                        },
+                        "trackingParams": "synthetic-tracking"
+                      }
+                    },
+                    {
+                      "compactLinkRenderer": {
+                        "icon": {
+                          "iconType": "SIGN_OUT"
+                        },
+                        "title": {
+                          "runs": [
+                            {
+                              "text": "Sign out"
+                            }
+                          ]
+                        },
+                        "navigationEndpoint": {
+                          "clickTrackingParams": "synthetic-click-tracking",
+                          "signOutEndpoint": {
+                            "hack": true
+                          }
+                        },
+                        "serviceEndpoint": {
+                          "clickTrackingParams": "synthetic-click-tracking",
+                          "signalServiceEndpoint": {
+                            "signal": "CLIENT_SIGNAL",
+                            "actions": [
+                              {
+                                "clickTrackingParams": "synthetic-click-tracking",
+                                "signalAction": {
+                                  "signal": "SOFT_RELOAD_PAGE"
+                                }
+                              }
+                            ]
+                          }
+                        },
+                        "trackingParams": "synthetic-tracking"
+                      }
+                    }
+                  ],
+                  "trackingParams": "synthetic-tracking"
+                }
+              },
+              {
+                "multiPageMenuSectionRenderer": {
+                  "items": [
+                    {
+                      "compactLinkRenderer": {
+                        "icon": {
+                          "iconType": "HELP"
+                        },
+                        "title": {
+                          "runs": [
+                            {
+                              "text": "Help"
+                            }
+                          ]
+                        },
+                        "navigationEndpoint": {
+                          "clickTrackingParams": "synthetic-click-tracking",
+                          "urlEndpoint": {
+                            "url": "https://support.example.test/help"
+                          }
+                        },
+                        "trackingParams": "synthetic-tracking"
+                      }
+                    }
+                  ],
+                  "trackingParams": "synthetic-tracking"
+                }
+              }
+            ],
+            "style": "MULTI_PAGE_MENU_STYLE_TYPE_ACCOUNT",
+            "trackingParams": "synthetic-tracking"
+          }
+        },
+        "popupType": "DROPDOWN",
+        "reusePopup": true
+      },
+      "clickTrackingParams": "synthetic-click-tracking"
+    }
+  ]
+}

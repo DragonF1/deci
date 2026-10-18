@@ -141,6 +141,18 @@ actor InnerTubeClient {
 
     // MARK: - Calls
 
+    /// Name, handle and avatar of the signed-in channel, from the account menu. Nil when the menu
+    /// has no account header.
+    func accountInfo() async throws -> MusicAccount? {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let session = try await sessionOrFallback()
+        let data = try await post("account/account_menu", session: session, body: [:])
+        let account = try InnerTubeParser.accountInfo(from: data)
+        // The name, handle and photo are the user's own: only whether the menu had a header is logged.
+        Self.log.info("account menu has account \(account != nil, privacy: .public)")
+        return account
+    }
+
     func search(_ query: String) async throws -> [MusicTrack] {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
