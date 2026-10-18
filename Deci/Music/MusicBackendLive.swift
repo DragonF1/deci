@@ -42,6 +42,14 @@ actor MusicBackendLive: MusicBackend {
         try await resolver.resolve(videoId: videoId)
     }
 
+    func radio(seedVideoId: String) async throws -> MusicQueuePage {
+        throw MusicError.parse("radio is not built yet")
+    }
+
+    func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage {
+        throw MusicError.parse("radio is not built yet")
+    }
+
     func reportPlayback(trackingURL: URL, cpn: String) async throws {
         try await client.reportPlayback(trackingURL: trackingURL, cpn: cpn)
     }

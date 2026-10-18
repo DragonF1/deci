@@ -89,6 +89,14 @@ actor FakeMusicBackend: MusicBackend {
         return streams[videoId] ?? MusicSamples.stream(videoId: videoId)
     }
 
+    func radio(seedVideoId: String) async throws -> MusicQueuePage {
+        MusicQueuePage(tracks: [], continuation: nil)
+    }
+
+    func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage {
+        MusicQueuePage(tracks: [], continuation: nil)
+    }
+
     func reportPlayback(trackingURL: URL, cpn: String) async throws {
         reportAttempts.append(Report(url: trackingURL, cpn: cpn))
         if let reportError { throw reportError }

@@ -55,6 +55,14 @@ extension StoredCookie {
     }
 }
 
+/// One page of a radio (autoplay) queue from the `next` endpoint.
+struct MusicQueuePage: Sendable, Equatable {
+    /// Tracks in play order. A fresh radio starts with the seed track itself.
+    let tracks: [MusicTrack]
+    /// Token for the following page; nil when YouTube has no more.
+    let continuation: String?
+}
+
 enum MusicError: Error, Sendable, Equatable {
     case signedOut
     case http(Int)
@@ -74,6 +82,10 @@ protocol MusicBackend: Sendable {
     func signOut() async
     func search(_ query: String) async throws -> [MusicTrack]
     func resolve(videoId: String) async throws -> ResolvedStream
+    /// First page of the radio seeded by `seedVideoId` (playlist RDAMVM<seedVideoId>).
+    func radio(seedVideoId: String) async throws -> MusicQueuePage
+    /// The page after `continuation` of the radio seeded by `seedVideoId`.
+    func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage
     /// Sends the single history ping for one playback session.
     func reportPlayback(trackingURL: URL, cpn: String) async throws
 }
