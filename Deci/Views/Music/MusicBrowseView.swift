@@ -23,6 +23,8 @@ struct MusicBrowseView: View {
             if let top = browse.path.last {
                 MusicPageView(service: service, collection: top)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    // The page draws its hero edge to edge, under the 32 pt header strip the shell leaves clear.
+                    .padding(.top, -MusicPopupMetrics.headerHeight)
                     // A fresh view per page, so each one starts at the top.
                     .id("\(browse.path.count)|\(top.browseId)")
             }

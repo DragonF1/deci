@@ -54,6 +54,9 @@ private struct MusicSignedInView: View {
     /// Owned by the host so the popup's Escape key can close the card.
     @Binding var isAccountCardOpen: Bool
 
+    /// The colour of the bottom scrim: the darker bottom of the open detail page, else the base colour.
+    @State private var scrimColor: Color?
+
     private var nowPlaying: MusicTrack? { service.player.nowPlaying }
 
     var body: some View {
@@ -74,10 +77,11 @@ private struct MusicSignedInView: View {
                         .frame(maxHeight: .infinity, alignment: .top)
                         .padding(.top, MusicPopupMetrics.headerHeight + 4)
                 } else {
-                    chrome(width: proxy.size.width)
+                    chrome(width: proxy.size.width, showsBrowse: isBrowseInView(screen))
                 }
             }
             .animation(DesignTokens.Animation.quick, value: screen.isPlayer)
+            .onPreferenceChange(MusicScrimColorKey.self) { scrimColor = $0 }
             .overlayPreferenceValue(MusicAvatarAnchorKey.self) { anchor in
                 GeometryReader { overlay in
                     if isAccountCardOpen {
@@ -151,9 +155,14 @@ private struct MusicSignedInView: View {
         .accessibilityHidden(true)
     }
 
+    /// Whether the browse screen is the one in view: it is not under the player screens or the playlist picker.
+    private func isBrowseInView(_ screen: MusicShellScreen) -> Bool {
+        screen == .browse && !navigation.showsPicker
+    }
+
     /// The browse screen stays alive under the player screens and the picker, so it keeps its place.
     private func content(screen: MusicShellScreen) -> some View {
-        let showsBrowse = screen == .browse && !navigation.showsPicker
+        let showsBrowse = isBrowseInView(screen)
         return ZStack {
             MusicBrowseView(service: service, navigation: navigation, isActive: showsBrowse)
                 .opacity(showsBrowse ? 1 : 0)
@@ -188,14 +197,16 @@ private struct MusicSignedInView: View {
     }
 
     /// The fade the lists dissolve into, the mini player and the tab bar, bottom up.
-    private func chrome(width: CGFloat) -> some View {
-        ZStack(alignment: .bottom) {
+    /// The page's scrim colour counts only while browse is in view: the hidden browse view keeps its preference value.
+    private func chrome(width: CGFloat, showsBrowse: Bool) -> some View {
+        let scrim = (showsBrowse ? scrimColor : nil) ?? MusicStyle.Palette.base
+        return ZStack(alignment: .bottom) {
             LinearGradient(
                 stops: [
-                    .init(color: MusicStyle.Palette.base.opacity(0), location: 0),
-                    .init(color: MusicStyle.Palette.base.opacity(0.9), location: 0.35),
-                    .init(color: MusicStyle.Palette.base, location: 0.6),
-                    .init(color: MusicStyle.Palette.base, location: 1),
+                    .init(color: scrim.opacity(0), location: 0),
+                    .init(color: scrim.opacity(0.9), location: 0.35),
+                    .init(color: scrim, location: 0.6),
+                    .init(color: scrim, location: 1),
                 ],
                 startPoint: .top,
                 endPoint: .bottom

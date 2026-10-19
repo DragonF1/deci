@@ -10,12 +10,11 @@ import Testing
 @Suite("MusicPinBadge")
 struct MusicPinBadgeTests {
 
-    @Test("The dot is 18 on a shelf tile, 14 on a row and on the page header")
+    @Test("The dot is 14 on a row and on the covers of the page rows")
     func diameters() {
-        #expect(MusicPinBadge.diameter(coverSize: MusicTile.coverSize) == 18)
         #expect(MusicPinBadge.diameter(coverSize: MusicResultRow.coverSize) == 14)
         #expect(MusicPinBadge.diameter(coverSize: MusicCollectionRow.coverSize) == 14)
-        #expect(MusicPinBadge.diameter(coverSize: MusicPageHeader.coverSize) == 14)
+        #expect(MusicPinBadge.diameter(coverSize: MusicSongRowLayout.playlist.coverSize ?? 0) == 14)
     }
 
     @Test("The dot grows with the cover and never falls under the floor")
@@ -44,7 +43,8 @@ struct MusicPinBadgeTests {
     @Test("The badge stays inside the cover's square on every cover the Music tab draws")
     func badgeFitsTheSquare() {
         let covers: [CGFloat] = [
-            MusicTile.coverSize, MusicResultRow.coverSize, MusicCollectionRow.coverSize, MusicPageHeader.coverSize,
+            MusicStyle.Size.coverTile, MusicResultRow.coverSize, MusicCollectionRow.coverSize,
+            MusicSongRowLayout.playlist.coverSize ?? 0,
         ]
         for size in covers {
             for circular in [false, true] {

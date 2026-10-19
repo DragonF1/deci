@@ -338,20 +338,20 @@ struct MusicPinnedArtistsTests {
 
     // MARK: - The button's words
 
-    @Test("the page button reads Pin to Home, and Unpin from Home with a filled pin once pinned")
+    @Test("the page pill reads Pin to Home, and Pinned with a filled pin once pinned")
     func buttonWords() {
-        #expect(MusicPageHeader.pinLabel(isPinned: false) == "Pin to Home")
-        #expect(MusicPageHeader.pinLabel(isPinned: true) == "Unpin from Home")
-        #expect(MusicPageHeader.pinSymbol(isPinned: false) == "pin")
-        #expect(MusicPageHeader.pinSymbol(isPinned: true) == "pin.fill")
+        #expect(MusicPagePills.pinLabel(isPinned: false) == "Pin to Home")
+        #expect(MusicPagePills.pinLabel(isPinned: true) == "Pinned")
+        #expect(MusicPagePills.pinSymbol(isPinned: false) == "pin")
+        #expect(MusicPagePills.pinSymbol(isPinned: true) == "pin.fill")
     }
 
     @Test("a full Home says so in the button's help text; otherwise the help says what the button does")
     func buttonHelp() {
-        let full = MusicPageHeader.pinHelp(isPinned: false, isEnabled: false)
+        let full = MusicPagePills.pinHelp(isPinned: false, isEnabled: false)
         #expect(full.contains("20"))
-        #expect(full != MusicPageHeader.pinHelp(isPinned: false, isEnabled: true))
-        #expect(MusicPageHeader.pinHelp(isPinned: true, isEnabled: true) != MusicPageHeader.pinHelp(isPinned: false, isEnabled: true))
-        #expect(!MusicPageHeader.pinHelp(isPinned: true, isEnabled: true).contains("20"))
+        #expect(full != MusicPagePills.pinHelp(isPinned: false, isEnabled: true))
+        #expect(MusicPagePills.pinHelp(isPinned: true, isEnabled: true) != MusicPagePills.pinHelp(isPinned: false, isEnabled: true))
+        #expect(!MusicPagePills.pinHelp(isPinned: true, isEnabled: true).contains("20"))
     }
 }

@@ -562,8 +562,8 @@ struct MusicBrowseStoreSortTests {
 
     @Test("the note reads First 2000 songs, and First song for a single one")
     func limitText() {
-        #expect(MusicPageHeader.sortLimitText(MusicBrowseStore.sortTrackCap) == "First 2000 songs")
-        #expect(MusicPageHeader.sortLimitText(1) == "First song")
+        #expect(MusicSortNote.limitText(MusicBrowseStore.sortTrackCap) == "First 2000 songs")
+        #expect(MusicSortNote.limitText(1) == "First song")
     }
 
     @Test("going back to the default order drops the limit note")

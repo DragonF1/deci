@@ -2,14 +2,121 @@
 import AppKit
 import SwiftUI
 
-/// A song row of the redesigned Music popover: a 36 pt cover, the title over "artist · album", a hairline underneath.
-/// Under the pointer the row gets the hover fill, slides in by 6 and shows the round "..." button. The Search results
-/// use it first; the pages take it over from `MusicResultRow` in the next phase.
+/// How a song row is laid out. Search results, album tracks, playlist and Liked rows and an artist's top songs are one
+/// row with different measures; they live here, apart from the view, so they are tested.
+nonisolated enum MusicSongRowLayout: Equatable {
+    /// A Search result: 36 pt cover, "artist · album" under the title.
+    case search
+    /// An album track: the number of the track in place of a cover, and the title alone.
+    case album(number: Int)
+    /// A playlist or Liked music row: 40 pt cover, "artist · album" under the title.
+    case playlist
+    /// An artist's top song: a number, a 40 pt cover and the album under the title.
+    case topSong(number: Int)
+
+    var height: CGFloat {
+        switch self {
+        case .search, .album: 44
+        case .playlist: 52
+        case .topSong: 48
+        }
+    }
+
+    /// The cover's side; nil where the row has none.
+    var coverSize: CGFloat? {
+        switch self {
+        case .search: 36
+        case .album: nil
+        case .playlist, .topSong: 40
+        }
+    }
+
+    /// The number that leads the row, nil where it has none.
+    var number: Int? {
+        switch self {
+        case .album(let number), .topSong(let number): number
+        case .search, .playlist: nil
+        }
+    }
+
+    /// The width of the number column, and the gap after it.
+    var numberWidth: CGFloat { self.isAlbum ? 28 : 14 }
+    var numberGap: CGFloat { self.isAlbum ? 8 : 10 }
+
+    /// The gap between the cover (or the number) and the text.
+    var coverGap: CGFloat {
+        switch self {
+        case .search, .playlist: 12
+        case .album, .topSong: 10
+        }
+    }
+
+    var titleStyle: MusicStyle.TextStyle {
+        switch self {
+        case .search: MusicStyle.Typeface.row13M
+        case .album, .playlist: MusicStyle.Typeface.row15
+        case .topSong: MusicStyle.Typeface.row14M
+        }
+    }
+
+    var numberStyle: MusicStyle.TextStyle {
+        self.isAlbum ? MusicStyle.TextStyle(13) : MusicStyle.TextStyle(13, .semibold)
+    }
+
+    var numberOpacity: Double { self.isAlbum ? 0.45 : 0.5 }
+
+    /// The space after the text, before the row's edge.
+    var trailingPadding: CGFloat { self.isAlbum ? 8 : 4 }
+
+    /// Space the row keeps on both sides of itself. A top song sits in a grid that has its own margin.
+    var horizontalPadding: CGFloat {
+        switch self {
+        case .search, .playlist: MusicStyle.Spacing.page
+        case .album: 16
+        case .topSong: 0
+        }
+    }
+
+    /// The glyph that stands in for the round "..." button while the pointer is elsewhere; Search shows nothing.
+    var showsIdleEllipsis: Bool { self != .search }
+
+    /// A row that is playing wears the accent title, except on an album, whose playing track is marked in the number's place.
+    var accentsCurrentTitle: Bool {
+        if case .album = self { return false }
+        return true
+    }
+
+    enum Subtitle: Equatable {
+        case none
+        case artistAndAlbum
+        case album
+    }
+
+    var subtitle: Subtitle {
+        switch self {
+        case .search, .playlist: .artistAndAlbum
+        case .album: .none
+        case .topSong: .album
+        }
+    }
+
+    private var isAlbum: Bool {
+        if case .album = self { return true }
+        return false
+    }
+}
+
+/// A song row of the redesigned Music popover: the cover, the title over "artist · album", a hairline underneath.
+/// Under the pointer the row gets the hover fill, slides in by 6 and shows the round "..." button. Search results and
+/// the pages use it; the layout says which measures.
 struct MusicSongRow: View {
     let track: MusicTrack
     let isCurrent: Bool
     /// True only on the current row while audio plays, so play and pause redraw one row.
     let isPlaying: Bool
+    var layout: MusicSongRowLayout = .search
+    /// The colour of the playing indicator of an album track: the page's light tint.
+    var playingColor: Color = .white
     let action: () -> Void
 
     /// Set while Full Keyboard Access has put keyboard focus on the row, so it shows the hover surface.
@@ -45,14 +152,19 @@ struct MusicSongRow: View {
         let showsMore = isHovered || isMenuOpen || isKeyboardFocused
         // The row plays on a tap. It is not one Button, because the artist names inside it are buttons of their
         // own, and a button nested in another button's label is unreliable for clicks and for VoiceOver.
-        HStack(spacing: 12) {
-            cover
+        HStack(spacing: layout.number != nil && layout.coverSize == nil ? layout.numberGap : layout.coverGap) {
+            if layout.number != nil {
+                numberColumn
+            }
+            if layout.coverSize != nil {
+                cover
+            }
 
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(track.title)
-                        .musicText(MusicStyle.Typeface.row13M)
-                        .foregroundStyle(isCurrent ? MusicStyle.Palette.accent : .white)
+                        .musicText(layout.titleStyle)
+                        .foregroundStyle(isCurrent && layout.accentsCurrentTitle ? MusicStyle.Palette.accent : .white)
                         .lineLimit(1)
                         .accessibilityHidden(true)
                     subtitle
@@ -61,14 +173,14 @@ struct MusicSongRow: View {
                 moreButton(actions: actions, isShown: showsMore)
             }
             .frame(maxHeight: .infinity)
-            .padding(.trailing, 4)
+            .padding(.trailing, layout.trailingPadding)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1)
             }
         }
-        .frame(height: Self.height)
+        .frame(height: layout.height)
         .musicRowHover(showsMore)
-        .padding(.horizontal, MusicStyle.Spacing.page)
+        .padding(.horizontal, layout.horizontalPadding)
         .onHover { isHovered = $0 }
         // Tracking begins while the pointer is still on the row (the hover ends after the menu window is up), so
         // only the row the menu was opened from takes it. Every end of tracking clears it, and so does the row leaving.
@@ -109,8 +221,26 @@ struct MusicSongRow: View {
         }
     }
 
+    /// The track's number, or the playing indicator in its place on the track in the player.
+    private var numberColumn: some View {
+        Group {
+            if isCurrent, layout.coverSize == nil {
+                MusicPlayingBars(isPlaying: isPlaying, color: playingColor)
+            } else {
+                Text(verbatim: String(layout.number ?? 0))
+                    .musicText(layout.numberStyle)
+                    .foregroundStyle(Color.white.opacity(layout.numberOpacity))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+        }
+        .frame(width: layout.numberWidth)
+        .accessibilityHidden(true)
+    }
+
     private var cover: some View {
-        MusicThumbnail(url: track.thumbnailURL, size: Self.coverSize, cornerRadius: MusicStyle.Radius.small)
+        let size = layout.coverSize ?? Self.coverSize
+        return MusicThumbnail(url: track.thumbnailURL, size: size, cornerRadius: MusicStyle.Radius.small)
             .overlay {
                 if isCurrent { MusicPlayingOverlay(isPlaying: isPlaying, radius: MusicStyle.Radius.small) }
             }
@@ -118,12 +248,33 @@ struct MusicSongRow: View {
                 RoundedRectangle(cornerRadius: MusicStyle.Radius.small, style: .continuous)
                     .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
             )
-            .musicPinBadge(isPinned, coverSize: Self.coverSize)
+            .musicPinBadge(isPinned, coverSize: size)
             .accessibilityHidden(true)
     }
 
-    /// "artist · album": the artist names stay links, the album is plain text and gives way first.
+    /// "artist · album": the artist names stay links, the album is plain text and gives way first. A top song shows
+    /// its album, or its artists when YouTube names none; an album track has no second line.
+    @ViewBuilder
     private var subtitle: some View {
+        switch layout.subtitle {
+        case .none:
+            EmptyView()
+        case .artistAndAlbum:
+            artistAndAlbum
+        case .album:
+            if let album = track.album, !album.isEmpty {
+                Text(album)
+                    .musicText(MusicStyle.Typeface.caption12)
+                    .foregroundStyle(MusicStyle.Palette.textSecondary)
+                    .lineLimit(1)
+                    .accessibilityHidden(true)
+            } else {
+                artistAndAlbum
+            }
+        }
+    }
+
+    private var artistAndAlbum: some View {
         HStack(spacing: 0) {
             MusicArtistLine(
                 artist: track.artist,
@@ -151,9 +302,19 @@ struct MusicSongRow: View {
         if actions.isEmpty {
             Color.clear.frame(width: MusicTrackMoreButton.roundSize, height: MusicTrackMoreButton.roundSize)
         } else {
-            MusicTrackMoreButton(track: track, actions: actions, perform: perform, style: .round)
-                .opacity(isShown ? 1 : 0)
-                .accessibilityHidden(!isShown)
+            ZStack {
+                MusicTrackMoreButton(track: track, actions: actions, perform: perform, style: .round)
+                    .opacity(isShown ? 1 : 0)
+                    .accessibilityHidden(!isShown)
+                // The rows of the pages show the dots at rest; the round button takes their place under the pointer.
+                if layout.showsIdleEllipsis, !isShown {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16))
+                        .foregroundStyle(MusicStyle.Palette.textSecondary)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
         }
     }
 }

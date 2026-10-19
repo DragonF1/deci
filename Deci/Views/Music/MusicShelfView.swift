@@ -1,8 +1,8 @@
 // Deci/Views/Music/MusicShelfView.swift
 import SwiftUI
 
-/// One titled shelf on Home or an artist page. A shelf of songs only (Quick picks) shows
-/// compact song rows; any other shelf scrolls sideways through tiles.
+/// One titled shelf of a page: an artist's Albums, Singles and the rest. A shelf of songs only shows song rows; any
+/// other shelf scrolls sideways through 112 pt cover tiles, starting 20 in and sliding under the popover's edge.
 struct MusicShelfView: View {
     let shelf: MusicShelf
     /// videoId of the track in the player, for the playing indicator.
@@ -10,16 +10,11 @@ struct MusicShelfView: View {
     let isPlaying: Bool
     let onPlay: (MusicTrack) -> Void
     let onOpen: (MusicCollection) -> Void
-    /// Gives each collection tile an "Unpin from Home" context menu item. Only the pinned artists row passes it.
-    var onUnpin: ((MusicCollection) -> Void)?
     @Environment(\.musicCollectionPin) private var collectionPin
     @Environment(\.musicTrackMenu) private var trackMenu
 
     /// Song rows a songs-only shelf shows.
     static let maxSongRows = 6
-
-    /// The pinned artists row shows no badges: every tile on it is pinned, so they would only be noise.
-    private var showsPinBadges: Bool { onUnpin == nil }
 
     /// The shelf's songs when every item is one, else nil.
     private var songs: [MusicTrack]? {
@@ -31,16 +26,17 @@ struct MusicShelfView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DesignTokens.Spacing.xs) {
-            MusicSectionTitle(text: shelf.title)
+        VStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionContent) {
+            MusicSectionHeader(title: shelf.title)
 
             if let songs {
                 VStack(spacing: 0) {
                     ForEach(Array(songs.prefix(Self.maxSongRows).enumerated()), id: \.offset) { _, track in
-                        MusicResultRow(
+                        MusicSongRow(
                             track: track,
                             isCurrent: nowPlayingId == track.videoId,
-                            isPlaying: nowPlayingId == track.videoId && isPlaying
+                            isPlaying: nowPlayingId == track.videoId && isPlaying,
+                            layout: .playlist
                         ) {
                             onPlay(track)
                         }
@@ -48,13 +44,15 @@ struct MusicShelfView: View {
                 }
             } else {
                 ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: 0) {
+                    LazyHStack(alignment: .top, spacing: MusicStyle.Spacing.shelfGap) {
                         ForEach(Array(shelf.items.enumerated()), id: \.offset) { _, item in
                             tile(for: item)
                         }
                     }
+                    .padding(.horizontal, MusicStyle.Spacing.page)
                 }
                 .scrollIndicators(.never)
+                .scrollClipDisabled()
             }
         }
     }
@@ -63,101 +61,29 @@ struct MusicShelfView: View {
     private func tile(for item: MusicShelfItem) -> some View {
         switch item {
         case .track(let track):
-            MusicTile(
+            MusicCoverTile(
                 title: track.title,
                 subtitle: track.artist,
                 thumbnailURL: track.thumbnailURL,
+                isPinned: trackMenu?.isPinned(track) == true,
                 isCurrent: nowPlayingId == track.videoId,
-                isPlaying: nowPlayingId == track.videoId && isPlaying,
-                isPinned: showsPinBadges && trackMenu?.isPinned(track) == true
+                isPlaying: nowPlayingId == track.videoId && isPlaying
             ) {
                 onPlay(track)
             }
         case .collection(let collection):
-            let tile = MusicTile(
+            MusicCoverTile(
                 title: collection.title,
-                subtitle: collection.subtitle,
+                subtitle: MusicHomeText.subtitle(collection.subtitle),
                 thumbnailURL: collection.thumbnailURL,
                 circular: collection.kind == .artist,
                 placeholder: collection.kind.placeholderSymbol,
-                isPinned: showsPinBadges && collectionPin?.isPinned(collection) == true
+                isPinned: collectionPin?.isPinned(collection) == true
             ) {
                 onOpen(collection)
             }
-            let listenAgain = collectionPin?.pin(collection)
-            if onUnpin != nil || listenAgain != nil {
-                tile.contextMenu {
-                    if let listenAgain, let collectionPin {
-                        MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
-                    }
-                    if let onUnpin {
-                        Button {
-                            onUnpin(collection)
-                        } label: {
-                            Label("Unpin from Home", systemImage: "pin.slash")
-                        }
-                    }
-                }
-            } else {
-                tile
-            }
+            .musicCollectionMenu(collection)
         }
-    }
-}
-
-/// A cover with two lines of title and one of subtitle, for sideways shelves.
-struct MusicTile: View {
-    let title: String
-    let subtitle: String
-    let thumbnailURL: URL?
-    var circular = false
-    var placeholder = "music.note"
-    var isCurrent = false
-    var isPlaying = false
-    /// Pinned to Listen again (a song, playlist or album) or to Home (an artist): the cover wears the pin badge.
-    var isPinned = false
-    let action: () -> Void
-
-    static let coverSize: CGFloat = 96
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: circular ? .center : .leading, spacing: DesignTokens.Spacing.xxs) {
-                MusicThumbnail(url: thumbnailURL, size: Self.coverSize, circular: circular, placeholder: placeholder)
-                    .overlay {
-                        if isCurrent {
-                            MusicPlayingOverlay(isPlaying: isPlaying, circular: circular, symbolSize: 20)
-                        }
-                    }
-                    .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: circular)
-                    .padding(.bottom, DesignTokens.Spacing.xxs)
-                // Every tile takes two title lines and a subtitle line, short or not: the lazy shelf
-                // sizes its height from the first tiles, so a taller tile further along got cut off.
-                Text(title)
-                    .font(DesignTokens.Typography.rowName)
-                    .foregroundStyle(isCurrent ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textPrimary)
-                    .lineLimit(2, reservesSpace: true)
-                    .multilineTextAlignment(circular ? .center : .leading)
-                Text(subtitle.isEmpty ? " " : subtitle)
-                    .font(DesignTokens.Typography.rowDescription)
-                    .foregroundStyle(DesignTokens.Colors.textSecondary)
-                    .lineLimit(1)
-            }
-            .frame(width: Self.coverSize, alignment: circular ? .center : .leading)
-            .hoverableRow()
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityText)
-        .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
-    }
-
-    private var accessibilityText: String {
-        var text = subtitle.isEmpty ? title : "\(title), \(subtitle)"
-        if isPinned { text += ", pinned" }
-        if isPlaying { text += ", playing" }
-        return text
     }
 }
 
@@ -180,20 +106,6 @@ struct MusicPlayingOverlay: View {
         }
         .clipShape(MusicCoverShape(circular: circular, radius: radius))
         .accessibilityHidden(true)
-    }
-}
-
-/// A shelf or list title, in the popup's section header style.
-struct MusicSectionTitle: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .sectionHeaderStyle()
-            .lineLimit(1)
-            .padding(.horizontal, DesignTokens.Spacing.sm)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -252,14 +164,14 @@ struct MusicLoadMoreFooter: View {
     var body: some View {
         ZStack {
             if isLoading {
-                ProgressView()
-                    .controlSize(.small)
+                MusicSpinner(size: 15, lineWidth: 1.6)
+                    .accessibilityElement()
                     .accessibilityLabel("Loading more")
             } else {
                 Button("Load more", action: loadMore)
                     .buttonStyle(.plain)
-                    .font(DesignTokens.Typography.caption)
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
+                    .musicText(MusicStyle.Typeface.caption12M)
+                    .foregroundStyle(MusicStyle.Palette.textSecondary)
                     .contentShape(Rectangle())
             }
         }
