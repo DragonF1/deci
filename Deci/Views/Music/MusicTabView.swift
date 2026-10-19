@@ -1,10 +1,10 @@
 // Deci/Views/Music/MusicTabView.swift
 import SwiftUI
 
-/// The Music popover body. It fills the whole popover, edge to edge: the popup lays its 32 pt header strip over the
-/// top of it, and the signed-in screens leave that strip clear themselves.
+/// The Music popover body. It fills the whole popover, edge to edge: the popup lays its header row (tabs, avatar and
+/// gear) over the top of it, and the signed-in screens leave that room clear themselves (`musicContentTop`).
 struct MusicTabView: View {
-    @Bindable var host: MusicServiceHost
+    let host: MusicServiceHost
 
     var body: some View {
         Group {
@@ -12,17 +12,14 @@ struct MusicTabView: View {
                 MusicServiceView(
                     service: service,
                     navigation: navigation,
-                    mixer: host.mixer,
-                    isAccountCardOpen: $host.isAccountCardOpen
+                    mixer: host.mixer
                 )
             } else {
                 ProgressView()
                     .controlSize(.small)
-                    .environment(\.colorScheme, .dark)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(MusicStyle.Palette.base)
     }
 }
 
@@ -30,27 +27,25 @@ private struct MusicServiceView: View {
     @Bindable var service: MusicService
     let navigation: MusicSearchNavigation
     let mixer: MusicMixerState?
-    @Binding var isAccountCardOpen: Bool
 
     var body: some View {
         switch service.authState {
         case .unknown:
             ProgressView()
                 .controlSize(.small)
-                .environment(\.colorScheme, .dark)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .signedOut:
             MusicSignedOutView(service: service, isSigningIn: false)
         case .signingIn:
             MusicSignedOutView(service: service, isSigningIn: true)
         case .signedIn:
-            MusicSignedInView(service: service, navigation: navigation, mixer: mixer, isAccountCardOpen: $isAccountCardOpen)
+            MusicSignedInView(service: service, navigation: navigation, mixer: mixer)
         }
     }
 }
 
-/// The signed-in shell: a browse screen with the floating tab bar and mini player over it, or one of the player
-/// screens that fill the popover. Which one shows comes from `navigation.screen`.
+/// The signed-in shell: a browse screen with the glass mini player over it, or one of the player screens that fill the
+/// popover. Which one shows comes from `navigation.screen`. The tabs, the avatar and the gear are the popup's header.
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
     /// What shows over the browse screens (Now Playing, Up next, Lyrics, the picker) and how an artist page opens.
@@ -59,11 +54,8 @@ private struct MusicSignedInView: View {
     let navigation: MusicSearchNavigation
     /// The Mixer's state, for the player's volume slider and output control. Nil where there is no Mixer.
     let mixer: MusicMixerState?
-    /// Owned by the host so the popup's Escape key can close the card.
-    @Binding var isAccountCardOpen: Bool
 
-    /// The colour of the bottom scrim: the darker bottom of the open detail page, else the base colour.
-    @State private var scrimColor: Color?
+    @Environment(\.musicContentTop) private var contentTop
 
     private var nowPlaying: MusicTrack? { service.player.nowPlaying }
 
@@ -71,10 +63,10 @@ private struct MusicSignedInView: View {
         let screen = navigation.screen
         GeometryReader { proxy in
             ZStack(alignment: .bottom) {
-                backdrop
-
                 content(screen: screen)
-                    .padding(.top, MusicPopupMetrics.headerHeight)
+                    .padding(.top, contentTop)
+                    // Over the padded area too, so a page's wash and a player backdrop can reach under the header.
+                    .mask { bottomFade(hasMiniPlayer: isBrowseInView(screen) && nowPlaying != nil) }
                     .environment(
                         \.musicBottomInset,
                         MusicShellLayout.bottomInset(hasMiniPlayer: nowPlaying != nil)
@@ -82,27 +74,15 @@ private struct MusicSignedInView: View {
 
                 if screen.isPlayer {
                     notice
+                        .musicDarkScope()
                         .frame(maxHeight: .infinity, alignment: .top)
-                        .padding(.top, MusicPopupMetrics.headerHeight + 4)
+                        .padding(.top, contentTop + 4)
                 } else {
-                    chrome(width: proxy.size.width, showsBrowse: isBrowseInView(screen))
+                    chrome(width: proxy.size.width)
                 }
             }
             .animation(DesignTokens.Animation.quick, value: screen.isPlayer)
-            .onPreferenceChange(MusicScrimColorKey.self) { scrimColor = $0 }
-            .overlayPreferenceValue(MusicAvatarAnchorKey.self) { anchor in
-                GeometryReader { overlay in
-                    if isAccountCardOpen {
-                        accountCardLayer(avatar: anchor.map { overlay[$0] }, size: overlay.size)
-                    }
-                }
-            }
-            .animation(DesignTokens.Animation.quick, value: isAccountCardOpen)
         }
-        // The avatar in a screen header opens and closes the card, which is drawn above.
-        .environment(\.musicAccountCard, MusicAccountCardControl(isOpen: isAccountCardOpen) {
-            isAccountCardOpen.toggle()
-        })
         // Every artist name under a song, on any list or in the player, opens the artist through here.
         .environment(\.openMusicArtist, { navigation.openArtist($0) })
         // Every song row's "..." button and right click menu, and the one in the player, run through here.
@@ -120,9 +100,9 @@ private struct MusicSignedInView: View {
                 MusicCollectionPinHandler.wearsPinBadge($0, actions: service.trackActions, artists: service.pinnedArtists)
             }
         ))
-        // Leaving the signed-in view (sign out, a dead session, the icon hidden) takes the card and the panels with it.
+        // Leaving the signed-in view (sign out, a dead session, the icon hidden) takes the panels with it. The account
+        // card is the popup's: it closes there when the session ends, the popup loses focus or the icon is hidden.
         .onDisappear {
-            isAccountCardOpen = false
             service.lyrics.setPanelOpen(false)
             service.trackActions.closePicker()
             navigation.queueForced = false
@@ -153,18 +133,13 @@ private struct MusicSignedInView: View {
 
     // MARK: - Layers
 
-    /// The base colour. The player screens draw their own backdrop (the cover's tint and the blurred cover) over it.
-    private var backdrop: some View {
-        MusicStyle.Palette.base
-            .accessibilityHidden(true)
-    }
-
     /// Whether the browse screen is the one in view: it is not under the player screens or the playlist picker.
     private func isBrowseInView(_ screen: MusicShellScreen) -> Bool {
         screen == .browse && !navigation.showsPicker
     }
 
-    /// The browse screen stays alive under the player screens and the picker, so it keeps its place.
+    /// The browse screen stays alive under the player screens and the picker, so it keeps its place. While the mini
+    /// player shows, the last rows dissolve into it.
     private func content(screen: MusicShellScreen) -> some View {
         let showsBrowse = isBrowseInView(screen)
         return ZStack {
@@ -188,6 +163,15 @@ private struct MusicSignedInView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Opaque down to the mini player's neighbourhood, then clear at the bottom edge. Nothing to fade without a player.
+    private func bottomFade(hasMiniPlayer: Bool) -> some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(.black)
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: hasMiniPlayer ? MusicShellLayout.scrimHeight : 0)
+        }
+    }
+
     /// What a song action did ("Saved to ...", "Removed from ..."). The animation stays on the line: a removed row
     /// lands in the same turn and must not crossfade the list.
     private var notice: some View {
@@ -200,72 +184,47 @@ private struct MusicSignedInView: View {
         .animation(DesignTokens.Animation.quick, value: service.trackActions.notice)
     }
 
-    /// The fade the lists dissolve into, the mini player and the tab bar, bottom up.
-    /// The page's scrim colour counts only while browse is in view: the hidden browse view keeps its preference value.
-    private func chrome(width: CGFloat, showsBrowse: Bool) -> some View {
-        let scrim = (showsBrowse ? scrimColor : nil) ?? MusicStyle.Palette.base
-        return ZStack(alignment: .bottom) {
-            LinearGradient(
-                stops: [
-                    .init(color: scrim.opacity(0), location: 0),
-                    .init(color: scrim.opacity(0.9), location: 0.35),
-                    .init(color: scrim, location: 0.6),
-                    .init(color: scrim, location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: MusicShellLayout.scrimHeight)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-
-            VStack(spacing: 4) {
-                notice
-                if let track = nowPlaying {
-                    MusicMiniPlayer(service: service, track: track) { navigation.openNowPlaying() }
-                }
+    /// The slim glass mini player near the bottom edge, with the notice line above it.
+    private func chrome(width: CGFloat) -> some View {
+        VStack(spacing: 4) {
+            notice
+            if let track = nowPlaying {
+                MusicMiniPlayer(service: service, track: track) { navigation.openNowPlaying() }
             }
-            .frame(width: MusicShellLayout.miniPlayerWidth(forWidth: width))
-            .padding(.bottom, MusicShellLayout.miniPlayerBottom)
-
-            MusicTabBar(
-                selection: service.browse.tab,
-                width: MusicShellLayout.tabBarWidth(forWidth: width)
-            ) {
-                navigation.select($0)
-            }
-            .padding(.bottom, MusicShellLayout.tabBarBottom)
         }
+        .frame(width: MusicShellLayout.miniPlayerWidth(forWidth: width))
+        .padding(.bottom, MusicShellLayout.miniPlayerBottom)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .background(alignment: .bottom) {
+            if nowPlaying != nil { miniPlayerShield }
+        }
     }
 
-    /// A dim over the popover with the avatar left out of it and ringed, and the card hanging under the avatar. A tap
-    /// anywhere closes it. An overlay, not a Menu or popover: this view already lives in the menu bar panel, which a
-    /// nested popover would dismiss. With no avatar on screen (its header scrolled away) the card hangs from where
-    /// the avatar sits at the top of a screen.
-    private func accountCardLayer(avatar: CGRect?, size: CGSize) -> some View {
-        let side = MusicAccountButton.size
-        let rect = avatar ?? CGRect(
-            x: size.width - MusicShellLayout.pageMargin - side,
-            y: MusicPopupMetrics.headerHeight + 4,
-            width: side,
-            height: side
-        )
-        return ZStack(alignment: .topTrailing) {
-            Path { path in
-                path.addRect(CGRect(origin: .zero, size: size))
-                path.addEllipse(in: rect)
-            }
-            .fill(MusicStyle.Palette.dimModal, style: FillStyle(eoFill: true))
+    /// The band the mini player stands in, side margins and the gap under it included. The fade only dims the rows
+    /// there, it does not stop them taking a click or a hover, so this clear layer takes those instead. It is under the
+    /// mini player, whose own buttons stay live, and scrolling still reaches the list.
+    private var miniPlayerShield: some View {
+        Color.clear
+            .frame(height: MusicShellLayout.miniPlayerFootprint)
             .contentShape(Rectangle())
-            .onTapGesture { isAccountCardOpen = false }
+            .onTapGesture {}
             .accessibilityHidden(true)
+    }
+}
 
-            Circle()
-                .strokeBorder(MusicStyle.Palette.lineFocus, lineWidth: 2)
-                .frame(width: rect.width + 4, height: rect.height + 4)
-                .position(x: rect.midX, y: rect.midY)
-                .allowsHitTesting(false)
+/// The account card layer of the popup: a light dim over everything (a tap anywhere closes it) and the card hanging
+/// under the avatar. An overlay, not a Menu or popover: the popup is a menu bar panel, which a nested popover would
+/// dismiss. It sits above the header, so the avatar's tap closes the card too.
+struct MusicAccountCardLayer: View {
+    let service: MusicService
+    @Binding var isOpen: Bool
+    let contentPadding: CGFloat
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            MusicStyle.Palette.dimModal
+                .contentShape(Rectangle())
+                .onTapGesture { isOpen = false }
                 .accessibilityHidden(true)
 
             MusicAccountCard(
@@ -274,20 +233,20 @@ private struct MusicSignedInView: View {
                 isSwitchingChannel: service.isSwitchingChannel,
                 isAddingAccount: service.isAddingAccount,
                 onSwitchChannel: {
-                    isAccountCardOpen = false
+                    isOpen = false
                     service.switchChannel()
                 },
                 onUseAnotherAccount: {
-                    isAccountCardOpen = false
+                    isOpen = false
                     service.useAnotherAccount()
                 },
                 onSignOut: {
-                    isAccountCardOpen = false
+                    isOpen = false
                     service.signOut()
                 }
             )
-            .padding(.top, rect.maxY + 8)
-            .padding(.trailing, max(0, size.width - rect.maxX))
+            .padding(.top, MusicPopupMetrics.accountCardTop(contentPadding: contentPadding))
+            .padding(.trailing, MusicPopupMetrics.avatarTrailingInset(contentPadding: contentPadding))
             .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

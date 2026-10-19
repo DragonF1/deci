@@ -5,29 +5,27 @@ import SwiftUI
 /// How a song row is laid out. Search results, album tracks, playlist and Liked rows and an artist's top songs are one
 /// row with different measures; they live here, apart from the view, so they are tested.
 nonisolated enum MusicSongRowLayout: Equatable {
-    /// A Search result: 36 pt cover, "artist · album" under the title.
+    /// A Search result: 32 pt cover, "artist · album" under the title.
     case search
     /// An album track: the number of the track in place of a cover, and the title alone.
     case album(number: Int)
-    /// A playlist or Liked music row: 40 pt cover, "artist · album" under the title.
+    /// A playlist or Liked music row: 32 pt cover, "artist · album" under the title.
     case playlist
-    /// An artist's top song: a number, a 40 pt cover and the album under the title.
+    /// An artist's top song: a number, a 32 pt cover and the album under the title.
     case topSong(number: Int)
 
     var height: CGFloat {
         switch self {
-        case .search, .album: 44
-        case .playlist: 52
-        case .topSong: 48
+        case .search, .playlist, .topSong: 40
+        case .album: 36
         }
     }
 
     /// The cover's side; nil where the row has none.
     var coverSize: CGFloat? {
         switch self {
-        case .search: 36
+        case .search, .playlist, .topSong: 32
         case .album: nil
-        case .playlist, .topSong: 40
         }
     }
 
@@ -40,44 +38,27 @@ nonisolated enum MusicSongRowLayout: Equatable {
     }
 
     /// The width of the number column, and the gap after it.
-    var numberWidth: CGFloat { self.isAlbum ? 28 : 14 }
-    var numberGap: CGFloat { self.isAlbum ? 8 : 10 }
+    var numberWidth: CGFloat { 22 }
+    var numberGap: CGFloat { 8 }
 
     /// The gap between the cover (or the number) and the text.
-    var coverGap: CGFloat {
-        switch self {
-        case .search, .playlist: 12
-        case .album, .topSong: 10
-        }
-    }
+    var coverGap: CGFloat { DesignTokens.Spacing.sm }
 
-    var titleStyle: MusicStyle.TextStyle {
-        switch self {
-        case .search: MusicStyle.Typeface.row13M
-        case .album, .playlist: MusicStyle.Typeface.row15
-        case .topSong: MusicStyle.Typeface.row14M
-        }
-    }
+    var titleStyle: MusicStyle.TextStyle { MusicStyle.Typeface.row }
 
-    var numberStyle: MusicStyle.TextStyle {
-        self.isAlbum ? MusicStyle.TextStyle(13) : MusicStyle.TextStyle(13, .semibold)
-    }
+    var numberStyle: MusicStyle.TextStyle { MusicStyle.Typeface.secondaryMedium }
 
-    var numberOpacity: Double { self.isAlbum ? 0.45 : 0.5 }
-
-    /// The space after the text, before the row's edge.
-    var trailingPadding: CGFloat { self.isAlbum ? 8 : 4 }
+    var numberOpacity: Double { 0.5 }
 
     /// Space the row keeps on both sides of itself. A top song sits in a grid that has its own margin.
     var horizontalPadding: CGFloat {
         switch self {
-        case .search, .playlist: MusicStyle.Spacing.page
-        case .album: 16
+        case .search, .playlist, .album: MusicStyle.Spacing.page
         case .topSong: 0
         }
     }
 
-    /// The glyph that stands in for the round "..." button while the pointer is elsewhere; Search shows nothing.
+    /// The glyph that stands in for the "..." button while the pointer is elsewhere; Search shows nothing.
     var showsIdleEllipsis: Bool { self != .search }
 
     /// A row that is playing wears the accent title, except on an album, whose playing track is marked in the number's place.
@@ -99,16 +80,11 @@ nonisolated enum MusicSongRowLayout: Equatable {
         case .topSong: .album
         }
     }
-
-    private var isAlbum: Bool {
-        if case .album = self { return true }
-        return false
-    }
 }
 
-/// A song row of the redesigned Music popover: the cover, the title over "artist · album", a hairline underneath.
-/// Under the pointer the row gets the hover fill, slides in by 6 and shows the round "..." button. Search results and
-/// the pages use it; the layout says which measures.
+/// A song row of the Music popover, a Mixer row: the cover, the title over "artist · album". Under the pointer the row
+/// gets the Mixer's hover fill and shows the "..." button. Search results and the pages use it; the layout says which
+/// measures.
 struct MusicSongRow: View {
     let track: MusicTrack
     let isCurrent: Bool
@@ -116,7 +92,7 @@ struct MusicSongRow: View {
     let isPlaying: Bool
     var layout: MusicSongRowLayout = .search
     /// The colour of the playing indicator of an album track: the page's light tint.
-    var playingColor: Color = .white
+    var playingColor: Color = .primary
     let action: () -> Void
 
     /// Set while Full Keyboard Access has put keyboard focus on the row, so it shows the hover surface.
@@ -128,8 +104,8 @@ struct MusicSongRow: View {
     @Environment(\.musicTrackMenu) private var menu
     @Environment(\.musicTrackContext) private var context
 
-    static let height: CGFloat = 44
-    static let coverSize: CGFloat = 36
+    static let height: CGFloat = 40
+    static let coverSize: CGFloat = 32
 
     private var offeredActions: [MusicTrackAction] { menu?.actions(track, context) ?? [] }
 
@@ -160,11 +136,11 @@ struct MusicSongRow: View {
                 cover
             }
 
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: DesignTokens.Spacing.sm) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text(track.title)
                         .musicText(layout.titleStyle)
-                        .foregroundStyle(isCurrent && layout.accentsCurrentTitle ? MusicStyle.Palette.accent : .white)
+                        .foregroundStyle(isCurrent && layout.accentsCurrentTitle ? MusicStyle.Palette.accent : MusicStyle.Palette.textPrimary)
                         .lineLimit(1)
                         .accessibilityHidden(true)
                     subtitle
@@ -173,10 +149,6 @@ struct MusicSongRow: View {
                 moreButton(actions: actions, isShown: showsMore)
             }
             .frame(maxHeight: .infinity)
-            .padding(.trailing, layout.trailingPadding)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1)
-            }
         }
         .frame(height: layout.height)
         .musicRowHover(showsMore)
@@ -229,7 +201,7 @@ struct MusicSongRow: View {
             } else {
                 Text(verbatim: String(layout.number ?? 0))
                     .musicText(layout.numberStyle)
-                    .foregroundStyle(Color.white.opacity(layout.numberOpacity))
+                    .foregroundStyle(Color.primary.opacity(layout.numberOpacity))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
@@ -264,7 +236,7 @@ struct MusicSongRow: View {
         case .album:
             if let album = track.album, !album.isEmpty {
                 Text(album)
-                    .musicText(MusicStyle.Typeface.caption12)
+                    .musicText(MusicStyle.Typeface.secondary)
                     .foregroundStyle(MusicStyle.Palette.textSecondary)
                     .lineLimit(1)
                     .accessibilityHidden(true)
@@ -280,13 +252,13 @@ struct MusicSongRow: View {
                 artist: track.artist,
                 links: track.artistLinks,
                 hidesPlainTextFromVoiceOver: true,
-                font: MusicStyle.Typeface.caption12.font,
+                font: MusicStyle.Typeface.secondary.font,
                 color: MusicStyle.Palette.textSecondary
             )
             .layoutPriority(1)
             if let album = track.album, !album.isEmpty {
                 Text(" \u{00B7} " + album)
-                    .musicText(MusicStyle.Typeface.caption12)
+                    .musicText(MusicStyle.Typeface.secondary)
                     .foregroundStyle(MusicStyle.Palette.textSecondary)
                     .lineLimit(1)
                     .accessibilityHidden(true)
@@ -306,10 +278,10 @@ struct MusicSongRow: View {
                 MusicTrackMoreButton(track: track, actions: actions, perform: perform, style: .round)
                     .opacity(isShown ? 1 : 0)
                     .accessibilityHidden(!isShown)
-                // The rows of the pages show the dots at rest; the round button takes their place under the pointer.
+                // The rows of the pages show the dots at rest; the button takes their place under the pointer.
                 if layout.showsIdleEllipsis, !isShown {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 16))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(MusicStyle.Palette.textSecondary)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)

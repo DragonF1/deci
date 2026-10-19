@@ -81,77 +81,17 @@ nonisolated enum MusicHomeText {
     }
 }
 
-// MARK: - Account card control
-
-/// What a screen header's avatar button does: it opens and closes the account card, which the shell draws.
-struct MusicAccountCardControl: Sendable {
-    let isOpen: Bool
-    let toggle: @MainActor () -> Void
-}
-
-private struct MusicAccountCardControlKey: EnvironmentKey {
-    static let defaultValue: MusicAccountCardControl? = nil
-}
-
-extension EnvironmentValues {
-    var musicAccountCard: MusicAccountCardControl? {
-        get { self[MusicAccountCardControlKey.self] }
-        set { self[MusicAccountCardControlKey.self] = newValue }
-    }
-}
-
 // MARK: - Headers
 
-/// The large title of a browse screen with the search button and the avatar. It scrolls away with the content.
-struct MusicScreenHeader: View {
-    let title: String
-    let account: MusicAccount?
-    /// Nil on Library, which has the avatar only.
-    var onSearch: (() -> Void)?
-
-    @Environment(\.musicAccountCard) private var accountCard
-
-    var body: some View {
-        HStack(spacing: MusicStyle.Spacing.sectionContent) {
-            Text(title)
-                .musicText(MusicStyle.Typeface.title1)
-                .foregroundStyle(MusicStyle.Palette.textPrimary)
-                .lineLimit(1)
-                .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: MusicStyle.Spacing.sectionContent)
-            if let onSearch {
-                Button(action: onSearch) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .frame(width: MusicStyle.Size.screenHeaderButton, height: MusicStyle.Size.screenHeaderButton)
-                        .background(Circle().fill(MusicStyle.Palette.fillControl))
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Search")
-                .help("Search")
-            }
-            MusicAccountButton(account: account, isOpen: accountCard?.isOpen == true) {
-                accountCard?.toggle()
-            }
-        }
-        .padding(.horizontal, MusicStyle.Spacing.page)
-        .frame(height: 36)
-        .padding(.top, 8)
-    }
-}
-
-/// A section title: 17 bold, 21 tall.
+/// A section title in the Mixer's small uppercase header style ("APPS", "OUTPUT DEVICES").
 struct MusicSectionHeader: View {
     let title: String
 
     var body: some View {
         Text(title)
-            .musicText(MusicStyle.Typeface.headline)
-            .foregroundStyle(MusicStyle.Palette.textPrimary)
+            .sectionHeaderStyle()
             .lineLimit(1)
-            .frame(maxWidth: .infinity, minHeight: 21, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, MusicStyle.Spacing.page)
             .accessibilityAddTraits(.isHeader)
     }
@@ -159,9 +99,9 @@ struct MusicSectionHeader: View {
 
 // MARK: - State cards
 
-/// The card a loading, empty or failed list shows where its content would be. `minHeight` keeps a card at the height
-/// its screen draws it (Search states are 72); without one it hugs its content. `margin` is the space on both sides
-/// (the page's 20; the lyrics lines area keeps 32).
+/// What a loading, empty or failed list shows where its content would be: plain centred text, no card. `minHeight`
+/// keeps it at the height its screen draws it; without one it hugs its content. `margin` is the space on both sides
+/// (the page's margin; the lyrics lines area keeps a wider one).
 struct MusicStateCard<Content: View>: View {
     var minHeight: CGFloat?
     var margin: CGFloat
@@ -178,16 +118,8 @@ struct MusicStateCard<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 20)
+        .padding(.vertical, DesignTokens.Spacing.lg)
         .frame(minHeight: minHeight)
-        .background(
-            RoundedRectangle(cornerRadius: MusicStyle.Radius.stateCard, style: .continuous)
-                .fill(MusicStyle.Palette.fillCard)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: MusicStyle.Radius.stateCard, style: .continuous)
-                .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
-        )
         .padding(.horizontal, margin)
     }
 }
@@ -204,18 +136,17 @@ struct MusicStateCardMessage: View {
 
     var body: some View {
         Text(text)
-            .musicText(MusicStyle.Typeface.body13)
-            .foregroundStyle(MusicStyle.Palette.textSung)
+            .musicText(MusicStyle.Typeface.row)
+            .foregroundStyle(MusicStyle.Palette.textSecondary)
             .multilineTextAlignment(.center)
     }
 }
 
-/// The spinner of the design: a faint ring with a white arc of a quarter turn that goes round once per 0.8 s. Sizes
-/// and line widths in the mock: 11 / 1.2, 15 / 1.6, 20 / 2.2, 22 / 2.4, 30 / 3.3. It has no accessibility label of its
+/// A faint ring with an arc of a quarter turn that goes round once per 0.8 s. It has no accessibility label of its
 /// own: the card or row that holds it says what is loading.
 struct MusicSpinner: View {
-    var size: CGFloat = 22
-    var lineWidth: CGFloat = 2.4
+    var size: CGFloat = 18
+    var lineWidth: CGFloat = 2
 
     private static let period: TimeInterval = 0.8
 
@@ -228,7 +159,7 @@ struct MusicSpinner: View {
                 .stroke(MusicStyle.Palette.sliderTrack, lineWidth: lineWidth)
             Circle()
                 .trim(from: 0, to: 0.25)
-                .stroke(.white, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .stroke(Color.primary, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(isTurning ? 360 : 0))
                 .animation(.linear(duration: Self.period).repeatForever(autoreverses: false), value: isTurning)
         }
@@ -251,7 +182,7 @@ struct MusicLoadingCard: View {
     }
 }
 
-/// A list that failed to load: the warning, the message and a Retry pill.
+/// A list that failed to load: the warning, the message and a small Retry button.
 struct MusicFailedCard: View {
     let message: String
     let retry: () -> Void
@@ -259,7 +190,7 @@ struct MusicFailedCard: View {
     var body: some View {
         MusicStateCard {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 18))
+                .font(.system(size: 14))
                 .foregroundStyle(MusicStyle.Palette.textSecondary)
                 .accessibilityHidden(true)
             MusicStateCardMessage(text: message)
@@ -273,16 +204,18 @@ struct MusicRetryPill: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 13))
+                    .font(.system(size: 10, weight: .semibold))
                 Text("Retry")
-                    .musicText(MusicStyle.Typeface.button12)
+                    .musicText(MusicStyle.Typeface.button)
             }
-            .foregroundStyle(.white)
-            .padding(.init(top: 5, leading: 10, bottom: 5, trailing: 12))
+            .foregroundStyle(MusicStyle.Palette.textPrimary)
+            .padding(.horizontal, DesignTokens.Spacing.sm)
+            .frame(height: 24)
             .background(
-                RoundedRectangle(cornerRadius: 13, style: .continuous).fill(MusicStyle.Palette.fillControl3)
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                    .fill(DesignTokens.Colors.pickerBackground)
             )
             .contentShape(Rectangle())
         }
@@ -292,41 +225,73 @@ struct MusicRetryPill: View {
 
 // MARK: - Hover
 
-private struct MusicHoverScale: ViewModifier {
+/// The hover of a tile or card: the Mixer's hover surface behind it, a little wider than the tile. The surface draws
+/// `overflow` outside the tile's layout, so a scroll view around tiles has to leave that much room (`MusicHorizontalShelf`).
+private struct MusicTileHover: ViewModifier {
+    static let overflow = DesignTokens.Spacing.xs
+
     @State private var isHovered = false
 
     func body(content: Content) -> some View {
         content
-            .scaleEffect(isHovered ? 1.02 : 1)
-            .animation(.easeInOut(duration: 0.15), value: isHovered)
+            .padding(Self.overflow)
+            .background(
+                RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous)
+                    .fill(isHovered ? DesignTokens.Colors.hoverSurface : .clear)
+            )
+            .padding(-Self.overflow)
+            .animation(DesignTokens.Animation.hover, value: isHovered)
             .onHover { isHovered = $0 }
     }
 }
 
-/// The hover of a list row as the design draws it: a rounded fill behind the row and its content nudged 6 in.
+/// A sideways row of tiles that starts one page margin in and scrolls under the popover edge. The page padding is
+/// inside the scroll, so the first and last tile rest a margin from the edge and the rest slides past it. The tiles'
+/// hover surface reaches outside them, which a scroll view can cut off: the scroll gets the same room inside, and its
+/// layout is trimmed back by it, so the hover is never cropped and the shelf still takes only the tiles' height.
+struct MusicHorizontalShelf<Content: View>: View {
+    var spacing: CGFloat = MusicStyle.Spacing.shelfGap
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: spacing) {
+                content
+            }
+            .padding(.horizontal, MusicStyle.Spacing.page)
+            .padding(.vertical, MusicTileHover.overflow)
+        }
+        .scrollIndicators(.never)
+        .scrollClipDisabled()
+        .padding(.vertical, -MusicTileHover.overflow)
+    }
+}
+
+/// The hover of a list row as the Mixer draws it: its content inset 8 inside a rounded surface that appears under the
+/// pointer (or with the keyboard on the row). The surface is the row's own width, so the row sits 8 further out.
 private struct MusicRowHover: ViewModifier {
     let isHovered: Bool
 
     func body(content: Content) -> some View {
         content
-            .padding(.leading, isHovered ? 6 : 0)
+            .padding(.horizontal, DesignTokens.Spacing.sm)
             .background(
-                RoundedRectangle(cornerRadius: MusicStyle.Radius.hoverRow, style: .continuous)
-                    .fill(isHovered ? MusicStyle.Palette.fillHover : .clear)
+                RoundedRectangle(cornerRadius: MusicStyle.Radius.small, style: .continuous)
+                    .fill(isHovered ? DesignTokens.Colors.hoverSurface : .clear)
             )
             .animation(DesignTokens.Animation.hover, value: isHovered)
     }
 }
 
 extension View {
-    /// The row under the pointer (or with the keyboard on it) gets the hover fill, and its content slides in by 6.
+    /// The row under the pointer (or with the keyboard on it) gets the Mixer's hover surface.
     func musicRowHover(_ isHovered: Bool) -> some View {
         modifier(MusicRowHover(isHovered: isHovered))
     }
 
-    /// A cover or card grows by two percent under the pointer.
-    func musicHoverScale() -> some View {
-        modifier(MusicHoverScale())
+    /// A cover or card gets the hover surface behind it under the pointer.
+    func musicTileHover() -> some View {
+        modifier(MusicTileHover())
     }
 }
 
@@ -385,13 +350,15 @@ struct MusicTopPickCard: View {
     var body: some View {
         let tint = MusicTint.forKey(tintKey)
         let width = MusicStyle.Size.topPickWidth
+        let height = MusicStyle.Size.topPickHeight
         Button(action: action) {
-            ZStack(alignment: .topLeading) {
+            ZStack(alignment: .bottomLeading) {
                 tint.page
                 MusicThumbnail(url: thumbnailURL, size: width, cornerRadius: 0)
                     .overlay {
-                        if isCurrent { MusicPlayingOverlay(isPlaying: isPlaying, symbolSize: 24) }
+                        if isCurrent { MusicPlayingOverlay(isPlaying: isPlaying, symbolSize: 20) }
                     }
+                    .frame(maxHeight: .infinity, alignment: .top)
                 LinearGradient(
                     stops: [
                         .init(color: tint.page.opacity(0), location: 0),
@@ -401,36 +368,36 @@ struct MusicTopPickCard: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .frame(width: width, height: 124)
-                .offset(y: 104)
-                VStack(alignment: .leading, spacing: 2) {
+                .frame(width: width, height: height * 0.55)
+                VStack(alignment: .leading, spacing: 1) {
                     Text(kicker)
                         .musicText(MusicStyle.Typeface.kicker)
-                        .foregroundStyle(MusicStyle.Palette.textOnCard)
+                        .foregroundStyle(Color.white.opacity(0.72))
                         .lineLimit(1)
                     Text(title)
-                        .musicText(MusicStyle.Typeface.cardTitle)
-                        .foregroundStyle(.white)
+                        .musicText(MusicStyle.Typeface.heading)
+                        .foregroundStyle(Color.white)
                         .lineLimit(1)
                     Text(subtitle.isEmpty ? " " : subtitle)
-                        .musicText(MusicStyle.Typeface.caption12)
-                        .foregroundStyle(MusicStyle.Palette.textOnCard)
+                        .musicText(MusicStyle.Typeface.secondary)
+                        .foregroundStyle(Color.white.opacity(0.72))
                         .lineLimit(1)
                 }
-                .frame(width: width - 24, alignment: .leading)
-                .offset(x: 12, y: 164)
+                .frame(width: width - 16, alignment: .leading)
+                .padding(.leading, 8)
+                .padding(.bottom, 8)
             }
-            .frame(width: width, height: MusicStyle.Size.topPickHeight)
+            .frame(width: width, height: height)
             .clipShape(RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous)
                     .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
             )
-            .musicPinBadge(isPinned, coverSize: width, diameter: 20, inset: 6)
+            .musicPinBadge(isPinned, coverSize: width, diameter: 16, inset: 5)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .musicHoverScale()
+        .musicTileHover()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
@@ -459,7 +426,7 @@ struct MusicCoverTile: View {
     var body: some View {
         let size = MusicStyle.Size.coverTile
         Button(action: action) {
-            VStack(alignment: circular ? .center : .leading, spacing: 6) {
+            VStack(alignment: circular ? .center : .leading, spacing: 4) {
                 MusicThumbnail(
                     url: thumbnailURL,
                     size: size,
@@ -468,7 +435,7 @@ struct MusicCoverTile: View {
                     cornerRadius: MusicStyle.Radius.art
                 )
                 .overlay {
-                    if isCurrent { MusicPlayingOverlay(isPlaying: isPlaying, circular: circular, symbolSize: 22, radius: MusicStyle.Radius.art) }
+                    if isCurrent { MusicPlayingOverlay(isPlaying: isPlaying, circular: circular, symbolSize: 18, radius: MusicStyle.Radius.art) }
                 }
                 .overlay {
                     if circular {
@@ -478,15 +445,15 @@ struct MusicCoverTile: View {
                             .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
                     }
                 }
-                .musicPinBadge(isPinned, coverSize: size, circular: circular, diameter: 18, inset: circular ? 10 : 4)
+                .musicPinBadge(isPinned, coverSize: size, circular: circular, diameter: 14, inset: circular ? 6 : 3)
 
-                VStack(alignment: circular ? .center : .leading, spacing: 1) {
+                VStack(alignment: circular ? .center : .leading, spacing: 0) {
                     Text(title)
-                        .musicText(MusicStyle.Typeface.caption12M)
-                        .foregroundStyle(isCurrent ? MusicStyle.Palette.accent : .white)
+                        .musicText(MusicStyle.Typeface.secondaryMedium)
+                        .foregroundStyle(isCurrent ? MusicStyle.Palette.accent : MusicStyle.Palette.textPrimary)
                         .lineLimit(1)
                     Text(subtitle.isEmpty ? " " : subtitle)
-                        .musicText(MusicStyle.Typeface.caption12)
+                        .musicText(MusicStyle.Typeface.caption)
                         .foregroundStyle(MusicStyle.Palette.textSecondary)
                         .lineLimit(1)
                 }
@@ -495,7 +462,7 @@ struct MusicCoverTile: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .musicHoverScale()
+        .musicTileHover()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
@@ -516,7 +483,7 @@ struct MusicPinnedArtistTile: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 5) {
+            VStack(spacing: 3) {
                 MusicThumbnail(
                     url: collection.thumbnailURL,
                     size: MusicStyle.Size.pinnedPhoto,
@@ -524,8 +491,8 @@ struct MusicPinnedArtistTile: View {
                     placeholder: MusicCollection.Kind.artist.placeholderSymbol
                 )
                 Text(collection.title)
-                    .musicText(MusicStyle.Typeface.caption11)
-                    .foregroundStyle(MusicStyle.Palette.textTile)
+                    .musicText(MusicStyle.Typeface.caption)
+                    .foregroundStyle(MusicStyle.Palette.textPrimary.opacity(0.85))
                     .lineLimit(1)
                     .multilineTextAlignment(.center)
             }
@@ -533,7 +500,7 @@ struct MusicPinnedArtistTile: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .musicHoverScale()
+        .musicTileHover()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(collection.title)
         .accessibilityAddTraits(.isButton)
@@ -561,7 +528,7 @@ struct MusicQuickPickRow: View {
     var body: some View {
         let actions = offeredActions
         let size = MusicStyle.Size.quickPickArt
-        HStack(spacing: 10) {
+        HStack(spacing: DesignTokens.Spacing.sm) {
             MusicThumbnail(url: track.thumbnailURL, size: size, cornerRadius: MusicStyle.Radius.small)
                 .overlay {
                     if isCurrent { MusicPlayingOverlay(isPlaying: isPlaying, radius: MusicStyle.Radius.small) }
@@ -573,14 +540,14 @@ struct MusicQuickPickRow: View {
                 .musicPinBadge(isPinned, coverSize: size)
                 .accessibilityHidden(true)
 
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: DesignTokens.Spacing.sm) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text(track.title)
-                        .musicText(MusicStyle.Typeface.row14M)
-                        .foregroundStyle(isCurrent ? MusicStyle.Palette.accent : .white)
+                        .musicText(MusicStyle.Typeface.row)
+                        .foregroundStyle(isCurrent ? MusicStyle.Palette.accent : MusicStyle.Palette.textPrimary)
                         .lineLimit(1)
                     Text(MusicHomeText.songSubtitle(artist: track.artist, album: track.album))
-                        .musicText(MusicStyle.Typeface.caption12)
+                        .musicText(MusicStyle.Typeface.secondary)
                         .foregroundStyle(MusicStyle.Palette.textSecondary)
                         .lineLimit(1)
                 }
@@ -595,16 +562,9 @@ struct MusicQuickPickRow: View {
                 }
             }
             .frame(maxHeight: .infinity)
-            .padding(.trailing, 4)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1)
-            }
         }
         .frame(height: MusicStyle.Size.quickPickRowHeight)
-        .background(
-            RoundedRectangle(cornerRadius: MusicStyle.Radius.hoverRow, style: .continuous)
-                .fill(isHovered ? MusicStyle.Palette.fillHover : .clear)
-        )
+        .musicRowHover(isHovered)
         .onHover { isHovered = $0 }
         .contentShape(Rectangle())
         .contextMenu {

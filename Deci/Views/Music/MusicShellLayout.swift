@@ -2,47 +2,43 @@
 import SwiftUI
 
 /// The measures of the Music shell that depend on the width of the popover. The popover keeps the size of its
-/// setting, so everything is laid out against the real width, not the mock's 510.
+/// setting, so everything is laid out against the real width.
 nonisolated enum MusicShellLayout {
-    /// The side margin of browse screens and of the floating chrome.
-    static let pageMargin: CGFloat = 20
+    /// The side margin of browse screens: the Mixer's content padding.
+    static let pageMargin: CGFloat = 16
 
-    /// The tab bar's distance from the popover bottom.
-    static let tabBarBottom: CGFloat = 12
+    /// The gap between the mini player and the bottom edge of the popover, and its side margin.
+    static let miniPlayerMargin: CGFloat = 10
 
-    /// The mini player's bottom edge above the popover bottom: 8 above the tab bar.
-    static let miniPlayerBottom: CGFloat = 80
+    /// The mini player's bottom edge above the popover bottom.
+    static let miniPlayerBottom: CGFloat = miniPlayerMargin
 
-    /// The widest the tab bar gets.
-    static let maxTabBarWidth: CGFloat = 286
-
-    /// The height of the fade the content dissolves into behind the chrome.
-    static let scrimHeight: CGFloat = 150
+    /// The height of the fade the last rows dissolve in, over the mini player. Its top is a little above the player.
+    static let scrimHeight: CGFloat = 64
 
     /// The gap between the two Quick picks columns.
-    static let quickPickColumnGap: CGFloat = 16
+    static let quickPickColumnGap: CGFloat = 12
 
-    /// Space under the last row of a browse scroll view, so it clears the chrome with 16 to spare.
+    /// How far the mini player reaches up from the bottom edge: its height and the gap under it.
+    static var miniPlayerFootprint: CGFloat { MusicStyle.Size.miniPlayerHeight + miniPlayerBottom }
+
+    /// Room kept between the last row and the mini player.
+    static let miniPlayerClearance: CGFloat = 12
+
+    /// Space under the last row of a browse scroll view: the mini player's footprint and some clearance, so the last row
+    /// scrolls clear of the player. Without a player, the page margin.
     static func bottomInset(hasMiniPlayer: Bool) -> CGFloat {
-        hasMiniPlayer ? 140 : 80
+        hasMiniPlayer ? miniPlayerFootprint + miniPlayerClearance : pageMargin
     }
 
-    static func tabBarWidth(forWidth width: CGFloat) -> CGFloat {
-        min(maxTabBarWidth, max(0, width - 2 * pageMargin))
-    }
-
-    /// One tab of a bar `barWidth` wide: three equal tabs inside 4 pt of padding.
-    static func tabWidth(forBarWidth barWidth: CGFloat) -> CGFloat {
-        max(0, (barWidth - 8) / 3)
-    }
-
+    /// The mini player is as wide as the popover less its side margin on each side.
     static func miniPlayerWidth(forWidth width: CGFloat) -> CGFloat {
-        max(0, width - 2 * pageMargin)
+        max(0, width - 2 * miniPlayerMargin)
     }
 }
 
-/// Which screen the Music shell shows. Browse screens (Home, Library, Search and the pages opened from them) wear
-/// the tab bar and the mini player; the three player screens fill the popover and have neither.
+/// Which screen the Music shell shows. Browse screens (Home, Library, Search and the pages opened from them) wear the
+/// mini player; the three player screens fill the popover and have none.
 nonisolated enum MusicShellScreen: Equatable {
     case browse
     case nowPlaying
@@ -69,13 +65,45 @@ nonisolated enum MusicShellScreen: Equatable {
 }
 
 extension MusicPopupMetrics {
-    /// The gap the old layout kept between the gear row and the body.
+    /// The gap between the header row and the body, as in the Mixer.
     static let headerGap: CGFloat = 8
 
-    /// The whole height of the popover. It is what the popover always was: the padding around a gear row, a gap
-    /// and the body. The shell draws edge to edge inside it, so the size does not change.
+    /// The gap between the header's trailing buttons (avatar, gear).
+    static let headerButtonGap: CGFloat = 8
+
+    /// The whole height of the popover: the padding around a header row, a gap and the body. The shell draws edge to
+    /// edge inside it, so the size does not change.
     static func totalHeight(maxContentHeight: CGFloat, contentPadding: CGFloat) -> CGFloat {
         2 * contentPadding + headerHeight + headerGap + bodyHeight(maxContentHeight: maxContentHeight)
+    }
+
+    /// Where the body starts: under the padding, the header row and the gap. A screen that draws a backdrop behind the
+    /// header reaches up by this much.
+    static func contentTop(contentPadding: CGFloat) -> CGFloat {
+        contentPadding + headerHeight + headerGap
+    }
+
+    /// The distance from the popover's trailing edge to the avatar's: the padding, the gear and the gap between them.
+    static func avatarTrailingInset(contentPadding: CGFloat) -> CGFloat {
+        contentPadding + MusicStyle.Size.headerButton + headerButtonGap
+    }
+
+    /// Where the account card hangs: just under the avatar, which is centred in the header row.
+    static func accountCardTop(contentPadding: CGFloat) -> CGFloat {
+        contentPadding + (headerHeight + MusicStyle.Size.headerButton) / 2 + 6
+    }
+}
+
+private struct MusicContentTopKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 56
+}
+
+extension EnvironmentValues {
+    /// Where the body of the Music popup starts (`MusicPopupMetrics.contentTop`): the signed-in screens leave this
+    /// much room for the header row, and a backdrop that covers the header reaches up by it.
+    var musicContentTop: CGFloat {
+        get { self[MusicContentTopKey.self] }
+        set { self[MusicContentTopKey.self] = newValue }
     }
 }
 

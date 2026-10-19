@@ -1,8 +1,8 @@
 // Deci/Views/Music/MusicMiniPlayer.swift
 import SwiftUI
 
-/// The floating glass pill above the tab bar: the song that is loaded, with pause and next. A click anywhere
-/// outside the two buttons and the artist names opens Now Playing.
+/// The slim glass bar near the bottom edge: the song that is loaded, with pause and next. A click anywhere outside
+/// the two buttons and the artist names opens Now Playing.
 struct MusicMiniPlayer: View {
     let service: MusicService
     let track: MusicTrack
@@ -12,56 +12,59 @@ struct MusicMiniPlayer: View {
 
     private var player: MusicPlayer { service.player }
 
+    private static let artSize: CGFloat = 30
+
     var body: some View {
-        HStack(spacing: 12) {
-            MusicThumbnail(url: track.thumbnailURL, size: 36, cornerRadius: MusicStyle.Radius.art)
+        let shape = RoundedRectangle(cornerRadius: DesignTokens.Dimensions.cornerRadius, style: .continuous)
+        HStack(spacing: DesignTokens.Spacing.sm) {
+            MusicThumbnail(url: track.thumbnailURL, size: Self.artSize, cornerRadius: MusicStyle.Radius.art)
                 .overlay(
                     RoundedRectangle(cornerRadius: MusicStyle.Radius.art, style: .continuous)
                         .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
                 )
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text(track.title)
-                    .musicText(MusicStyle.Typeface.miniTitle)
-                    .foregroundStyle(.white)
+                    .musicText(MusicStyle.Typeface.heading)
+                    .foregroundStyle(MusicStyle.Palette.textPrimary)
                     .lineLimit(1)
                 if let error = player.error {
                     Text(error)
-                        .musicText(MusicStyle.Typeface.caption12)
+                        .musicText(MusicStyle.Typeface.secondary)
                         .foregroundStyle(MusicStyle.Palette.textSecondary)
                         .lineLimit(1)
                 } else {
                     MusicArtistLine(
                         artist: track.artist,
                         links: track.artistLinks,
-                        font: MusicStyle.Typeface.caption12.font,
-                        color: MusicStyle.Palette.textSecondaryAlt
+                        font: MusicStyle.Typeface.secondary.font,
+                        color: MusicStyle.Palette.textSecondary
                     )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 20) {
+            HStack(spacing: DesignTokens.Spacing.xs) {
                 playPause
                 Button("Next", systemImage: "forward.fill") { service.next() }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.plain)
-                    .font(.system(size: 19))
-                    .foregroundStyle(service.canGoNext ? Color.white : MusicStyle.Palette.textQuaternary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(service.canGoNext ? MusicStyle.Palette.textPrimary : MusicStyle.Palette.textQuaternary)
                     .frame(width: 26, height: 26)
                     .contentShape(Rectangle())
                     .disabled(!service.canGoNext)
             }
         }
-        .padding(.init(top: 8, leading: 8, bottom: 8, trailing: 20))
+        .padding(.leading, 6)
+        .padding(.trailing, DesignTokens.Spacing.sm)
         .frame(height: MusicStyle.Size.miniPlayerHeight)
-        .musicGlass(
-            in: RoundedRectangle(cornerRadius: MusicStyle.Radius.chrome, style: .continuous),
-            fill: isHovered ? MusicStyle.Palette.glassFillHover : MusicStyle.Palette.glassFill
-        )
-        .contentShape(RoundedRectangle(cornerRadius: MusicStyle.Radius.chrome, style: .continuous))
+        .musicGlass(in: shape)
+        .overlay(shape.fill(isHovered ? DesignTokens.Colors.hoverSurface : .clear).allowsHitTesting(false))
+        .contentShape(shape)
         .onHover { isHovered = $0 }
+        .animation(DesignTokens.Animation.hover, value: isHovered)
         .onTapGesture(perform: onOpen)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Now playing: \(track.title), \(track.artist)")
@@ -73,8 +76,7 @@ struct MusicMiniPlayer: View {
         if player.isLoading {
             ProgressView()
                 .controlSize(.small)
-                .environment(\.colorScheme, .dark)
-                .frame(width: 22, height: 26)
+                .frame(width: 26, height: 26)
         } else {
             Button(
                 player.isPlaying ? "Pause" : "Play",
@@ -84,9 +86,9 @@ struct MusicMiniPlayer: View {
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.plain)
-            .font(.system(size: 15))
-            .foregroundStyle(.white)
-            .frame(width: 22, height: 26)
+            .font(.system(size: 14))
+            .foregroundStyle(MusicStyle.Palette.textPrimary)
+            .frame(width: 26, height: 26)
             .contentShape(Rectangle())
         }
     }

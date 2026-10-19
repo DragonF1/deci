@@ -1,13 +1,10 @@
 // Deci/Views/Music/MusicHomeView.swift
 import SwiftUI
 
-/// The Home root: a large title, the pinned artists at the top, then YouTube Music's shelves top to bottom (Top
-/// Picks cards, Listen again tiles, two column Quick picks), more as the list reaches its end. One scroll view, so
-/// the title scrolls away with the content.
+/// The Home root: the pinned artists at the top, then YouTube Music's shelves top to bottom (Top Picks cards, Listen
+/// again tiles, two column Quick picks), more as the list reaches its end, each under a small Mixer section header.
 struct MusicHomeView: View {
     let service: MusicService
-    /// The search button of the header: goes to the Search tab.
-    let onSearch: () -> Void
 
     @Environment(\.musicTrackMenu) private var trackMenu
     @Environment(\.musicCollectionPin) private var collectionPin
@@ -19,10 +16,7 @@ struct MusicHomeView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionGap) {
-                VStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionContent) {
-                    MusicScreenHeader(title: "Home", account: service.account, onSearch: onSearch)
-                    pinnedRow
-                }
+                pinnedRow
                 shelves
                 MusicBottomInsetSpacer()
             }
@@ -66,12 +60,8 @@ struct MusicHomeView: View {
     @ViewBuilder
     private var pinnedRow: some View {
         if let shelf = service.pinnedArtists.shelf {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Pinned artists")
-                    .musicText(MusicStyle.Typeface.callout)
-                    .foregroundStyle(Color.white.opacity(0.62))
-                    .padding(.horizontal, MusicStyle.Spacing.page)
-                    .accessibilityAddTraits(.isHeader)
+            VStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionContent) {
+                MusicSectionHeader(title: "Pinned artists")
 
                 shelfRow(spacing: MusicStyle.Spacing.pinnedGap) {
                     ForEach(shelf.items) { item in
@@ -106,17 +96,9 @@ struct MusicHomeView: View {
         }
     }
 
-    /// A sideways row that starts 20 in and scrolls under the popover edge. The padding is inside the scroll, so the
-    /// first and last tile rest 20 from the edge and the rest slides past it.
+    /// A sideways row of tiles, as on every shelf of the popover.
     private func shelfRow<Content: View>(spacing: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
-        ScrollView(.horizontal) {
-            LazyHStack(alignment: .top, spacing: spacing) {
-                content()
-            }
-            .padding(.horizontal, MusicStyle.Spacing.page)
-        }
-        .scrollIndicators(.never)
-        .scrollClipDisabled()
+        MusicHorizontalShelf(spacing: spacing) { content() }
     }
 
     private func quickPicks(_ shelf: MusicShelf) -> some View {

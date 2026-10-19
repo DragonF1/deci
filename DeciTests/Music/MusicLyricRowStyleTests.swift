@@ -87,13 +87,13 @@ struct MusicLyricRowStyleTests {
         #expect(fonts.count == 1)
     }
 
-    @Test("The font is bold and 17 points, inside the 16 to 18 that fits the popover")
+    @Test("The font is bold and 15 points, inside the 14 to 16 that fits the popover")
     func fontIsBoldSeventeen() {
         let value = style(.current)
-        #expect(value.fontSize == 17)
-        #expect((16...18).contains(value.fontSize))
+        #expect(value.fontSize == 15)
+        #expect((14...16).contains(value.fontSize))
         #expect(value.fontWeight == .bold)
-        #expect(value.font == Font.system(size: 17, weight: .bold))
+        #expect(value.font == Font.system(size: 15, weight: .bold))
     }
 
     @Test("Rows have 7 points above and below, so two rows are 14 points apart, with a little room between wrapped lines")

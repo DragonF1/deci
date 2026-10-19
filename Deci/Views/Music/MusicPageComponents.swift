@@ -1,33 +1,20 @@
 // Deci/Views/Music/MusicPageComponents.swift
 import SwiftUI
 
-// The small views of the detail pages: the pills, the nav button, the playing indicator, the sort note and the tooltip
-// of the full Home. The page itself is in MusicPageView.
+// The small views of the detail pages: the action buttons, the nav button, the playing indicator, the sort note and
+// the tooltip of the full Home. The page itself is in MusicPageView.
 
-// MARK: - Scrim colour
+// MARK: - Buttons
 
-/// The colour the bottom scrim of the shell takes. A detail page sets its darker bottom colour here, so the fade the
-/// lists dissolve into matches the page; with no page open the shell uses the base colour.
-struct MusicScrimColorKey: PreferenceKey {
-    static let defaultValue: Color? = nil
-
-    static func reduce(value: inout Color?, nextValue: () -> Color?) {
-        value = nextValue() ?? value
-    }
-}
-
-// MARK: - Pills
-
-/// The pill of the page's action row: 36 tall, a capsule, with the fill and the padding of its kind. The pointer
-/// lightens it, a press shrinks it a little and a disabled one dims.
+/// The action button of the page header, in the Mixer's small button look: 24 tall, a 6 pt radius, a quiet fill that
+/// lightens under the pointer. A press shrinks it a little and a disabled one dims.
 struct MusicPillButtonStyle: ButtonStyle {
-    var fill: Color
-    var leading: CGFloat = 14
-    var trailing: CGFloat = 16
-    /// A pill the design gives a fixed width (the artist's Play).
+    var fill: Color = MusicStyle.Palette.fillControl
+    var horizontal: CGFloat = 8
+    /// A button with a fixed width (the square pin).
     var width: CGFloat?
 
-    static let height: CGFloat = 36
+    static let height: CGFloat = 24
 
     func makeBody(configuration: Configuration) -> some View {
         MusicPillBody(configuration: configuration, style: self)
@@ -42,57 +29,58 @@ private struct MusicPillBody: View {
     @State private var isHovered = false
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
         configuration.label
-            .padding(.leading, style.leading)
-            .padding(.trailing, style.trailing)
+            .padding(.horizontal, style.horizontal)
             .frame(width: style.width, height: MusicPillButtonStyle.height)
-            .background(Capsule().fill(style.fill))
-            .overlay(Capsule().fill(Color.white.opacity(isHovered && isEnabled ? 0.06 : 0)))
-            .contentShape(Capsule())
+            .background(shape.fill(style.fill))
+            .overlay(shape.fill(Color.primary.opacity(isHovered && isEnabled ? 0.08 : 0)))
+            .contentShape(shape)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .opacity(isEnabled ? 1 : 0.5)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-            .animation(.easeOut(duration: 0.12), value: isHovered)
+            .animation(DesignTokens.Animation.hover, value: configuration.isPressed)
+            .animation(DesignTokens.Animation.hover, value: isHovered)
             .onHover { isHovered = $0 }
     }
 }
 
-/// An icon and a label side by side, 6 apart: the content of a pill.
+/// An icon and a label side by side, 4 apart: the content of an action button.
 private struct MusicPillContent: View {
     let symbol: String
-    let symbolSize: CGFloat
-    var symbolWeight: Font.Weight = .regular
+    var symbolWeight: Font.Weight = .medium
     let label: String
-    let labelStyle: MusicStyle.TextStyle
-    var color: Color = .white
+    var color: Color = MusicStyle.Palette.textPrimary
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             Image(systemName: symbol)
-                .font(.system(size: symbolSize, weight: symbolWeight))
+                .font(.system(size: 10, weight: symbolWeight))
             Text(label)
-                .musicText(labelStyle)
+                .musicText(MusicStyle.Typeface.button)
                 .lineLimit(1)
         }
         .foregroundStyle(color)
     }
 }
 
+/// The accent-filled Play button. Its ink is white or black, whichever the accent (the system's, which the user picks)
+/// can carry: white on the default blue, black on yellow.
 struct MusicPlayPill: View {
-    let fill: Color
-    let ink: Color
-    /// The artist's Play pill has a fixed width and no padding of its own.
-    var width: CGFloat?
     let title: String
     let action: () -> Void
 
+    @Environment(\.self) private var environment
+
+    private var ink: Color {
+        let accent = MusicStyle.Palette.accent.resolve(in: environment)
+        return MusicInk.onFill(red: Double(accent.red), green: Double(accent.green), blue: Double(accent.blue)).color
+    }
+
     var body: some View {
         Button(action: action) {
-            MusicPillContent(
-                symbol: "play.fill", symbolSize: 14, label: "Play", labelStyle: MusicStyle.Typeface.button14, color: ink
-            )
+            MusicPillContent(symbol: "play.fill", symbolWeight: .regular, label: "Play", color: ink)
         }
-        .buttonStyle(MusicPillButtonStyle(fill: fill, leading: 26, trailing: 28, width: width))
+        .buttonStyle(MusicPillButtonStyle(fill: MusicStyle.Palette.accent, horizontal: 10))
         .accessibilityLabel("Play \(title)")
     }
 }
@@ -103,22 +91,15 @@ struct MusicShufflePill: View {
 
     var body: some View {
         Button(action: action) {
-            MusicPillContent(
-                symbol: "shuffle",
-                symbolSize: 18,
-                symbolWeight: .medium,
-                label: "Shuffle",
-                labelStyle: MusicStyle.Typeface.callout,
-                color: .white.opacity(0.95)
-            )
+            MusicPillContent(symbol: "shuffle", label: "Shuffle")
         }
-        .buttonStyle(MusicPillButtonStyle(fill: MusicStyle.Palette.fillControl2))
+        .buttonStyle(MusicPillButtonStyle())
         .accessibilityLabel("Shuffle \(title)")
     }
 }
 
-/// The Sort pill: a plain SwiftUI menu of the sort keys, with a mark on the picked one that shows its direction.
-/// Picking it again flips the direction. Once a key is picked the pill is active and names it.
+/// The Sort button: a plain SwiftUI menu of the sort keys, with a mark on the picked one that shows its direction.
+/// Picking it again flips the direction. Once a key is picked the button is active and names it.
 struct MusicSortPill: View {
     let sort: MusicPlaylistSort
     let onPick: (MusicSortField) -> Void
@@ -138,22 +119,17 @@ struct MusicSortPill: View {
                 }
             }
         } label: {
-            MusicPillContent(
-                symbol: pill.symbol,
-                symbolSize: pill.symbolSize,
-                label: pill.label,
-                labelStyle: MusicStyle.Typeface.callout
-            )
+            MusicPillContent(symbol: pill.symbol, label: pill.label)
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
-        .buttonStyle(MusicPillButtonStyle(fill: pill.isActive ? MusicStyle.Palette.fillActive : MusicStyle.Palette.fillControl2))
+        .buttonStyle(MusicPillButtonStyle(fill: pill.isActive ? MusicStyle.Palette.accentFill : MusicStyle.Palette.fillControl))
         .fixedSize()
         .accessibilityLabel(pill.isActive ? "Sort: \(pill.label), \(sort.ascending ? "ascending" : "descending")" : "Sort")
     }
 }
 
-/// An artist's Pin to Home pill. At the limit it dims to half and says why in a tooltip, on hover and on a click.
+/// An artist's Pin to Home button. At the limit it dims to half and says why in a tooltip, on hover and on a click.
 struct MusicPinHomePill: View {
     let title: String
     let isPinned: Bool
@@ -174,16 +150,14 @@ struct MusicPinHomePill: View {
         } label: {
             MusicPillContent(
                 symbol: MusicPagePills.pinSymbol(isPinned: isPinned),
-                symbolSize: 15,
-                label: MusicPagePills.pinLabel(isPinned: isPinned),
-                labelStyle: MusicStyle.Typeface.button14
+                label: MusicPagePills.pinLabel(isPinned: isPinned)
             )
         }
-        .buttonStyle(MusicPillButtonStyle(fill: MusicStyle.Palette.fillControl3))
-        // Dimmed, not disabled: a disabled pill gets no click, and the tooltip answers a click too.
+        .buttonStyle(MusicPillButtonStyle())
+        // Dimmed, not disabled: a disabled button gets no click, and the tooltip answers a click too.
         .opacity(isEnabled ? 1 : 0.5)
         .onHover { isHovered = $0 }
-        .overlay(alignment: .bottomTrailing) {
+        .overlay(alignment: .bottomLeading) {
             if !isEnabled, isHovered || clickedAt != nil {
                 MusicTooltip(text: MusicPagePills.pinHelp(isPinned: isPinned, isEnabled: isEnabled))
                     .alignmentGuide(.bottom) { $0[.top] - 6 }
@@ -191,7 +165,7 @@ struct MusicPinHomePill: View {
                     .allowsHitTesting(false)
             }
         }
-        .animation(.easeOut(duration: 0.12), value: isHovered || clickedAt != nil)
+        .animation(DesignTokens.Animation.hover, value: isHovered || clickedAt != nil)
         // A click leaves the tooltip up for a moment after the pointer is gone.
         .task(id: clickedAt) {
             guard clickedAt != nil else { return }
@@ -203,7 +177,7 @@ struct MusicPinHomePill: View {
     }
 }
 
-/// The 36 pt round pin of a playlist or album: it pins to Listen again.
+/// The square pin of a playlist or album: it pins to Listen again.
 struct MusicRoundPinButton: View {
     let title: String
     let isPinned: Bool
@@ -213,16 +187,16 @@ struct MusicRoundPinButton: View {
         let item: MusicTrackAction = isPinned ? .unpinFromListenAgain : .pinToListenAgain
         Button(action: action) {
             Image(systemName: isPinned ? "pin.fill" : "pin")
-                .font(.system(size: 17))
-                .foregroundStyle(.white)
+                .font(.system(size: 11))
+                .foregroundStyle(MusicStyle.Palette.textPrimary)
         }
-        .buttonStyle(MusicPillButtonStyle(fill: MusicStyle.Palette.fillControl2, leading: 0, trailing: 0, width: MusicPillButtonStyle.height))
+        .buttonStyle(MusicPillButtonStyle(horizontal: 0, width: MusicPillButtonStyle.height))
         .help(item.title)
         .accessibilityLabel("\(item.title): \(title)")
     }
 }
 
-/// A short note over the page: 226 wide, wrapping, on a dark chip.
+/// A short note over the page: 226 wide, wrapping, on a Mixer popover chip.
 struct MusicTooltip: View {
     let text: String
 
@@ -231,7 +205,7 @@ struct MusicTooltip: View {
     var body: some View {
         Text(text)
             .font(.system(size: 11))
-            .foregroundStyle(Color.white.opacity(0.92))
+            .foregroundStyle(MusicStyle.Palette.textPrimary)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 8)
@@ -243,7 +217,7 @@ struct MusicTooltip: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: MusicStyle.Radius.small, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5)
+                    .strokeBorder(DesignTokens.Colors.menuBorder, lineWidth: 0.5)
             )
             .shadow(color: MusicStyle.Shadow.glass.color, radius: MusicStyle.Shadow.glass.radius, y: MusicStyle.Shadow.glass.y)
     }
@@ -263,14 +237,14 @@ struct MusicSortNoteView: View {
             HStack(spacing: 6) {
                 MusicSpinner(size: 11, lineWidth: 1.2)
                 Text("Loading all songs")
-                    .musicText(MusicStyle.Typeface.caption11)
-                    .foregroundStyle(MusicStyle.Palette.textSecondaryAlt)
+                    .musicText(MusicStyle.Typeface.secondary)
+                    .foregroundStyle(MusicStyle.Palette.textSecondary)
             }
             .accessibilityElement(children: .combine)
         case .limited(let count):
             Text(MusicSortNote.limitText(count))
-                .musicText(MusicStyle.Typeface.caption11)
-                .foregroundStyle(MusicStyle.Palette.textSecondaryAlt)
+                .musicText(MusicStyle.Typeface.secondary)
+                .foregroundStyle(MusicStyle.Palette.textSecondary)
                 .help("The sort covers only the start of this playlist.")
         }
     }
@@ -278,22 +252,30 @@ struct MusicSortNoteView: View {
 
 // MARK: - Nav
 
-/// The 32 pt glass circle of the detail page's nav row.
+/// The back button of the detail page's nav row: the Mixer's 26 pt header button with a chevron.
 struct MusicNavBackButton: View {
     let action: () -> Void
 
-    static let size = MusicStyle.Size.screenHeaderButton
+    static let size = MusicStyle.Size.headerButton
+
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "chevron.left")
-                .font(.system(size: 16))
-                .foregroundStyle(Color.white.opacity(0.95))
+                .font(.system(size: 12, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isHovered ? DesignTokens.Colors.interactiveHover : DesignTokens.Colors.interactiveDefault)
                 .frame(width: Self.size, height: Self.size)
-                .musicGlass(in: Circle(), fill: MusicStyle.Palette.navButton, stroke: MusicStyle.Palette.lineGlass, shadow: nil)
-                .contentShape(Circle())
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                        .fill(isHovered ? DesignTokens.Colors.hoverSurface : .clear)
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(DesignTokens.Animation.hover, value: isHovered)
         .accessibilityLabel("Back")
         .help("Back")
     }
@@ -305,7 +287,7 @@ struct MusicNavBackButton: View {
 /// each one moves between 3 and 12 at its own speed.
 struct MusicPlayingBars: View {
     let isPlaying: Bool
-    var color: Color = .white
+    var color: Color = .primary
 
     static let restHeights: [CGFloat] = [6, 12, 9]
 

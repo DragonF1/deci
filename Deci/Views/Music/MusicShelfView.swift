@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// One titled shelf of a page: an artist's Albums, Singles and the rest. A shelf of songs only shows song rows; any
-/// other shelf scrolls sideways through 112 pt cover tiles, starting 20 in and sliding under the popover's edge.
+/// other shelf scrolls sideways through 76 pt cover tiles, starting one page margin in and sliding under the popover's edge.
 struct MusicShelfView: View {
     let shelf: MusicShelf
     /// videoId of the track in the player, for the playing indicator.
@@ -43,16 +43,11 @@ struct MusicShelfView: View {
                     }
                 }
             } else {
-                ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: MusicStyle.Spacing.shelfGap) {
-                        ForEach(Array(shelf.items.enumerated()), id: \.offset) { _, item in
-                            tile(for: item)
-                        }
+                MusicHorizontalShelf {
+                    ForEach(Array(shelf.items.enumerated()), id: \.offset) { _, item in
+                        tile(for: item)
                     }
-                    .padding(.horizontal, MusicStyle.Spacing.page)
                 }
-                .scrollIndicators(.never)
-                .scrollClipDisabled()
             }
         }
     }
@@ -164,18 +159,18 @@ struct MusicLoadMoreFooter: View {
     var body: some View {
         ZStack {
             if isLoading {
-                MusicSpinner(size: 15, lineWidth: 1.6)
+                MusicSpinner(size: 14, lineWidth: 1.5)
                     .accessibilityElement()
                     .accessibilityLabel("Loading more")
             } else {
                 Button("Load more", action: loadMore)
                     .buttonStyle(.plain)
-                    .musicText(MusicStyle.Typeface.caption12M)
+                    .musicText(MusicStyle.Typeface.secondaryMedium)
                     .foregroundStyle(MusicStyle.Palette.textSecondary)
                     .contentShape(Rectangle())
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 32)
+        .frame(maxWidth: .infinity, minHeight: 28)
         .onAppear {
             if !isLoading { loadMore() }
         }

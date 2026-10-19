@@ -4,7 +4,7 @@ import SwiftUI
 // The controls the player screens share: a thin slider (the scrubber and the volume), the scrubber with its times, the
 // transport, the volume row, the output control and the round buttons that open Lyrics and Up next.
 
-/// A thin slider: a 4 pt track, its level, and under the pointer a 6 pt track with a 10 pt knob. Dragging or clicking
+/// The Mixer's slider look: a 4 pt capsule track with the accent level, and under the pointer a 12 pt knob. Dragging or clicking
 /// reports the position; the owner decides what it means. The owner keeps the gesture state, so a drag that is
 /// cancelled (the track changed, the window lost focus) lets go by itself, and passes what to show.
 struct MusicSlider: View {
@@ -25,8 +25,7 @@ struct MusicSlider: View {
     @State private var isHovered = false
 
     static let trackHeight: CGFloat = 4
-    static let engagedHeight: CGFloat = 6
-    static let knob: CGFloat = 10
+    static let knob: CGFloat = DesignTokens.Dimensions.sliderThumbSize
     /// The height of the area that takes the pointer: a thin track is hard to hit.
     static let hitHeight: CGFloat = 22
 
@@ -34,26 +33,26 @@ struct MusicSlider: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let engaged = isEnabled && (isHovered || isDragging)
-            let height = engaged ? Self.engagedHeight : Self.trackHeight
+            let height = Self.trackHeight
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(MusicStyle.Palette.sliderTrack)
                     .frame(height: height)
                 Capsule()
-                    .fill(MusicStyle.Palette.sliderLevel)
+                    .fill(DesignTokens.Colors.accentPrimary)
                     .frame(width: MusicSliderGeometry.filledWidth(fraction: fraction, width: width), height: height)
                 if engaged {
                     Circle()
                         .fill(.white)
                         .frame(width: Self.knob, height: Self.knob)
-                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
                         .offset(x: MusicSliderGeometry.knobOffset(fraction: fraction, width: width, knob: Self.knob))
                         .transition(.opacity)
                 }
             }
             .frame(width: width, height: proxy.size.height, alignment: .leading)
             .contentShape(Rectangle())
-            .animation(.easeOut(duration: 0.12), value: engaged)
+            .animation(DesignTokens.Animation.hover, value: engaged)
             .onHover { isHovered = $0 }
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -93,7 +92,7 @@ struct MusicPlayerScrubber: View {
         let player = service.player
         let progress = MusicTimeFormat.progress(current: player.currentTime, duration: player.duration)
         let shown = dragFraction.map { $0 * player.duration } ?? player.currentTime
-        VStack(spacing: 8) {
+        VStack(spacing: 2) {
             MusicSlider(
                 fraction: dragFraction ?? progress,
                 isDragging: dragFraction != nil,
@@ -119,23 +118,23 @@ struct MusicPlayerScrubber: View {
                 Spacer(minLength: 8)
                 Text(MusicTimeFormat.remaining(current: shown, duration: player.duration))
             }
-            .musicText(MusicStyle.Typeface.caption11)
+            .musicText(MusicStyle.Typeface.caption)
             .monospacedDigit()
             .foregroundStyle(MusicStyle.Palette.textSecondary)
-            .frame(height: 17)
+            .frame(height: 14)
             .accessibilityHidden(true)
         }
     }
 }
 
-/// One glyph of the transport: bare, in a box, with a faint round fill under the pointer.
+/// One glyph of the transport: bare, in a box, with the Mixer's hover fill under the pointer.
 private struct MusicTransportButton: View {
     let title: String
     let systemImage: String
     let fontSize: CGFloat
     var weight: Font.Weight = .regular
     let box: CGFloat
-    var color: Color = .white
+    var color: Color = MusicStyle.Palette.textPrimary
     var isSelected = false
     var isDisabled = false
     let action: () -> Void
@@ -148,63 +147,67 @@ private struct MusicTransportButton: View {
                 .font(.system(size: fontSize, weight: weight))
                 .foregroundStyle(color)
                 .frame(width: box, height: box)
-                .background(Circle().fill(isHovered && !isDisabled ? MusicStyle.Palette.fillHover : .clear))
-                .contentShape(Circle())
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                        .fill(isHovered && !isDisabled ? DesignTokens.Colors.hoverSurface : .clear)
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
         .onHover { isHovered = $0 }
+        .animation(DesignTokens.Animation.hover, value: isHovered)
         .accessibilityLabel(title)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .help(title)
     }
 }
 
-/// Shuffle: 32 pt, in the accent colour while on. On Now Playing's transport and in the Up next header.
+/// Shuffle: 28 pt, in the accent colour while on. On Now Playing's transport and in the Up next header.
 struct MusicShuffleButton: View {
     let service: MusicService
 
     var body: some View {
         MusicTransportButton(
-            title: "Shuffle", systemImage: "shuffle", fontSize: 20, weight: .medium, box: 32,
-            color: service.isShuffleOn ? MusicStyle.Palette.accent : MusicStyle.Palette.textSecondaryAlt,
+            title: "Shuffle", systemImage: "shuffle", fontSize: 13, weight: .medium, box: MusicStyle.Size.headerButton + 2,
+            color: service.isShuffleOn ? MusicStyle.Palette.accent : MusicStyle.Palette.textSecondary,
             isSelected: service.isShuffleOn
         ) { service.setShuffle(!service.isShuffleOn) }
     }
 }
 
-/// Repeat: 32 pt, in the accent colour while on; each press goes to the next loop mode. Same places as Shuffle.
+/// Repeat: 28 pt, in the accent colour while on; each press goes to the next loop mode. Same places as Shuffle.
 struct MusicLoopButton: View {
     let service: MusicService
 
     var body: some View {
         MusicTransportButton(
-            title: service.loopMode.label, systemImage: service.loopMode.systemImage, fontSize: 20, weight: .medium, box: 32,
-            color: service.loopMode != .off ? MusicStyle.Palette.accent : MusicStyle.Palette.textSecondaryAlt,
+            title: service.loopMode.label, systemImage: service.loopMode.systemImage, fontSize: 13, weight: .medium,
+            box: MusicStyle.Size.headerButton + 2,
+            color: service.loopMode != .off ? MusicStyle.Palette.accent : MusicStyle.Palette.textSecondary,
             isSelected: service.loopMode != .off
         ) { service.cycleLoopMode() }
     }
 }
 
 /// Previous, play or pause and next, and in the full size also Shuffle, Repeat and the song's "..." menu. The compact
-/// size is the three middle buttons at four fifths, for the Lyrics and Up next screens.
+/// size is the three middle buttons a little tighter, for the Lyrics and Up next screens.
 struct MusicPlayerTransport: View {
     let service: MusicService
     var isCompact = false
 
     private var player: MusicPlayer { service.player }
-    private var scale: CGFloat { isCompact ? 0.8 : 1 }
 
     var body: some View {
-        HStack(spacing: isCompact ? 44.8 : 30) {
+        HStack(spacing: isCompact ? 28 : 18) {
             if !isCompact { MusicShuffleButton(service: service) }
             MusicTransportButton(
-                title: "Previous", systemImage: "backward.fill", fontSize: 24 * scale, box: 36 * scale
+                title: "Previous", systemImage: "backward.fill", fontSize: 15, box: 30
             ) { service.previous() }
             playPause
             MusicTransportButton(
-                title: "Next", systemImage: "forward.fill", fontSize: 24 * scale, box: 36 * scale,
-                color: service.canGoNext ? .white : MusicStyle.Palette.textTertiary,
+                title: "Next", systemImage: "forward.fill", fontSize: 15, box: 30,
+                color: service.canGoNext ? MusicStyle.Palette.textPrimary : MusicStyle.Palette.textTertiary,
                 isDisabled: !service.canGoNext
             ) { service.next() }
             if !isCompact {
@@ -222,18 +225,18 @@ struct MusicPlayerTransport: View {
     private var playPause: some View {
         ZStack {
             if player.isLoading {
-                MusicSpinner(size: 30 * scale, lineWidth: 3.3 * scale)
+                MusicSpinner(size: 22, lineWidth: 2.4)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Loading")
             } else {
                 MusicTransportButton(
                     title: player.isPlaying ? "Pause" : "Play",
                     systemImage: player.isPlaying ? "pause.fill" : "play.fill",
-                    fontSize: 28 * scale, box: 44 * scale
+                    fontSize: 20, box: 36
                 ) { service.togglePlayback() }
             }
         }
-        .frame(width: 44 * scale, height: 44 * scale)
+        .frame(width: 36, height: 36)
     }
 }
 
@@ -248,10 +251,10 @@ struct MusicPlayerVolumeRow: View {
 
     var body: some View {
         let position = dragFraction ?? mixer.sliderPosition
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: "speaker.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(MusicStyle.Palette.textSecondaryAlt)
+                .font(.system(size: 11))
+                .foregroundStyle(MusicStyle.Palette.textSecondary)
                 .accessibilityHidden(true)
             MusicSlider(
                 fraction: position,
@@ -269,15 +272,15 @@ struct MusicPlayerVolumeRow: View {
                 }
             )
             Image(systemName: "speaker.wave.3.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(MusicStyle.Palette.textSecondaryAlt)
+                .font(.system(size: 11))
+                .foregroundStyle(MusicStyle.Palette.textSecondary)
                 .accessibilityHidden(true)
         }
         .frame(height: 16)
     }
 }
 
-/// The round button that opens Lyrics or Up next. It is lit while its panel is open, and pressing it then goes back to
+/// The small button that opens Lyrics or Up next. It is lit while its panel is open, and pressing it then goes back to
 /// Now Playing.
 struct MusicPanelToggle: View {
     enum Panel {
@@ -301,29 +304,28 @@ struct MusicPanelToggle: View {
 
     let panel: Panel
     let isActive: Bool
-    var weight: Font.Weight = .semibold
+    var weight: Font.Weight = .medium
     let action: () -> Void
 
     @State private var isHovered = false
 
-    static let size: CGFloat = 34
+    static let size: CGFloat = 28
 
     var body: some View {
         Button(action: action) {
             Image(systemName: panel.systemImage)
-                .font(.system(size: 22, weight: weight))
-                .foregroundStyle(isActive ? MusicStyle.Palette.activeCircleInk : Color.white.opacity(0.75))
+                .font(.system(size: 13, weight: weight))
+                .foregroundStyle(isActive ? MusicStyle.Palette.textPrimary : MusicStyle.Palette.textSecondary)
                 .frame(width: Self.size, height: Self.size)
                 .background(
-                    Circle().fill(
-                        isActive ? MusicStyle.Palette.activeCircle
-                            : (isHovered ? MusicStyle.Palette.fillHover : Color.clear)
-                    )
+                    RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                        .fill(isActive ? DesignTokens.Colors.glassFillStrong : (isHovered ? DesignTokens.Colors.hoverSurface : Color.clear))
                 )
-                .contentShape(Circle())
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+        .animation(DesignTokens.Animation.hover, value: isHovered)
         .accessibilityLabel(panel.title)
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .help(panel.title)
@@ -336,7 +338,7 @@ struct MusicPanelButton: View {
     let panel: MusicPanelToggle.Panel
     let service: MusicService
     let navigation: MusicSearchNavigation
-    var weight: Font.Weight = .semibold
+    var weight: Font.Weight = .medium
 
     var body: some View {
         switch panel {
@@ -366,20 +368,20 @@ struct MusicPlayerBottomRow: View {
     let tint: MusicTint
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            MusicPanelButton(panel: .lyrics, service: service, navigation: navigation, weight: .regular)
+        HStack(alignment: .center, spacing: 0) {
+            MusicPanelButton(panel: .lyrics, service: service, navigation: navigation)
             Spacer(minLength: 8)
             if let mixer {
                 MusicOutputMenu(mixer: mixer, tint: tint)
             }
             Spacer(minLength: 8)
-            MusicPanelButton(panel: .queue, service: service, navigation: navigation, weight: .regular)
+            MusicPanelButton(panel: .queue, service: service, navigation: navigation)
         }
-        .frame(height: 38, alignment: .top)
+        .frame(height: MusicPanelToggle.size, alignment: .center)
     }
 }
 
-/// The output control: an AirPlay glyph over the name of the device in use and the EQ profile on it. A click lists the
+/// The output control: an AirPlay glyph beside the name of the device in use and the EQ profile on it. A click lists the
 /// connected devices and the system default, with a check on the one in use.
 struct MusicOutputMenu: View {
     let mixer: MusicMixerState
@@ -406,17 +408,23 @@ struct MusicOutputMenu: View {
                 }
             }
         } label: {
-            VStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Image(systemName: "airplayaudio")
-                    .font(.system(size: 22))
+                    .font(.system(size: 12))
                     .foregroundStyle(tint.light)
                 Text(mixer.outputLabel)
-                    .musicText(MusicStyle.Typeface.tab)
+                    .musicText(MusicStyle.Typeface.secondaryMedium)
                     .foregroundStyle(tint.light.opacity(0.95))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
             .frame(maxWidth: 240)
+            .padding(.horizontal, DesignTokens.Spacing.sm)
+            .frame(height: MusicPanelToggle.size - 4)
+            .background(
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                    .fill(DesignTokens.Colors.pickerBackground)
+            )
             .contentShape(Rectangle())
         }
         .menuStyle(.button)
@@ -438,14 +446,14 @@ struct MusicOutputMenu: View {
     }
 }
 
-/// The part Lyrics and Up next share at the bottom: the scrubber, and a row with the Lyrics circle, the compact transport
-/// and the Up next circle.
+/// The part Lyrics and Up next share at the bottom: the scrubber, and a row with the Lyrics button, the compact transport
+/// and the Up next button.
 struct MusicPlayerFooter: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
 
     var body: some View {
-        VStack(spacing: 17) {
+        VStack(spacing: 8) {
             MusicPlayerScrubber(service: service)
             HStack(spacing: 0) {
                 MusicPanelButton(panel: .lyrics, service: service, navigation: navigation)
@@ -454,7 +462,7 @@ struct MusicPlayerFooter: View {
                 Spacer(minLength: 8)
                 MusicPanelButton(panel: .queue, service: service, navigation: navigation)
             }
-            .frame(height: 40)
+            .frame(height: 36)
         }
     }
 }

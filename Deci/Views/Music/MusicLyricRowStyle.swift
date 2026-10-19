@@ -6,14 +6,14 @@ enum MusicLyricPosition: Sendable {
     case past, current, upcoming
 }
 
-/// How a lyric row looks. Every row has the same font, bold and 17 pt, whatever its position: a weight or size that
+/// How a lyric row looks. Every row has the same font, bold and 15 pt, whatever its position: a weight or size that
 /// changed with the current line would re-wrap lines and shift the list in the middle of a scroll. The position
 /// moves only the colour: upcoming lines are dim, sung lines are lit, the current line is full. Hovering a line
 /// that is not current brightens it part of the way to the current colour.
 struct MusicLyricRowStyle: Equatable {
-    static let fontSize: CGFloat = 17
+    static let fontSize: CGFloat = 15
     static let fontWeight = Font.Weight.bold
-    /// The room between the wrapped lines of one row: with the font's own leading it makes the design's 22 pt line.
+    /// The room between the wrapped lines of one row: with the font's own leading it makes a comfortable line.
     static let lineSpacing: CGFloat = 2
     /// The room above and below each row: two of them are the design's 14 pt gap between lines.
     static let verticalPadding: CGFloat = 7

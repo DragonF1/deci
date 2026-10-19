@@ -87,8 +87,8 @@ struct MusicTrackMenuItems: View {
 
 /// The "..." button. It is a button of its own, so a click on it opens the menu and never plays the row under it.
 struct MusicTrackMoreButton: View {
-    /// How the button is drawn: the bare dots of the older rows, the 24 pt round button of the redesigned song row, or
-    /// the 30 pt one of the player.
+    /// How the button is drawn: the bare dots of the compact rows, the 22 pt Mixer button of the song row, or the
+    /// 26 pt one of the player.
     enum Style {
         case plain
         case round
@@ -114,18 +114,24 @@ struct MusicTrackMoreButton: View {
                     .contentShape(Rectangle())
             case .round:
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MusicStyle.Palette.textPrimary)
                     .frame(width: Self.roundSize, height: Self.roundSize)
-                    .background(Circle().fill(MusicStyle.Palette.fillSelected))
-                    .contentShape(Circle())
+                    .background(
+                        RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                            .fill(DesignTokens.Colors.pickerBackground)
+                    )
+                    .contentShape(Rectangle())
             case .player:
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.95))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MusicStyle.Palette.textPrimary)
                     .frame(width: Self.playerSize, height: Self.playerSize)
-                    .background(Circle().fill(MusicStyle.Palette.fillControl3))
-                    .contentShape(Circle())
+                    .background(
+                        RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                            .fill(DesignTokens.Colors.pickerBackground)
+                    )
+                    .contentShape(Rectangle())
             }
         }
         .menuStyle(.button)
@@ -138,10 +144,10 @@ struct MusicTrackMoreButton: View {
 
     /// Wide enough for a click, the same as the transport buttons beside it in the player.
     static let width: CGFloat = 22
-    /// The round button the redesigned song row shows under the pointer.
-    static let roundSize: CGFloat = 24
-    /// The round button of the player's Now Playing and header.
-    static let playerSize: CGFloat = 30
+    /// The button the song row shows under the pointer.
+    static let roundSize: CGFloat = 22
+    /// The button of the player's Now Playing and header.
+    static let playerSize: CGFloat = 26
 }
 
 /// The "..." button of the song in the player: always visible, with the same actions as a row and no page.
@@ -266,11 +272,8 @@ struct MusicNoticeLine: View {
             .multilineTextAlignment(.center)
             .padding(.horizontal, DesignTokens.Spacing.md)
             .padding(.vertical, DesignTokens.Spacing.xs)
-            .background(
-                Capsule()
-                    .fill(.ultraThinMaterial)
-                    .overlay(Capsule().strokeBorder(DesignTokens.Colors.glassBorder, lineWidth: 0.5))
-            )
+            .musicBlurBackground(in: Capsule())
+            .overlay(Capsule().strokeBorder(DesignTokens.Colors.glassBorder, lineWidth: 0.5))
             .padding(.horizontal, DesignTokens.Spacing.sm)
             .padding(.bottom, DesignTokens.Spacing.xs)
             .contentShape(Capsule())

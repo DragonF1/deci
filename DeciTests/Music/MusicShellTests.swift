@@ -26,31 +26,52 @@ struct MusicShellLayoutTests {
         #expect(MusicPopupMetrics.totalHeight(maxContentHeight: 400, contentPadding: 12) == expected)
     }
 
-    @Test("the tab bar is 286 wide when there is room and shrinks with the popover when there is not")
-    func tabBarWidth() {
-        #expect(MusicShellLayout.tabBarWidth(forWidth: 510) == 286)
-        #expect(MusicShellLayout.tabBarWidth(forWidth: 470) == 286)
-        #expect(MusicShellLayout.tabBarWidth(forWidth: 300) == 260)
-        #expect(MusicShellLayout.tabBarWidth(forWidth: 10) == 0)
-    }
-
-    @Test("three tabs share what is left of the bar inside its padding")
-    func tabWidth() {
-        let expected: CGFloat = 278.0 / 3.0
-        #expect(MusicShellLayout.tabWidth(forBarWidth: 286) == expected)
-        #expect(MusicShellLayout.tabWidth(forBarWidth: 4) == 0)
-    }
-
-    @Test("the mini player spans the popover inside the page margin")
+    @Test("the mini player spans the popover inside its side margin, and never goes negative")
     func miniPlayerWidth() {
-        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 470) == 430)
-        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 30) == 0)
+        let margin = MusicShellLayout.miniPlayerMargin
+        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 470) == 470 - 2 * margin)
+        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 30) == 10)
+        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 2 * margin - 1) == 0)
+        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 0) == 0)
     }
 
-    @Test("a list scrolls clear of the tab bar, and of the mini player while one shows")
+    @Test("a list scrolls clear of the mini player while one shows, and keeps the page margin without one")
     func bottomInset() {
-        #expect(MusicShellLayout.bottomInset(hasMiniPlayer: false) == 80)
-        #expect(MusicShellLayout.bottomInset(hasMiniPlayer: true) == 140)
+        let without = MusicShellLayout.bottomInset(hasMiniPlayer: false)
+        let with = MusicShellLayout.bottomInset(hasMiniPlayer: true)
+        #expect(without == MusicShellLayout.pageMargin)
+        #expect(with >= MusicStyle.Size.miniPlayerHeight + MusicShellLayout.miniPlayerBottom)
+        #expect(with > without)
+    }
+
+    @Test("a list's last row scrolls clear of the mini player, and the fade and the click shield cover its footprint")
+    func insetClearsThePlayer() {
+        let footprint = MusicStyle.Size.miniPlayerHeight + MusicShellLayout.miniPlayerBottom
+        #expect(MusicShellLayout.miniPlayerFootprint == footprint)
+        // The inset is the whole footprint plus a real gap, so the last row stops above the player and not under it.
+        #expect(MusicShellLayout.miniPlayerClearance > 0)
+        #expect(MusicShellLayout.bottomInset(hasMiniPlayer: true) == footprint + MusicShellLayout.miniPlayerClearance)
+        // The fade dissolves the rows over the whole player, side margins and bottom gap included.
+        #expect(MusicShellLayout.scrimHeight >= footprint)
+    }
+
+    @Test("the account card hangs clear under the avatar and fits inside the popover, at every size", arguments: MenuBarPopupSize.allCases)
+    @MainActor
+    func accountCardPlacement(size: MenuBarPopupSize) {
+        let dimensions = size.dimensions
+        let padding = dimensions.contentPadding
+        let avatarBottom = padding + (MusicPopupMetrics.headerHeight + MusicStyle.Size.headerButton) / 2
+        let cardTop = MusicPopupMetrics.accountCardTop(contentPadding: padding)
+        #expect(cardTop > avatarBottom)
+        // The card is as wide as it is and ends where the avatar does, so it must fit between that edge and the left one.
+        let cardLeft = dimensions.width - MusicPopupMetrics.avatarTrailingInset(contentPadding: padding) - MusicAccountCard.width
+        #expect(cardLeft >= 0)
+        // The avatar sits left of the gear, one gap apart.
+        let gearLeft = dimensions.width - padding - MusicStyle.Size.headerButton
+        let avatarRight = dimensions.width - MusicPopupMetrics.avatarTrailingInset(contentPadding: padding)
+        #expect(gearLeft - avatarRight == MusicPopupMetrics.headerButtonGap)
+        // The body starts under the header row.
+        #expect(MusicPopupMetrics.contentTop(contentPadding: padding) > padding + MusicPopupMetrics.headerHeight)
     }
 }
 

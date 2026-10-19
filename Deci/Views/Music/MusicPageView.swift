@@ -1,18 +1,21 @@
 // Deci/Views/Music/MusicPageView.swift
 import SwiftUI
 
-/// The page on top of `browse.path`: an album, an artist, a playlist or Liked music. A tinted hero bleeds to the top
-/// of the popover and scrolls away with the list; the nav row stays pinned over it, with a bar that fades in behind it
-/// once the hero is gone. The page's colour is taken from its cover, and the shell's bottom scrim follows it.
+/// The page on top of `browse.path`: an album, an artist, a playlist or Liked music. A small nav row (Back, and the
+/// page's title once its header has scrolled away) stays pinned; under it a compact header with the cover on the left
+/// and the title and actions on its right, over a soft wash of the cover's colour that fades into the list and away
+/// as the list scrolls.
 struct MusicPageView: View {
     let service: MusicService
     let collection: MusicCollection
 
     /// The colour of the cover once it is known; until then the page wears the hash palette's tint of its id.
     @State private var coverTint: MusicTint?
-    /// How opaque the bar behind the header and nav row is. Only the top layer reads it, so a step of the fade does
-    /// not run this body again or rebuild the lists.
+    /// How opaque the nav row's title is. Only the nav row and the wash read it, so a step of the fade does not run
+    /// this body again or rebuild the lists.
     @State private var bar = MusicPageBar()
+    @Environment(\.musicContentTop) private var contentTop
+    @Environment(\.colorScheme) private var colorScheme
 
     init(service: MusicService, collection: MusicCollection) {
         self.service = service
@@ -41,20 +44,18 @@ struct MusicPageView: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .top) {
-                background
-                content(width: proxy.size.width)
-                MusicPageTopLayer(
-                    bar: bar,
-                    title: loadedPage?.title ?? collection.title,
-                    barColor: palette.page,
-                    onBack: { browse.back() }
-                )
+        ZStack(alignment: .top) {
+            MusicPageWash(
+                bar: bar,
+                color: palette.wash(for: colorScheme),
+                height: contentTop + MusicPageScroll.barHeight + kind.washDepth
+            )
+            VStack(spacing: 0) {
+                MusicPageNavRow(bar: bar, title: loadedPage?.title ?? collection.title) { browse.back() }
+                    .padding(.top, contentTop)
+                content
             }
         }
-        // The shell's scrim over the lists takes the page's darker colour.
-        .preference(key: MusicScrimColorKey.self, value: palette.pageBottom)
         // The cover's colour: from the cache at once, else after the cover is fetched. Failing leaves the fallback.
         .task(id: tintURL) {
             guard kind != .liked, let url = tintURL else { return }
@@ -68,45 +69,26 @@ struct MusicPageView: View {
         }
     }
 
-    // MARK: - Layers
-
-    /// The page gradient across the whole popover: the page colour, then the darker bottom colour.
-    private var background: some View {
-        let hold = kind.backgroundHold
-        let stops: [Gradient.Stop] = hold > 0
-            ? [
-                .init(color: palette.page, location: 0),
-                .init(color: palette.page, location: hold),
-                .init(color: palette.pageBottom, location: 1),
-            ]
-            : [
-                .init(color: palette.page, location: 0),
-                .init(color: palette.pageBottom, location: 1),
-            ]
-        return LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
-            .accessibilityHidden(true)
-    }
-
     // MARK: - Content
 
     @ViewBuilder
-    private func content(width: CGFloat) -> some View {
+    private var content: some View {
         switch browse.pageState(collection.browseId) {
         case .idle, .loading:
             MusicLoadingCard()
-                .padding(.top, MusicPopupMetrics.headerHeight + 72)
+                .padding(.top, 48)
                 .frame(maxHeight: .infinity, alignment: .top)
         case .failed(let message):
             MusicFailedCard(message: message) { browse.reloadPage(collection.browseId) }
-                .padding(.top, MusicPopupMetrics.headerHeight + 72)
+                .padding(.top, 48)
                 .frame(maxHeight: .infinity, alignment: .top)
         case .loaded(let loaded):
             // A sorted playlist shows, and queues, its sorted songs once all of them are loaded.
-            loadedContent(page: browse.displayedPage(collection.browseId) ?? loaded, loaded: loaded, width: width)
+            loadedContent(page: browse.displayedPage(collection.browseId) ?? loaded, loaded: loaded)
         }
     }
 
-    private func loadedContent(page: MusicBrowsePage, loaded: MusicBrowsePage, width: CGFloat) -> some View {
+    private func loadedContent(page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
         let heroHeight = kind.heroHeight
         let isSorted = MusicBrowseStore.canSort(page.browseId) && !browse.sort(for: page.browseId).isDefault
         let note = MusicSortNote.resolve(
@@ -115,7 +97,7 @@ struct MusicPageView: View {
         )
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                hero(page: page, loaded: loaded, width: width)
+                header(page: page, loaded: loaded)
                     // Over the list that follows, so the pin limit tooltip is not cut by its first rows.
                     .zIndex(1)
 
@@ -124,7 +106,7 @@ struct MusicPageView: View {
                 } else {
                     if isSorted, note != .none {
                         MusicSortNoteView(note: note)
-                            .padding(.top, 8)
+                            .padding(.top, 4)
                             .frame(maxWidth: .infinity)
                             .frame(height: MusicPageKind.sortNoteBlock, alignment: .top)
                     } else {
@@ -145,17 +127,15 @@ struct MusicPageView: View {
         }
     }
 
-    private func hero(page: MusicBrowsePage, loaded: MusicBrowsePage, width: CGFloat) -> some View {
+    private func header(page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
         let pills = MusicPagePills.pills(
             kind: kind,
             hasTracks: !page.tracks.isEmpty,
             canSort: MusicBrowseStore.canSort(page.browseId),
             hasListenAgainPin: listenAgainControl(for: loaded) != nil
         )
-        return MusicPageHero(
+        return MusicPageHeader(
             kind: kind,
-            palette: palette,
-            width: width,
             coverURL: page.thumbnailURL ?? collection.thumbnailURL,
             text: MusicPageHeroText.resolve(
                 kind: kind,
@@ -174,12 +154,7 @@ struct MusicPageView: View {
     private func pillView(_ pill: MusicPagePill, page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
         switch pill {
         case .play:
-            MusicPlayPill(
-                fill: kind == .artist ? MusicPagePalette.artistPlayFill : palette.light,
-                ink: kind == .artist ? MusicPagePalette.artistPlayInk : palette.ink,
-                width: kind == .artist ? 100 : nil,
-                title: page.title
-            ) {
+            MusicPlayPill(title: page.title) {
                 if let first = page.tracks.first { service.play(first, in: page) }
             }
         case .shuffle:
@@ -227,7 +202,7 @@ struct MusicPageView: View {
     @ViewBuilder
     private func tracks(of page: MusicBrowsePage) -> some View {
         if page.tracks.isEmpty, page.shelves.isEmpty {
-            MusicStateCard(message: "No songs here yet.", minHeight: 72)
+            MusicStateCard(message: "No songs here yet.", minHeight: 56)
         } else if !page.tracks.isEmpty {
             // The page the songs sit on decides whether they can leave the playlist or go to this album.
             let context = MusicTrackContext(
@@ -242,7 +217,7 @@ struct MusicPageView: View {
                     isCurrent: nowPlayingId == track.videoId,
                     isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
                     layout: kind == .album ? .album(number: index + 1) : .playlist,
-                    playingColor: palette.light
+                    playingColor: MusicStyle.Palette.accent
                 ) {
                     service.play(track, in: page)
                 }
@@ -268,11 +243,11 @@ struct MusicPageView: View {
         }
     }
 
-    /// An artist's body, 20 under the name row: the top songs in two columns, then Albums, Singles and the rest.
+    /// An artist's body, under the header: the top songs in two columns, then Albums, Singles and the rest.
     private func artistBody(page: MusicBrowsePage) -> some View {
         VStack(alignment: .leading, spacing: MusicPageKind.artistBodyGap) {
             if page.tracks.isEmpty, page.shelves.isEmpty {
-                MusicStateCard(message: "No songs here yet.", minHeight: 72)
+                MusicStateCard(message: "No songs here yet.", minHeight: 56)
             }
             if !page.tracks.isEmpty {
                 topSongs(page: page)
@@ -322,49 +297,52 @@ struct MusicPageView: View {
     }
 }
 
-/// The bar's opacity, in a model of its own: the scroll sets it, and only `MusicPageTopLayer` reads it.
+/// The nav row's opacity, in a model of its own: the scroll sets it, and only the nav row and the wash read it.
 @Observable
 final class MusicPageBar {
     var opacity: Double = 0
 }
 
-/// The nav row at popover y 40, and behind it and the header strip the bar that shows once the hero has scrolled off.
-private struct MusicPageTopLayer: View {
+/// The soft wash of the cover's colour behind the header, from the popover's top edge (under the header row) down,
+/// fading to clear. It goes away as the list scrolls up, so rows never sit on it.
+private struct MusicPageWash: View {
+    let bar: MusicPageBar
+    let color: Color
+    let height: CGFloat
+
+    var body: some View {
+        LinearGradient(colors: [color, color.opacity(0)], startPoint: .top, endPoint: .bottom)
+            .frame(height: height)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .opacity(1 - bar.opacity)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The pinned nav row: the Back button, and the page's title once the header has scrolled away.
+private struct MusicPageNavRow: View {
     let bar: MusicPageBar
     let title: String
-    let barColor: Color
     let onBack: () -> Void
 
     var body: some View {
         let opacity = bar.opacity
-        ZStack(alignment: .top) {
-            barColor.opacity(0.94)
-                .frame(height: MusicPageScroll.barHeight)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1)
-                }
+        HStack(spacing: DesignTokens.Spacing.xs) {
+            MusicNavBackButton(action: onBack)
+            Text(title)
+                .musicText(MusicStyle.Typeface.heading)
+                .foregroundStyle(MusicStyle.Palette.textPrimary)
+                .lineLimit(1)
                 .opacity(opacity)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
-
-            ZStack {
-                Text(title)
-                    .musicText(MusicStyle.Typeface.row15SB)
-                    .foregroundStyle(MusicStyle.Palette.textPrimary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 16 + MusicNavBackButton.size + 8)
-                    .opacity(opacity)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-
-                HStack(spacing: 0) {
-                    MusicNavBackButton(action: onBack)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 16)
-            }
-            .frame(height: MusicNavBackButton.size)
-            .padding(.top, MusicPopupMetrics.headerHeight + 8)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, MusicStyle.Spacing.page - 4)
+        .frame(height: MusicPageScroll.barHeight)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1).opacity(opacity)
         }
     }
 }

@@ -22,97 +22,89 @@ enum MusicPageKind: Equatable, Sendable {
         }
     }
 
-    /// The part of the hero that shows the cover or the photo. It is clipped there.
-    var visualHeight: CGFloat { self == .artist ? 244 : 260 }
+    /// The cover's side in the compact header: art on the left, the title and actions on its right.
+    var artSize: CGFloat { 104 }
 
-    /// The whole hero, the first item of the scroll view: the visual and, over its bottom edge, the title block and
-    /// the pills. The artist's hero ends where the body starts.
-    var heroHeight: CGFloat { self == .artist ? 246 : 288 }
+    /// The header block, the first item of the scroll view: the art with its gaps above and below.
+    var heroHeight: CGFloat { artSize + 4 + 12 }
 
-    /// How far above the bottom of the visual the cover's top edge sits, for a cover as wide as the mock's 510.
-    var coverRise: CGFloat { self == .artist ? 414 : 360 }
+    /// How far down the cover's wash reaches from the top of the content area before it is clear.
+    var washDepth: CGFloat { heroHeight + 40 }
 
-    /// The cover is as wide as the popover, so every measure of it scales by `width / 510`.
-    static let mockWidth: CGFloat = 510
+    /// An artist's photo is round; every other cover is a rounded square.
+    var isRound: Bool { self == .artist }
 
-    /// The top edge of the cover in the hero, which is above the popover: only the lower part of it shows.
-    func coverTop(width: CGFloat) -> CGFloat {
-        visualHeight - coverRise * (width / Self.mockWidth)
-    }
+    /// The gap between the header and the first list, and how tall that gap is when a sort note takes it.
+    static let listGap: CGFloat = 4
+    static let sortNoteBlock: CGFloat = 24
 
-    /// The fade that dissolves the cover into the page colour: the colour's opacity at each point of the hero's height.
-    var fadeStops: [(location: Double, opacity: Double)] {
-        switch self {
-        case .album: [(0, 0), (0.45, 0.5), (0.75, 0.94), (1, 1)]
-        case .artist: [(0, 0), (0.5, 0.12), (0.82, 0.62), (1, 1)]
-        case .playlist, .liked: [(0, 0), (0.4, 0), (0.7, 0.62), (1, 1)]
-        }
-    }
-
-    /// Where the page colour starts to turn into the darker bottom colour, as a fraction of the popover's height.
-    /// A playlist darkens all the way down.
-    var backgroundHold: Double {
-        switch self {
-        case .album, .liked: 0.5
-        case .artist: 0.46
-        case .playlist: 0
-        }
-    }
-
-    /// The popover y where the gap between the hero and the first list starts, and how tall that gap is. A sort note
-    /// takes the room the playlist's songs are pushed down by.
-    static let listGap: CGFloat = 12
-    static let sortNoteBlock: CGFloat = 32
-
-    /// The artist's body has this margin on both sides and this gap between its sections.
-    static let artistBodyGap: CGFloat = 20
+    /// The gap between an artist's sections.
+    static let artistBodyGap: CGFloat = MusicStyle.Spacing.sectionGap
 }
 
 // MARK: - Colours
 
-/// The colours a page wears: the page and its darker bottom, the light colour of the Play pill and the accent text,
-/// and the ink on the light one. They come from the cover's tint, except on Liked music, which keeps its red.
+/// The colours a page wears: the page colour and a light one. The header's wash is made from them. They come from the
+/// cover's tint, except on Liked music, which keeps its red.
 struct MusicPagePalette: Equatable {
     let page: Color
-    let pageBottom: Color
     let light: Color
-    let ink: Color
-    /// The colour of the line under the title: the light colour, except on Liked music.
-    let accentText: Color
 
     init(tint: MusicTint) {
         page = tint.page
-        pageBottom = tint.pageBottom
         light = tint.light
-        ink = tint.ink
-        accentText = tint.light
     }
 
-    private init(page: Color, pageBottom: Color, light: Color, ink: Color, accentText: Color) {
+    private init(page: Color, light: Color) {
         self.page = page
-        self.pageBottom = pageBottom
         self.light = light
-        self.ink = ink
-        self.accentText = accentText
     }
 
     /// Liked music always uses these.
     static let liked = MusicPagePalette(
         page: MusicStyle.Palette.hex(0x4F1B24),
-        pageBottom: MusicStyle.Palette.hex(0x200A0F),
-        light: MusicStyle.Palette.hex(0xFFB3BE),
-        ink: MusicStyle.Palette.hex(0x3A0A12),
-        accentText: MusicStyle.Palette.hex(0xFFA3B1)
+        light: MusicStyle.Palette.hex(0xFFB3BE)
     )
 
-    /// The Play pill of an artist is the same pale blue on every artist.
-    static let artistPlayFill = MusicStyle.Palette.hex(0xBCD9EE)
-    static let artistPlayInk = MusicStyle.Palette.hex(0x0E2233)
+    /// The soft wash behind a page's header: the dark page colour on a dark popover, the pale light colour on a light
+    /// one, so it reads in both.
+    func wash(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? page.opacity(0.85) : light.opacity(0.55)
+    }
 
     /// The palette of a page: the fixed red for Liked music, else the cover's tint, or `fallback` (the tint of the
     /// page's id) until the cover's colour is known.
     static func resolve(kind: MusicPageKind, coverTint: MusicTint?, fallback: MusicTint) -> MusicPagePalette {
         kind == .liked ? .liked : MusicPagePalette(tint: coverTint ?? fallback)
+    }
+}
+
+// MARK: - Ink on a fill
+
+/// The ink for text and icons on a solid fill of a colour the app does not choose, like the system accent: white, which
+/// is what the Mac puts on its blue, graphite, green and orange buttons, or black where white would all but vanish
+/// (the yellow accent).
+enum MusicInk: Equatable, Sendable {
+    case white
+    case black
+
+    /// White keeps the fill until its contrast ratio against it (WCAG 2) falls under this.
+    static let whiteContrastFloor = 2.0
+
+    var color: Color { self == .white ? .white : .black }
+
+    /// The ink for a fill given by its sRGB components (0 to 1). Anything out of range is clamped, and a component that
+    /// is not a number counts as 0.
+    static func onFill(red: Double, green: Double, blue: Double) -> MusicInk {
+        let luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+        let whiteContrast = 1.05 / (luminance + 0.05)
+        return whiteContrast < whiteContrastFloor ? .black : .white
+    }
+
+    private static func linear(_ component: Double) -> Double {
+        guard component.isFinite else { return 0 }
+        let value = min(max(component, 0), 1)
+        return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
     }
 }
 
@@ -153,18 +145,16 @@ enum MusicPagePills {
     struct SortPill: Equatable {
         let label: String
         let symbol: String
-        let symbolSize: CGFloat
         let isActive: Bool
     }
 
     static func sortPill(_ sort: MusicPlaylistSort) -> SortPill {
         if sort.isDefault {
-            return SortPill(label: "Sort", symbol: "arrow.up.arrow.down", symbolSize: 16, isActive: false)
+            return SortPill(label: "Sort", symbol: "arrow.up.arrow.down", isActive: false)
         }
         return SortPill(
             label: sort.field.label,
             symbol: sort.ascending ? "arrow.up" : "arrow.down",
-            symbolSize: 15,
             isActive: true
         )
     }
@@ -262,14 +252,14 @@ struct MusicPageHeroText: Equatable {
 // MARK: - Scrolling
 
 nonisolated enum MusicPageScroll {
-    /// The bar behind the header and the nav row fades in over this many points of scrolling.
+    /// The nav row's title fades in (and the header's wash out) over this many points of scrolling.
     static let barFade: CGFloat = 24
 
-    /// The bar is as tall as the header strip and the nav row under it.
-    static let barHeight: CGFloat = 72
+    /// The nav row with the back button: a Mixer header row.
+    static let barHeight: CGFloat = 30
 
-    /// How opaque the top bar is at a scroll offset: clear while the hero still reaches under the nav row, solid
-    /// `barFade` points after it stops doing so.
+    /// How opaque the nav row's title is at a scroll offset: clear while the header still reaches under the nav row,
+    /// solid `barFade` points after it stops doing so.
     static func barOpacity(offset: CGFloat, heroHeight: CGFloat) -> Double {
         guard offset.isFinite else { return 0 }
         let start = heroHeight - barHeight

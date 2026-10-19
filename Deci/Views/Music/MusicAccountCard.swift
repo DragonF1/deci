@@ -88,17 +88,7 @@ nonisolated enum MusicAccountInitials {
     }
 }
 
-/// Where the account avatar sits, so the shell can leave it out of the dim behind the account card and hang the
-/// card under it.
-struct MusicAvatarAnchorKey: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>? { nil }
-
-    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
-        value = nextValue() ?? value
-    }
-}
-
-/// The 32 pt round avatar in a screen header. Opens and closes the account card.
+/// The round avatar in the popup's header strip. Opens and closes the account card.
 struct MusicAccountButton: View {
     let account: MusicAccount?
     let isOpen: Bool
@@ -110,13 +100,13 @@ struct MusicAccountButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .anchorPreference(key: MusicAvatarAnchorKey.self, value: .bounds) { $0 }
         .accessibilityLabel("Account")
         .accessibilityAddTraits(isOpen ? .isSelected : [])
         .help("Account")
     }
 
-    static let size: CGFloat = 32
+    /// The header's button size, the Mixer's 26 pt.
+    static let size: CGFloat = MusicStyle.Size.headerButton
 }
 
 /// The round account photo, in the header button and on the card. It loads through `MusicAvatarModel`,
@@ -143,10 +133,10 @@ struct MusicAccountAvatar: View {
                     .scaledToFill()
             } else if !initials.isEmpty {
                 ZStack {
-                    Rectangle().fill(MusicStyle.Palette.avatarGradient)
+                    Rectangle().fill(DesignTokens.Colors.deviceBadgeMonoFill)
                     Text(initials)
                         .font(.system(size: initialsSize ?? size * 0.375, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Color.primary)
                 }
             } else {
                 MusicCoverPlaceholder(symbol: "person.fill", size: size)
@@ -159,9 +149,10 @@ struct MusicAccountAvatar: View {
     }
 }
 
-/// The account card under the avatar: who is signed in, and the three things to do about it. A 240 pt glass card,
-/// the header (56 pt avatar, name, handle, and a badge for a brand channel), then the two window rows and Sign out
-/// between hairlines. Plain values and closures in, so it draws without a service. The caller closes it on every action.
+/// The account card under the avatar, drawn like a Mixer popover menu: who is signed in, and the three things to do
+/// about it. A 220 pt glass card, the header (36 pt avatar, name, handle, and a badge for a brand channel), then the two
+/// window rows and Sign out between hairlines. Plain values and closures in, so it draws without a service. The
+/// caller closes it on every action.
 struct MusicAccountCard: View {
     let account: MusicAccount?
     let isBrandChannel: Bool?
@@ -171,8 +162,8 @@ struct MusicAccountCard: View {
     let onUseAnotherAccount: () -> Void
     let onSignOut: () -> Void
 
-    static let width: CGFloat = 240
-    static let avatarSize: CGFloat = 56
+    static let width: CGFloat = 220
+    static let avatarSize: CGFloat = 36
 
     private var content: MusicAccountCardContent {
         MusicAccountCardContent(account: account, isBrandChannel: isBrandChannel)
@@ -183,21 +174,19 @@ struct MusicAccountCard: View {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: MusicStyle.Radius.pill, style: .continuous)
-        // Inside the 1 pt edge, as the mock lays it out.
+        let shape = RoundedRectangle(cornerRadius: DesignTokens.Dimensions.cornerRadius, style: .continuous)
         VStack(spacing: 0) {
             header
             divider
-            VStack(spacing: 0) {
+            VStack(spacing: 2) {
                 MusicAccountActionRow(row: rows.switchChannel, perform: onSwitchChannel)
                 MusicAccountActionRow(row: rows.useAnotherAccount, perform: onUseAnotherAccount)
             }
-            .padding(.vertical, 6)
+            .padding(DesignTokens.Spacing.xs)
             divider
             MusicAccountActionRow(row: MusicAccountCardRows.signOut, perform: onSignOut)
-                .padding(.vertical, 6)
+                .padding(DesignTokens.Spacing.xs)
         }
-        .padding(1)
         .frame(width: Self.width)
         .clipShape(shape)
         .musicGlass(in: shape, fill: MusicStyle.Palette.cardGlassFill, stroke: MusicStyle.Palette.lineGlass, shadow: .glass)
@@ -205,51 +194,51 @@ struct MusicAccountCard: View {
 
     private var divider: some View {
         Rectangle()
-            .fill(MusicStyle.Palette.lineDivider)
+            .fill(DesignTokens.Colors.separator)
             .frame(height: 1)
             .accessibilityHidden(true)
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
-            MusicAccountAvatar(url: account?.photoURL, size: Self.avatarSize, name: account?.name, initialsSize: 20)
+        HStack(spacing: DesignTokens.Spacing.md) {
+            MusicAccountAvatar(url: account?.photoURL, size: Self.avatarSize, name: account?.name, initialsSize: 14)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(content.title)
-                        .musicText(MusicStyle.Typeface.name17)
+                        .musicText(MusicStyle.Typeface.heading)
                         .foregroundStyle(MusicStyle.Palette.textPrimary)
                         .lineLimit(1)
                     if let handle = content.handle {
                         Text(handle)
-                            .musicText(MusicStyle.Typeface.body13)
+                            .musicText(MusicStyle.Typeface.secondary)
                             .foregroundStyle(MusicStyle.Palette.textSecondary)
                             .lineLimit(1)
                     }
                 }
                 if let badge = content.brandBadge {
                     Text(badge)
-                        .musicText(MusicStyle.Typeface.badge10)
-                        .foregroundStyle(Color.white.opacity(0.7))
+                        .musicText(MusicStyle.Typeface.caption)
+                        .foregroundStyle(MusicStyle.Palette.textSecondary)
                         .lineLimit(1)
-                        .padding(.vertical, 2)
-                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .padding(.horizontal, 5)
                         .overlay(
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .strokeBorder(MusicStyle.Palette.lineBadge, lineWidth: 1)
+                                .strokeBorder(DesignTokens.Colors.menuBorder, lineWidth: 1)
                         )
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(16)
+        .padding(DesignTokens.Spacing.md)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(content.spokenLine)
     }
 }
 
-/// One 40 pt action row of the account card: an 18 pt icon, the label, and a trailing chevron on a row that opens a
-/// window. The pointer lays the hover fill across the full width; a row that is off shows dimmed and takes no click.
+/// One action row of the account card, a Mixer row: a 13 pt icon, the label, and a trailing chevron on a row that
+/// opens a window. The pointer lays the hover fill across the row; a row that is off shows dimmed and takes no click.
 private struct MusicAccountActionRow: View {
     let row: MusicAccountCardRows.Row
     let perform: () -> Void
@@ -258,28 +247,30 @@ private struct MusicAccountActionRow: View {
 
     var body: some View {
         Button(action: perform) {
-            HStack(spacing: 12) {
+            HStack(spacing: DesignTokens.Spacing.sm) {
                 Image(systemName: row.symbol)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(row.isDestructive ? MusicStyle.Palette.destructive : MusicStyle.Palette.textTile)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(row.isDestructive ? MusicStyle.Palette.destructive : MusicStyle.Palette.textSecondary)
                     .frame(width: 18, height: 18)
                     .accessibilityHidden(true)
                 Text(row.title)
-                    .musicText(MusicStyle.Typeface.body13)
+                    .musicText(MusicStyle.Typeface.row)
                     .foregroundStyle(row.isDestructive ? MusicStyle.Palette.destructive : MusicStyle.Palette.textPrimary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 if row.hasChevron {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(MusicStyle.Palette.textQuaternary)
-                        .frame(width: 16, height: 16)
                         .accessibilityHidden(true)
                 }
             }
-            .padding(.horizontal, 16)
-            .frame(height: 40)
-            .background(isHovered && row.isEnabled ? MusicStyle.Palette.fillHover : Color.clear)
+            .padding(.horizontal, DesignTokens.Spacing.sm)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                    .fill(isHovered && row.isEnabled ? DesignTokens.Colors.hoverSurface : Color.clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

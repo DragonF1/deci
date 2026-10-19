@@ -10,20 +10,20 @@ struct MusicLyricsView: View {
     let seek: (TimeInterval) -> Void
 
     /// The margin of the caption, the lines and the state cards; the lines' own 8 pt row padding makes up the rest.
-    static let margin: CGFloat = 32
+    static let margin: CGFloat = 24
     private static let linesInset: CGFloat = margin - 8
 
     var body: some View {
         VStack(spacing: 0) {
             Text(MusicLyricsCaption.text(for: store.state))
-                .musicText(MusicStyle.Typeface.callout)
+                .musicText(MusicStyle.Typeface.secondaryMedium)
                 .foregroundStyle(MusicStyle.Palette.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Self.margin)
 
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .padding(.top, 6)
+                .padding(.top, 4)
 
             MusicLyricsCredit(text: creditText)
                 .padding(.horizontal, Self.margin)
@@ -71,8 +71,8 @@ struct MusicLyricsView: View {
             MusicStateCard(margin: Self.margin) {
                 HStack(spacing: 8) {
                     Image(systemName: "music.note")
-                        .font(.system(size: 15))
-                        .foregroundStyle(MusicStyle.Palette.textSung)
+                        .font(.system(size: 13))
+                        .foregroundStyle(MusicStyle.Palette.textSecondary)
                         .accessibilityHidden(true)
                     MusicStateCardMessage(text: "Instrumental")
                 }
@@ -145,7 +145,7 @@ private struct MusicLyricsCredit: View {
 
     var body: some View {
         Text(text ?? "")
-            .musicText(MusicStyle.Typeface.caption11)
+            .musicText(MusicStyle.Typeface.caption)
             .foregroundStyle(MusicStyle.Palette.textTertiary)
             .lineLimit(1)
             .frame(maxWidth: .infinity, minHeight: 14, alignment: .leading)
@@ -167,8 +167,8 @@ private struct MusicPlainLyricsView: View {
                 .foregroundStyle(style.color)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, DesignTokens.Spacing.sm)
-                .padding(.top, 18)
-                .padding(.bottom, 18)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
         }
         .scrollIndicators(.never)
         .lyricsEdgeFade()

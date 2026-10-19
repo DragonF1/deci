@@ -10,20 +10,20 @@ struct MusicQueueView: View {
         let listing = MusicQueueListing(queue: service.queue)
         VStack(spacing: 0) {
             titleRow
-                .padding(.top, 16)
+                .padding(.top, 8)
 
             if let current = listing.current {
                 MusicQueueCurrentRow(track: current, isPlaying: service.player.isPlaying) {
                     service.jump(to: current)
                 }
-                .padding(.top, 10)
+                .padding(.top, 8)
             }
 
             header(sourceLine: listing.sourceLine)
-                .padding(.top, 6)
+                .padding(.top, MusicStyle.Spacing.sectionGap)
 
             upcoming(listing.upcoming)
-                .padding(.top, 11)
+                .padding(.top, 4)
         }
     }
 
@@ -32,15 +32,16 @@ struct MusicQueueView: View {
     private var titleRow: some View {
         HStack(spacing: 0) {
             Text("Up next")
-                .musicText(MusicStyle.Typeface.headline)
-                .foregroundStyle(.white)
+                .musicText(MusicStyle.Typeface.heading)
+                .foregroundStyle(MusicStyle.Palette.textPrimary)
+                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 8)
             // The play order and the loop, beside Autoplay: the same buttons, states and loop cycle as Now Playing.
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 MusicShuffleButton(service: service)
                 MusicLoopButton(service: service)
             }
-            .padding(.trailing, 8)
+            .padding(.trailing, 6)
             MusicAutoplayChip(isOn: service.isAutoplayOn) {
                 service.setAutoplay(!service.isAutoplayOn)
             }
@@ -52,11 +53,10 @@ struct MusicQueueView: View {
     private func header(sourceLine: String?) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             Text("Playing Next")
-                .musicText(MusicStyle.Typeface.headline)
-                .foregroundStyle(.white)
+                .sectionHeaderStyle()
             if let sourceLine {
                 Text(sourceLine)
-                    .musicText(MusicStyle.Typeface.caption12)
+                    .musicText(MusicStyle.Typeface.secondary)
                     .foregroundStyle(MusicStyle.Palette.textSecondary)
                     .lineLimit(1)
             }
@@ -72,7 +72,7 @@ struct MusicQueueView: View {
     @ViewBuilder
     private func upcoming(_ tracks: [MusicTrack]) -> some View {
         if tracks.isEmpty {
-            MusicStateCard(message: "No more songs queued.", minHeight: 60)
+            MusicStateCard(message: "No more songs queued.", minHeight: 48)
                 .frame(maxHeight: .infinity, alignment: .top)
         } else {
             ScrollView {
@@ -102,27 +102,29 @@ struct MusicQueueView: View {
     }
 }
 
-/// The Autoplay chip: when a playlist or an album ends, recommended songs carry on. Lit in the accent colour while on.
+/// The Autoplay button: when a playlist or an album ends, recommended songs carry on. Lit in the accent colour while on.
 struct MusicAutoplayChip: View {
     let isOn: Bool
     let action: () -> Void
 
-    static let height: CGFloat = 36
+    static let height: CGFloat = MusicPillButtonStyle.height
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Image(systemName: "infinity")
-                    .font(.system(size: 18))
+                    .font(.system(size: 11, weight: .medium))
                 Text("Autoplay")
-                    .musicText(MusicStyle.Typeface.callout)
+                    .musicText(MusicStyle.Typeface.button)
             }
-            .foregroundStyle(isOn ? MusicStyle.Palette.accent : Color.white)
-            .padding(.leading, 12)
-            .padding(.trailing, 14)
+            .foregroundStyle(isOn ? MusicStyle.Palette.accent : MusicStyle.Palette.textPrimary)
+            .padding(.horizontal, 8)
             .frame(height: Self.height)
-            .background(Capsule().fill(isOn ? MusicStyle.Palette.accentFill : MusicStyle.Palette.fillControl2))
-            .contentShape(Capsule())
+            .background(
+                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
+                    .fill(isOn ? MusicStyle.Palette.accentFill : MusicStyle.Palette.fillControl)
+            )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isOn ? .isSelected : [])
@@ -146,12 +148,12 @@ private struct MusicQueueCurrentRow: View {
 
     var body: some View {
         let actions = menu?.actions(track, context) ?? []
-        HStack(spacing: 12) {
-            MusicThumbnail(url: track.thumbnailURL, size: 40, cornerRadius: MusicStyle.Radius.small)
+        HStack(spacing: DesignTokens.Spacing.sm) {
+            MusicThumbnail(url: track.thumbnailURL, size: 32, cornerRadius: MusicStyle.Radius.small)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text(track.title)
-                    .musicText(MusicStyle.Typeface.row15)
+                    .musicText(MusicStyle.Typeface.row)
                     .foregroundStyle(accent)
                     .lineLimit(1)
                     .accessibilityHidden(true)
@@ -159,15 +161,18 @@ private struct MusicQueueCurrentRow: View {
             }
             Spacer(minLength: 8)
             Image(systemName: "waveform")
-                .font(.system(size: 18))
+                .font(.system(size: 13))
                 .foregroundStyle(accent)
                 .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isPlaying)
                 .accessibilityHidden(true)
         }
-        .padding(.leading, 6)
-        .padding(.trailing, 10)
-        .frame(height: 52)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(MusicStyle.Palette.accentRow))
+        .padding(.leading, DesignTokens.Spacing.sm)
+        .padding(.trailing, DesignTokens.Spacing.sm)
+        .frame(height: MusicSongRow.height)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.rowRadius, style: .continuous)
+                .fill(MusicStyle.Palette.accentRow)
+        )
         .padding(.horizontal, MusicStyle.Spacing.page)
         .contentShape(Rectangle())
         .contextMenu {
@@ -200,13 +205,13 @@ private struct MusicQueueCurrentRow: View {
                 artist: track.artist,
                 links: track.artistLinks,
                 hidesPlainTextFromVoiceOver: true,
-                font: MusicStyle.Typeface.caption12.font,
+                font: MusicStyle.Typeface.secondary.font,
                 color: accent.opacity(0.75)
             )
             .layoutPriority(1)
             if let album = track.album, !album.isEmpty {
                 Text(" \u{00B7} " + album)
-                    .musicText(MusicStyle.Typeface.caption12)
+                    .musicText(MusicStyle.Typeface.secondary)
                     .foregroundStyle(accent.opacity(0.75))
                     .lineLimit(1)
                     .accessibilityHidden(true)

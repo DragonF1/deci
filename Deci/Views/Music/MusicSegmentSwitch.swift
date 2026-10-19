@@ -1,8 +1,9 @@
 // Deci/Views/Music/MusicSegmentSwitch.swift
 import SwiftUI
 
-/// The segmented control of Library: equal segments in a track, the picked one raised. A nil selection highlights
-/// nothing. Tapping a segment always reports it, even the selected one.
+/// The segmented control of Library in the Mixer's pill style: text segments in a small pill, the picked one on a raised
+/// fill that slides between them. A nil selection highlights nothing. Tapping a segment always reports it, even the
+/// selected one.
 struct MusicSegmentSwitch<Value: Hashable>: View {
     struct Segment: Identifiable {
         let value: Value
@@ -18,11 +19,11 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
     @Namespace private var namespace
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 2) {
             ForEach(segments) { segment in
                 let isSelected = selection == segment.value
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                         onSelect(segment.value)
                     }
                 } label: {
@@ -33,20 +34,15 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
                                 .symbolRenderingMode(.hierarchical)
                         }
                         Text(segment.title)
-                            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                            .musicText(MusicStyle.Typeface.secondaryMedium)
                     }
-                    .foregroundStyle(isSelected ? Color.white : MusicStyle.Palette.textSecondary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 26)
+                    .foregroundStyle(isSelected ? DesignTokens.Colors.textPrimary : DesignTokens.Colors.textTertiary)
+                    .padding(.horizontal, DesignTokens.Spacing.md)
+                    .frame(height: MusicStyle.Size.headerButton)
                     .background {
                         if isSelected {
-                            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                .fill(MusicStyle.Palette.fillSelected)
-                                .shadow(
-                                    color: MusicStyle.Shadow.segment.color,
-                                    radius: MusicStyle.Shadow.segment.radius,
-                                    y: MusicStyle.Shadow.segment.y
-                                )
+                            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius)
+                                .fill(DesignTokens.Colors.glassFillStrong)
                                 .matchedGeometryEffect(id: "segment", in: namespace)
                         }
                     }
@@ -58,9 +54,14 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
             }
         }
         .padding(3)
-        .frame(height: 32)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(MusicStyle.Palette.fillTrack))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1))
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius + 3)
+                .fill(DesignTokens.Colors.glassFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius + 3)
+                        .strokeBorder(DesignTokens.Colors.glassRowBorder, lineWidth: 0.5)
+                )
+        )
     }
 }
 

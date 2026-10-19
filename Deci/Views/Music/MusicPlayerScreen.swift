@@ -12,6 +12,7 @@ struct MusicPlayerScreen: View {
 
     /// The colour of the cover once it is known; until then the player wears the hash palette's tint of the song's id.
     @State private var coverTint: MusicTint?
+    @Environment(\.musicContentTop) private var contentTop
 
     init(service: MusicService, navigation: MusicSearchNavigation, screen: MusicShellScreen, mixer: MusicMixerState? = nil) {
         self.service = service
@@ -27,10 +28,13 @@ struct MusicPlayerScreen: View {
             page(track: track, tint: tint)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background {
-                    // The backdrop covers the popover's header strip too, which the shell's padding leaves above us.
+                    // The backdrop covers the popover's header row too, which the shell's padding leaves above us.
                     MusicPlayerBackdrop(coverURL: track.thumbnailURL, tint: tint, screen: screen)
-                        .padding(.top, -MusicPopupMetrics.headerHeight)
+                        .padding(.top, -contentTop)
                 }
+                // The backdrop is dark whatever the popover wears, so the controls on it read as on dark, and any glass
+                // or blur on it is the pinned dark one.
+                .musicDarkScope()
                 .animation(DesignTokens.Animation.quick, value: screen)
                 // The cover's colour: from the cache at once, else after the cover is fetched. Failing leaves the
                 // hash palette's tint. The previous song's colour stays until the new one is known.
@@ -62,10 +66,10 @@ struct MusicPlayerScreen: View {
                 MusicPlayerHeader(track: track)
                 MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
                     .frame(maxHeight: .infinity)
-                    .padding(.top, 6)
+                    .padding(.top, 4)
                 MusicPlayerFooter(service: service, navigation: navigation)
                     .padding(.horizontal, MusicLyricsView.margin)
-                    .padding(.top, 26)
+                    .padding(.top, 12)
                     .padding(.bottom, Self.footerBottom)
             }
             .transition(.opacity)
@@ -86,17 +90,17 @@ struct MusicPlayerScreen: View {
         }
     }
 
-    /// The space under the footer on Lyrics and Up next (the mock's 50).
-    private static let footerBottom: CGFloat = 50
+    /// The space under the footer on Lyrics and Up next.
+    private static let footerBottom: CGFloat = MusicStyle.Spacing.page
 }
 
-/// The song at the top of Lyrics and Up next: a small cover, the title and artist, and the "..." button.
+/// The song at the top of Lyrics and Up next: a small cover, the title and artist, and the "..." button, as a Mixer row.
 private struct MusicPlayerHeader: View {
     let track: MusicTrack
 
     var body: some View {
-        HStack(spacing: 12) {
-            MusicThumbnail(url: track.thumbnailURL, size: 48, cornerRadius: MusicStyle.Radius.small)
+        HStack(spacing: DesignTokens.Spacing.sm) {
+            MusicThumbnail(url: track.thumbnailURL, size: 36, cornerRadius: MusicStyle.Radius.small)
                 .overlay(
                     RoundedRectangle(cornerRadius: MusicStyle.Radius.small, style: .continuous)
                         .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
@@ -108,15 +112,15 @@ private struct MusicPlayerHeader: View {
                 )
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text(track.title)
-                    .musicText(MusicStyle.Typeface.row15SB)
-                    .foregroundStyle(.white)
+                    .musicText(MusicStyle.Typeface.heading)
+                    .foregroundStyle(MusicStyle.Palette.textPrimary)
                     .lineLimit(1)
                 MusicArtistLine(
                     artist: track.artist,
                     links: track.artistLinks,
-                    font: MusicStyle.Typeface.body13.font,
+                    font: MusicStyle.Typeface.secondary.font,
                     color: MusicStyle.Palette.playerSubtitle
                 )
             }
@@ -125,12 +129,12 @@ private struct MusicPlayerHeader: View {
             MusicNowPlayingMenu(track: track, style: .player)
         }
         .padding(.horizontal, MusicStyle.Spacing.page)
-        .padding(.top, 8)
+        .padding(.top, 4)
     }
 }
 
-/// Now Playing: the big cover, the title and artist, the scrubber, the transport, the volume and the row that opens
-/// Lyrics and Up next. The gaps between the blocks stretch a little when the popover is taller than the mock.
+/// Now Playing: the cover, the title and artist, the scrubber, the transport, the volume and the row that opens
+/// Lyrics and Up next, at the Mixer's scale. The gaps between the blocks stretch when the popover is taller.
 private struct MusicNowPlayingPage: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
@@ -139,34 +143,37 @@ private struct MusicNowPlayingPage: View {
     let tint: MusicTint
 
     /// The side margin of every block under the cover.
-    private static let margin: CGFloat = 32
+    private static let margin: CGFloat = 28
+
+    /// The cover's side.
+    private static let artSize: CGFloat = 160
 
     var body: some View {
         VStack(spacing: 0) {
             artwork
-                .padding(.top, 20)
-            Spacer(minLength: 20)
+                .padding(.top, 8)
+            Spacer(minLength: 12)
             titleBlock
                 .padding(.horizontal, Self.margin)
-            Spacer(minLength: 13)
+            Spacer(minLength: 8)
             MusicPlayerScrubber(service: service)
                 .padding(.horizontal, Self.margin)
-            Spacer(minLength: 13)
+            Spacer(minLength: 8)
             MusicPlayerTransport(service: service)
             if let mixer {
-                Spacer(minLength: 20)
+                Spacer(minLength: 12)
                 MusicPlayerVolumeRow(mixer: mixer)
                     .padding(.horizontal, Self.margin)
             }
-            Spacer(minLength: 22)
+            Spacer(minLength: 12)
             MusicPlayerBottomRow(service: service, navigation: navigation, mixer: mixer, tint: tint)
                 .padding(.horizontal, Self.margin)
-                .padding(.bottom, 38)
+                .padding(.bottom, MusicStyle.Spacing.page)
         }
     }
 
     private var artwork: some View {
-        MusicThumbnail(url: track.thumbnailURL, size: 220, cornerRadius: MusicStyle.Radius.card)
+        MusicThumbnail(url: track.thumbnailURL, size: Self.artSize, cornerRadius: MusicStyle.Radius.card)
             .overlay(
                 RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous)
                     .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
@@ -183,21 +190,21 @@ private struct MusicNowPlayingPage: View {
     private var titleBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(track.title)
-                .musicText(MusicStyle.Typeface.title3)
-                .foregroundStyle(.white)
+                .musicText(MusicStyle.Typeface.songTitle)
+                .foregroundStyle(MusicStyle.Palette.textPrimary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .help(track.title)
             if let error = service.player.error {
                 Text(error)
-                    .musicText(MusicStyle.Typeface.body17)
+                    .musicText(MusicStyle.Typeface.row)
                     .foregroundStyle(MusicStyle.Palette.playerSubtitle)
                     .lineLimit(1)
             } else {
                 MusicArtistLine(
                     artist: track.artist,
                     links: track.artistLinks,
-                    font: MusicStyle.Typeface.body17.font,
+                    font: MusicStyle.Typeface.row.font,
                     color: MusicStyle.Palette.playerSubtitle
                 )
             }

@@ -1,8 +1,8 @@
 // Deci/Views/Music/MusicLibraryView.swift
 import SwiftUI
 
-/// The Library root: a large title, the Playlists / Albums / Artists switch, then the saved list, with Liked music
-/// first on Playlists. One scroll view, so the title scrolls away with the content.
+/// The Library root: the Playlists / Albums / Artists switch, then the saved list, with Liked music first on
+/// Playlists. One scroll view, so the switch scrolls away with the content.
 struct MusicLibraryView: View {
     let service: MusicService
     @Environment(\.musicCollectionPin) private var collectionPin
@@ -15,7 +15,7 @@ struct MusicLibraryView: View {
     var body: some View {
         ScrollViewReader { proxy in
             scroll
-                // Another section starts at the top, as its own list did before the title joined the scroll.
+                // Another section starts at the top.
                 .onChange(of: section) {
                     proxy.scrollTo(Self.topID, anchor: .top)
                 }
@@ -25,15 +25,13 @@ struct MusicLibraryView: View {
     private var scroll: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                MusicScreenHeader(title: "Library", account: service.account)
-                    .id(Self.topID)
-
                 MusicSegmentSwitch(segments: MusicLibrarySection.segments, selection: section) {
                     browse.librarySection = $0
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, MusicStyle.Spacing.page)
-                .padding(.top, 12)
-                .padding(.bottom, 16)
+                .padding(.bottom, DesignTokens.Spacing.sm)
+                .id(Self.topID)
 
                 // Always first on Playlists, whatever state the list under it is in.
                 likedMusic
@@ -109,8 +107,8 @@ struct MusicCollectionRow: View {
     var isPinned = false
     let action: () -> Void
 
-    static let coverSize: CGFloat = 56
-    static let height: CGFloat = 64
+    static let coverSize: CGFloat = 32
+    static let height: CGFloat = 40
 
     @State private var isHovered = false
 
@@ -124,18 +122,18 @@ struct MusicCollectionRow: View {
         // Worked out once per draw: the text, the "is there a line" check and the VoiceOver label all use it.
         let subtitle = subtitleText
         Button(action: action) {
-            HStack(spacing: 12) {
+            HStack(spacing: DesignTokens.Spacing.sm) {
                 cover
 
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: DesignTokens.Spacing.sm) {
+                    VStack(alignment: .leading, spacing: 0) {
                         Text(collection.title)
-                            .musicText(symbol == nil ? MusicStyle.Typeface.row15M : MusicStyle.Typeface.row15SB)
-                            .foregroundStyle(.white)
+                            .musicText(MusicStyle.Typeface.row)
+                            .foregroundStyle(MusicStyle.Palette.textPrimary)
                             .lineLimit(1)
                         if !subtitle.isEmpty {
                             Text(subtitle)
-                                .musicText(MusicStyle.Typeface.caption12)
+                                .musicText(MusicStyle.Typeface.secondary)
                                 .foregroundStyle(MusicStyle.Palette.textSecondary)
                                 .lineLimit(1)
                         }
@@ -144,16 +142,11 @@ struct MusicCollectionRow: View {
                     Spacer(minLength: 0)
 
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(MusicStyle.Palette.textQuaternary)
-                        .frame(width: 16, height: 16)
                         .accessibilityHidden(true)
                 }
                 .frame(maxHeight: .infinity)
-                .padding(.trailing, 4)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1)
-                }
             }
             .frame(height: Self.height)
             .musicRowHover(isHovered)
@@ -180,8 +173,8 @@ struct MusicCollectionRow: View {
                 .frame(width: Self.coverSize, height: Self.coverSize)
                 .overlay {
                     Image(systemName: symbol)
-                        .font(.system(size: 26))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.white)
                 }
                 .accessibilityHidden(true)
         } else {
@@ -201,7 +194,7 @@ struct MusicCollectionRow: View {
                         .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
                 }
             }
-            .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: circular, diameter: 14, inset: 4)
+            .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: circular, diameter: 14, inset: 2)
         }
     }
 }

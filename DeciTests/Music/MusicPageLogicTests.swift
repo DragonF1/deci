@@ -1,4 +1,5 @@
 // DeciTests/Music/MusicPageLogicTests.swift
+import AppKit
 import SwiftUI
 import Testing
 
@@ -16,40 +17,6 @@ struct MusicPageKindTests {
         // An album or an artist with that id is still what its kind says.
         #expect(MusicPageKind.resolve(kind: .album, browseId: "VLLM") == .album)
     }
-
-    @Test("the visual always ends above the hero's bottom edge, where the title block and the pills overlap it")
-    func visualIsShorterThanHero() {
-        for kind in [MusicPageKind.album, .artist, .playlist, .liked] {
-            #expect(kind.visualHeight < kind.heroHeight)
-        }
-    }
-
-    @Test("the cover is placed at the mock's offset when the popover is as wide as the mock, and scales with it")
-    func coverTop() {
-        #expect(MusicPageKind.album.coverTop(width: 510) == CGFloat(-100))
-        #expect(MusicPageKind.artist.coverTop(width: 510) == CGFloat(-170))
-        // A narrower popover shrinks the cover and its rise by the same ratio.
-        #expect(abs(MusicPageKind.album.coverTop(width: 255) - (260 - 180)) < 0.0001)
-        // The cover always reaches the visual's bottom edge or beyond: its height is the width.
-        for width in [320.0, 420, 510, 600] {
-            let top = MusicPageKind.album.coverTop(width: width)
-            #expect(top + width >= MusicPageKind.album.visualHeight)
-        }
-    }
-
-    @Test("every fade starts clear, ends solid and only gets more opaque")
-    func fadeStops() {
-        for kind in [MusicPageKind.album, .artist, .playlist, .liked] {
-            let stops = kind.fadeStops
-            #expect(stops.first?.location == 0 && stops.first?.opacity == 0)
-            #expect(stops.last?.location == 1 && stops.last?.opacity == 1)
-            for (before, after) in zip(stops, stops.dropFirst()) {
-                #expect(after.location > before.location)
-                #expect(after.opacity >= before.opacity)
-            }
-        }
-    }
-
 }
 
 @MainActor
@@ -58,15 +25,35 @@ struct MusicPagePaletteTests {
     private let cover = MusicTint(hue: 0.6, saturation: 0.5, brightness: 0.5)
     private let fallback = MusicTint.forKey("some page")
 
+    /// The sRGB components of a colour, red, green, blue and alpha.
+    private func components(_ color: Color) -> [Double] {
+        let resolved = NSColor(color).usingColorSpace(.sRGB) ?? .clear
+        return [resolved.redComponent, resolved.greenComponent, resolved.blueComponent, resolved.alphaComponent].map(Double.init)
+    }
+
+    private func expectSameColour(_ a: Color, _ b: Color, alpha: Double, sourceLocation: SourceLocation = #_sourceLocation) {
+        let lhs = components(a)
+        let rhs = components(b)
+        for index in 0..<3 {
+            #expect(abs(lhs[index] - rhs[index]) < 0.002, sourceLocation: sourceLocation)
+        }
+        #expect(abs(lhs[3] - alpha) < 0.002, sourceLocation: sourceLocation)
+    }
+
+    @Test("the header wash is the page colour at 85 percent on dark and the light colour at 55 percent on light")
+    func washFollowsScheme() {
+        for palette in [MusicPagePalette(tint: cover), .liked] {
+            expectSameColour(palette.wash(for: .dark), palette.page, alpha: 0.85)
+            expectSameColour(palette.wash(for: .light), palette.light, alpha: 0.55)
+        }
+    }
+
     @Test("a page wears its cover's colours")
     func coverColours() {
         let palette = MusicPagePalette.resolve(kind: .album, coverTint: cover, fallback: fallback)
         #expect(palette == MusicPagePalette(tint: cover))
         #expect(palette.page == cover.page)
-        #expect(palette.pageBottom == cover.pageBottom)
         #expect(palette.light == cover.light)
-        #expect(palette.ink == cover.ink)
-        #expect(palette.accentText == cover.light)
     }
 
     @Test("until the cover's colour is known the page keeps the tint of its id")
@@ -80,9 +67,58 @@ struct MusicPagePaletteTests {
     func likedIsFixed() {
         #expect(MusicPagePalette.resolve(kind: .liked, coverTint: cover, fallback: fallback) == .liked)
         #expect(MusicPagePalette.resolve(kind: .liked, coverTint: nil, fallback: fallback) == .liked)
-        #expect(MusicPagePalette.liked.accentText != MusicPagePalette.liked.light)
+        #expect(MusicPagePalette.liked.page != cover.page)
+    }
+}
+
+@Suite("MusicInk")
+struct MusicInkTests {
+    @Test("yellow is too light for white, so it gets black ink")
+    func yellowGetsBlack() {
+        // The system's yellow accent.
+        #expect(MusicInk.onFill(red: 1, green: 0.8, blue: 0) == .black)
     }
 
+    @Test("graphite and the default blue keep white ink, like the Mac's own buttons")
+    func graphiteAndBlueGetWhite() {
+        // The system's graphite and blue accents.
+        #expect(MusicInk.onFill(red: 0.596, green: 0.596, blue: 0.616) == .white)
+        #expect(MusicInk.onFill(red: 0, green: 0.478, blue: 1) == .white)
+        // Orange and green keep white as well: it is what the Mac puts on them.
+        #expect(MusicInk.onFill(red: 1, green: 0.584, blue: 0) == .white)
+        #expect(MusicInk.onFill(red: 0.157, green: 0.804, blue: 0.255) == .white)
+    }
+
+    @Test("the extremes: black takes white ink and white takes black ink")
+    func extremes() {
+        #expect(MusicInk.onFill(red: 0, green: 0, blue: 0) == .white)
+        #expect(MusicInk.onFill(red: 1, green: 1, blue: 1) == .black)
+    }
+
+    @Test("out of range and not-a-number components are clamped and do not crash")
+    func oddInput() {
+        #expect(MusicInk.onFill(red: 3, green: 3, blue: 3) == .black)
+        #expect(MusicInk.onFill(red: -1, green: -1, blue: -1) == .white)
+        #expect(MusicInk.onFill(red: .nan, green: .infinity, blue: -.infinity) == .white)
+    }
+
+    @Test("the ink maps to the colour of its name")
+    func colours() {
+        #expect(MusicInk.white.color == .white)
+        #expect(MusicInk.black.color == .black)
+    }
+}
+
+@MainActor
+@Suite("MusicDarkBlur")
+struct MusicDarkBlurTests {
+    @Test("the pinned blur is dark Aqua whatever the window wears, and blurs inside the window")
+    func pinnedDark() {
+        let view = MusicDarkBlur.makeEffectView()
+        #expect(view.appearance?.name == .darkAqua)
+        #expect(view.blendingMode == .withinWindow)
+        #expect(view.state == .active)
+    }
 }
 
 @MainActor
@@ -121,7 +157,7 @@ struct MusicPagePillsTests {
     @Test("the Sort pill is plain at rest and names the key and the direction once picked")
     func sortPill() {
         let rest = MusicPagePills.sortPill(.default)
-        #expect(rest == .init(label: "Sort", symbol: "arrow.up.arrow.down", symbolSize: 16, isActive: false))
+        #expect(rest == .init(label: "Sort", symbol: "arrow.up.arrow.down", isActive: false))
         let up = MusicPagePills.sortPill(MusicPlaylistSort(field: .title, ascending: true))
         #expect(up.label == "Title" && up.symbol == "arrow.up" && up.isActive)
         let down = MusicPagePills.sortPill(MusicPlaylistSort(field: .duration, ascending: false))
@@ -229,7 +265,7 @@ struct MusicPageHeroTextTests {
 struct MusicPageScrollTests {
     @Test("the bar is clear while the hero reaches under the nav row and solid a fade later")
     func barOpacity() {
-        let hero: CGFloat = 288
+        let hero = MusicPageKind.album.heroHeight
         let start = hero - MusicPageScroll.barHeight
         #expect(MusicPageScroll.barOpacity(offset: 0, heroHeight: hero) == 0)
         #expect(MusicPageScroll.barOpacity(offset: start, heroHeight: hero) == 0)
@@ -265,11 +301,23 @@ struct MusicSongRowLayoutTests {
         #expect(MusicSongRowLayout.album(number: 7).number == 7)
         #expect(MusicSongRowLayout.album(number: 7).coverSize == nil)
         #expect(MusicSongRowLayout.topSong(number: 3).number == 3)
-        #expect(MusicSongRowLayout.topSong(number: 3).coverSize == 40)
+        #expect(MusicSongRowLayout.topSong(number: 3).coverSize != nil)
         #expect(MusicSongRowLayout.playlist.number == nil)
-        #expect(MusicSongRowLayout.playlist.coverSize == 40)
+        #expect(MusicSongRowLayout.playlist.coverSize != nil)
         #expect(MusicSongRowLayout.search.number == nil)
-        #expect(MusicSongRowLayout.search.coverSize == 36)
+        #expect(MusicSongRowLayout.search.coverSize != nil)
+    }
+
+    @Test("every row with a cover uses the Mixer's 32 to 36 pt art and has room for it above and below")
+    func coverFitsTheRow() {
+        let layouts: [MusicSongRowLayout] = [.search, .playlist, .topSong(number: 1), .album(number: 1)]
+        for layout in layouts {
+            if let cover = layout.coverSize {
+                #expect((32...36).contains(cover))
+                #expect(layout.height >= cover + 2 * 2)
+            }
+            #expect(layout.height >= 36 && layout.height <= 44)
+        }
     }
 
     @Test("an album's playing track is marked by the bars, so its title keeps its colour")
