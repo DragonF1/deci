@@ -1,5 +1,5 @@
 // DeciTests/Music/MusicLiveLyricsTests.swift
-// Hits the real lrclib.net through the real client and transport, with a temporary cache. No
+// Hits the real lrclib.net through the real client and transport, behind the chain's temporary cache. No
 // Keychain item, YouTube client or account is involved.
 // Skipped unless DECI_MUSIC_LIVE=1 (pass it to xcodebuild as TEST_RUNNER_DECI_MUSIC_LIVE=1).
 // Prints counts only, never lyric text.
@@ -33,10 +33,14 @@ struct MusicLiveLyricsTests {
         let directory = makeTemporaryDirectory("deci-music-live-lyrics")
         defer { try? FileManager.default.removeItem(at: directory) }
         let cache = LyricsDiskCache(directory: directory.appendingPathComponent("Lyrics", isDirectory: true))
-        let client = LRCLibClient(
-            transport: URLSessionTransport(configuration: LRCLibClient.makeConfiguration()),
-            cache: cache,
-            userAgent: LRCLibClient.userAgent(version: "test")
+        // LRCLIB alone behind the disk cache: YouTube Music is switched off so this stays a test of LRCLIB.
+        let client = LyricsChain(
+            primary: NoLyricsProvider(),
+            fallback: LRCLibClient(
+                transport: URLSessionTransport(configuration: LRCLibClient.makeConfiguration()),
+                userAgent: LRCLibClient.userAgent(version: "test")
+            ),
+            cache: cache
         )
         let query = LyricsQuery(
             videoId: "dQw4w9WgXcQ",

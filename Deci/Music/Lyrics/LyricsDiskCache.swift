@@ -3,10 +3,13 @@ import CryptoKit
 import Foundation
 import os
 
-/// What LRCLIB said about a video, kept on disk so the same song is never asked for twice a month.
-/// One small JSON file per video, named by a hash of the video id. Found lyrics last 30 days, "not found" 3,
-/// and the folder keeps the newest 500 files. Network errors and 429s are never stored: the client
-/// only calls `store` with a real answer.
+/// What the lyrics sources said about a video, and who is credited for it, kept on disk so the same song is never
+/// asked for twice a month. One small JSON file per video, named by a hash of the video id. Found lyrics last 30
+/// days, "not found" 3, and the folder keeps the newest 500 files. Network errors and 429s are never stored: the
+/// chain only calls `store` with a real answer.
+///
+/// Entries are version 2, which carry the credit. A version 1 file (from before YouTube Music, when a "not found"
+/// could only mean LRCLIB did not know the song) is a miss and is deleted, so it cannot hide YouTube Music's lyrics.
 ///
 /// An actor, so file reads and writes run off the main thread and two writes never prune over each other.
 actor LyricsDiskCache {
@@ -20,6 +23,7 @@ actor LyricsDiskCache {
         var kind: String
         var lines: [Line]?
         var text: String?
+        var credit: String?
 
         struct Line: Codable {
             var time: Double
@@ -27,7 +31,7 @@ actor LyricsDiskCache {
         }
     }
 
-    private static let currentVersion = 1
+    private static let currentVersion = 2
     private static let log = Logger(subsystem: "com.abraham.Deci", category: "MusicLyrics")
 
     private let directory: URL
@@ -58,9 +62,10 @@ actor LyricsDiskCache {
 
     // MARK: - Reading
 
-    /// The stored answer, or nil when there is none, it has expired or the file cannot be read. A file
-    /// that is expired or damaged is deleted on the way.
-    func cached(videoId: String) -> LyricsResult? {
+    /// The stored answer, or nil when there is none, it has expired or the file cannot be read. A file that is
+    /// expired, damaged or of another version is deleted on the way. Whatever was stored is final, so the length the
+    /// player knows no longer matters to it.
+    func cached(videoId: String) -> LyricsAnswer? {
         let url = fileURL(videoId)
         guard let data = try? Data(contentsOf: url) else { return nil }
         guard let entry = try? JSONDecoder().decode(Entry.self, from: data), entry.version == Self.currentVersion,
@@ -74,14 +79,14 @@ actor LyricsDiskCache {
             try? FileManager.default.removeItem(at: url)
             return nil
         }
-        return result
+        return LyricsAnswer(result: result, credit: entry.credit, lengthMatters: false)
     }
 
     // MARK: - Writing
 
-    func store(_ result: LyricsResult, videoId: String) {
+    func store(_ result: LyricsResult, credit: String? = nil, videoId: String) {
         let stamp = now()
-        let entry = Self.entry(for: result, storedAt: stamp)
+        let entry = Self.entry(for: result, credit: credit, storedAt: stamp)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = fileURL(videoId)
@@ -117,20 +122,20 @@ actor LyricsDiskCache {
 
     // MARK: - Encoding
 
-    private static func entry(for result: LyricsResult, storedAt: Date) -> Entry {
+    private static func entry(for result: LyricsResult, credit: String?, storedAt: Date) -> Entry {
         let stamp = storedAt.timeIntervalSince1970
         switch result {
         case .synced(let lines):
             return Entry(
                 version: currentVersion, storedAt: stamp, kind: "synced",
-                lines: lines.map { Entry.Line(time: $0.time, text: $0.text) }, text: nil
+                lines: lines.map { Entry.Line(time: $0.time, text: $0.text) }, text: nil, credit: credit
             )
         case .plain(let text):
-            return Entry(version: currentVersion, storedAt: stamp, kind: "plain", lines: nil, text: text)
+            return Entry(version: currentVersion, storedAt: stamp, kind: "plain", lines: nil, text: text, credit: credit)
         case .instrumental:
-            return Entry(version: currentVersion, storedAt: stamp, kind: "instrumental", lines: nil, text: nil)
+            return Entry(version: currentVersion, storedAt: stamp, kind: "instrumental", lines: nil, text: nil, credit: credit)
         case .notFound:
-            return Entry(version: currentVersion, storedAt: stamp, kind: "notFound", lines: nil, text: nil)
+            return Entry(version: currentVersion, storedAt: stamp, kind: "notFound", lines: nil, text: nil, credit: credit)
         }
     }
 

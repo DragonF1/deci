@@ -8,9 +8,12 @@ import Observation
 ///
 /// Lyrics are fetched only while the panel is open and the popup is on screen, for the current track, and
 /// again when the track changes while it is. A closed panel never touches the network. A track change waits a
-/// moment first (`debounce`), so skipping through a queue sends one request, for the song it stops on. When LRCLIB
-/// asks us to wait (busy, or a server-error window), the store asks again by itself as the window ends, but only
-/// while the panel is being watched.
+/// moment first (`debounce`), so skipping through a queue sends one request, for the song it stops on. When a lyrics
+/// source asks us to wait (busy, or a server-error window), the store asks again by itself as the window ends, but
+/// only while the panel is being watched.
+///
+/// Where the lyrics came from is the provider's business (the live one tries YouTube Music, then LRCLIB); the store
+/// carries the credit line the provider gave with the answer, for the panel to print under the lyrics.
 @MainActor
 @Observable
 final class MusicLyricsStore {
@@ -18,7 +21,7 @@ final class MusicLyricsStore {
         case idle
         case loading
         case loaded(LyricsResult)
-        /// LRCLIB asked us to wait; nothing goes out before the date, and the store asks again then.
+        /// A lyrics source asked us to wait; nothing goes out before the date, and the store asks again then.
         case busy(until: Date)
         /// A short message for the user; the panel shows it with a Retry button. With `retryAfter` (a server error
         /// that opened a short window) Retry comes once that date has passed, nothing goes out before it, and the
@@ -29,12 +32,12 @@ final class MusicLyricsStore {
     /// How long a track change waits before asking. A newer change inside it replaces the pending request.
     static let debounce: Duration = .milliseconds(300)
 
-    /// The panel's words while LRCLIB asks us to wait.
+    /// The panel's words while a lyrics source asks us to wait.
     static let busyMessage = "Lyrics service is busy. Trying again shortly."
 
-    /// The store the app uses: lyrics from LRCLIB.
+    /// The store the app uses: lyrics from YouTube Music, with LRCLIB behind it and a disk cache in front.
     static func live() -> MusicLyricsStore {
-        MusicLyricsStore(provider: LRCLibClient.live())
+        MusicLyricsStore(provider: LyricsChain.live())
     }
 
     private(set) var state: State = .idle
@@ -46,6 +49,16 @@ final class MusicLyricsStore {
     private(set) var isPopupVisible = true
     /// The last position the player reported, for the highlight to run ahead of between ticks.
     private(set) var playhead = LyricsPlayhead.zero
+    /// The credit that came with the lyrics now on screen. Only meaningful while `state` is `.loaded`: every other
+    /// state is entered without it, and `credit` hides it there.
+    private var loadedCredit: String?
+
+    /// The line that says where the lyrics on screen came from ("Lyrics from LRCLIB"). Nil while loading, after a
+    /// failure, when the track changes (it goes with the lyrics it belonged to), and when the source names no one.
+    var credit: String? {
+        guard case .loaded = state else { return nil }
+        return loadedCredit
+    }
 
     /// The panel is open and can be seen: the only time anything is fetched or animated.
     var isWatching: Bool { isPanelOpen && isPopupVisible }
@@ -69,8 +82,9 @@ final class MusicLyricsStore {
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     /// The player's length of the track, in seconds, once it is known; nil until then.
     @ObservationIgnored private var duration: TimeInterval?
-    /// The lookup in flight or last done ran with no duration, so its answer was not cached. A duration that
-    /// shows up for the same track while this is set redoes the lookup once.
+    /// The lookup in flight or last done ran with no duration, and its answer may be a guess (LRCLIB matches on the
+    /// length). A duration that shows up for the same track while this is set redoes the lookup once. An answer that
+    /// does not depend on the length (`LyricsAnswer.lengthMatters` false) clears it: nothing is left to improve.
     @ObservationIgnored private var lookupLacksDuration = false
     /// A fetch names itself with the next number and only lands while it is still the current one, so a
     /// track change, a close or a reset drops a slower earlier answer.
@@ -145,7 +159,7 @@ final class MusicLyricsStore {
     }
 
     /// The exact length reached a track whose lookup ran without one. The answer may be a guess and was not
-    /// cached, so it is dropped and asked for again, once: at once while watching, else on the next open. A failed
+    /// kept, so it is dropped and asked for again, once: at once while watching, else on the next open. A failed
     /// or busy lookup stays as it is, and its Retry uses the new length.
     private func durationArrived() {
         switch state {
@@ -208,8 +222,8 @@ final class MusicLyricsStore {
             }
             guard let query = self?.queryIfCurrent(run) else { return }
             do {
-                let result = try await provider.lyrics(for: query)
-                self?.land(.loaded(result), run: run)
+                let answer = try await provider.answer(for: query)
+                self?.land(answer, run: run)
             } catch is CancellationError {
                 // Whoever cancelled has already set the state.
             } catch let error as LyricsError {
@@ -236,6 +250,15 @@ final class MusicLyricsStore {
         case .backoff(_, let until): .failed(message(for: error), retryAfter: until)
         case .http, .parse: .failed(message(for: error))
         }
+    }
+
+    /// An answer for the current run: its credit is set before the state, so a view that sees `.loaded` sees the
+    /// credit with it. An answer that does not depend on the length ends the wait for one.
+    private func land(_ answer: LyricsAnswer, run: Int) {
+        guard run == runCounter else { return }
+        if !answer.lengthMatters { lookupLacksDuration = false }
+        loadedCredit = answer.credit
+        land(.loaded(answer.result), run: run)
     }
 
     private func land(_ new: State, run: Int) {

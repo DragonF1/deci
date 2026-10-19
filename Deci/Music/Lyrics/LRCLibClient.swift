@@ -3,13 +3,17 @@ import Foundation
 import os
 
 /// Lyrics from lrclib.net, a free community service: `/api/get` with the exact track, falling back to
-/// `/api/search`, a disk cache in front, a hard stop on 429, and a quick second and third try when a request
-/// fails with a blip (a 5xx that is gone a moment later).
+/// `/api/search`, a hard stop on 429, and a quick second and third try when a request fails with a blip (a 5xx that
+/// is gone a moment later). The second source of the chain, after YouTube Music; it keeps no disk cache of its own,
+/// the chain owns that, but it keeps the busy and server-error windows.
 ///
 /// Nothing that identifies the listener ever goes out: no cookies, no auth headers, no video id, only the
 /// song's title, artist, album and length and a User-Agent that names the app. It goes through `HTTPTransport`
 /// so tests can script the service, and the live transport is an ephemeral session with no cookie jar or cache.
 actor LRCLibClient: LyricsProviding {
+    /// The credit line for lyrics that came from here.
+    static let credit = "Lyrics from LRCLIB"
+
     /// How far a record's length may be from the song's, either way.
     static let durationTolerance: TimeInterval = 2
     /// A record with fewer sung lines than this is the placeholder junk LRCLIB sometimes returns.
@@ -58,7 +62,6 @@ actor LRCLibClient: LyricsProviding {
     }
 
     private let transport: any HTTPTransport
-    private let cache: LyricsDiskCache
     private let userAgent: String
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (Duration) async throws -> Void
@@ -66,13 +69,11 @@ actor LRCLibClient: LyricsProviding {
 
     init(
         transport: any HTTPTransport,
-        cache: LyricsDiskCache,
         userAgent: String,
         now: @escaping @Sendable () -> Date = Date.init,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.transport = transport
-        self.cache = cache
         self.userAgent = userAgent
         self.now = now
         self.sleep = sleep
@@ -82,7 +83,6 @@ actor LRCLibClient: LyricsProviding {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         return LRCLibClient(
             transport: URLSessionTransport(configuration: makeConfiguration()),
-            cache: .live(),
             userAgent: userAgent(version: version)
         )
     }
@@ -116,24 +116,29 @@ actor LRCLibClient: LyricsProviding {
     // MARK: - Lookup
 
     func lyrics(for query: LyricsQuery) async throws -> LyricsResult {
-        // A cached answer needs no network, so it is served even inside a busy window.
-        if let hit = await cache.cached(videoId: query.videoId) { return hit }
+        try await answer(for: query).result
+    }
+
+    /// Synced and plain lyrics are credited to LRCLIB; an instrumental or a miss has nothing to credit. Without the
+    /// exact length the match is a guess (the search takes the first usable record), so the answer says the length
+    /// matters: the store asks again once the player knows it, and the chain does not keep the guess for 30 days.
+    func answer(for query: LyricsQuery) async throws -> LyricsAnswer {
         try Task.checkCancellation()
         if let until = busyUntil { throw LyricsError.busy(until: until) }
 
         let result = try await lookup(query)
         try Task.checkCancellation()
-        // Without the exact length the match is a guess (the search takes the first usable record), and a guess
-        // must not stick for 30 days: the store asks again once the player knows the length.
-        if Self.known(query.duration) != nil {
-            await cache.store(result, videoId: query.videoId)
+        let credit: String?
+        switch result {
+        case .synced, .plain: credit = Self.credit
+        case .instrumental, .notFound: credit = nil
         }
-        return result
+        return LyricsAnswer(result: result, credit: credit, lengthMatters: query.knownDuration == nil)
     }
 
     private func lookup(_ query: LyricsQuery) async throws -> LyricsResult {
         // /api/get answers with one record or a 404, and wants the album and the length to match on.
-        if let album = Self.known(query.album), let duration = Self.known(query.duration) {
+        if let album = Self.known(query.album), let duration = query.knownDuration {
             let parameters = [
                 ("track_name", query.title),
                 ("artist_name", query.artist),
@@ -149,14 +154,14 @@ actor LRCLibClient: LyricsProviding {
             }
         }
 
-        if let found = try await search(title: query.title, artist: query.artist, duration: query.duration) {
+        if let found = try await search(title: query.title, artist: query.artist, duration: query.knownDuration) {
             return found
         }
         // One more try with the packaging taken off the title and only the first artist.
         let title = LyricsTitleCleaner.cleanTitle(query.title)
         let artist = LyricsTitleCleaner.firstArtist(query.artist)
         if title != query.title || artist != query.artist,
-           let found = try await search(title: title, artist: artist, duration: query.duration) {
+           let found = try await search(title: title, artist: artist, duration: query.knownDuration) {
             return found
         }
         return .notFound
@@ -164,11 +169,10 @@ actor LRCLibClient: LyricsProviding {
 
     /// The best record within the duration window: synced over plain over instrumental, the closest length
     /// first among equals. Nil when nothing usable is in range.
-    private func search(title: String, artist: String, duration: TimeInterval?) async throws -> LyricsResult? {
+    private func search(title: String, artist: String, duration target: TimeInterval?) async throws -> LyricsResult? {
         guard let data = try await fetch("search", [("track_name", title), ("artist_name", artist)]) else { return nil }
         guard let objects = try? JSONSerialization.jsonObject(with: data) as? [Any] else { throw LyricsError.parse }
 
-        let target = Self.known(duration)
         var best: (answer: Answer, distance: Double)?
         for case let object as [String: Any] in objects {
             let record = Record(object)
@@ -285,11 +289,6 @@ actor LRCLibClient: LyricsProviding {
     private static func known(_ album: String?) -> String? {
         let trimmed = album?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func known(_ duration: TimeInterval?) -> TimeInterval? {
-        guard let duration, duration.isFinite, duration > 0 else { return nil }
-        return duration
     }
 
     private static func answer(for record: Record) -> Answer? {

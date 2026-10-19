@@ -40,9 +40,9 @@ struct MusicLyricsView: View {
         case .busy(let until):
             MusicLyricsWaitView(message: MusicLyricsStore.busyMessage, until: until) { store.retry() }
         case .loaded(.synced(let lines)):
-            MusicSyncedLyricsList(store: store, lines: lines, seek: seek)
+            MusicSyncedLyricsList(store: store, lines: lines, credit: store.credit, seek: seek)
         case .loaded(.plain(let text)):
-            MusicPlainLyricsView(text: text)
+            MusicPlainLyricsView(text: text, credit: store.credit)
         case .loaded(.instrumental):
             MusicEmptyView(text: "Instrumental")
         case .loaded(.notFound):
@@ -51,7 +51,7 @@ struct MusicLyricsView: View {
     }
 }
 
-/// LRCLIB asked us to wait (busy, or a server error that opened a short window): the message shows, and Retry
+/// A lyrics source asked us to wait (busy, or a server error that opened a short window): the message shows, and Retry
 /// appears once the window has passed. Until then nothing is sent. There is no ticking clock: one timeline entry
 /// just after the end of the window redraws the view once, and a window that is already over shows Retry at once.
 private struct MusicLyricsWaitView: View {
@@ -107,20 +107,27 @@ private extension View {
     }
 }
 
+/// The line under the lyrics that says where they came from, as the lyrics source worded it ("Lyrics from LRCLIB").
+/// Nothing at all when the source named no one.
 private struct MusicLyricsCredit: View {
+    let text: String?
+
     var body: some View {
-        Text("Lyrics from LRCLIB")
-            .font(DesignTokens.Typography.caption)
-            .foregroundStyle(DesignTokens.Colors.textTertiary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, DesignTokens.Spacing.sm)
-            .padding(.vertical, DesignTokens.Spacing.md)
+        if let text {
+            Text(text)
+                .font(DesignTokens.Typography.caption)
+                .foregroundStyle(DesignTokens.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, DesignTokens.Spacing.sm)
+                .padding(.vertical, DesignTokens.Spacing.md)
+        }
     }
 }
 
 /// Lyrics with no timing: text to read, marked as not synced.
 private struct MusicPlainLyricsView: View {
     let text: String
+    let credit: String?
 
     var body: some View {
         ScrollView {
@@ -132,7 +139,7 @@ private struct MusicPlainLyricsView: View {
                     .font(DesignTokens.Typography.rowName)
                     .foregroundStyle(DesignTokens.Colors.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                MusicLyricsCredit()
+                MusicLyricsCredit(text: credit)
                     .padding(.horizontal, -DesignTokens.Spacing.sm)
             }
             .padding(.horizontal, DesignTokens.Spacing.sm)
@@ -195,6 +202,7 @@ private struct MusicLyricRow: View {
 private struct MusicSyncedLyricsList: View {
     let store: MusicLyricsStore
     let lines: [LyricLine]
+    let credit: String?
     let seek: (TimeInterval) -> Void
     /// Written by the tracker, so only the rows whose position changed redraw as the song moves.
     @State private var currentIndex: Int?
@@ -211,7 +219,7 @@ private struct MusicSyncedLyricsList: View {
                         }
                         .id(index)
                     }
-                    MusicLyricsCredit()
+                    MusicLyricsCredit(text: credit)
                 }
                 .padding(.top, DesignTokens.Spacing.md)
             }

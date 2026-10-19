@@ -152,12 +152,14 @@ nonisolated final class FakeLRCLib: HTTPTransport, @unchecked Sendable {
     }
 }
 
-/// Stands in for the LRCLIB client in store and service tests: records queries, answers from a
-/// script, and can hold a query at a gate.
+/// Stands in for a lyrics source (the chain's two legs, or the whole chain in store and service tests): records
+/// queries, answers from a script, and can hold a query at a gate.
 nonisolated final class FakeLyricsProvider: LyricsProviding, @unchecked Sendable {
     private struct State {
         var queries: [LyricsQuery] = []
         var results: [String: LyricsResult] = [:]
+        var credits: [String: String] = [:]
+        var lengthMatters: [String: Bool] = [:]
         var errors: [String: any Error] = [:]
         var gates: [String: MusicTestGate] = [:]
         var fallback: LyricsResult = .notFound
@@ -172,6 +174,16 @@ nonisolated final class FakeLyricsProvider: LyricsProviding, @unchecked Sendable
         state.withLockUnchecked { $0.results[videoId] = result; $0.errors[videoId] = nil }
     }
 
+    /// The credit that goes with the scripted result; none by default, like a provider that does not name itself.
+    func setCredit(_ credit: String?, for videoId: String) {
+        state.withLockUnchecked { $0.credits[videoId] = credit }
+    }
+
+    /// Whether the scripted answer is worth redoing once the length is known; true by default, like a guess.
+    func setLengthMatters(_ matters: Bool, for videoId: String) {
+        state.withLockUnchecked { $0.lengthMatters[videoId] = matters }
+    }
+
     func setError(_ error: (any Error)?, for videoId: String) {
         state.withLockUnchecked { $0.errors[videoId] = error }
     }
@@ -181,16 +193,31 @@ nonisolated final class FakeLyricsProvider: LyricsProviding, @unchecked Sendable
     }
 
     func lyrics(for query: LyricsQuery) async throws -> LyricsResult {
+        try await answer(for: query).result
+    }
+
+    func answer(for query: LyricsQuery) async throws -> LyricsAnswer {
         // Like the real client, the answer is what was scripted when the call was made, even if a gate holds it.
-        let (result, error, gate) = state.withLockUnchecked { state -> (LyricsResult, (any Error)?, MusicTestGate?) in
+        let (answer, error, gate) = state.withLockUnchecked { state -> (LyricsAnswer, (any Error)?, MusicTestGate?) in
             state.queries.append(query)
-            return (state.results[query.videoId] ?? state.fallback, state.errors[query.videoId], state.gates[query.videoId])
+            let answer = LyricsAnswer(
+                result: state.results[query.videoId] ?? state.fallback,
+                credit: state.credits[query.videoId],
+                lengthMatters: state.lengthMatters[query.videoId] ?? true
+            )
+            return (answer, state.errors[query.videoId], state.gates[query.videoId])
         }
         // The gate ignores cancellation, like a slow server: a late answer must be dropped by the store, not by the task.
         if let gate { await gate.wait() }
         if let error { throw error }
-        return result
+        return answer
     }
+}
+
+/// A provider that only knows the older one-method seam, so it gets the default `answer(for:)` with no credit.
+nonisolated struct ResultOnlyProvider: LyricsProviding {
+    let result: LyricsResult
+    func lyrics(for query: LyricsQuery) async throws -> LyricsResult { result }
 }
 
 /// Stands in for `Task.sleep` in the store: records how long it was asked to wait and, when gated, holds every

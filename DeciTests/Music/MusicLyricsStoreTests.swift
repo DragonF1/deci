@@ -619,6 +619,279 @@ struct MusicLyricsStoreLateDurationTests {
         await rig.idle()
         #expect(rig.provider.queries.count == 2)
     }
+
+    @Test("An answer that does not depend on the length is final: a late length asks nothing and shows no spinner")
+    func lengthFreeAnswerIsNotRedone() async {
+        let rig = Rig()
+        rig.provider.setResult(.synced(Rig.lines), for: "a")
+        rig.provider.setCredit("Lyrics from Test Provider via YouTube Music", for: "a")
+        rig.provider.setLengthMatters(false, for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a", seconds: nil), duration: 0)
+        await rig.settle()
+        #expect(rig.store.state == .loaded(.synced(Rig.lines)))
+
+        rig.store.trackChanged(Rig.track("a", seconds: nil), duration: 213.4)
+        // Nothing is dropped and nothing is asked: the lyrics stay on screen with their credit.
+        #expect(rig.store.state == .loaded(.synced(Rig.lines)))
+        #expect(rig.store.credit == "Lyrics from Test Provider via YouTube Music")
+        await rig.idle()
+        #expect(rig.provider.queries.map(\.duration) == [nil])
+        #expect(rig.store.state == .loaded(.synced(Rig.lines)))
+    }
+
+    @Test("A guess that is worth redoing is redone once, and the redo's credit is the one shown")
+    func redoReplacesTheCredit() async {
+        let rig = Rig()
+        rig.provider.setResult(.plain("Guess"), for: "a")
+        rig.provider.setCredit("Lyrics from LRCLIB", for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a", seconds: nil), duration: 0)
+        await rig.settle()
+        #expect(rig.store.credit == "Lyrics from LRCLIB")
+
+        rig.provider.setResult(.plain("Better"), for: "a")
+        rig.provider.setCredit("Lyrics from Test Provider via YouTube Music", for: "a")
+        rig.provider.setLengthMatters(false, for: "a")
+        rig.store.trackChanged(Rig.track("a", seconds: nil), duration: 200)
+        // The old credit goes with the old lyrics the moment they are dropped.
+        #expect(rig.store.credit == nil)
+        await rig.settle()
+        #expect(rig.store.state == .loaded(.plain("Better")))
+        #expect(rig.store.credit == "Lyrics from Test Provider via YouTube Music")
+        rig.store.trackChanged(Rig.track("a", seconds: nil), duration: 201)
+        await rig.idle()
+        #expect(rig.provider.queries.count == 2)
+    }
+}
+
+// MARK: - Credit
+
+/// The line under the lyrics that says where they came from. The provider names it, the store only carries it: it is
+/// there while the lyrics are, and gone with them.
+@MainActor
+@Suite("Music lyrics store: credit")
+struct MusicLyricsStoreCreditTests {
+    static let credit = "Lyrics from Test Provider via YouTube Music"
+
+    @Test("A store that has loaded nothing has no credit")
+    func startsEmpty() {
+        let rig = Rig()
+        #expect(rig.store.credit == nil)
+    }
+
+    @Test("The credit of the answer is exposed with it, for synced and plain lyrics", arguments: [
+        LyricsResult.synced(LyricsSamples.syncedLines), .plain("First test line"),
+    ])
+    func exposedWithTheAnswer(result: LyricsResult) async {
+        let rig = Rig()
+        rig.provider.setResult(result, for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        #expect(rig.store.state == .loaded(result))
+        #expect(rig.store.credit == Self.credit)
+    }
+
+    @Test("An answer with no credit exposes none")
+    func noCredit() async {
+        let rig = Rig()
+        rig.provider.setResult(.plain("First test line"), for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        #expect(rig.store.state == .loaded(.plain("First test line")))
+        #expect(rig.store.credit == nil)
+    }
+
+    @Test("While the lookup is running there is no credit")
+    func noCreditWhileLoading() async {
+        let rig = Rig()
+        let gate = MusicTestGate()
+        rig.provider.setGate(gate, for: "a")
+        rig.provider.setResult(.plain("First test line"), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        #expect(await eventually { rig.provider.queries.count == 1 })
+        #expect(rig.store.state == .loading)
+        #expect(rig.store.credit == nil)
+        await gate.open()
+        await rig.settle()
+        #expect(rig.store.credit == Self.credit)
+    }
+
+    @Test("A track change clears the credit at once, and the new track brings its own")
+    func clearedOnTrackChange() async {
+        let rig = Rig()
+        let gate = MusicTestGate()
+        rig.provider.setResult(.plain("From a"), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.provider.setResult(.plain("From b"), for: "b")
+        rig.provider.setCredit("Lyrics from LRCLIB", for: "b")
+        rig.provider.setGate(gate, for: "b")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        #expect(rig.store.credit == Self.credit)
+
+        rig.store.trackChanged(Rig.track("b"), duration: 200)
+        #expect(rig.store.credit == nil)
+        #expect(await eventually { rig.provider.videoIds == ["a", "b"] })
+        #expect(rig.store.credit == nil)
+        await gate.open()
+        await rig.settle()
+        #expect(rig.store.state == .loaded(.plain("From b")))
+        #expect(rig.store.credit == "Lyrics from LRCLIB")
+    }
+
+    @Test("A track change to nothing clears it too")
+    func clearedWhenNothingPlays() async {
+        let rig = Rig()
+        rig.provider.setResult(.plain("From a"), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        rig.store.trackChanged(nil, duration: 0)
+        #expect(rig.store.credit == nil)
+    }
+
+    @Test("A new track with no credit does not inherit the last one")
+    func notInherited() async {
+        let rig = Rig()
+        rig.provider.setResult(.plain("From a"), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.provider.setResult(.plain("From b"), for: "b")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        rig.store.trackChanged(Rig.track("b"), duration: 200)
+        await rig.settle()
+        #expect(rig.store.state == .loaded(.plain("From b")))
+        #expect(rig.store.credit == nil)
+    }
+
+    @Test("A reset clears the credit")
+    func clearedOnReset() async {
+        let rig = Rig()
+        rig.provider.setResult(.plain("From a"), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        rig.store.reset()
+        #expect(rig.store.credit == nil)
+        // And nothing comes back when the same track is shown again before a new answer.
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        #expect(rig.store.credit == nil)
+        await rig.settle()
+        #expect(rig.store.credit == Self.credit)
+    }
+
+    @Test("Closing the panel keeps the lyrics and their credit")
+    func keptWhileClosed() async {
+        let rig = Rig()
+        rig.provider.setResult(.plain("From a"), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        rig.store.setPanelOpen(false)
+        rig.store.setPopupVisible(false)
+        #expect(rig.store.state == .loaded(.plain("From a")))
+        #expect(rig.store.credit == Self.credit)
+        rig.store.setPopupVisible(true)
+        rig.store.setPanelOpen(true)
+        await rig.idle()
+        #expect(rig.store.credit == Self.credit)
+        #expect(rig.provider.queries.count == 1)
+    }
+
+    @Test("The same track again keeps its credit")
+    func keptForTheSameTrack() async {
+        let rig = Rig()
+        rig.provider.setResult(.plain("From a"), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        rig.store.trackChanged(Rig.track("a"), duration: 201)
+        #expect(rig.store.credit == Self.credit)
+    }
+
+    @Test("A failure and a busy window carry no credit, whatever the provider said", arguments: ["http", "busy", "backoff"])
+    func noCreditOnFailure(kind: String) async {
+        let rig = Rig()
+        // A window that is still open, so the store waits for it instead of asking again at once.
+        let until = rig.clock.now.addingTimeInterval(60)
+        let error: LyricsError = switch kind {
+        case "busy": .busy(until: until)
+        case "backoff": .backoff(status: 503, until: until)
+        default: .http(500)
+        }
+        rig.provider.setResult(.plain("From a"), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.provider.setError(error, for: "b")
+        rig.provider.setCredit(Self.credit, for: "b")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        #expect(rig.store.credit == Self.credit)
+        rig.store.trackChanged(Rig.track("b"), duration: 200)
+        await rig.settle()
+        #expect(rig.store.state != .loading)
+        #expect(rig.store.credit == nil)
+    }
+
+    @Test("Retry after a failure shows the credit of the answer that finally came")
+    func creditAfterRetry() async {
+        let rig = Rig()
+        rig.provider.setError(URLError(.timedOut), for: "a")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        await rig.settle()
+        #expect(rig.store.credit == nil)
+
+        rig.provider.setError(nil, for: "a")
+        rig.provider.setResult(.synced(Rig.lines), for: "a")
+        rig.provider.setCredit(Self.credit, for: "a")
+        rig.store.retry()
+        await rig.settle()
+        #expect(rig.store.credit == Self.credit)
+    }
+
+    @Test("A slow answer for the track that was left does not set the credit of the new one")
+    func staleAnswerCarriesNoCredit() async {
+        let rig = Rig()
+        let gate = MusicTestGate()
+        rig.provider.setGate(gate, for: "a")
+        rig.provider.setResult(.plain("From a"), for: "a")
+        rig.provider.setCredit("Lyrics from LRCLIB", for: "a")
+        rig.provider.setResult(.plain("From b"), for: "b")
+        rig.provider.setCredit(Self.credit, for: "b")
+        rig.store.setPanelOpen(true)
+        rig.store.trackChanged(Rig.track("a"), duration: 200)
+        #expect(await eventually { rig.provider.queries.count == 1 })
+        rig.store.trackChanged(Rig.track("b"), duration: 200)
+        await rig.settle()
+        await gate.open()
+        await rig.idle()
+        #expect(rig.store.state == .loaded(.plain("From b")))
+        #expect(rig.store.credit == Self.credit)
+    }
+
+    @Test("The default provider seam has no credit to give")
+    func resultOnlyProviderHasNone() async {
+        let store = MusicLyricsStore(provider: ResultOnlyProvider(result: .plain("First test line")), sleep: { _ in })
+        store.setPanelOpen(true)
+        store.trackChanged(Rig.track("a"), duration: 200)
+        while let task = store.loadTask { await task.value; if store.loadTask == task { break } }
+        #expect(store.state == .loaded(.plain("First test line")))
+        #expect(store.credit == nil)
+    }
 }
 
 // MARK: - Playhead while hidden
@@ -1030,9 +1303,9 @@ struct MusicLyricsStoreBackoffTests {
         #expect(MusicLyricsStore.message(for: LyricsError.http(403)) == "The lyrics service returned an error (403).")
     }
 
-    @Test("The live store talks to the LRCLIB client")
-    func liveUsesTheClient() {
-        #expect(MusicLyricsStore.live().provider is LRCLibClient)
+    @Test("The live store talks to the lyrics chain: YouTube Music first, LRCLIB behind it")
+    func liveUsesTheChain() {
+        #expect(MusicLyricsStore.live().provider is LyricsChain)
     }
 
     @Test("The no-op provider finds no lyrics and never fails")
@@ -1066,7 +1339,7 @@ struct MusicLyricsStoreAutoRetryTests {
         }
     }
 
-    /// Opens the panel on track "a" while LRCLIB answers with `error`, and waits until the retry timer is asking to
+    /// Opens the panel on track "a" while the provider answers with `error`, and waits until the retry timer is asking to
     /// sleep. The track is set before the panel opens, so the first fetch is not debounced and the sleeper's first
     /// request is the retry's.
     private func land(_ error: any Error, _ rig: Rig, _ sleeper: FakeSleeper) async {

@@ -173,7 +173,7 @@ final class MusicService {
         raiseSignInWindow: @escaping @MainActor () -> Void = { MusicSignInWindowController.bringToFront() },
         nowPlaying: NowPlayingController = NowPlayingController(),
         // Offline unless the caller says otherwise: only the app's own wiring (MusicServiceHost) passes
-        // `MusicLyricsStore.live()`, so a service built by a test or a preview never reaches LRCLIB.
+        // `MusicLyricsStore.live()`, so a service built by a test or a preview never reaches a lyrics server.
         lyrics: MusicLyricsStore = MusicLyricsStore(provider: NoLyricsProvider()),
         now: @escaping () -> Date = Date.init,
         listenerLevel: @escaping @MainActor () -> (volume: Int, muted: Bool) = { (WatchtimeTracker.fullVolume, false) },
