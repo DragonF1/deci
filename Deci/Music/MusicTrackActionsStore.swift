@@ -87,6 +87,22 @@ final class MusicTrackActionsStore {
         Self.offered(pinState(page.listenAgainPin, key: Self.pinKey(page.browseId)))
     }
 
+    /// Whether the song is pinned to Listen again, as last left this session. It reads the toggle itself, not
+    /// `actions(for:in:)`, so a pinned song YouTube gives no unpin token for still counts. False for a row with no toggle.
+    func isPinnedToListenAgain(_ track: MusicTrack) -> Bool {
+        pinState(track.listenAgainPin, key: Self.pinKey(track))?.isPinned == true
+    }
+
+    /// The same for a playlist or album tile or row.
+    func isPinnedToListenAgain(_ collection: MusicCollection) -> Bool {
+        pinState(collection.listenAgainPin, key: Self.pinKey(collection.browseId))?.isPinned == true
+    }
+
+    /// The same for an open playlist or album page.
+    func isPinnedToListenAgain(_ page: MusicBrowsePage) -> Bool {
+        pinState(page.listenAgainPin, key: Self.pinKey(page.browseId))?.isPinned == true
+    }
+
     /// The toggle as last left: an override from this session only while the row still carries the toggle that was
     /// flipped. A row loaded since (new state or new tokens) shows its own.
     private func pinState(_ own: MusicFeedbackToggle?, key: String) -> MusicFeedbackToggle? {

@@ -6,6 +6,8 @@ import SwiftUI
 struct MusicTrackMenuHandler: Sendable {
     let actions: @MainActor (MusicTrack, MusicTrackContext) -> [MusicTrackAction]
     let perform: @MainActor (MusicTrackAction, MusicTrack, MusicTrackContext) -> Void
+    /// Whether the song is pinned to Listen again, for the badge on its cover.
+    let isPinned: @MainActor (MusicTrack) -> Bool
 }
 
 private struct MusicTrackMenuKey: EnvironmentKey {
@@ -17,6 +19,15 @@ private struct MusicTrackMenuKey: EnvironmentKey {
 struct MusicCollectionPinHandler: Sendable {
     let pin: @MainActor (MusicCollection) -> MusicFeedbackToggle?
     let toggle: @MainActor (MusicCollection) -> Void
+    /// Whether the tile or row wears the pin badge: see `wearsPinBadge`.
+    let isPinned: @MainActor (MusicCollection) -> Bool
+
+    /// A playlist or album pinned to Listen again, or an artist pinned to Home. It does not need an Unpin to be
+    /// on offer, so a pinned collection YouTube gives no unpin token for still shows the badge.
+    @MainActor
+    static func wearsPinBadge(_ collection: MusicCollection, actions: MusicTrackActionsStore, artists: MusicPinnedArtists) -> Bool {
+        actions.isPinnedToListenAgain(collection) || (collection.kind == .artist && artists.isPinned(collection.browseId))
+    }
 }
 
 private struct MusicCollectionPinKey: EnvironmentKey {

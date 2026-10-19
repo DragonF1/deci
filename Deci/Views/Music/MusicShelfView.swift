@@ -13,9 +13,13 @@ struct MusicShelfView: View {
     /// Gives each collection tile an "Unpin from Home" context menu item. Only the pinned artists row passes it.
     var onUnpin: ((MusicCollection) -> Void)?
     @Environment(\.musicCollectionPin) private var collectionPin
+    @Environment(\.musicTrackMenu) private var trackMenu
 
     /// Song rows a songs-only shelf shows.
     static let maxSongRows = 6
+
+    /// The pinned artists row shows no badges: every tile on it is pinned, so they would only be noise.
+    private var showsPinBadges: Bool { onUnpin == nil }
 
     /// The shelf's songs when every item is one, else nil.
     private var songs: [MusicTrack]? {
@@ -64,7 +68,8 @@ struct MusicShelfView: View {
                 subtitle: track.artist,
                 thumbnailURL: track.thumbnailURL,
                 isCurrent: nowPlayingId == track.videoId,
-                isPlaying: nowPlayingId == track.videoId && isPlaying
+                isPlaying: nowPlayingId == track.videoId && isPlaying,
+                isPinned: showsPinBadges && trackMenu?.isPinned(track) == true
             ) {
                 onPlay(track)
             }
@@ -74,7 +79,8 @@ struct MusicShelfView: View {
                 subtitle: collection.subtitle,
                 thumbnailURL: collection.thumbnailURL,
                 circular: collection.kind == .artist,
-                placeholder: collection.kind.placeholderSymbol
+                placeholder: collection.kind.placeholderSymbol,
+                isPinned: showsPinBadges && collectionPin?.isPinned(collection) == true
             ) {
                 onOpen(collection)
             }
@@ -108,6 +114,8 @@ struct MusicTile: View {
     var placeholder = "music.note"
     var isCurrent = false
     var isPlaying = false
+    /// Pinned to Listen again (a song, playlist or album) or to Home (an artist): the cover wears the pin badge.
+    var isPinned = false
     let action: () -> Void
 
     static let coverSize: CGFloat = 96
@@ -121,6 +129,7 @@ struct MusicTile: View {
                             MusicPlayingOverlay(isPlaying: isPlaying, circular: circular, symbolSize: 20)
                         }
                     }
+                    .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: circular)
                     .padding(.bottom, DesignTokens.Spacing.xxs)
                 // Every tile takes two title lines and a subtitle line, short or not: the lazy shelf
                 // sizes its height from the first tiles, so a taller tile further along got cut off.
@@ -145,8 +154,10 @@ struct MusicTile: View {
     }
 
     private var accessibilityText: String {
-        let base = subtitle.isEmpty ? title : "\(title), \(subtitle)"
-        return isPlaying ? base + ", playing" : base
+        var text = subtitle.isEmpty ? title : "\(title), \(subtitle)"
+        if isPinned { text += ", pinned" }
+        if isPlaying { text += ", playing" }
+        return text
     }
 }
 

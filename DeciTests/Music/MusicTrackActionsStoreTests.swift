@@ -521,6 +521,200 @@ struct MusicTrackActionsStoreTests {
         #expect(h.store.notice == nil)
     }
 
+    // MARK: - Pin badge state
+
+    @Test("A song, playlist or page reads pinned from its own toggle, and a row with no toggle never does")
+    func pinnedReadsTheRowsOwnToggle() {
+        let h = ActionsHarness()
+        let pinnedSong = MusicSamples.track("v1", pin: MusicSamples.pinToggle(isPinned: true))
+        let openSong = MusicSamples.track("v2", pin: MusicSamples.pinToggle(isPinned: false))
+        var pinnedTile = MusicSamples.collection("VLPLpinned")
+        pinnedTile.listenAgainPin = MusicSamples.pinToggle(isPinned: true)
+        var openTile = MusicSamples.collection("VLPLopen")
+        openTile.listenAgainPin = MusicSamples.pinToggle(isPinned: false)
+        var pinnedPage = MusicSamples.page("VLPLpinned")
+        pinnedPage.listenAgainPin = MusicSamples.pinToggle(isPinned: true)
+        var openPage = MusicSamples.page("VLPLopen")
+        openPage.listenAgainPin = MusicSamples.pinToggle(isPinned: false)
+
+        #expect(h.store.isPinnedToListenAgain(pinnedSong))
+        #expect(!h.store.isPinnedToListenAgain(openSong))
+        #expect(!h.store.isPinnedToListenAgain(MusicSamples.track("v3")))
+        #expect(h.store.isPinnedToListenAgain(pinnedTile))
+        #expect(!h.store.isPinnedToListenAgain(openTile))
+        #expect(!h.store.isPinnedToListenAgain(MusicSamples.collection("VLPLbare")))
+        #expect(h.store.isPinnedToListenAgain(pinnedPage))
+        #expect(!h.store.isPinnedToListenAgain(openPage))
+        #expect(!h.store.isPinnedToListenAgain(MusicSamples.page("VLPLbare")))
+    }
+
+    @Test("A pinned song flips to not pinned after its unpin lands, and back after the next pin")
+    func songBadgeFollowsToggle() async {
+        let h = ActionsHarness()
+        let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
+        #expect(!h.store.isPinnedToListenAgain(track))
+
+        h.store.togglePin(track)
+        #expect(await h.until { h.store.isPinnedToListenAgain(track) })
+        h.store.togglePin(track)
+        #expect(await h.until { !h.store.isPinnedToListenAgain(track) })
+        #expect(await h.backend.feedbackTokens == ["pin-token", "unpin-token"])
+    }
+
+    @Test("The song stays unpinned until YouTube says the pin worked")
+    func songBadgeWaitsForTheCall() async {
+        let h = ActionsHarness()
+        let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
+        let gate = MusicTestGate()
+        await h.backend.setFeedbackGate(gate)
+
+        h.store.togglePin(track)
+        #expect(await h.until { await h.backend.feedbackTokens.count == 1 })
+        #expect(!h.store.isPinnedToListenAgain(track))
+        await gate.open()
+        #expect(await h.until { h.store.isPinnedToListenAgain(track) })
+    }
+
+    @Test("A failed pin leaves the badge off")
+    func failedPinKeepsBadgeOff() async {
+        let h = ActionsHarness()
+        let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
+        await h.backend.setFeedbackError(MusicError.rejected)
+        h.store.togglePin(track)
+        #expect(await h.until { h.store.notice != nil })
+        #expect(!h.store.isPinnedToListenAgain(track))
+    }
+
+    @Test("A pin from a playlist's page flips its tile and the page, and an unpin flips them back")
+    func collectionAndPageBadgeFollowToggle() async {
+        let h = ActionsHarness()
+        var tile = MusicSamples.collection("VLPLmine")
+        tile.listenAgainPin = MusicSamples.pinToggle()
+        var page = MusicSamples.page("VLPLmine")
+        page.listenAgainPin = MusicSamples.pinToggle()
+        #expect(!h.store.isPinnedToListenAgain(tile))
+        #expect(!h.store.isPinnedToListenAgain(page))
+
+        h.store.togglePin(page)
+        #expect(await h.until { h.store.isPinnedToListenAgain(page) })
+        #expect(h.store.isPinnedToListenAgain(tile))
+
+        h.store.togglePin(tile)
+        #expect(await h.until { !h.store.isPinnedToListenAgain(tile) })
+        #expect(!h.store.isPinnedToListenAgain(page))
+    }
+
+    @Test("A pinned song, playlist or page with no unpin token still reads pinned, though no Unpin is offered")
+    func pinnedWithoutUnpinTokenStillReadsPinned() {
+        let h = ActionsHarness()
+        let noWayBack = MusicSamples.pinToggle(isPinned: true, pin: "p", unpin: nil)
+        let track = MusicSamples.track("v1", pin: noWayBack)
+        var tile = MusicSamples.collection("VLPLmine")
+        tile.listenAgainPin = noWayBack
+        var page = MusicSamples.page("VLPLmine")
+        page.listenAgainPin = noWayBack
+
+        #expect(h.store.isPinnedToListenAgain(track))
+        #expect(h.store.isPinnedToListenAgain(tile))
+        #expect(h.store.isPinnedToListenAgain(page))
+        #expect(h.store.listenAgainPin(for: tile) == nil)
+        #expect(h.store.listenAgainPin(for: page) == nil)
+        #expect(!h.store.actions(for: track, in: .none).contains(.unpinFromListenAgain))
+    }
+
+    @Test("A toggle with neither token reads from its own state, and an unpinned one reads not pinned")
+    func tokenlessTogglesReadTheirState() {
+        let h = ActionsHarness()
+        let pinned = MusicSamples.track("v1", pin: MusicSamples.pinToggle(isPinned: true, pin: nil, unpin: nil))
+        let open = MusicSamples.track("v2", pin: MusicSamples.pinToggle(isPinned: false, pin: nil, unpin: nil))
+        #expect(h.store.isPinnedToListenAgain(pinned))
+        #expect(!h.store.isPinnedToListenAgain(open))
+    }
+
+    @Test("A pinned song is pinned on every row that carries the toggle, and no other song or collection is")
+    func badgeIsPerThing() async {
+        let h = ActionsHarness()
+        let here = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
+        let elsewhere = MusicSamples.track("v1", title: "Same song, other row", pin: MusicSamples.pinToggle())
+        let without = MusicSamples.track("v1")
+        let other = MusicSamples.track("v2", pin: MusicSamples.pinToggle())
+        // A collection whose browse id equals the song's video id is a different thing.
+        var sameId = MusicSamples.collection("v1")
+        sameId.listenAgainPin = MusicSamples.pinToggle()
+
+        h.store.togglePin(here)
+        #expect(await h.until { h.store.isPinnedToListenAgain(here) })
+        #expect(h.store.isPinnedToListenAgain(elsewhere))
+        #expect(!h.store.isPinnedToListenAgain(without))
+        #expect(!h.store.isPinnedToListenAgain(other))
+        #expect(!h.store.isPinnedToListenAgain(sameId))
+    }
+
+    @Test("A row loaded since the pin reads its own state, the old row keeps reading the pin")
+    func reloadedRowBadgeReadsItsOwn() async {
+        let h = ActionsHarness()
+        let here = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
+        h.store.togglePin(here)
+        #expect(await h.until { h.store.isPinnedToListenAgain(here) })
+
+        // Unpinned on the web since: the fresh row says not pinned, with new tokens.
+        let reloaded = MusicSamples.track("v1", pin: MusicSamples.pinToggle(isPinned: false, pin: "pin-2", unpin: "unpin-2"))
+        #expect(!h.store.isPinnedToListenAgain(reloaded))
+        #expect(h.store.isPinnedToListenAgain(here))
+    }
+
+    @Test("Reset drops the pin state, so every row reads its own toggle again")
+    func resetDropsBadgeState() async {
+        let h = ActionsHarness()
+        let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
+        h.store.togglePin(track)
+        #expect(await h.until { h.store.isPinnedToListenAgain(track) })
+
+        h.store.reset()
+        #expect(!h.store.isPinnedToListenAgain(track))
+    }
+
+    @Test("An id with Unicode, emoji and markup reads pinned like any other")
+    func unicodeIdsReadPinned() {
+        let h = ActionsHarness()
+        let id = "VL\u{E9}\u{1F3B5}<b>&amp;</b> 'q'"
+        var tile = MusicSamples.collection(id)
+        tile.listenAgainPin = MusicSamples.pinToggle(isPinned: true)
+        #expect(h.store.isPinnedToListenAgain(tile))
+        #expect(h.store.isPinnedToListenAgain(MusicSamples.track(id, pin: MusicSamples.pinToggle(isPinned: true))))
+    }
+
+    @Test("A tile wears the badge for a playlist or album pinned to Listen again, and for an artist pinned to Home")
+    func tileBadgeCombinesBothPins() async {
+        let h = ActionsHarness()
+        let pinnedArtist = MusicPinnedArtist(browseId: "UCpinned", title: "Pinned Artist", thumbnailURL: nil)
+        let artists = MusicPinnedArtists(artists: [pinnedArtist])
+        func wears(_ collection: MusicCollection) -> Bool {
+            MusicCollectionPinHandler.wearsPinBadge(collection, actions: h.store, artists: artists)
+        }
+
+        var playlist = MusicSamples.collection("VLPLmine")
+        playlist.listenAgainPin = MusicSamples.pinToggle()
+        var album = MusicSamples.collection("MPREbFixture", kind: .album)
+        album.listenAgainPin = MusicSamples.pinToggle(isPinned: true, pin: "p", unpin: nil)
+        let homeArtist = MusicSamples.collection("UCpinned", kind: .artist)
+        let otherArtist = MusicSamples.collection("UCother", kind: .artist)
+        // A playlist that shares an id with a pinned artist is not an artist.
+        let lookalike = MusicSamples.collection("UCpinned")
+
+        #expect(!wears(playlist))
+        #expect(wears(album))
+        #expect(wears(homeArtist))
+        #expect(!wears(otherArtist))
+        #expect(!wears(lookalike))
+
+        h.store.togglePin(playlist)
+        #expect(await h.until { wears(playlist) })
+
+        artists.unpin("UCpinned")
+        #expect(!wears(homeArtist))
+    }
+
     // MARK: - The action list
 
     @Test("Pin on a playlist sends its pin token, then it offers Unpin, and the next tap sends the unpin token")

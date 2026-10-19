@@ -143,12 +143,17 @@ private struct MusicSignedInView: View {
         // Every song row's "..." button and right click menu, and the one in the player, run through here.
         .environment(\.musicTrackMenu, MusicTrackMenuHandler(
             actions: { navigation.actions(for: $0, in: $1) },
-            perform: { navigation.perform($0, for: $1, in: $2) }
+            perform: { navigation.perform($0, for: $1, in: $2) },
+            isPinned: { service.trackActions.isPinnedToListenAgain($0) }
         ))
-        // Pin / Unpin to Listen again on every playlist and album tile and Library row, on the real account.
+        // Pin / Unpin to Listen again on every playlist and album tile and Library row, on the real account. Also
+        // which tiles and rows wear the pin badge: those pinned to Listen again, and artists pinned to Home.
         .environment(\.musicCollectionPin, MusicCollectionPinHandler(
             pin: { service.trackActions.listenAgainPin(for: $0) },
-            toggle: { service.trackActions.togglePin($0) }
+            toggle: { service.trackActions.togglePin($0) },
+            isPinned: {
+                MusicCollectionPinHandler.wearsPinBadge($0, actions: service.trackActions, artists: service.pinnedArtists)
+            }
         ))
         .overlay(alignment: .topTrailing) {
             if isAccountCardOpen {
@@ -393,10 +398,22 @@ struct MusicResultRow: View {
     @Environment(\.musicTrackMenu) private var menu
     @Environment(\.musicTrackContext) private var context
 
+    static let coverSize: CGFloat = 40
+
     private var offeredActions: [MusicTrackAction] { menu?.actions(track, context) ?? [] }
+
+    /// Pinned to Listen again, as last left this session: the cover wears the pin badge.
+    private var isPinned: Bool { menu?.isPinned(track) == true }
 
     private func perform(_ action: MusicTrackAction) {
         menu?.perform(action, track, context)
+    }
+
+    private var accessibilityText: String {
+        var text = "\(track.title), \(track.artist)"
+        if isPinned { text += ", pinned" }
+        if isPlaying { text += ", playing" }
+        return text
     }
 
     var body: some View {
@@ -404,12 +421,13 @@ struct MusicResultRow: View {
         // The row plays on a tap. It is not one Button, because the artist names inside it are buttons of their
         // own, and a button nested in another button's label is unreliable for clicks and for VoiceOver.
         HStack(spacing: DesignTokens.Spacing.sm) {
-            MusicThumbnail(url: track.thumbnailURL, size: 40)
+            MusicThumbnail(url: track.thumbnailURL, size: Self.coverSize)
                 .overlay {
                     if isCurrent {
                         MusicPlayingOverlay(isPlaying: isPlaying)
                     }
                 }
+                .musicPinBadge(isPinned, coverSize: Self.coverSize)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 1) {
@@ -461,7 +479,7 @@ struct MusicResultRow: View {
         }
         // A container, so each artist name inside stays its own button for VoiceOver; the row plays by its action.
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(isPlaying ? "\(track.title), \(track.artist), playing" : "\(track.title), \(track.artist)")
+        .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
         .accessibilityAction(named: "Play", action)
         .accessibilityAction(.default, action)

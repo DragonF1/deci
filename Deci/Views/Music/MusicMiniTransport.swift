@@ -222,6 +222,52 @@ struct MusicThumbnail: View {
     }
 }
 
+/// A small pushpin on a dark dot, for the top-right corner of a pinned song, playlist, album or artist cover. It
+/// scales with the cover. A round cover is inset further, so the dot sits on the edge of the circle and not in the
+/// empty corner of its square.
+struct MusicPinBadge: View {
+    let coverSize: CGFloat
+    var circular = false
+
+    /// The dot is about a fifth of the cover, never under `minDiameter`: 18 on a 96 tile, 14 on a row.
+    static let minDiameter: CGFloat = 14
+
+    static func diameter(coverSize: CGFloat) -> CGFloat {
+        max(minDiameter, (coverSize * 0.1875).rounded())
+    }
+
+    /// The gap from the cover's top and right edges.
+    static func inset(coverSize: CGFloat, circular: Bool) -> CGFloat {
+        circular ? max(4, coverSize * 0.1) : 4
+    }
+
+    var body: some View {
+        let diameter = Self.diameter(coverSize: coverSize)
+        let inset = Self.inset(coverSize: coverSize, circular: circular)
+        Image(systemName: "pin.fill")
+            .font(.system(size: diameter * 0.55, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: diameter, height: diameter)
+            .background(Circle().fill(Color.black.opacity(0.6)))
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5))
+            .padding(.top, inset)
+            .padding(.trailing, inset)
+            .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// Puts the pin badge on this cover's top-right corner while `isPinned`. Apply it after the playing overlay, so
+    /// the badge stays on top while the song plays.
+    func musicPinBadge(_ isPinned: Bool, coverSize: CGFloat, circular: Bool = false) -> some View {
+        overlay(alignment: .topTrailing) {
+            if isPinned {
+                MusicPinBadge(coverSize: coverSize, circular: circular)
+            }
+        }
+    }
+}
+
 /// What stands in for a cover or a photo that is still loading, failed, or does not exist.
 struct MusicCoverPlaceholder: View {
     let symbol: String

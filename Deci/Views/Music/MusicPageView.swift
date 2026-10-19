@@ -32,6 +32,7 @@ struct MusicPageView: View {
                         kind: collection.kind,
                         pin: collection.kind == .artist ? pinControl(for: page) : nil,
                         listenAgain: listenAgainControl(for: loaded),
+                        isPinned: isPinned(loaded),
                         sort: MusicBrowseStore.canSort(page.browseId) ? browse.sort(for: page.browseId) : nil,
                         isLoadingAll: browse.loadingAllTracks.contains(page.browseId),
                         sortLimit: browse.sortedSongLimit(page.browseId),
@@ -81,6 +82,14 @@ struct MusicPageView: View {
         let actions = service.trackActions
         guard let toggle = actions.listenAgainPin(for: page) else { return nil }
         return MusicPageHeader.ListenAgainControl(isPinned: toggle.isPinned) { actions.togglePin(page) }
+    }
+
+    /// Whether the cover wears the pin badge: an artist pinned to Home, a playlist or album pinned to Listen again.
+    /// The Listen again side reads the toggle itself, so a pin YouTube gives no unpin token for still shows it.
+    private func isPinned(_ page: MusicBrowsePage) -> Bool {
+        collection.kind == .artist
+            ? service.pinnedArtists.isPinned(page.browseId)
+            : service.trackActions.isPinnedToListenAgain(page)
     }
 
     @ViewBuilder
@@ -167,6 +176,8 @@ struct MusicPageHeader: View {
     var pin: PinControl?
     /// The Listen again pin; nil where YouTube offers none.
     var listenAgain: ListenAgainControl?
+    /// The page's playlist, album or artist is pinned (to Listen again, or to Home): the cover wears the pin badge.
+    var isPinned = false
     /// The sort picked for a playlist; nil on a page that cannot be sorted.
     var sort: MusicPlaylistSort?
     /// The sort is loading the rest of the songs before it can order them.
@@ -187,6 +198,7 @@ struct MusicPageHeader: View {
                 circular: kind == .artist,
                 placeholder: kind.placeholderSymbol
             )
+            .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: kind == .artist)
             .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.xxs) {

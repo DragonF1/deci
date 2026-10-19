@@ -47,7 +47,10 @@ struct MusicLibraryView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
-                        let row = MusicCollectionRow(collection: collection) {
+                        let row = MusicCollectionRow(
+                            collection: collection,
+                            isPinned: collectionPin?.isPinned(collection) == true
+                        ) {
                             browse.open(collection)
                         }
                         if let collectionPin, let listenAgain = collectionPin.pin(collection) {
@@ -79,6 +82,8 @@ struct MusicLibraryView: View {
 struct MusicCollectionRow: View {
     let collection: MusicCollection
     var symbol: String?
+    /// Pinned to Listen again (a playlist or album) or to Home (an artist): the cover wears the pin badge.
+    var isPinned = false
     let action: () -> Void
 
     static let coverSize: CGFloat = 40
@@ -113,8 +118,13 @@ struct MusicCollectionRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(collection.subtitle.isEmpty ? collection.title : "\(collection.title), \(collection.subtitle)")
+        .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(.isButton)
+    }
+
+    private var accessibilityText: String {
+        let base = collection.subtitle.isEmpty ? collection.title : "\(collection.title), \(collection.subtitle)"
+        return isPinned ? base + ", pinned" : base
     }
 
     @ViewBuilder
@@ -136,6 +146,7 @@ struct MusicCollectionRow: View {
                 circular: collection.kind == .artist,
                 placeholder: collection.kind.placeholderSymbol
             )
+            .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: collection.kind == .artist)
         }
     }
 }
