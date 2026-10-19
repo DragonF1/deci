@@ -7,6 +7,9 @@ struct BootstrapConfig: Sendable, Equatable {
     var playerJSURL: URL?
     /// Whether the page was served to a brand channel. History pings land on this identity.
     var isBrandChannel: Bool?
+    /// The brand channel's page id, which API calls name as `onBehalfOfUser`; nil on the account's own
+    /// channel. An account id: never logged.
+    var brandPageId: String?
 }
 
 struct PlayerFormat: Sendable, Equatable {
@@ -49,12 +52,23 @@ enum InnerTubeParser {
         let jsPath = string(merged["PLAYER_JS_URL"])
             ?? nestedPlayerJS(in: merged)
             ?? firstJSURL(in: html)
+        let dataSyncId = string(merged["DATASYNC_ID"])
         return BootstrapConfig(
             clientVersion: string(merged["INNERTUBE_CLIENT_VERSION"]) ?? string(client?["clientVersion"]),
             visitorData: string(merged["VISITOR_DATA"]) ?? string(client?["visitorData"]),
             playerJSURL: jsPath.flatMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL },
-            isBrandChannel: string(merged["DATASYNC_ID"]).flatMap(isBrandChannel(dataSyncId:))
+            isBrandChannel: dataSyncId.flatMap(isBrandChannel(dataSyncId:)),
+            brandPageId: brandPageId(delegatedSessionId: string(merged["DELEGATED_SESSION_ID"]), dataSyncId: dataSyncId)
         )
+    }
+
+    /// `DELEGATED_SESSION_ID` when the page has it, else the brand half of a brand channel's `DATASYNC_ID`.
+    /// Nil on the account's own channel.
+    static func brandPageId(delegatedSessionId: String?, dataSyncId: String?) -> String? {
+        if let delegatedSessionId, !delegatedSessionId.isEmpty { return delegatedSessionId }
+        guard let dataSyncId, isBrandChannel(dataSyncId: dataSyncId) == true,
+              let separator = dataSyncId.range(of: "||") else { return nil }
+        return String(dataSyncId[..<separator.lowerBound])
     }
 
     /// `DATASYNC_ID` reads `<brand id>||<user id>` on a brand channel and `<user id>||` on the

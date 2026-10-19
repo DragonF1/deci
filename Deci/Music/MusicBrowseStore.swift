@@ -318,7 +318,8 @@ final class MusicBrowseStore {
             tracks: page.tracks + fresh,
             continuation: more.continuation == token ? nil : more.continuation,
             shelves: page.shelves,
-            isEditable: page.isEditable
+            isEditable: page.isEditable,
+            listenAgainPin: page.listenAgainPin
         ))
     }
 
@@ -347,7 +348,8 @@ final class MusicBrowseStore {
             tracks: tracks,
             continuation: page.continuation,
             shelves: page.shelves,
-            isEditable: page.isEditable
+            isEditable: page.isEditable,
+            listenAgainPin: page.listenAgainPin
         ))
         return true
     }
@@ -389,7 +391,8 @@ final class MusicBrowseStore {
             tracks: sort.sorted(Array(page.tracks.prefix(Self.sortTrackCap))),
             continuation: nil,
             shelves: page.shelves,
-            isEditable: page.isEditable
+            isEditable: page.isEditable,
+            listenAgainPin: page.listenAgainPin
         )
         sortedPages[browseId] = (sort, sorted)
         return sorted

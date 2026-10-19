@@ -12,6 +12,17 @@ private struct MusicTrackMenuKey: EnvironmentKey {
     static let defaultValue: MusicTrackMenuHandler? = nil
 }
 
+/// Pin / Unpin to Listen again for playlist and album tiles and rows: which way a collection's toggle faces (nil when
+/// YouTube offers none), and what a pick does. The Music tab sets it; outside it a tile has no such item.
+struct MusicCollectionPinHandler: Sendable {
+    let pin: @MainActor (MusicCollection) -> MusicFeedbackToggle?
+    let toggle: @MainActor (MusicCollection) -> Void
+}
+
+private struct MusicCollectionPinKey: EnvironmentKey {
+    static let defaultValue: MusicCollectionPinHandler? = nil
+}
+
 /// The page a row sits on. A page sets it for its own song rows; everywhere else it stays `.none`.
 private struct MusicTrackContextKey: EnvironmentKey {
     static let defaultValue = MusicTrackContext.none
@@ -26,6 +37,24 @@ extension EnvironmentValues {
     var musicTrackContext: MusicTrackContext {
         get { self[MusicTrackContextKey.self] }
         set { self[MusicTrackContextKey.self] = newValue }
+    }
+
+    var musicCollectionPin: MusicCollectionPinHandler? {
+        get { self[MusicCollectionPinKey.self] }
+        set { self[MusicCollectionPinKey.self] = newValue }
+    }
+}
+
+/// The Listen again item of a playlist or album's right click menu, worded like the song menu's.
+struct MusicListenAgainPinItem: View {
+    let toggle: MusicFeedbackToggle
+    let action: () -> Void
+
+    var body: some View {
+        let item: MusicTrackAction = toggle.isPinned ? .unpinFromListenAgain : .pinToListenAgain
+        Button(action: action) {
+            Label(item.title, systemImage: item.systemImage)
+        }
     }
 }
 

@@ -385,6 +385,73 @@ struct InnerTubeParserRowActionsTests {
 
     // MARK: - Builders
 
+    // MARK: - Pin playlists and albums
+
+    @Test("Playlist and album tiles on Home take their Listen again toggle from their menu, and an artist tile has none")
+    func collectionTilePins() throws {
+        let carousel: [String: Any] = ["musicCarouselShelfRenderer": [
+            "header": ["musicCarouselShelfBasicHeaderRenderer": ["title": ["runs": [["text": "Shelf"]]]]],
+            "contents": [
+                Self.collectionTile("VLPLpinned", page: "MUSIC_PAGE_TYPE_PLAYLIST", menu: [Self.pinMenuItem(icon: "KEEP", toggled: false, default: "pin-p", toggledToken: "unpin-p")]),
+                Self.collectionTile("MPREbPinned", page: "MUSIC_PAGE_TYPE_ALBUM", menu: [Self.pinMenuItem(icon: "KEEP_OFF", toggled: false, default: "unpin-a", toggledToken: "pin-a")]),
+                Self.collectionTile("UCartist", page: "MUSIC_PAGE_TYPE_ARTIST", menu: [Self.pinMenuItem(icon: "KEEP", toggled: false, default: "pin-x", toggledToken: "unpin-x")]),
+                Self.collectionTile("VLPLplain", page: "MUSIC_PAGE_TYPE_PLAYLIST", menu: []),
+            ],
+        ]]
+        let root: [String: Any] = ["contents": ["singleColumnBrowseResultsRenderer": ["tabs": [
+            ["tabRenderer": ["content": ["sectionListRenderer": ["contents": [carousel]]]]],
+        ]]]]
+        let page = try InnerTubeParser.homePage(from: JSONSerialization.data(withJSONObject: root))
+        let collections = (page.shelves.first?.items ?? []).compactMap { item -> MusicCollection? in
+            guard case .collection(let collection) = item else { return nil }
+            return collection
+        }
+        #expect(collections.map(\.browseId) == ["VLPLpinned", "MPREbPinned", "UCartist", "VLPLplain"])
+        #expect(collections[0].listenAgainPin == MusicFeedbackToggle(isPinned: false, pinToken: "pin-p", unpinToken: "unpin-p"))
+        #expect(collections[1].listenAgainPin == MusicFeedbackToggle(isPinned: true, pinToken: "pin-a", unpinToken: "unpin-a"))
+        #expect(collections[2].listenAgainPin == nil)
+        #expect(collections[3].listenAgainPin == nil)
+    }
+
+    @Test("A Library playlist tile keeps its Listen again toggle")
+    func libraryTilePin() throws {
+        let tile = Self.collectionTile("VLPLlibrary", page: "MUSIC_PAGE_TYPE_PLAYLIST", menu: [Self.pinMenuItem(icon: "KEEP", toggled: true, default: "pin-l", toggledToken: "unpin-l")])
+        let root: [String: Any] = ["contents": ["gridRenderer": ["items": [tile]]]]
+        let list = try InnerTubeParser.libraryPage(from: JSONSerialization.data(withJSONObject: root))
+        #expect(list.items.first?.listenAgainPin == MusicFeedbackToggle(isPinned: true, pinToken: "pin-l", unpinToken: "unpin-l"))
+    }
+
+    @Test("A playlist page takes its Listen again toggle from the header menu, never from a row's menu")
+    func headerPin() throws {
+        let pinned = try InnerTubeParser.browsePage(
+            from: Self.playlistJSON(rows: [Self.pageRow("p1", artist: [])], headerMenu: [Self.pinMenuItem(icon: "KEEP", toggled: false, default: "pin-h", toggledToken: "unpin-h")]),
+            browseId: "VLPLfixtureHeader"
+        )
+        #expect(pinned.listenAgainPin == MusicFeedbackToggle(isPinned: false, pinToken: "pin-h", unpinToken: "unpin-h"))
+
+        let rowOnly = Self.pageRow("p1", artist: [], menu: [Self.pinMenuItem(icon: "KEEP", toggled: false, default: "pin-r", toggledToken: "unpin-r")])
+        let plain = try InnerTubeParser.browsePage(from: Self.playlistJSON(rows: [rowOnly]), browseId: "VLPLfixtureRow")
+        #expect(plain.listenAgainPin == nil)
+        #expect(plain.tracks.first?.listenAgainPin != nil)
+    }
+
+    @Test("The captured artist page has no Listen again toggle")
+    func artistPageHasNoPin() throws {
+        #expect(try InnerTubeParser.browsePage(from: fixture("browse-artist.json"), browseId: "UCuAXFkgsw1L7xaCfnd5JJOw").listenAgainPin == nil)
+    }
+
+    private static func collectionTile(_ browseId: String, page: String, menu items: [[String: Any]]) -> [String: Any] {
+        ["musicTwoRowItemRenderer": [
+            "title": ["runs": [["text": "Tile \(browseId)"]]],
+            "subtitle": ["runs": [["text": "Playlist"]]],
+            "navigationEndpoint": ["browseEndpoint": [
+                "browseId": browseId,
+                "browseEndpointContextSupportedConfigs": ["browseEndpointContextMusicConfig": ["pageType": page]],
+            ]],
+            "menu": menu(items),
+        ]]
+    }
+
     private static func run(_ text: String, id: String? = nil, page: String? = "MUSIC_PAGE_TYPE_ARTIST") -> [String: Any] {
         guard let id else { return ["text": text] }
         var browse: [String: Any] = ["browseId": id]
@@ -500,8 +567,9 @@ struct InnerTubeParserRowActionsTests {
     }
 
     /// A playlist page in the two-column layout. The editable header wraps the plain one, as YouTube's does.
-    private static func playlistJSON(rows: [[String: Any]], editableHeader: Bool = false) -> Data {
-        let header: [String: Any] = ["title": ["runs": [["text": "A Playlist"]]], "subtitle": ["runs": [["text": "Playlist"]]]]
+    private static func playlistJSON(rows: [[String: Any]], editableHeader: Bool = false, headerMenu: [[String: Any]]? = nil) -> Data {
+        var header: [String: Any] = ["title": ["runs": [["text": "A Playlist"]]], "subtitle": ["runs": [["text": "Playlist"]]]]
+        if let headerMenu { header["buttons"] = [menu(headerMenu)] }
         let headerSection: [String: Any] = editableHeader
             ? ["musicEditablePlaylistDetailHeaderRenderer": ["header": ["musicResponsiveHeaderRenderer": header], "playlistId": "PLfixtureMine"]]
             : ["musicResponsiveHeaderRenderer": header]

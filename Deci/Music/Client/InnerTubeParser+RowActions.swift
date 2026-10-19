@@ -1,5 +1,6 @@
 // Deci/Music/Client/InnerTubeParser+RowActions.swift
-// What a row's own menu offers for the song actions (go to album, remove from playlist, pin to Listen again),
+// What a row's own menu offers for the song actions (go to album, remove from playlist, pin to Listen again, also
+// read off playlist and album tiles, rows and page headers),
 // the page-level "can the user edit this playlist" check, the add-to-playlist picker's list, and how the
 // playlist edit and feedback responses say they worked.
 import Foundation
@@ -31,6 +32,14 @@ extension InnerTubeParser {
             setVideoId: items.lazy.compactMap(removeSetVideoId(in:)).first,
             pin: items.lazy.compactMap(pinToggle(in:)).first
         )
+    }
+
+    /// A page header's pin toggle. The header nests its menu deeper than a row (inside its buttons), so every toggle
+    /// under it is tried; only the pin icons count.
+    static func headerPin(in header: [String: Any]) -> MusicFeedbackToggle? {
+        var toggles: [[String: Any]] = []
+        collect("toggleMenuServiceItemRenderer", in: header, into: &toggles)
+        return toggles.lazy.compactMap { pinToggle(in: ["toggleMenuServiceItemRenderer": $0]) }.first
     }
 
     private static func menuItems(of renderer: [String: Any]) -> [[String: Any]] {

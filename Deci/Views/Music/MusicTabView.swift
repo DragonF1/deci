@@ -145,6 +145,11 @@ private struct MusicSignedInView: View {
             actions: { navigation.actions(for: $0, in: $1) },
             perform: { navigation.perform($0, for: $1, in: $2) }
         ))
+        // Pin / Unpin to Listen again on every playlist and album tile and Library row, on the real account.
+        .environment(\.musicCollectionPin, MusicCollectionPinHandler(
+            pin: { service.trackActions.listenAgainPin(for: $0) },
+            toggle: { service.trackActions.togglePin($0) }
+        ))
         .overlay(alignment: .topTrailing) {
             if isAccountCardOpen {
                 accountCardLayer

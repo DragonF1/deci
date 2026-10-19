@@ -4,6 +4,7 @@ import SwiftUI
 /// The Library root: Liked music pinned on top, then the saved playlists, albums or artists.
 struct MusicLibraryView: View {
     @Bindable var browse: MusicBrowseStore
+    @Environment(\.musicCollectionPin) private var collectionPin
 
     private var section: MusicLibrarySection { browse.librarySection }
 
@@ -46,8 +47,15 @@ struct MusicLibraryView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
-                        MusicCollectionRow(collection: collection) {
+                        let row = MusicCollectionRow(collection: collection) {
                             browse.open(collection)
+                        }
+                        if let collectionPin, let listenAgain = collectionPin.pin(collection) {
+                            row.contextMenu {
+                                MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
+                            }
+                        } else {
+                            row
                         }
                     }
 

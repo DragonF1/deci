@@ -523,6 +523,59 @@ struct MusicTrackActionsStoreTests {
 
     // MARK: - The action list
 
+    @Test("Pin on a playlist sends its pin token, then it offers Unpin, and the next tap sends the unpin token")
+    func collectionPinToggles() async {
+        let h = ActionsHarness()
+        var playlist = MusicSamples.collection("VLPLmine")
+        playlist.listenAgainPin = MusicSamples.pinToggle()
+        #expect(h.store.listenAgainPin(for: playlist)?.isPinned == false)
+
+        h.store.togglePin(playlist)
+        #expect(await h.until { h.store.listenAgainPin(for: playlist)?.isPinned == true })
+        #expect(await h.backend.feedbackTokens == ["pin-token"])
+        #expect(h.store.notice?.text == "Pinned to Listen again")
+
+        h.store.togglePin(playlist)
+        #expect(await h.until { h.store.listenAgainPin(for: playlist)?.isPinned == false })
+        #expect(await h.backend.feedbackTokens == ["pin-token", "unpin-token"])
+        #expect(h.store.notice?.text == "Unpinned from Listen again")
+    }
+
+    @Test("A pin from a playlist's page shows on its tiles too, and other playlists are not touched")
+    func pagePinSharesCollectionState() async {
+        let h = ActionsHarness()
+        var page = MusicSamples.page("VLPLmine")
+        page.listenAgainPin = MusicSamples.pinToggle()
+        var tile = MusicSamples.collection("VLPLmine")
+        tile.listenAgainPin = MusicSamples.pinToggle()
+        var other = MusicSamples.collection("VLPLother")
+        other.listenAgainPin = MusicSamples.pinToggle()
+
+        h.store.togglePin(page)
+        #expect(await h.until { h.store.listenAgainPin(for: page)?.isPinned == true })
+        #expect(h.store.listenAgainPin(for: tile)?.isPinned == true)
+        #expect(h.store.listenAgainPin(for: other)?.isPinned == false)
+        #expect(await h.backend.feedbackTokens == ["pin-token"])
+    }
+
+    @Test("A playlist or page with no toggle, or no token for its next step, offers no pin and sends nothing")
+    func collectionWithoutPin() async {
+        let h = ActionsHarness()
+        let bare = MusicSamples.collection("VLPLbare")
+        var half = MusicSamples.collection("VLPLhalf")
+        half.listenAgainPin = MusicSamples.pinToggle(pin: nil)
+        let page = MusicSamples.page("VLPLbare")
+        #expect(h.store.listenAgainPin(for: bare) == nil)
+        #expect(h.store.listenAgainPin(for: half) == nil)
+        #expect(h.store.listenAgainPin(for: page) == nil)
+
+        h.store.togglePin(bare)
+        h.store.togglePin(half)
+        h.store.togglePin(page)
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(await h.backend.feedbackTokens.isEmpty)
+    }
+
     @Test("The store's list is the model's list, with the pin state it knows about")
     func actionsMatchTheModel() async {
         let h = ActionsHarness()

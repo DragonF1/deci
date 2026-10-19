@@ -6,7 +6,7 @@ import os
 private let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicTrackActions")
 
 /// The state behind a song's "..." menu: the add-to-playlist picker, the short line that says what happened, and
-/// which songs the user pinned to Listen again. `MusicService` owns one (`service.trackActions`). The state lives
+/// which songs, playlists and albums the user pinned to Listen again. `MusicService` owns one (`service.trackActions`). The state lives
 /// here, not in the views, because the popover panel hides whenever it loses focus. Nothing here logs a playlist,
 /// song or token, only counts and error kinds.
 @MainActor
@@ -36,7 +36,8 @@ final class MusicTrackActionsStore {
         let toggle: MusicFeedbackToggle
     }
 
-    /// Keyed by song: every row of the same song, from the same load, shows the same Pin / Unpin.
+    /// Keyed by song ("t:" + video id) or by playlist or album ("c:" + browse id): every row of the same thing, from
+    /// the same load, shows the same Pin / Unpin.
     private var pins: [String: PinOverride] = [:]
 
     @ObservationIgnored private let backend: any MusicBackend
@@ -69,11 +70,37 @@ final class MusicTrackActionsStore {
 
     /// Only a song YouTube offered the toggle for has one; another row's pin never gives one to a row that has none.
     private func withPinState(_ track: MusicTrack) -> MusicTrack {
-        guard let own = track.listenAgainPin, let override = pins[track.videoId], override.source == own else { return track }
+        guard track.listenAgainPin != nil else { return track }
         var pinned = track
-        pinned.listenAgainPin = override.toggle
+        pinned.listenAgainPin = pinState(track.listenAgainPin, key: Self.pinKey(track))
         return pinned
     }
+
+    /// A playlist or album tile or row's Pin / Unpin, facing the way it was last left this session. Nil when YouTube
+    /// offers no toggle for it, or none for its next move.
+    func listenAgainPin(for collection: MusicCollection) -> MusicFeedbackToggle? {
+        Self.offered(pinState(collection.listenAgainPin, key: Self.pinKey(collection.browseId)))
+    }
+
+    /// The same for an open playlist or album page, from its header menu.
+    func listenAgainPin(for page: MusicBrowsePage) -> MusicFeedbackToggle? {
+        Self.offered(pinState(page.listenAgainPin, key: Self.pinKey(page.browseId)))
+    }
+
+    /// The toggle as last left: an override from this session only while the row still carries the toggle that was
+    /// flipped. A row loaded since (new state or new tokens) shows its own.
+    private func pinState(_ own: MusicFeedbackToggle?, key: String) -> MusicFeedbackToggle? {
+        guard let own else { return nil }
+        guard let override = pins[key], override.source == own else { return own }
+        return override.toggle
+    }
+
+    private static func offered(_ toggle: MusicFeedbackToggle?) -> MusicFeedbackToggle? {
+        toggle?.nextToken?.isEmpty == false ? toggle : nil
+    }
+
+    private static func pinKey(_ track: MusicTrack) -> String { "t:" + track.videoId }
+    private static func pinKey(_ browseId: String) -> String { "c:" + browseId }
 
     // MARK: - Save to playlist
 
@@ -199,26 +226,38 @@ final class MusicTrackActionsStore {
     /// Pins the song to Listen again, or unpins it, whichever the row offers. The row flips to the other word only
     /// once YouTube says it worked.
     func togglePin(_ track: MusicTrack) {
-        guard let source = track.listenAgainPin else { return }
-        guard let toggle = withPinState(track).listenAgainPin, let token = toggle.nextToken, !token.isEmpty else { return }
-        let key = busyKey("pin:\(track.videoId)")
+        togglePin(source: track.listenAgainPin, pinKey: Self.pinKey(track))
+    }
+
+    /// The same for a playlist or album tile or row.
+    func togglePin(_ collection: MusicCollection) {
+        togglePin(source: collection.listenAgainPin, pinKey: Self.pinKey(collection.browseId))
+    }
+
+    /// The same for an open playlist or album page.
+    func togglePin(_ page: MusicBrowsePage) {
+        togglePin(source: page.listenAgainPin, pinKey: Self.pinKey(page.browseId))
+    }
+
+    private func togglePin(source: MusicFeedbackToggle?, pinKey: String) {
+        guard let source, let toggle = pinState(source, key: pinKey), let token = toggle.nextToken, !token.isEmpty else { return }
+        let key = busyKey("pin:\(pinKey)")
         guard busy.insert(key).inserted else { return }
         let session = sessionRun
-        let videoId = track.videoId
         Task { [weak self, backend] in
             do {
                 try await backend.sendFeedback(token: token)
-                self?.landPin(PinOverride(source: source, toggle: toggle.flipped()), videoId: videoId, key: key, session: session)
+                self?.landPin(PinOverride(source: source, toggle: toggle.flipped()), pinKey: pinKey, key: key, session: session)
             } catch {
                 self?.failWrite(error, key: key, session: session)
             }
         }
     }
 
-    private func landPin(_ override: PinOverride, videoId: String, key: String, session: Int) {
+    private func landPin(_ override: PinOverride, pinKey: String, key: String, session: Int) {
         busy.remove(key)
         guard sessionRun == session else { return }
-        pins[videoId] = override
+        pins[pinKey] = override
         post(override.toggle.isPinned ? "Pinned to Listen again" : "Unpinned from Listen again")
     }
 

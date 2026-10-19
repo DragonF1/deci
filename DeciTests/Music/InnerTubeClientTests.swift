@@ -360,6 +360,48 @@ struct InnerTubeClientTests {
         #expect(await makeClient(brand, store: MemorySecretStore(data: nil)).channelIdentity() == nil)
     }
 
+    @Test("On a brand channel every call but player names it as onBehalfOfUser; the own channel sends no user")
+    func brandChannelOnBehalfOfUser() async throws {
+        let brand = FakeYouTube {
+            $0.bootstrapHTML = #"<script>ytcfg.set({"INNERTUBE_CLIENT_VERSION":"1.2","DATASYNC_ID":"brand123||user456"});</script>"#
+        }
+        let client = makeClient(brand)
+        _ = try await client.search("anything")
+        _ = try? await client.player(videoId: "x", signatureTimestamp: 1)
+        let search = FakeYouTube.jsonBody(try #require(brand.requests(path: "/youtubei/v1/search").first))
+        let searchUser = (search["context"] as? [String: Any])?["user"] as? [String: Any]
+        #expect(searchUser?["onBehalfOfUser"] as? String == "brand123")
+        let player = FakeYouTube.jsonBody(try #require(brand.requests(path: "/youtubei/v1/player").first))
+        #expect((player["context"] as? [String: Any])?["user"] == nil)
+
+        let own = FakeYouTube {
+            $0.bootstrapHTML = #"<script>ytcfg.set({"INNERTUBE_CLIENT_VERSION":"1.2","DATASYNC_ID":"user456||"});</script>"#
+        }
+        _ = try await makeClient(own).search("anything")
+        let ownSearch = FakeYouTube.jsonBody(try #require(own.requests(path: "/youtubei/v1/search").first))
+        #expect((ownSearch["context"] as? [String: Any])?["user"] == nil)
+    }
+
+    @Test("A 401 to a call that named the brand channel is tried once more without it; the own channel is not retried")
+    func brandChannel401RetriesWithoutUser() async throws {
+        let brand = FakeYouTube {
+            $0.bootstrapHTML = #"<script>ytcfg.set({"INNERTUBE_CLIENT_VERSION":"1.2","DATASYNC_ID":"brand123||user456"});</script>"#
+            $0.searchStatus = 401
+        }
+        await #expect(throws: MusicError.signedOut) { _ = try await makeClient(brand).search("anything") }
+        let searches = brand.requests(path: "/youtubei/v1/search").map(FakeYouTube.jsonBody)
+        #expect(searches.count == 2)
+        #expect(((searches.first?["context"] as? [String: Any])?["user"] as? [String: Any])?["onBehalfOfUser"] as? String == "brand123")
+        #expect((searches.last?["context"] as? [String: Any])?["user"] == nil)
+
+        let own = FakeYouTube {
+            $0.bootstrapHTML = #"<script>ytcfg.set({"INNERTUBE_CLIENT_VERSION":"1.2","DATASYNC_ID":"user456||"});</script>"#
+            $0.searchStatus = 401
+        }
+        await #expect(throws: MusicError.signedOut) { _ = try await makeClient(own).search("anything") }
+        #expect(own.requests(path: "/youtubei/v1/search").count == 1)
+    }
+
     @Test("sessionCookies hands back the stored jar")
     func sessionCookies() async {
         let cookies = await makeClient().sessionCookies()

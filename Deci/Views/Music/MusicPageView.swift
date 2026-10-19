@@ -31,6 +31,7 @@ struct MusicPageView: View {
                         page: page,
                         kind: collection.kind,
                         pin: collection.kind == .artist ? pinControl(for: page) : nil,
+                        listenAgain: listenAgainControl(for: loaded),
                         sort: MusicBrowseStore.canSort(page.browseId) ? browse.sort(for: page.browseId) : nil,
                         isLoadingAll: browse.loadingAllTracks.contains(page.browseId),
                         sortLimit: browse.sortedSongLimit(page.browseId),
@@ -72,6 +73,14 @@ struct MusicPageView: View {
             isEnabled: pins.canToggle(page.browseId),
             toggle: { pins.toggle(MusicPinnedArtist(page: page, opener: collection)) }
         )
+    }
+
+    /// The page's own Listen again toggle, from its header menu: on YouTube Music, not on Deci's Home. Nil when
+    /// YouTube offers none (artist pages, Liked Music, most mixes).
+    private func listenAgainControl(for page: MusicBrowsePage) -> MusicPageHeader.ListenAgainControl? {
+        let actions = service.trackActions
+        guard let toggle = actions.listenAgainPin(for: page) else { return nil }
+        return MusicPageHeader.ListenAgainControl(isPinned: toggle.isPinned) { actions.togglePin(page) }
     }
 
     @ViewBuilder
@@ -146,10 +155,18 @@ struct MusicPageHeader: View {
         let toggle: () -> Void
     }
 
+    /// The Pin to Listen again button of a playlist or album page. It pins on the YouTube Music account.
+    struct ListenAgainControl {
+        let isPinned: Bool
+        let toggle: () -> Void
+    }
+
     let page: MusicBrowsePage
     let kind: MusicCollection.Kind
     /// The pin button; nil on a page that is not an artist's.
     var pin: PinControl?
+    /// The Listen again pin; nil where YouTube offers none.
+    var listenAgain: ListenAgainControl?
     /// The sort picked for a playlist; nil on a page that cannot be sorted.
     var sort: MusicPlaylistSort?
     /// The sort is loading the rest of the songs before it can order them.
@@ -184,7 +201,7 @@ struct MusicPageHeader: View {
                         .lineLimit(2)
                 }
 
-                if !page.tracks.isEmpty || pin != nil {
+                if !page.tracks.isEmpty || pin != nil || listenAgain != nil {
                     HStack(spacing: DesignTokens.Spacing.xs) {
                         if !page.tracks.isEmpty {
                             Button(action: onPlay) {
@@ -227,6 +244,10 @@ struct MusicPageHeader: View {
                         if let pin {
                             pinButton(pin)
                         }
+
+                        if let listenAgain {
+                            listenAgainButton(listenAgain)
+                        }
                     }
                     .padding(.top, DesignTokens.Spacing.xs)
                 }
@@ -267,6 +288,21 @@ struct MusicPageHeader: View {
         .disabled(!pin.isEnabled)
         .help(Self.pinHelp(isPinned: pin.isPinned, isEnabled: pin.isEnabled))
         .accessibilityLabel(pin.isPinned ? "Unpin \(page.title) from Home" : "Pin \(page.title) to Home")
+    }
+
+    /// Icon only: the row beside it already holds Play, Shuffle and Sort. The tooltip and label say what it does.
+    private func listenAgainButton(_ control: ListenAgainControl) -> some View {
+        let item: MusicTrackAction = control.isPinned ? .unpinFromListenAgain : .pinToListenAgain
+        return Button(action: control.toggle) {
+            Image(systemName: control.isPinned ? "pin.fill" : "pin")
+        }
+        .buttonStyle(.plain)
+        .font(DesignTokens.Typography.pickerText)
+        .foregroundStyle(DesignTokens.Colors.textPrimary)
+        .glassButtonStyle()
+        .contentShape(Capsule())
+        .help(item.title)
+        .accessibilityLabel("\(item.title): \(page.title)")
     }
 
     /// The options, with a mark on the picked one that shows its direction. Picking it again flips the direction.

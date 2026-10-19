@@ -71,6 +71,21 @@ struct InnerTubeParserTests {
         #expect(InnerTubeParser.bootstrapConfig(fromHTML: "<html></html>").isBrandChannel == nil)
     }
 
+    @Test("The brand page id is DELEGATED_SESSION_ID, else the brand half of DATASYNC_ID, and nil on the own channel")
+    func bootstrapBrandPageId() {
+        #expect(InnerTubeParser.brandPageId(delegatedSessionId: "delegated789", dataSyncId: "brand123||user456") == "delegated789")
+        #expect(InnerTubeParser.brandPageId(delegatedSessionId: nil, dataSyncId: "brand123||user456") == "brand123")
+        #expect(InnerTubeParser.brandPageId(delegatedSessionId: "", dataSyncId: "brand123||user456") == "brand123")
+        #expect(InnerTubeParser.brandPageId(delegatedSessionId: nil, dataSyncId: "user456||") == nil)
+        #expect(InnerTubeParser.brandPageId(delegatedSessionId: nil, dataSyncId: "user456") == nil)
+        #expect(InnerTubeParser.brandPageId(delegatedSessionId: nil, dataSyncId: nil) == nil)
+
+        let brand = #"ytcfg.set({"INNERTUBE_CLIENT_VERSION":"4.4","DATASYNC_ID":"brand123||user456"});"#
+        #expect(InnerTubeParser.bootstrapConfig(fromHTML: brand).brandPageId == "brand123")
+        let own = #"ytcfg.set({"INNERTUBE_CLIENT_VERSION":"4.4","DATASYNC_ID":"user456||"});"#
+        #expect(InnerTubeParser.bootstrapConfig(fromHTML: own).brandPageId == nil)
+    }
+
     // MARK: - Player JS
 
     @Test("The player hash is the path segment after /s/player/")

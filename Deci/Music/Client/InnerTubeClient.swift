@@ -8,6 +8,8 @@ struct InnerTubeSession: Sendable, Equatable {
     let playerJSURL: URL?
     /// Whether the page was served to a brand channel; nil when it didn't say.
     var isBrandChannel: Bool?
+    /// The brand channel's page id; nil on the account's own channel. Never logged.
+    var brandPageId: String?
 
     var playerHash: String? { playerJSURL.flatMap(InnerTubeParser.playerHash(fromPlayerJSURL:)) }
 }
@@ -126,7 +128,8 @@ actor InnerTubeClient {
             clientVersion: config.clientVersion ?? Self.fallbackClientVersion,
             visitorData: config.visitorData,
             playerJSURL: config.playerJSURL,
-            isBrandChannel: config.isBrandChannel
+            isBrandChannel: config.isBrandChannel,
+            brandPageId: config.brandPageId
         )
         if (config.clientVersion != nil || config.playerJSURL != nil), !Task.isCancelled, epoch == self.epoch {
             cachedSession = (session, now())
@@ -419,13 +422,30 @@ actor InnerTubeClient {
             throw MusicError.parse("request url is not valid")
         }
         guard let headers = authenticatedHeaders(for: url, session: session) else { throw MusicError.signedOut }
-        var payload = body
-        payload["context"] = ["client": clientContext(session)]
-        let data = try JSONSerialization.data(withJSONObject: payload)
-        let response = try await transport.send(HTTPRequest(url: url, method: "POST", headers: headers, body: data))
+        // The cookies pick the channel for the page, but browse, library, account and write calls only act
+        // as a brand channel when they name it, as ytmusicapi does. Not on player: it answers 401 to that,
+        // and streams and History work from the cookies alone.
+        let onBehalfOf = endpoint == "player" ? nil : session.brandPageId
+        var response = try await send(url, headers: headers, body: body, session: session, onBehalfOf: onBehalfOf)
         absorbCookies(from: response, url: url, epoch: epoch)
+        // A 401 would sign the whole session out. One that answers the channel id gets one try without it.
+        if response.statusCode == 401, onBehalfOf != nil {
+            response = try await send(url, headers: headers, body: body, session: session, onBehalfOf: nil)
+            absorbCookies(from: response, url: url, epoch: epoch)
+        }
         guard (200..<300).contains(response.statusCode) else { throw Self.error(for: response.statusCode) }
         return response.data
+    }
+
+    private func send(
+        _ url: URL, headers: [String: String], body: [String: Any], session: InnerTubeSession, onBehalfOf: String?
+    ) async throws -> HTTPResponse {
+        var context: [String: Any] = ["client": clientContext(session)]
+        if let onBehalfOf { context["user"] = ["onBehalfOfUser": onBehalfOf] }
+        var payload = body
+        payload["context"] = context
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        return try await transport.send(HTTPRequest(url: url, method: "POST", headers: headers, body: data))
     }
 
     private func clientContext(_ session: InnerTubeSession) -> [String: Any] {

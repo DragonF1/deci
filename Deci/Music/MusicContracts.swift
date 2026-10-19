@@ -189,6 +189,8 @@ struct MusicCollection: Sendable, Hashable, Identifiable {
     /// YouTube's own second line, e.g. "Album • Daft Punk • 2013" or "Playlist • 50 songs".
     let subtitle: String
     let thumbnailURL: URL?
+    /// The tile or row menu's "Pin to Listen again" toggle, when YouTube offers one (playlists and albums).
+    var listenAgainPin: MusicFeedbackToggle?
 
     var id: String { browseId }
 }
@@ -255,6 +257,8 @@ struct MusicBrowsePage: Sendable, Equatable {
     let shelves: [MusicShelf]
     /// Whether the user can change this playlist's songs (their own playlist, not Liked Music or an album).
     var isEditable = false
+    /// The header menu's "Pin to Listen again" toggle, when YouTube offers one for the page.
+    var listenAgainPin: MusicFeedbackToggle?
 }
 
 /// Who the session is signed in as, from YouTube's account menu. Shown on the Music tab's account card.

@@ -12,6 +12,7 @@ struct MusicShelfView: View {
     let onOpen: (MusicCollection) -> Void
     /// Gives each collection tile an "Unpin from Home" context menu item. Only the pinned artists row passes it.
     var onUnpin: ((MusicCollection) -> Void)?
+    @Environment(\.musicCollectionPin) private var collectionPin
 
     /// Song rows a songs-only shelf shows.
     static let maxSongRows = 6
@@ -77,12 +78,18 @@ struct MusicShelfView: View {
             ) {
                 onOpen(collection)
             }
-            if let onUnpin {
+            let listenAgain = collectionPin?.pin(collection)
+            if onUnpin != nil || listenAgain != nil {
                 tile.contextMenu {
-                    Button {
-                        onUnpin(collection)
-                    } label: {
-                        Label("Unpin from Home", systemImage: "pin.slash")
+                    if let listenAgain, let collectionPin {
+                        MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
+                    }
+                    if let onUnpin {
+                        Button {
+                            onUnpin(collection)
+                        } label: {
+                            Label("Unpin from Home", systemImage: "pin.slash")
+                        }
                     }
                 }
             } else {

@@ -198,7 +198,8 @@ extension InnerTubeParser {
             tracks: uniqueTracks(tracks),
             continuation: rows.flatMap { continuationToken(in: $0, items: $0["contents"] as? [[String: Any]] ?? []) },
             shelves: shelves,
-            isEditable: isEditablePlaylist(root: root, browseId: browseId, rows: rowRenderers)
+            isEditable: isEditablePlaylist(root: root, browseId: browseId, rows: rowRenderers),
+            listenAgainPin: header.isArtist ? nil : headerPin(in: header.renderer)
         )
     }
 
@@ -380,7 +381,7 @@ extension InnerTubeParser {
         let thumbnail = pickThumbnail(tile["thumbnailRenderer"], near: 300)
 
         if let browse = endpoint?["browseEndpoint"] as? [String: Any] {
-            return collection(browse, title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)
+            return collection(browse, title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail, pin: rowOptions(in: tile).pin)
         }
         if let watch = endpoint?["watchEndpoint"] as? [String: Any] {
             if let videoId = string(watch["videoId"]) {
@@ -399,10 +400,10 @@ extension InnerTubeParser {
                     listenAgainPin: options.pin
                 ))
             }
-            return mix(playlistId: string(watch["playlistId"]), title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)
+            return mix(playlistId: string(watch["playlistId"]), title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail, pin: rowOptions(in: tile).pin)
         }
         let playlistId = string((endpoint?["watchPlaylistEndpoint"] as? [String: Any])?["playlistId"])
-        return mix(playlistId: playlistId, title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)
+        return mix(playlistId: playlistId, title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail, pin: rowOptions(in: tile).pin)
     }
 
     /// A row is a song when it has a video; otherwise a row-level browse endpoint makes it an
@@ -417,7 +418,8 @@ extension InnerTubeParser {
                 browse,
                 title: title,
                 subtitle: text(of: columns.count > 1 ? columns[1] : []),
-                thumbnail: thumbnailURL(in: row)
+                thumbnail: thumbnailURL(in: row),
+                pin: rowOptions(in: row).pin
             )
         }
         return browseTrack(from: row).map { .track($0) }
@@ -426,19 +428,26 @@ extension InnerTubeParser {
     /// "Episodes for later" (playlist SE) lists podcast episodes only, which Deci cannot play, so its page would be empty.
     private static let episodesForLaterBrowseId = "VLSE"
 
-    private static func collection(_ browse: [String: Any], title: String, subtitle: String?, thumbnail: URL?) -> MusicShelfItem? {
+    private static func collection(
+        _ browse: [String: Any], title: String, subtitle: String?, thumbnail: URL?, pin: MusicFeedbackToggle? = nil
+    ) -> MusicShelfItem? {
         guard var browseId = string(browse["browseId"]), browseId != episodesForLaterBrowseId,
               let kind = collectionKind(of: browse) else { return nil }
         // A library artist links to "MPLA" + its channel id; the artist page is the channel id (as ytmusicapi does).
         if kind == .artist, browseId.hasPrefix("MPLAUC") { browseId.removeFirst(4) }
-        return .collection(MusicCollection(browseId: browseId, kind: kind, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail))
+        return .collection(MusicCollection(
+            browseId: browseId, kind: kind, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail,
+            listenAgainPin: kind == .artist ? nil : pin
+        ))
     }
 
     /// A mix has no page of its own, only a playlist id: its page is "VL" + that id.
-    private static func mix(playlistId: String?, title: String, subtitle: String?, thumbnail: URL?) -> MusicShelfItem? {
+    private static func mix(playlistId: String?, title: String, subtitle: String?, thumbnail: URL?, pin: MusicFeedbackToggle?) -> MusicShelfItem? {
         guard let playlistId else { return nil }
         let browseId = playlistId.hasPrefix("VL") ? playlistId : "VL" + playlistId
-        return .collection(MusicCollection(browseId: browseId, kind: .playlist, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail))
+        return .collection(MusicCollection(
+            browseId: browseId, kind: .playlist, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail, listenAgainPin: pin
+        ))
     }
 
     /// By YouTube's page type. A destination without one is told apart by its id prefix instead;
