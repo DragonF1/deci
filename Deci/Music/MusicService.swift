@@ -209,6 +209,8 @@ final class MusicService {
         self.lastActivity = now()
         // The lyrics panel ignores ticks while it is hidden, so it asks for one fresh reading when it comes back.
         lyrics.playbackSampler = { [player] in (player.currentTime, player.isPlaying) }
+        // The ticks come every half second; while the lyrics are on screen they follow the engine's own clock.
+        lyrics.livePosition = { [player] in player.livePosition() }
         player.onTick = { [weak self] position, isPlaying in
             self?.handlePlaybackTick(position: position, isPlaying: isPlaying)
         }

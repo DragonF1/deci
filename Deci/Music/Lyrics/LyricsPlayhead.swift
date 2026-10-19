@@ -1,8 +1,8 @@
 // Deci/Music/Lyrics/LyricsPlayhead.swift
 import Foundation
 
-/// Where the song is, between player ticks. The player reports its time every half second; the lyrics
-/// view redraws ten times a second, so it takes the last observed time and adds the wall-clock time since.
+/// Where the song is, between player ticks. The player reports its time every half second, so this takes the last
+/// observed time and adds the wall-clock time since. The lyrics use it only when the player's live clock is not there.
 struct LyricsPlayhead: Equatable, Sendable {
     let time: TimeInterval
     let isPlaying: Bool
@@ -12,6 +12,12 @@ struct LyricsPlayhead: Equatable, Sendable {
     static let maxExtrapolation: TimeInterval = 1
 
     static let zero = LyricsPlayhead(time: 0, isPlaying: false, observedAt: .distantPast)
+
+    /// Whether the lyrics' per frame timelines (the current line, and the fill of the line being sung) run: only while
+    /// the panel is on screen and the song plays. Paused or hidden they schedule nothing.
+    static func animates(isWatching: Bool, isPlaying: Bool) -> Bool {
+        isWatching && isPlaying
+    }
 
     func position(at date: Date) -> TimeInterval {
         guard time.isFinite else { return 0 }

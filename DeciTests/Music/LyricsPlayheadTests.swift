@@ -51,3 +51,17 @@ struct LyricsPlayheadTests {
         #expect(!LyricsPlayhead.zero.isPlaying)
     }
 }
+
+@Suite("Lyrics timelines: when they run")
+struct LyricsTimelineRunTests {
+
+    @Test("The per frame timelines run only while the panel is on screen and the song plays", arguments: [
+        (isWatching: true, isPlaying: true, runs: true),
+        (isWatching: true, isPlaying: false, runs: false),
+        (isWatching: false, isPlaying: true, runs: false),
+        (isWatching: false, isPlaying: false, runs: false),
+    ])
+    func runsOnlyWhenWatchingAndPlaying(isWatching: Bool, isPlaying: Bool, runs: Bool) {
+        #expect(LyricsPlayhead.animates(isWatching: isWatching, isPlaying: isPlaying) == runs)
+    }
+}

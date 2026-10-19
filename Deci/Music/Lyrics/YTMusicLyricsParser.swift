@@ -50,7 +50,8 @@ enum YTMusicLyricsParser {
 
     /// Timed lines from `timedLyricsData`, a list of `{"lyricLine", "cueRange": {"startTimeMilliseconds", ...}}`.
     /// Lines with no letters or digits (the note symbol YouTube uses for a break) become empty gap lines. A page with
-    /// fewer real lines than LRCLIB's own minimum is not trusted. A last gap closes the final line at its cue's end.
+    /// fewer real lines than LRCLIB's own minimum is not trusted. Each line keeps the end of its cue when that is after its start,
+    /// and a last gap closes the final line at its cue's end.
     private static func timedLyrics(in root: Any) -> Page? {
         guard let container = firstDictionary(containingKey: "timedLyricsData", in: root),
               let cues = container["timedLyricsData"] as? [Any]
@@ -74,7 +75,10 @@ enum YTMusicLyricsParser {
         timed.sort { ($0.time, $0.order) < ($1.time, $1.order) }
         guard timed.filter({ !$0.text.isEmpty }).count >= LRCLibClient.minimumLines else { return nil }
 
-        var lines = timed.map { LyricLine(time: $0.time, text: $0.text) }
+        // A cue's end is kept when it is after its start: the view fills the line across that time.
+        var lines = timed.map { cue in
+            LyricLine(time: cue.time, text: cue.text, end: cue.end.flatMap { $0.isFinite && $0 > cue.time ? $0 : nil })
+        }
         if let last = timed.last, !last.text.isEmpty, let end = last.end, end > last.time {
             lines.append(LyricLine(time: end, text: ""))
         }

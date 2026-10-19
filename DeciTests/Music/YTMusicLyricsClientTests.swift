@@ -31,10 +31,10 @@ struct YTMusicLyricsClientTests {
 
     /// The four sung lines of `YTSamples.fourCues` and the gap after the last cue.
     private static let fourLines = [
-        LyricLine(time: 1, text: "Line one"),
-        LyricLine(time: 3, text: "Line two"),
-        LyricLine(time: 5, text: "Line three"),
-        LyricLine(time: 7, text: "Line four"),
+        LyricLine(time: 1, text: "Line one", end: 3),
+        LyricLine(time: 3, text: "Line two", end: 5),
+        LyricLine(time: 5, text: "Line three", end: 7),
+        LyricLine(time: 7, text: "Line four", end: 9),
         LyricLine(time: 9, text: ""),
     ]
 
@@ -257,9 +257,9 @@ struct YTMusicLyricsClientTests {
         ]))]))
         let result = try await answer(rig).result
         #expect(result == .synced([
-            LyricLine(time: 12.34, text: "Line one"),
-            LyricLine(time: 15, text: "Line two"),
-            LyricLine(time: 18.5, text: "Line three"),
+            LyricLine(time: 12.34, text: "Line one", end: 15),
+            LyricLine(time: 15, text: "Line two", end: 18.5),
+            LyricLine(time: 18.5, text: "Line three", end: 21.25),
             LyricLine(time: 21.25, text: ""),
         ]))
     }
@@ -272,9 +272,9 @@ struct YTMusicLyricsClientTests {
             YTSamples.cue("Line two", "3000", "5000"),
         ]))]))
         #expect(try await answer(rig).result == .synced([
-            LyricLine(time: 1, text: "Line one"),
-            LyricLine(time: 3, text: "Line two"),
-            LyricLine(time: 5, text: "Line three"),
+            LyricLine(time: 1, text: "Line one", end: 3),
+            LyricLine(time: 3, text: "Line two", end: 5),
+            LyricLine(time: 5, text: "Line three", end: 8),
             LyricLine(time: 8, text: ""),
         ]))
     }
@@ -302,10 +302,10 @@ struct YTMusicLyricsClientTests {
             YTSamples.cue("Line three", "4000", "5000"),
         ]))]))
         #expect(try await answer(rig).result == .synced([
-            LyricLine(time: 1, text: "Line one"),
-            LyricLine(time: 2, text: ""),
-            LyricLine(time: 3, text: "Line two"),
-            LyricLine(time: 4, text: "Line three"),
+            LyricLine(time: 1, text: "Line one", end: 2),
+            LyricLine(time: 2, text: "", end: 3),
+            LyricLine(time: 3, text: "Line two", end: 4),
+            LyricLine(time: 4, text: "Line three", end: 5),
             LyricLine(time: 5, text: ""),
         ]))
     }
@@ -321,7 +321,7 @@ struct YTMusicLyricsClientTests {
             Issue.record("expected synced lyrics")
             return
         }
-        #expect(lines.first == LyricLine(time: 1, text: "1, 2, 3"))
+        #expect(lines.first == LyricLine(time: 1, text: "1, 2, 3", end: 2))
     }
 
     @Test("Fewer than three sung lines is not timed lyrics")
@@ -379,7 +379,7 @@ struct YTMusicLyricsClientTests {
             Issue.record("expected synced lyrics")
             return
         }
-        #expect(lines.last == LyricLine(time: 4, text: ""))
+        #expect(lines.last == LyricLine(time: 4, text: "", end: 6))
         #expect(lines.count == 4)
     }
 
@@ -397,6 +397,23 @@ struct YTMusicLyricsClientTests {
         #expect(lines.map(\.text) == ["Line one", "Line two", "Line three"])
     }
 
+    @Test("Each line carries the end of its cue, and an end that is missing or not after the start is left out")
+    func cueEnds() async throws {
+        let rig = makeRig(FakeYTMusic(android: [.ok(YTSamples.timedBrowse([
+            YTSamples.cue("Line one", "1000", "2500"),
+            YTSamples.cue("Line two", "3000", "3000"),
+            YTSamples.cue("Line three", "4000", "soon"),
+            YTSamples.cue("Line four", "5000", "4500"),
+            YTSamples.cue("Line five", "6000", "7000"),
+        ]))]))
+        guard case .synced(let lines) = try await answer(rig).result else {
+            Issue.record("expected synced lyrics")
+            return
+        }
+        #expect(lines.map(\.end) == [2.5, nil, nil, nil, 7, nil])
+        #expect(lines.allSatisfy { $0.words == nil })
+    }
+
     @Test("Numbers are accepted where the API usually sends strings")
     func numericTimes() async throws {
         let rig = makeRig(FakeYTMusic(android: [.ok(YTSamples.timedBrowse([
@@ -405,9 +422,9 @@ struct YTMusicLyricsClientTests {
             YTSamples.cue("Line three", 3000, 4000),
         ]))]))
         #expect(try await answer(rig).result == .synced([
-            LyricLine(time: 1, text: "Line one"),
-            LyricLine(time: 2, text: "Line two"),
-            LyricLine(time: 3, text: "Line three"),
+            LyricLine(time: 1, text: "Line one", end: 2),
+            LyricLine(time: 2, text: "Line two", end: 3),
+            LyricLine(time: 3, text: "Line three", end: 4),
             LyricLine(time: 4, text: ""),
         ]))
     }

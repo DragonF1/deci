@@ -1,10 +1,31 @@
 // Deci/Music/Lyrics/LyricsModels.swift
 import Foundation
 
+/// A run of a line's text with the moment it starts being sung: one word of an enhanced LRC line ("<00:05.40>up ").
+/// The text keeps its own spacing, so the words of a line joined are exactly the line's text.
+struct LyricWord: Sendable, Equatable, Hashable {
+    let time: TimeInterval
+    let text: String
+}
+
 /// One timed line of synced lyrics. Empty text is an instrumental gap, shown as a note.
+///
+/// `end` and `words` are the timing a source may add beyond the line's start: YouTube Music says when each line stops,
+/// and some LRCLIB files carry a start for every word. A line with neither is fine: the view estimates the words.
 struct LyricLine: Sendable, Equatable, Hashable {
     let time: TimeInterval
     let text: String
+    /// When the line stops being sung, for a source that says. Nil: the line runs until the next one starts.
+    let end: TimeInterval?
+    /// When each word starts, for a source that says. Nil: estimated from the line's own timing when it is shown.
+    let words: [LyricWord]?
+
+    init(time: TimeInterval, text: String, end: TimeInterval? = nil, words: [LyricWord]? = nil) {
+        self.time = time
+        self.text = text
+        self.end = end
+        self.words = words
+    }
 }
 
 /// What a lyrics source knows about a song.

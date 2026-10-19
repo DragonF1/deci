@@ -54,6 +54,25 @@ struct MusicLyricRowStyle: Equatable {
         return index < current ? .past : .upcoming
     }
 
+    /// The text of the line being sung, at one moment of its fill: each character at the brightness the sweep gives it,
+    /// full where the singer has been, upcoming ahead, with a soft edge between. Only the colour is set on a run, so
+    /// the font, the size and the wrapping are exactly those of the plain row, and the characters are the line's own
+    /// (a character is never cut: an accent or an emoji keeps its one colour). A sweep that is not a number is the start.
+    static func filledText(_ text: String, sweep: Double) -> AttributedString {
+        let characters = Array(text)
+        guard !characters.isEmpty else { return AttributedString() }
+        let alphas = LyricFill.alphas(
+            characterCount: characters.count, sweep: sweep, unsung: upcomingOpacity, sung: currentOpacity
+        )
+        var result = AttributedString()
+        for run in LyricFill.runs(of: alphas) {
+            var piece = AttributedString(String(characters[run.range]))
+            piece.foregroundColor = DesignTokens.Colors.textPrimary.opacity(run.alpha)
+            result.append(piece)
+        }
+        return result
+    }
+
     /// What a row shows: an empty timed line is an instrumental gap, shown as a note.
     static func shownText(_ text: String) -> String {
         text.isEmpty ? "\u{266A}" : text
@@ -71,9 +90,15 @@ enum MusicLyricScroll {
     static let anchorFraction: CGFloat = 1.0 / 3.0
     static let anchor = UnitPoint(x: 0.5, y: anchorFraction)
 
+    /// How long before a line's time it becomes the current one: the eye needs a moment to follow a change, so a line
+    /// that lights up exactly on its beat looks late. Also the lead of the word fill.
+    static let lineLead: TimeInterval = 0.1
+
     /// One long gentle glide from line to line.
     static let glideDuration: TimeInterval = 0.55
-    /// A smooth spring: critically damped, so it eases out with no bounce and keeps its speed if the next line
-    /// arrives before it settles.
+    /// The glide's ease-out curve as the control points of a cubic Bezier (x1, y1, x2, y2): fast off the mark, long soft
+    /// landing. The real scroll view is animated with it, since SwiftUI's own scroll to a row does not animate on macOS.
+    static let glideControlPoints: [Float] = [0.25, 0.1, 0.25, 1]
+    /// The fallback when the real scroll view cannot be found: SwiftUI's own animated scroll, which on macOS may jump.
     static let glide = Animation.smooth(duration: glideDuration)
 }

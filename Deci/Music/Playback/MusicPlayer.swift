@@ -105,6 +105,18 @@ final class MusicPlayer {
         notifyStateChange()
     }
 
+    /// Where the track is right now, read from the engine's own clock instead of the last tick (the ticks come every
+    /// half second). For the synced lyrics, which have to be on the beat. Changes nothing: a read.
+    ///
+    /// The player's own `currentTime` is answered while there is no engine clock worth reading: nothing is loaded,
+    /// the stream is loading or being replaced (the engine may still hold the last track's time), or the track has
+    /// ended (the engine has rewound). A reading that is not a number, or below zero, is not worth reading either.
+    func livePosition() -> TimeInterval {
+        guard nowPlaying != nil, stream != nil, refreshTask == nil, !isLoading, !hasEnded else { return currentTime }
+        let position = engine.position
+        return position.isFinite && position >= 0 ? position : currentTime
+    }
+
     /// Jumps to `seconds`, clamped to the track. Does not change whether it is playing.
     func seek(to seconds: TimeInterval) {
         guard nowPlaying != nil, stream != nil, refreshTask == nil, seconds.isFinite else { return }

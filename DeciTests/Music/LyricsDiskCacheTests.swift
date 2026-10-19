@@ -195,6 +195,54 @@ struct LyricsDiskCacheTests {
         #expect(files(in: directory).isEmpty)
     }
 
+    // MARK: - Timing
+
+    @Test("A line's end and its word times read back as written")
+    func timingRoundTrips() async {
+        let (cache, directory, _) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        let lines = [
+            LyricLine(
+                time: 1, text: "Made up words", end: 3.5,
+                words: [LyricWord(time: 1, text: "Made "), LyricWord(time: 2, text: "up "), LyricWord(time: 2.5, text: "words")]
+            ),
+            LyricLine(time: 4, text: "", end: 6),
+            LyricLine(time: 7, text: "Plain line"),
+        ]
+        await cache.store(.synced(lines), videoId: "t")
+        #expect(await cache.cached(videoId: "t")?.result == .synced(lines))
+    }
+
+    @Test("An entry written before lines had timing still loads, with no end and no words")
+    func oldShapeLoads() async throws {
+        let (cache, directory, clock) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent(LyricsDiskCache.fileName(forVideoId: "old"))
+        let old: [String: Any] = [
+            "version": 2, "storedAt": clock.now.timeIntervalSince1970, "kind": "synced", "credit": "Lyrics from LRCLIB",
+            "lines": [["time": 1.0, "text": "First test line"], ["time": 5.5, "text": "Second test line"]],
+        ]
+        try JSONSerialization.data(withJSONObject: old).write(to: file)
+        let answer = await cache.cached(videoId: "old")
+        #expect(answer?.result == .synced([LyricLine(time: 1, text: "First test line"), LyricLine(time: 5.5, text: "Second test line")]))
+        #expect(answer?.credit == "Lyrics from LRCLIB")
+        #expect(files(in: directory).count == 1)
+    }
+
+    @Test("The file stays version 2, and a line with no timing is written with no timing keys")
+    func plainLineFormat() async throws {
+        let (cache, directory, _) = makeCache()
+        defer { try? FileManager.default.removeItem(at: directory.deletingLastPathComponent()) }
+        await cache.store(.synced([LyricLine(time: 1, text: "First test line"), LyricLine(time: 2, text: "Timed", end: 3)]), videoId: "a")
+        let file = try #require(files(in: directory).first)
+        let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        #expect(object["version"] as? Int == 2)
+        let lines = try #require(object["lines"] as? [[String: Any]])
+        #expect(Set(lines[0].keys) == ["time", "text"])
+        #expect(Set(lines[1].keys) == ["time", "text", "end"])
+    }
+
     // MARK: - Damage
 
     @Test("A corrupt file is a miss and is removed")

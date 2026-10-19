@@ -49,6 +49,9 @@ final class MusicLyricsStore {
     private(set) var isPopupVisible = true
     /// The last position the player reported, for the highlight to run ahead of between ticks.
     private(set) var playhead = LyricsPlayhead.zero
+    /// Whether the song plays, as the player last reported. Apart from `playhead` so that a view that needs only this
+    /// is not redrawn by every tick: it is written only when it changes.
+    private(set) var isPlaying = false
     /// The credit that came with the lyrics now on screen. Only meaningful while `state` is `.loaded`: every other
     /// state is entered without it, and `credit` hides it there.
     private var loadedCredit: String?
@@ -63,6 +66,15 @@ final class MusicLyricsStore {
     /// The panel is open and can be seen: the only time anything is fetched or animated.
     var isWatching: Bool { isPanelOpen && isPopupVisible }
 
+    /// Whether the per frame timelines run (`LyricsPlayhead.animates`). For a view body to read. Playing it depends only
+    /// on `isWatching` and `isPlaying`, so the player's ticks redraw no one. Paused it also reads `playhead`, which a
+    /// seek rewrites: the frame the timeline holds is then redrawn at the new place.
+    var animates: Bool {
+        let runs = LyricsPlayhead.animates(isWatching: isWatching, isPlaying: isPlaying)
+        if !runs { _ = playhead }
+        return runs
+    }
+
     /// Retry would send a request now: the last load failed (and its window, if any, has passed), or the busy
     /// window has passed.
     var canRetry: Bool {
@@ -76,6 +88,11 @@ final class MusicLyricsStore {
     /// Reads the player's position and whether it plays, for the one fresh sample taken when the panel comes
     /// into view (ticks are ignored while it is not). Set by `MusicService`; nil means no sample.
     @ObservationIgnored var playbackSampler: (@MainActor () -> (position: TimeInterval, isPlaying: Bool))?
+
+    /// Reads the player's clock right now, between its ticks. Set by `MusicService`; nil means the highlight runs on
+    /// the last tick carried forward. A function and not an observed property: the view reads it every frame while
+    /// the lyrics are on screen, and nothing may be written for that.
+    @ObservationIgnored var livePosition: (@MainActor () -> TimeInterval)?
 
     @ObservationIgnored let provider: any LyricsProviding
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -132,7 +149,7 @@ final class MusicLyricsStore {
 
     private func samplePlayer() {
         guard let sample = playbackSampler?() else { return }
-        playhead = LyricsPlayhead(time: sample.position, isPlaying: sample.isPlaying, observedAt: now())
+        record(LyricsPlayhead(time: sample.position, isPlaying: sample.isPlaying, observedAt: now()))
     }
 
     // MARK: - Track and playback
@@ -177,7 +194,21 @@ final class MusicLyricsStore {
     /// panel does not redraw on every tick, and the next sample is taken when it comes back.
     func observePlayback(position: TimeInterval, isPlaying: Bool) {
         guard isWatching else { return }
-        playhead = LyricsPlayhead(time: position, isPlaying: isPlaying, observedAt: now())
+        record(LyricsPlayhead(time: position, isPlaying: isPlaying, observedAt: now()))
+    }
+
+    /// Takes a new playhead; `isPlaying` is published only if it changed.
+    private func record(_ new: LyricsPlayhead) {
+        playhead = new
+        if isPlaying != new.isPlaying { isPlaying = new.isPlaying }
+    }
+
+    /// The position the highlight and the fill follow at `date`: the player's live clock when there is one and it
+    /// gives a real number, else the last tick carried forward (`playhead`). Never below zero. Reads only: safe to call
+    /// every frame.
+    func position(at date: Date) -> TimeInterval {
+        if let live = livePosition?(), live.isFinite { return max(0, live) }
+        return playhead.position(at: date)
     }
 
     // MARK: - Loading
@@ -196,7 +227,7 @@ final class MusicLyricsStore {
         duration = nil
         lookupLacksDuration = false
         isPanelOpen = false
-        playhead = .zero
+        record(.zero)
     }
 
     /// `debounced` is for a track change only: it waits `debounce` first, and a newer change, a close or a reset

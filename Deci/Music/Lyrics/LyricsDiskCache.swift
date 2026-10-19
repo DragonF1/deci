@@ -25,9 +25,18 @@ actor LyricsDiskCache {
         var text: String?
         var credit: String?
 
+        /// `end` and `words` are optional and left out of the file when a line has none, so an entry written before
+        /// lines had timing reads back with neither, and the version does not change.
         struct Line: Codable {
             var time: Double
             var text: String
+            var end: Double?
+            var words: [Word]?
+
+            struct Word: Codable {
+                var time: Double
+                var text: String
+            }
         }
     }
 
@@ -128,7 +137,13 @@ actor LyricsDiskCache {
         case .synced(let lines):
             return Entry(
                 version: currentVersion, storedAt: stamp, kind: "synced",
-                lines: lines.map { Entry.Line(time: $0.time, text: $0.text) }, text: nil, credit: credit
+                lines: lines.map { line in
+                    Entry.Line(
+                        time: line.time, text: line.text, end: line.end,
+                        words: line.words?.map { Entry.Line.Word(time: $0.time, text: $0.text) }
+                    )
+                },
+                text: nil, credit: credit
             )
         case .plain(let text):
             return Entry(version: currentVersion, storedAt: stamp, kind: "plain", lines: nil, text: text, credit: credit)
@@ -143,7 +158,12 @@ actor LyricsDiskCache {
         switch entry.kind {
         case "synced":
             guard let lines = entry.lines, !lines.isEmpty else { return nil }
-            return .synced(lines.map { LyricLine(time: $0.time, text: $0.text) })
+            return .synced(lines.map { line in
+                LyricLine(
+                    time: line.time, text: line.text, end: line.end,
+                    words: line.words?.map { LyricWord(time: $0.time, text: $0.text) }
+                )
+            })
         case "plain":
             guard let text = entry.text, !text.isEmpty else { return nil }
             return .plain(text)

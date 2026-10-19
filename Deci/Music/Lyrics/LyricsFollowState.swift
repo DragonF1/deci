@@ -36,6 +36,7 @@ struct LyricsFollowState: Sendable {
 
     private let now: @Sendable () -> Date
     private var mode = Mode.following
+    private(set) var isGliding = false
 
     init(now: @escaping @Sendable () -> Date = Date.init) {
         self.now = now
@@ -49,9 +50,22 @@ struct LyricsFollowState: Sendable {
         if case .waiting(let until) = mode { until } else { nil }
     }
 
+    /// The list started its own glide to a line. The scroll view may report that move as a scroll of its own, so until
+    /// the glide ends no phase counts: only the user's scroll pauses following, never the list's.
+    mutating func glideStarted() {
+        isGliding = true
+    }
+
+    /// The glide is over, finished or cancelled by the user's hand. The user's scroll that follows counts again.
+    mutating func glideEnded() {
+        isGliding = false
+    }
+
     /// The scroll view's phase changed. Touching, dragging and coasting are the user: they pause (and drop any wait
-    /// that was running); going idle after one starts the wait. The list's own animated scroll leaves the state alone.
+    /// that was running); going idle after one starts the wait. The list's own animated scroll leaves the state alone,
+    /// and so does any phase reported while the list glides.
     mutating func scrollPhaseChanged(_ phase: LyricsScrollPhase) {
+        guard !isGliding else { return }
         switch phase {
         case .tracking, .interacting, .decelerating:
             mode = .userScrolling

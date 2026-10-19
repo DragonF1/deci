@@ -153,6 +153,29 @@ struct MusicLyricsServiceTests {
         #expect(!h.lyrics.playhead.isPlaying)
     }
 
+    @Test("The store reads the player's own clock between ticks, so the highlight is not up to half a second late")
+    func storeReadsTheLiveClock() async {
+        let h = Harness()
+        h.lyrics.setPanelOpen(true)
+        await h.play("a", duration: 200)
+        h.engine.emit(.ready(duration: 200))
+        h.engine.emit(.playingChanged(true))
+        h.engine.tick(20, playing: true)
+        h.engine.position = 20.43
+        #expect(h.lyrics.playhead.time == 20)
+        #expect(h.lyrics.position(at: h.clock.now) == 20.43)
+    }
+
+    @Test("While a new track is still loading the store does not read the old track's clock")
+    func storeIgnoresTheClockWhileLoading() async {
+        let h = Harness()
+        h.lyrics.setPanelOpen(true)
+        await h.play("a", duration: 200)
+        h.engine.position = 150
+        #expect(h.player.isLoading)
+        #expect(h.lyrics.position(at: h.clock.now) < 1)
+    }
+
     @Test("A closed panel or a hidden popup does not follow the player")
     func hiddenIgnoresTicks() async {
         let h = Harness()

@@ -616,7 +616,7 @@ struct LyricsChainRealClientTests {
             Issue.record("expected synced lyrics")
             return
         }
-        #expect(lines.first == LyricLine(time: 1, text: "Line one"))
+        #expect(lines.first == LyricLine(time: 1, text: "Line one", end: 3))
         #expect(answer.credit == ytmCredit)
         #expect(real.lrclib.requests.isEmpty)
     }
