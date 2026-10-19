@@ -11,6 +11,8 @@ struct MusicPageView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
             MusicPageTopBar(title: collection.title) { browse.back() }
+                .padding(.horizontal, MusicStyle.Spacing.page)
+                .padding(.top, 8)
             content
         }
     }
@@ -60,7 +62,11 @@ struct MusicPageView: View {
                         )
                         .padding(.top, DesignTokens.Spacing.md)
                     }
+
+                    MusicBottomInsetSpacer()
                 }
+                // The rows keep their own look; this is the popover's margin around them.
+                .padding(.horizontal, 12)
             }
             .scrollIndicators(.never)
         }

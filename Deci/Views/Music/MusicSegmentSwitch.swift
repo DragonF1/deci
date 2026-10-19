@@ -1,9 +1,8 @@
 // Deci/Views/Music/MusicSegmentSwitch.swift
 import SwiftUI
 
-/// A small pill switch in the style of the Output / Input toggle in the Mixer popup, for "Home | Library" and the library
-/// sections. A nil selection highlights nothing (search results or the queue are on screen).
-/// Tapping a segment always reports it, even the selected one, so it can pop back to the root.
+/// The segmented control of Library: equal segments in a track, the picked one raised. A nil selection highlights
+/// nothing. Tapping a segment always reports it, even the selected one.
 struct MusicSegmentSwitch<Value: Hashable>: View {
     struct Segment: Identifiable {
         let value: Value
@@ -15,15 +14,15 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
 
     let segments: [Segment]
     let selection: Value?
-    var height: CGFloat = 22
     let onSelect: (Value) -> Void
     @Namespace private var namespace
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             ForEach(segments) { segment in
+                let isSelected = selection == segment.value
                 Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
                         onSelect(segment.value)
                     }
                 } label: {
@@ -34,15 +33,16 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
                                 .symbolRenderingMode(.hierarchical)
                         }
                         Text(segment.title)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
                     }
-                    .foregroundStyle(selection == segment.value ? DesignTokens.Colors.textPrimary : DesignTokens.Colors.textTertiary)
-                    .padding(.horizontal, DesignTokens.Spacing.sm)
-                    .frame(height: height)
+                    .foregroundStyle(isSelected ? Color.white : MusicStyle.Palette.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 26)
                     .background {
-                        if selection == segment.value {
-                            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius)
-                                .fill(DesignTokens.Colors.glassFillStrong)
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                .fill(MusicStyle.Palette.fillSelected)
+                                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
                                 .matchedGeometryEffect(id: "segment", in: namespace)
                         }
                     }
@@ -50,27 +50,13 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(segment.title)
-                .accessibilityAddTraits(selection == segment.value ? .isSelected : [])
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius + 2)
-                .fill(DesignTokens.Colors.glassFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius + 2)
-                        .strokeBorder(DesignTokens.Colors.glassRowBorder, lineWidth: 0.5)
-                )
-        )
-    }
-}
-
-extension MusicBrowseStore.Tab {
-    static var segments: [MusicSegmentSwitch<Self>.Segment] {
-        [
-            .init(value: .home, title: "Home", icon: "house"),
-            .init(value: .library, title: "Library", icon: "books.vertical"),
-        ]
+        .padding(3)
+        .frame(height: 32)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(MusicStyle.Palette.fillTrack))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1))
     }
 }
 

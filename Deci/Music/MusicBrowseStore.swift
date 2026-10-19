@@ -11,9 +11,10 @@ private let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicBrows
 @MainActor
 @Observable
 final class MusicBrowseStore {
-    enum Tab: Hashable {
+    enum Tab: Hashable, CaseIterable {
         case home
         case library
+        case search
     }
 
     enum Load<Value: Equatable>: Equatable {

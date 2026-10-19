@@ -215,22 +215,34 @@ struct MusicSearchNavigationTests {
         #expect(h.service.artistResults.isEmpty)
     }
 
-    @Test("typing closes Up next and Lyrics, and keeps the results that are there")
-    func typingClosesPanels() async {
+    @Test("typing leaves Up next, Lyrics and Now Playing open, and keeps the results that are there")
+    func typingKeepsThePlayerScreens() async {
         let h = NavHarness()
         await h.search("q")
         h.playSomething()
         h.loadLyricsTrack()
         h.nav.toggleQueue()
-        h.service.lyrics.setPanelOpen(true)
+        #expect(h.nav.screen == .queue)
 
         h.service.query = "qu"
         h.nav.queryChanged()
 
-        #expect(h.nav.queueForced == false)
-        #expect(h.service.lyrics.isPanelOpen == false)
+        #expect(h.nav.queueForced)
+        #expect(h.nav.screen == .queue)
         #expect(h.service.results.count == 1)
-        #expect(h.nav.showsResults)
+
+        h.nav.toggleLyrics()
+        h.service.query = "que"
+        h.nav.queryChanged()
+        #expect(h.service.lyrics.isPanelOpen)
+        #expect(h.nav.screen == .lyrics)
+
+        h.nav.dismissPlayer()
+        h.nav.openNowPlaying()
+        h.service.query = "quer"
+        h.nav.queryChanged()
+        #expect(h.nav.isNowPlayingOpen)
+        #expect(h.nav.screen == .nowPlaying)
     }
 
     // MARK: - The panels
@@ -806,5 +818,93 @@ struct MusicSearchNavigationTests {
         #expect(opened?.title == "Alpha")
         #expect(opened?.thumbnailURL == nil)
         #expect(h.nav.showsResults == false)
+    }
+}
+
+@MainActor
+@Suite("MusicSearchNavigation shell")
+struct MusicSearchNavigationShellTests {
+    @Test("Search keeps its query when it is picked again, and every other tab drops it")
+    func searchTabKeepsTheQuery() async {
+        let h = NavHarness()
+        await h.search("alpha")
+        h.nav.select(.search)
+        #expect(h.service.query == "alpha")
+        #expect(h.service.browse.tab == .search)
+        #expect(h.nav.showsResults)
+
+        h.nav.select(.home)
+        #expect(h.service.query.isEmpty)
+        #expect(h.service.browse.tab == .home)
+    }
+
+    @Test("Now Playing needs a loaded track to open")
+    func openNowPlayingNeedsATrack() {
+        let h = NavHarness()
+        h.nav.openNowPlaying()
+        #expect(h.nav.isNowPlayingOpen == false)
+        #expect(h.nav.screen == .browse)
+
+        h.playSomething()
+        h.nav.openNowPlaying()
+        #expect(h.nav.isNowPlayingOpen)
+        #expect(h.nav.screen == .nowPlaying)
+    }
+
+    @Test("dismissing the player goes back to the browse screen and closes Up next and Lyrics")
+    func dismissPlayer() {
+        let h = NavHarness()
+        h.playSomething()
+        h.loadLyricsTrack()
+        h.nav.openNowPlaying()
+        h.nav.toggleLyrics()
+        #expect(h.nav.screen == .lyrics)
+
+        h.nav.dismissPlayer()
+        #expect(h.nav.screen == .browse)
+        #expect(h.nav.isNowPlayingOpen == false)
+        #expect(h.service.lyrics.isPanelOpen == false)
+        #expect(h.nav.queueForced == false)
+    }
+
+    @Test("turning Lyrics or Up next on opens the player, and Back from them leaves it")
+    func panelsOpenThePlayer() {
+        let h = NavHarness()
+        h.playSomething()
+        h.loadLyricsTrack()
+
+        h.nav.toggleQueue()
+        #expect(h.nav.isNowPlayingOpen)
+        #expect(h.nav.screen == .queue)
+
+        h.nav.toggleLyrics()
+        #expect(h.nav.screen == .lyrics)
+        #expect(h.nav.queueForced == false)
+
+        h.nav.toggleLyrics()
+        #expect(h.nav.screen == .nowPlaying)
+    }
+
+    @Test("opening an artist from the player leaves it for the page")
+    func openCollectionDismissesThePlayer() {
+        let h = NavHarness()
+        h.playSomething()
+        h.nav.openNowPlaying()
+
+        h.nav.openArtist(NavHarness.artist("UCa"))
+
+        #expect(h.nav.isNowPlayingOpen == false)
+        #expect(h.nav.screen == .browse)
+        #expect(h.path == ["UCa"])
+    }
+
+    @Test("a tab pick closes the player screens too")
+    func selectClosesThePlayer() {
+        let h = NavHarness()
+        h.playSomething()
+        h.nav.openNowPlaying()
+        h.nav.select(.library)
+        #expect(h.nav.screen == .browse)
+        #expect(h.service.browse.tab == .library)
     }
 }

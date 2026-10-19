@@ -16,7 +16,7 @@ nonisolated enum MusicPopupMetrics {
     }
 }
 
-/// The popup of the Music menu bar item: a gear row over the Music body.
+/// The popup of the Music menu bar item: the Music shell edge to edge, with a gear strip over its top.
 ///
 /// The view stays mounted while the popup is hidden, so it learns about opening and closing from the
 /// key window notifications of its own window, found by title (the Mixer popup is a window of the same
@@ -41,34 +41,40 @@ struct MusicPopupView: View {
         appSettings.popupSize.dimensions
     }
 
-    private var bodyHeight: CGFloat {
-        MusicPopupMetrics.bodyHeight(maxContentHeight: popupDimensions.maxContentHeight)
+    private var totalHeight: CGFloat {
+        MusicPopupMetrics.totalHeight(
+            maxContentHeight: popupDimensions.maxContentHeight,
+            contentPadding: popupDimensions.contentPadding
+        )
+    }
+
+    /// The player screens fill the popover, and the header's leading button leaves them.
+    private var playerNavigation: MusicSearchNavigation? {
+        guard let navigation = musicHost.navigation, navigation.screen.isPlayer else { return nil }
+        return navigation
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
-            HStack(alignment: .center) {
-                Spacer()
-                settingsButton
-            }
-            .frame(height: MusicPopupMetrics.headerHeight)
-
+        // The shell draws edge to edge. The header is a strip laid over its top, and the popup keeps the size it
+        // always had (`MusicPopupMetrics.totalHeight`), whatever its content.
+        ZStack(alignment: .top) {
             if appSettings.showMusicInMenuBar {
-                MusicTabView(host: musicHost, height: bodyHeight)
+                MusicTabView(host: musicHost)
             } else {
                 // Hidden: the player is unmounted, so its panels close, and the popup keeps its size.
-                Color.clear.frame(height: bodyHeight)
+                MusicStyle.Palette.base
             }
+            header
         }
-        .padding(popupDimensions.contentPadding)
-        .frame(width: popupDimensions.width)
+        .frame(width: popupDimensions.width, height: totalHeight)
+        // The Music popup is dark in every appearance setting: the spec's colours are dark only.
         .background(
-            WindowAppearanceBridge(appearance: appSettings.appearance.nsAppearance)
+            WindowAppearanceBridge(appearance: NSAppearance(named: .darkAqua))
                 .frame(width: 0, height: 0)
         )
-        .darkGlassBackground()
-        .preferredColorScheme(appSettings.appearance.swiftUIColorScheme)
-        .environment(\.appearancePreference, appSettings.appearance)
+        .background(MusicStyle.Palette.base)
+        .preferredColorScheme(.dark)
+        .environment(\.appearancePreference, .dark)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
             guard isMusicPopup(notification) else { return }
             popupVisibility.setOpen(.music, true)
@@ -97,29 +103,42 @@ struct MusicPopupView: View {
         }
     }
 
-    // MARK: - Settings Button
+    // MARK: - Header
 
-    private var settingsButton: some View {
-        Button("Settings", systemImage: "gearshape.fill") {
-            openSettingsWindow()
+    /// The 32 pt strip over the top of the shell: the gear at the trailing edge and, on the player screens, a
+    /// chevron at the leading edge that goes back to the browse screen.
+    private var header: some View {
+        HStack(spacing: 0) {
+            if let navigation = playerNavigation {
+                MusicHeaderButton(title: "Close player", symbol: "chevron.down", weight: .bold) {
+                    navigation.dismissPlayer()
+                }
+                .transition(.opacity)
+            }
+            Spacer(minLength: 0)
+            MusicHeaderButton(title: "Settings", symbol: "gearshape.fill", weight: .regular) {
+                openSettingsWindow()
+            }
         }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.plain)
-        .font(.system(size: 12))
-        .symbolRenderingMode(.hierarchical)
-        .foregroundStyle(DesignTokens.Colors.interactiveDefault)
-        .frame(
-            minWidth: DesignTokens.Dimensions.minTouchTarget,
-            minHeight: DesignTokens.Dimensions.minTouchTarget
-        )
-        .contentShape(Rectangle())
+        .padding(.horizontal, 16)
+        .frame(height: MusicPopupMetrics.headerHeight)
+        .animation(DesignTokens.Animation.quick, value: playerNavigation != nil)
     }
 
     // MARK: - Actions
 
-    /// Closes the account card if it is open, otherwise dismisses the popup.
+    /// Closes the topmost thing: the account card, the add-to-playlist picker, then a player screen, otherwise the
+    /// popup itself.
     private func handleEscape() {
         if musicHost.closeAccountCard() { return }
+        if let navigation = musicHost.navigation, navigation.showsPicker {
+            navigation.closePicker()
+            return
+        }
+        if let navigation = playerNavigation {
+            navigation.dismissPlayer()
+            return
+        }
         NSApp.keyWindow?.resignKey()
     }
 
@@ -134,5 +153,30 @@ struct MusicPopupView: View {
     private func isMusicPopup(_ notification: Notification) -> Bool {
         guard let window = notification.object as? NSWindow else { return false }
         return MenuBarStatusItems.itemID(of: window) == .music
+    }
+}
+
+/// A 24 pt round button of the header strip. The pointer lights it.
+private struct MusicHeaderButton: View {
+    let title: String
+    let symbol: String
+    let weight: Font.Weight
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: weight))
+                .foregroundStyle(isHovered ? Color.white : MusicStyle.Palette.textTab)
+                .frame(width: MusicStyle.Size.headerButton, height: MusicStyle.Size.headerButton)
+                .background(Circle().fill(isHovered ? MusicStyle.Palette.fillControl : .clear))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel(title)
+        .help(title)
     }
 }

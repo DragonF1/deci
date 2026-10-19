@@ -1,10 +1,10 @@
 // Deci/Views/Music/MusicTabView.swift
 import SwiftUI
 
-/// The Music tab body. Fixed height so the popup does not jump as results come and go.
+/// The Music popover body. It fills the whole popover, edge to edge: the popup lays its 32 pt header strip over the
+/// top of it, and the signed-in screens leave that strip clear themselves.
 struct MusicTabView: View {
     @Bindable var host: MusicServiceHost
-    let height: CGFloat
 
     var body: some View {
         Group {
@@ -13,10 +13,11 @@ struct MusicTabView: View {
             } else {
                 ProgressView()
                     .controlSize(.small)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .environment(\.colorScheme, .dark)
             }
         }
-        .frame(height: height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(MusicStyle.Palette.base)
     }
 }
 
@@ -30,114 +31,66 @@ private struct MusicServiceView: View {
         case .unknown:
             ProgressView()
                 .controlSize(.small)
+                .environment(\.colorScheme, .dark)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .signedOut:
-            signedOutView
+            MusicSignedOutView(service: service, isSigningIn: false)
         case .signingIn:
-            VStack(spacing: DesignTokens.Spacing.sm) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Finish signing in in the YouTube Music window.")
-                    .font(DesignTokens.Typography.rowDescription)
-                    .foregroundStyle(DesignTokens.Colors.textSecondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            MusicSignedOutView(service: service, isSigningIn: true)
         case .signedIn:
             MusicSignedInView(service: service, navigation: navigation, isAccountCardOpen: $isAccountCardOpen)
         }
     }
-
-    private var signedOutView: some View {
-        VStack(spacing: DesignTokens.Spacing.md) {
-            Image(systemName: "music.note.list")
-                .font(.system(size: 26))
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-            Text("Sign in to search and play from your YouTube Music account.")
-                .font(DesignTokens.Typography.rowDescription)
-                .foregroundStyle(DesignTokens.Colors.textSecondary)
-                .multilineTextAlignment(.center)
-            Button("Sign in to YouTube Music") {
-                service.signIn()
-            }
-            .buttonStyle(.plain)
-            .font(DesignTokens.Typography.pickerText)
-            .foregroundStyle(DesignTokens.Colors.textPrimary)
-            .glassButtonStyle()
-            if let message = service.lastError {
-                Text(message)
-                    .font(DesignTokens.Typography.caption)
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
-            }
-        }
-        .padding(.horizontal, DesignTokens.Spacing.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 }
 
+/// The signed-in shell: a browse screen with the floating tab bar and mini player over it, or one of the player
+/// screens that fill the popover. Which one shows comes from `navigation.screen`.
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
-    /// What shows over Home and Library (results, Up next, Lyrics) and how an artist page opens. Owned by the host,
-    /// so it outlives this view: the popup unmounts the player when the Music icon is hidden and builds it again.
+    /// What shows over the browse screens (Now Playing, Up next, Lyrics, the picker) and how an artist page opens.
+    /// Owned by the host, so it outlives this view: the popup unmounts the player when the Music icon is hidden and
+    /// builds it again.
     let navigation: MusicSearchNavigation
     /// Owned by the host so the popup's Escape key can close the card.
     @Binding var isAccountCardOpen: Bool
-    @FocusState private var searchFocused: Bool
+
+    private var nowPlaying: MusicTrack? { service.player.nowPlaying }
 
     var body: some View {
-        VStack(spacing: DesignTokens.Spacing.sm) {
-            searchRow
+        let screen = navigation.screen
+        GeometryReader { proxy in
+            ZStack(alignment: .bottom) {
+                backdrop(isPlayer: screen.isPlayer)
 
-            if let message = service.lastError {
-                Text(message)
-                    .font(DesignTokens.Typography.caption)
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            HStack {
-                MusicSegmentSwitch(segments: MusicBrowseStore.Tab.segments, selection: navigation.isBrowsing ? service.browse.tab : nil) {
-                    navigation.select($0)
-                }
-                Spacer()
-            }
-
-            ZStack {
-                // Stays alive under search and the queue so it keeps its place.
-                MusicBrowseView(service: service)
-                    .opacity(navigation.isBrowsing ? 1 : 0)
-                    .allowsHitTesting(navigation.isBrowsing)
-                    .accessibilityHidden(!navigation.isBrowsing)
-
-                if let picker = service.trackActions.picker {
-                    MusicPlaylistPickerView(
-                        picker: picker,
-                        onBack: { navigation.closePicker() },
-                        onChoose: { service.trackActions.choose($0) },
-                        onRetry: { service.trackActions.openPicker(for: picker.track) }
+                content(screen: screen)
+                    .padding(.top, MusicPopupMetrics.headerHeight)
+                    .environment(
+                        \.musicBottomInset,
+                        MusicShellLayout.bottomInset(hasMiniPlayer: nowPlaying != nil)
                     )
-                } else if navigation.showsLyrics {
-                    MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
-                } else if navigation.showsQueue {
-                    queueList
-                } else if navigation.showsResults {
-                    resultsList
+
+                if screen.isPlayer {
+                    notice
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .padding(.top, MusicPopupMetrics.headerHeight + 4)
+                } else {
+                    chrome(width: proxy.size.width)
                 }
             }
-            .frame(maxHeight: .infinity)
-            // What a song action did ("Saved to ...", "Removed from ..."), over the bottom of the list.
-            // The animation stays on the line: a removed row lands in the same turn and must not crossfade the list.
-            .overlay(alignment: .bottom) {
-                ZStack {
-                    if let notice = service.trackActions.notice {
-                        MusicNoticeLine(notice: notice) { service.trackActions.dismissNotice() }
-                            .transition(.opacity)
+            .animation(DesignTokens.Animation.quick, value: screen.isPlayer)
+            .overlayPreferenceValue(MusicAvatarAnchorKey.self) { anchor in
+                GeometryReader { overlay in
+                    if isAccountCardOpen {
+                        accountCardLayer(avatar: anchor.map { overlay[$0] }, size: overlay.size)
                     }
                 }
-                .animation(DesignTokens.Animation.quick, value: service.trackActions.notice)
             }
-
-            MusicMiniTransport(service: service)
+            .animation(DesignTokens.Animation.quick, value: isAccountCardOpen)
         }
+        // The avatar in a screen header opens and closes the card, which is drawn above.
+        .environment(\.musicAccountCard, MusicAccountCardControl(isOpen: isAccountCardOpen) {
+            isAccountCardOpen.toggle()
+        })
         // Every artist name under a song, on any list or in the player, opens the artist through here.
         .environment(\.openMusicArtist, { navigation.openArtist($0) })
         // Every song row's "..." button and right click menu, and the one in the player, run through here.
@@ -155,20 +108,14 @@ private struct MusicSignedInView: View {
                 MusicCollectionPinHandler.wearsPinBadge($0, actions: service.trackActions, artists: service.pinnedArtists)
             }
         ))
-        .overlay(alignment: .topTrailing) {
-            if isAccountCardOpen {
-                accountCardLayer
-            }
-        }
-        .animation(DesignTokens.Animation.quick, value: isAccountCardOpen)
-        // Leaving the signed-in view (sign out, a dead session, another tab) takes the card with it.
+        // Leaving the signed-in view (sign out, a dead session, the icon hidden) takes the card and the panels with it.
         .onDisappear {
             isAccountCardOpen = false
             service.lyrics.setPanelOpen(false)
             service.trackActions.closePicker()
             navigation.queueForced = false
+            navigation.isNowPlayingOpen = false
         }
-        .task { searchFocused = true }
         .onChange(of: service.query) {
             navigation.queryChanged()
         }
@@ -180,6 +127,10 @@ private struct MusicSignedInView: View {
         .onChange(of: service.lyrics.track == nil) { _, noTrack in
             if noTrack { service.lyrics.setPanelOpen(false) }
         }
+        // The player was stopped: Now Playing has nothing to show, so it closes.
+        .onChange(of: nowPlaying == nil) { _, noTrack in
+            if noTrack { navigation.dismissPlayer() }
+        }
         // A screen reader hears the line that says what a song action did.
         .onChange(of: service.trackActions.notice?.id) {
             if let text = service.trackActions.notice?.text {
@@ -188,84 +139,118 @@ private struct MusicSignedInView: View {
         }
     }
 
-    private var searchRow: some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            HStack(spacing: DesignTokens.Spacing.xs) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11))
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
-                TextField("Search songs and artists", text: $service.query)
-                    .textFieldStyle(.plain)
-                    .font(DesignTokens.Typography.rowName)
-                    .focused($searchFocused)
-                    .onSubmit {
-                        navigation.submit()
-                    }
-                if service.isSearching {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
-                if !service.query.isEmpty {
-                    Button("Clear search", systemImage: "xmark.circle.fill") {
-                        service.query = ""
-                        searchFocused = true
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
-                    .frame(width: 16, height: 20)
-                    .contentShape(Rectangle())
-                    .help("Clear search")
-                }
-            }
-            .padding(.horizontal, DesignTokens.Spacing.sm)
-            .frame(height: 28)
-            .background(
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius)
-                    .fill(DesignTokens.Colors.glassFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius)
-                            .strokeBorder(DesignTokens.Colors.glassRowBorder, lineWidth: 0.5)
-                    )
-            )
+    // MARK: - Layers
 
-            if service.lyrics.track != nil {
-                Button("Lyrics", systemImage: "quote.bubble") {
-                    navigation.toggleLyrics()
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(navigation.showsLyrics ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
-                .accessibilityAddTraits(navigation.showsLyrics ? .isSelected : [])
-            }
-
-            if !service.queue.isEmpty {
-                Button("Up next", systemImage: "list.bullet") {
-                    navigation.toggleQueue()
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.plain)
-                .font(.system(size: 12))
-                .foregroundStyle(navigation.showsQueue ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
-                .accessibilityAddTraits(navigation.showsQueue ? .isSelected : [])
-            }
-
-            MusicAccountButton(account: service.account, isOpen: isAccountCardOpen) {
-                isAccountCardOpen.toggle()
-            }
+    /// The base colour, and over it the song's tint on the player screens.
+    private func backdrop(isPlayer: Bool) -> some View {
+        ZStack {
+            MusicStyle.Palette.base
+            MusicPlayerBackdrop(track: nowPlaying)
+                .opacity(isPlayer ? 1 : 0)
         }
+        .accessibilityHidden(true)
     }
 
-    /// A transparent layer that swallows the click and closes the card (tap outside), with the card
-    /// at the trailing edge just under the search row. An overlay, not a Menu or popover: this view
-    /// already lives in the menu bar panel, which a nested popover would dismiss.
-    private var accountCardLayer: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { isAccountCardOpen = false }
+    /// The browse screen stays alive under the player screens and the picker, so it keeps its place.
+    private func content(screen: MusicShellScreen) -> some View {
+        let showsBrowse = screen == .browse && !navigation.showsPicker
+        return ZStack {
+            MusicBrowseView(service: service, navigation: navigation, isActive: showsBrowse)
+                .opacity(showsBrowse ? 1 : 0)
+                .allowsHitTesting(showsBrowse)
+                .accessibilityHidden(!showsBrowse)
+
+            if let picker = service.trackActions.picker {
+                MusicPlaylistPickerView(
+                    picker: picker,
+                    onBack: { navigation.closePicker() },
+                    onChoose: { service.trackActions.choose($0) },
+                    onRetry: { service.trackActions.openPicker(for: picker.track) }
+                )
+            } else if screen.isPlayer {
+                MusicPlayerScreen(service: service, navigation: navigation, screen: screen)
+                    .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// What a song action did ("Saved to ...", "Removed from ..."). The animation stays on the line: a removed row
+    /// lands in the same turn and must not crossfade the list.
+    private var notice: some View {
+        ZStack {
+            if let notice = service.trackActions.notice {
+                MusicNoticeLine(notice: notice) { service.trackActions.dismissNotice() }
+                    .transition(.opacity)
+            }
+        }
+        .animation(DesignTokens.Animation.quick, value: service.trackActions.notice)
+    }
+
+    /// The fade the lists dissolve into, the mini player and the tab bar, bottom up.
+    private func chrome(width: CGFloat) -> some View {
+        ZStack(alignment: .bottom) {
+            LinearGradient(
+                stops: [
+                    .init(color: MusicStyle.Palette.base.opacity(0), location: 0),
+                    .init(color: MusicStyle.Palette.base.opacity(0.9), location: 0.35),
+                    .init(color: MusicStyle.Palette.base, location: 0.6),
+                    .init(color: MusicStyle.Palette.base, location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: MusicShellLayout.scrimHeight)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+
+            VStack(spacing: 4) {
+                notice
+                if let track = nowPlaying {
+                    MusicMiniPlayer(service: service, track: track) { navigation.openNowPlaying() }
+                }
+            }
+            .frame(width: MusicShellLayout.miniPlayerWidth(forWidth: width))
+            .padding(.bottom, MusicShellLayout.miniPlayerBottom)
+
+            MusicTabBar(
+                selection: service.browse.tab,
+                width: MusicShellLayout.tabBarWidth(forWidth: width)
+            ) {
+                navigation.select($0)
+            }
+            .padding(.bottom, MusicShellLayout.tabBarBottom)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
+    /// A dim over the popover with the avatar left out of it and ringed, and the card hanging under the avatar. A tap
+    /// anywhere closes it. An overlay, not a Menu or popover: this view already lives in the menu bar panel, which a
+    /// nested popover would dismiss. With no avatar on screen (its header scrolled away) the card hangs from where
+    /// the avatar sits at the top of a screen.
+    private func accountCardLayer(avatar: CGRect?, size: CGSize) -> some View {
+        let side = MusicAccountButton.size
+        let rect = avatar ?? CGRect(
+            x: size.width - MusicShellLayout.pageMargin - side,
+            y: MusicPopupMetrics.headerHeight + 4,
+            width: side,
+            height: side
+        )
+        return ZStack(alignment: .topTrailing) {
+            Path { path in
+                path.addRect(CGRect(origin: .zero, size: size))
+                path.addEllipse(in: rect)
+            }
+            .fill(MusicStyle.Palette.dimModal, style: FillStyle(eoFill: true))
+            .contentShape(Rectangle())
+            .onTapGesture { isAccountCardOpen = false }
+            .accessibilityHidden(true)
+
+            Circle()
+                .strokeBorder(MusicStyle.Palette.lineFocus, lineWidth: 2)
+                .frame(width: rect.width + 6, height: rect.height + 6)
+                .position(x: rect.midX, y: rect.midY)
+                .allowsHitTesting(false)
                 .accessibilityHidden(true)
 
             MusicAccountCard(
@@ -286,74 +271,11 @@ private struct MusicSignedInView: View {
                     service.signOut()
                 }
             )
-            .padding(.top, Self.searchRowHeight + DesignTokens.Spacing.xs)
+            .padding(.top, rect.maxY + 8)
+            .padding(.trailing, max(0, size.width - rect.maxX))
             .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
         }
-    }
-
-    private static let searchRowHeight: CGFloat = 28
-
-    @ViewBuilder
-    private var resultsList: some View {
-        if !navigation.hasResults {
-            Text(navigation.emptyResultsText)
-                .font(DesignTokens.Typography.rowDescription)
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    // The artists the search found, as a row of tiles above the songs.
-                    if let artists = navigation.artistsShelf {
-                        MusicShelfView(
-                            shelf: artists,
-                            nowPlayingId: service.player.nowPlaying?.videoId,
-                            isPlaying: service.player.isPlaying,
-                            onPlay: { service.play($0) },
-                            onOpen: { navigation.openArtist($0) }
-                        )
-                        if !service.results.isEmpty {
-                            MusicSectionTitle(text: "Songs")
-                                .padding(.top, DesignTokens.Spacing.md)
-                                .padding(.bottom, DesignTokens.Spacing.xs)
-                        }
-                    }
-                    ForEach(service.results) { track in
-                        MusicResultRow(
-                            track: track,
-                            isCurrent: service.player.nowPlaying?.videoId == track.videoId,
-                            isPlaying: service.player.nowPlaying?.videoId == track.videoId && service.player.isPlaying
-                        ) {
-                            service.play(track)
-                        }
-                    }
-                }
-            }
-            .scrollIndicators(.never)
-        }
-    }
-
-    private var queueList: some View {
-        VStack(spacing: DesignTokens.Spacing.xs) {
-            MusicQueueHeader(isAutoplayOn: service.isAutoplayOn) {
-                service.setAutoplay(!service.isAutoplayOn)
-            }
-
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(service.queue.fromCurrent) { track in
-                        MusicResultRow(
-                            track: track,
-                            isCurrent: service.queue.current?.videoId == track.videoId,
-                            isPlaying: service.queue.current?.videoId == track.videoId && service.player.isPlaying
-                        ) {
-                            service.jump(to: track)
-                        }
-                    }
-                }
-            }
-            .scrollIndicators(.never)
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

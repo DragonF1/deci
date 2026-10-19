@@ -12,6 +12,9 @@ import Observation
 final class MusicSearchNavigation {
     /// The Up next button shows the queue over whatever is on screen.
     var queueForced = false
+    /// Now Playing is open: the player screen fills the popover over whichever browse screen is under it. Lyrics and
+    /// Up next are player screens too, so they open it as well; Back from them goes to the browse screen.
+    var isNowPlayingOpen = false
     /// The query last sent with Return, so a search that found nothing still shows its result.
     private(set) var submittedQuery: String?
     /// An artist opened from the results is on screen: the results step aside, keeping the query, and come back
@@ -68,6 +71,17 @@ final class MusicSearchNavigation {
         !showsQueue && !showsResults && !showsLyrics && !showsPicker
     }
 
+    /// The screen the shell shows: a browse screen with the tab bar, or one of the player screens.
+    var screen: MusicShellScreen {
+        MusicShellScreen.resolve(
+            isNowPlayingOpen: isNowPlayingOpen,
+            hasTrack: service.player.nowPlaying != nil,
+            showsLyrics: showsLyrics,
+            showsQueue: showsQueue,
+            showsPicker: showsPicker
+        )
+    }
+
     private var isHidingResults: Bool {
         hidesResults && service.browse.path.count > resultsDepth
     }
@@ -94,10 +108,12 @@ final class MusicSearchNavigation {
         service.search()
     }
 
-    /// The query was edited. An emptied field stops the search and drops its results, back to browsing.
+    /// The query was edited. An emptied field stops the search and drops its results, back to browsing. Typing
+    /// closes the add-to-playlist picker, which sits over the results, but never a player screen: the field is on the
+    /// Search tab, under them, and a key that reaches it must not take Now Playing, Lyrics or Up next away.
     func queryChanged() {
         hidesResults = false
-        closePanels()
+        service.trackActions.closePicker()
         if trimmedQuery.isEmpty, service.isSearching || hasResults {
             service.search()
         }
@@ -109,16 +125,34 @@ final class MusicSearchNavigation {
         service.lyrics.setPanelOpen(false)
         service.trackActions.closePicker()
         queueForced.toggle()
+        if queueForced { isNowPlayingOpen = true }
     }
 
     func toggleLyrics() {
         queueForced = false
         service.trackActions.closePicker()
         service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
+        if service.lyrics.isPanelOpen { isNowPlayingOpen = true }
     }
 
+    /// The mini player was tapped: Now Playing opens over the browse screen.
+    func openNowPlaying() {
+        guard service.player.nowPlaying != nil else { return }
+        service.trackActions.closePicker()
+        isNowPlayingOpen = true
+    }
+
+    /// Leaves Now Playing, Lyrics and Up next, back to the browse screen under them.
+    func dismissPlayer() {
+        queueForced = false
+        service.lyrics.setPanelOpen(false)
+        isNowPlayingOpen = false
+    }
+
+    /// Everything that sits over the browse screens goes away, the player screens included.
     private func closePanels() {
         queueForced = false
+        isNowPlayingOpen = false
         service.lyrics.setPanelOpen(false)
         service.trackActions.closePicker()
     }
@@ -130,10 +164,11 @@ final class MusicSearchNavigation {
 
     // MARK: - Opening pages
 
-    /// Home or Library from the switch: leaves search, the queue and any page, and goes to the tab's root.
+    /// A tab of the tab bar: leaves the queue, the player and any page, and goes to the tab's root. Leaving Search
+    /// for another tab drops its query; the Search tab keeps the query and shows its results again.
     func select(_ tab: MusicBrowseStore.Tab) {
         closePanels()
-        if showsResults || isHidingResults { service.query = "" }
+        if tab != .search, showsResults || isHidingResults { service.query = "" }
         hidesResults = false
         service.browse.tab = tab
         service.browse.popToRoot()

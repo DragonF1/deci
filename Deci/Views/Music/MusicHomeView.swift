@@ -1,84 +1,206 @@
 // Deci/Views/Music/MusicHomeView.swift
 import SwiftUI
 
-/// The Home root: the pinned artists at the very top, then YouTube Music's shelves top to bottom, more as the
-/// list reaches its end.
+/// The Home root: a large title, the pinned artists at the top, then YouTube Music's shelves top to bottom (Top
+/// Picks cards, Listen again tiles, two column Quick picks), more as the list reaches its end. One scroll view, so
+/// the title scrolls away with the content.
 struct MusicHomeView: View {
     let service: MusicService
+    /// The search button of the header: goes to the Search tab.
+    let onSearch: () -> Void
+
+    @Environment(\.musicTrackMenu) private var trackMenu
+    @Environment(\.musicCollectionPin) private var collectionPin
 
     private var browse: MusicBrowseStore { service.browse }
 
+    private var nowPlayingId: String? { service.player.nowPlaying?.videoId }
+
     var body: some View {
-        content
-            .onAppear { browse.loadHomeIfNeeded() }
-            // A channel switch drops what was loaded while this view stays up.
-            .onChange(of: browse.home == .idle) { _, isIdle in
-                if isIdle { browse.loadHomeIfNeeded() }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionGap) {
+                VStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionContent) {
+                    MusicScreenHeader(title: "Home", account: service.account, onSearch: onSearch)
+                    pinnedRow
+                }
+                shelves
+                MusicBottomInsetSpacer()
             }
+        }
+        .scrollIndicators(.never)
+        .onAppear { browse.loadHomeIfNeeded() }
+        // A channel switch drops what was loaded while this view stays up.
+        .onChange(of: browse.home == .idle) { _, isIdle in
+            if isIdle { browse.loadHomeIfNeeded() }
+        }
     }
 
     @ViewBuilder
-    private var content: some View {
+    private var shelves: some View {
         switch browse.home {
         case .idle, .loading:
-            abovePinnedRow { MusicLoadingView() }
+            MusicLoadingCard()
         case .failed(let message):
-            abovePinnedRow { MusicFailedView(message: message) { browse.reloadHome() } }
+            MusicFailedCard(message: message) { browse.reloadHome() }
         case .loaded(let shelves) where shelves.isEmpty:
-            abovePinnedRow { MusicEmptyView(text: "Nothing on Home yet.") }
+            MusicStateCard(message: "Nothing on Home yet.")
         case .loaded(let shelves):
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
-                    pinnedRow
-
-                    ForEach(Array(shelves.enumerated()), id: \.offset) { index, shelf in
-                        MusicShelfView(
-                            shelf: shelf,
-                            nowPlayingId: service.player.nowPlaying?.videoId,
-                            isPlaying: service.player.isPlaying,
-                            onPlay: { service.play($0) },
-                            onOpen: { browse.open($0) }
-                        )
-                        .onAppear {
-                            if index == shelves.count - 1 { loadMore() }
-                        }
+            let styles = MusicHomeSectionStyle.styles(for: shelves)
+            ForEach(Array(shelves.enumerated()), id: \.offset) { index, shelf in
+                section(shelf, style: styles[index])
+                    .onAppear {
+                        if index == shelves.count - 1 { loadMore() }
                     }
-
-                    if browse.canLoadMoreHome || browse.isLoadingMoreHome {
-                        MusicLoadMoreFooter(isLoading: browse.isLoadingMoreHome) { loadMore() }
-                    }
-                }
             }
-            .scrollIndicators(.never)
+
+            if browse.canLoadMoreHome || browse.isLoadingMoreHome {
+                MusicLoadMoreFooter(isLoading: browse.isLoadingMoreHome) { loadMore() }
+            }
         }
     }
+
+    // MARK: - Pinned artists
 
     /// Round artist tiles in pin order. Local data, so it is there while YouTube's shelves are still loading or
     /// have failed; nothing at all while no artist is pinned.
     @ViewBuilder
     private var pinnedRow: some View {
         if let shelf = service.pinnedArtists.shelf {
-            MusicShelfView(
-                shelf: shelf,
-                nowPlayingId: service.player.nowPlaying?.videoId,
-                isPlaying: service.player.isPlaying,
-                onPlay: { service.play($0) },
-                onOpen: { browse.open($0) },
-                onUnpin: { service.pinnedArtists.unpin($0.browseId) }
-            )
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Pinned artists")
+                    .musicText(MusicStyle.Typeface.callout)
+                    .foregroundStyle(Color.white.opacity(0.62))
+                    .padding(.horizontal, MusicStyle.Spacing.page)
+                    .accessibilityAddTraits(.isHeader)
+
+                shelfRow(spacing: MusicStyle.Spacing.pinnedGap) {
+                    ForEach(shelf.items) { item in
+                        if case .collection(let artist) = item {
+                            MusicPinnedArtistTile(collection: artist) { browse.open(artist) }
+                                .musicCollectionMenu(artist) { service.pinnedArtists.unpin($0.browseId) }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    /// A state that fills the Home tab (loading, failed, empty), with the pinned row above it when there is one.
+    // MARK: - Shelves
+
     @ViewBuilder
-    private func abovePinnedRow<State: View>(@ViewBuilder _ state: () -> State) -> some View {
-        if service.pinnedArtists.shelf == nil {
-            state()
-        } else {
-            VStack(alignment: .leading, spacing: DesignTokens.Spacing.md) {
-                pinnedRow
-                state()
+    private func section(_ shelf: MusicShelf, style: MusicHomeSectionStyle) -> some View {
+        VStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionContent) {
+            MusicSectionHeader(title: shelf.title)
+            switch style {
+            case .quickPicks:
+                quickPicks(shelf)
+            case .topPicks:
+                shelfRow(spacing: MusicStyle.Spacing.shelfGap) {
+                    ForEach(shelf.items) { topPick($0) }
+                }
+            case .coverTiles:
+                shelfRow(spacing: MusicStyle.Spacing.shelfGap) {
+                    ForEach(shelf.items) { coverTile($0) }
+                }
             }
+        }
+    }
+
+    /// A sideways row that starts 20 in and scrolls under the popover edge. The padding is inside the scroll, so the
+    /// first and last tile rest 20 from the edge and the rest slides past it.
+    private func shelfRow<Content: View>(spacing: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: spacing) {
+                content()
+            }
+            .padding(.horizontal, MusicStyle.Spacing.page)
+        }
+        .scrollIndicators(.never)
+        .scrollClipDisabled()
+    }
+
+    private func quickPicks(_ shelf: MusicShelf) -> some View {
+        let tracks = shelf.items.compactMap { item -> MusicTrack? in
+            if case .track(let track) = item { return track }
+            return nil
+        }
+        return LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: MusicShellLayout.quickPickColumnGap),
+                GridItem(.flexible()),
+            ],
+            spacing: 0
+        ) {
+            ForEach(Array(tracks.prefix(MusicHomeSectionStyle.maxQuickPicks).enumerated()), id: \.offset) { _, track in
+                MusicQuickPickRow(
+                    track: track,
+                    isCurrent: nowPlayingId == track.videoId,
+                    isPlaying: nowPlayingId == track.videoId && service.player.isPlaying
+                ) {
+                    service.play(track)
+                }
+            }
+        }
+        .padding(.horizontal, MusicStyle.Spacing.page)
+    }
+
+    @ViewBuilder
+    private func topPick(_ item: MusicShelfItem) -> some View {
+        switch item {
+        case .track(let track):
+            MusicTopPickCard(
+                kicker: MusicHomeSectionStyle.kicker(for: item),
+                title: track.title,
+                subtitle: track.artist,
+                thumbnailURL: track.thumbnailURL,
+                tintKey: track.videoId,
+                isPinned: trackMenu?.isPinned(track) == true,
+                isCurrent: nowPlayingId == track.videoId,
+                isPlaying: nowPlayingId == track.videoId && service.player.isPlaying
+            ) {
+                service.play(track)
+            }
+        case .collection(let collection):
+            MusicTopPickCard(
+                kicker: MusicHomeSectionStyle.kicker(for: item),
+                title: collection.title,
+                subtitle: MusicHomeText.subtitle(collection.subtitle),
+                thumbnailURL: collection.thumbnailURL,
+                tintKey: collection.browseId,
+                isPinned: collectionPin?.isPinned(collection) == true
+            ) {
+                browse.open(collection)
+            }
+            .musicCollectionMenu(collection)
+        }
+    }
+
+    @ViewBuilder
+    private func coverTile(_ item: MusicShelfItem) -> some View {
+        switch item {
+        case .track(let track):
+            MusicCoverTile(
+                title: track.title,
+                subtitle: track.artist,
+                thumbnailURL: track.thumbnailURL,
+                isPinned: trackMenu?.isPinned(track) == true,
+                isCurrent: nowPlayingId == track.videoId,
+                isPlaying: nowPlayingId == track.videoId && service.player.isPlaying
+            ) {
+                service.play(track)
+            }
+        case .collection(let collection):
+            MusicCoverTile(
+                title: collection.title,
+                subtitle: MusicHomeText.subtitle(collection.subtitle),
+                thumbnailURL: collection.thumbnailURL,
+                circular: collection.kind == .artist,
+                placeholder: collection.kind.placeholderSymbol,
+                isPinned: collectionPin?.isPinned(collection) == true
+            ) {
+                browse.open(collection)
+            }
+            .musicCollectionMenu(collection)
         }
     }
 

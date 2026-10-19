@@ -1,10 +1,13 @@
 // Deci/Views/Music/MusicBrowseView.swift
 import SwiftUI
 
-/// Home or Library, or the page on top of `browse.path`. The root stays alive under an open
+/// Home, Library or Search, or the page on top of `browse.path`. The root stays alive under an open
 /// page so going back lands where the list was scrolled to.
 struct MusicBrowseView: View {
     let service: MusicService
+    let navigation: MusicSearchNavigation
+    /// False while a player screen or the picker covers the browse screens, which stay alive under them.
+    var isActive = true
 
     private var browse: MusicBrowseStore { service.browse }
 
@@ -30,9 +33,11 @@ struct MusicBrowseView: View {
     private var root: some View {
         switch browse.tab {
         case .home:
-            MusicHomeView(service: service)
+            MusicHomeView(service: service) { navigation.select(.search) }
         case .library:
-            MusicLibraryView(browse: browse)
+            MusicLibraryView(service: service)
+        case .search:
+            MusicSearchScreen(service: service, navigation: navigation, isActive: isActive)
         }
     }
 }

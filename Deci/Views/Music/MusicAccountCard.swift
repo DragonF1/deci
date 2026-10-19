@@ -56,7 +56,30 @@ struct MusicAccountCardRows: Equatable {
     }
 }
 
-/// The 20pt round avatar at the end of the search row. Opens and closes the account card.
+/// The first letters of an account name, for the avatar while it has no photo: the first letter of the first and of
+/// the last word, in capitals. Words with no letter or digit in them (an emoji, a dash) are skipped.
+nonisolated enum MusicAccountInitials {
+    static func from(_ name: String) -> String {
+        let letters = name.split(whereSeparator: \.isWhitespace).compactMap { word in
+            word.first(where: { $0.isLetter || $0.isNumber })
+        }
+        guard let first = letters.first else { return "" }
+        guard letters.count > 1, let last = letters.last else { return String(first).uppercased() }
+        return (String(first) + String(last)).uppercased()
+    }
+}
+
+/// Where the account avatar sits, so the shell can leave it out of the dim behind the account card and hang the
+/// card under it.
+struct MusicAvatarAnchorKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// The 32 pt round avatar in a screen header. Opens and closes the account card.
 struct MusicAccountButton: View {
     let account: MusicAccount?
     let isOpen: Bool
@@ -64,32 +87,32 @@ struct MusicAccountButton: View {
 
     var body: some View {
         Button(action: action) {
-            MusicAccountAvatar(url: account?.photoURL, size: Self.size)
-                .overlay {
-                    Circle()
-                        .strokeBorder(
-                            isOpen ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.eqCardBorder,
-                            lineWidth: isOpen ? 1.5 : 0.5
-                        )
-                }
+            MusicAccountAvatar(url: account?.photoURL, size: Self.size, name: account?.name)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .anchorPreference(key: MusicAvatarAnchorKey.self, value: .bounds) { $0 }
         .accessibilityLabel("Account")
         .accessibilityAddTraits(isOpen ? .isSelected : [])
         .help("Account")
     }
 
-    static let size: CGFloat = 20
+    static let size: CGFloat = 32
 }
 
-/// The round account photo, in the search-row button and on the card. It loads through `MusicAvatarModel`,
-/// not `AsyncImage`: the photo URL must stay out of the shared URL cache. The person placeholder shows while
-/// it loads, when it fails and when there is no URL.
+/// The round account photo, in the header button and on the card. It loads through `MusicAvatarModel`,
+/// not `AsyncImage`: the photo URL must stay out of the shared URL cache. While the photo loads, when it fails and
+/// when there is no URL, the avatar shows the account's initials on the avatar gradient, or a person when the
+/// account has no name yet.
 struct MusicAccountAvatar: View {
     let url: URL?
     let size: CGFloat
+    var name: String?
     @State private var model = MusicAvatarModel()
+
+    private var initials: String {
+        name.map(MusicAccountInitials.from) ?? ""
+    }
 
     var body: some View {
         Group {
@@ -97,6 +120,13 @@ struct MusicAccountAvatar: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
+            } else if !initials.isEmpty {
+                ZStack {
+                    Rectangle().fill(MusicStyle.Palette.avatarGradient)
+                    Text(initials)
+                        .font(.system(size: size * 0.375, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
             } else {
                 MusicCoverPlaceholder(symbol: "person.fill", size: size)
             }
@@ -158,7 +188,7 @@ struct MusicAccountCard: View {
 
     private var identity: some View {
         HStack(spacing: DesignTokens.Spacing.sm) {
-            MusicAccountAvatar(url: account?.photoURL, size: 36)
+            MusicAccountAvatar(url: account?.photoURL, size: 36, name: account?.name)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(content.title)

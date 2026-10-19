@@ -37,6 +37,9 @@ enum MusicTimeFormat {
 /// Pinned under the list: what is playing, previous / play-pause / next and a scrubbable progress bar.
 struct MusicMiniTransport: View {
     let service: MusicService
+    /// False on the player screens, which show the cover, title and artist themselves: the card then holds the
+    /// buttons and the progress bar only.
+    var showsNowPlayingInfo = true
     /// Fraction under the finger while scrubbing; nil otherwise. Seeks on release.
     /// A gesture state, so a drag that is cancelled (the track changed, the window lost focus) lets go by itself.
     @GestureState private var dragFraction: Double? = nil
@@ -47,19 +50,21 @@ struct MusicMiniTransport: View {
         if let track = player.nowPlaying {
             VStack(spacing: DesignTokens.Spacing.xs) {
                 HStack(spacing: DesignTokens.Spacing.sm) {
-                    MusicThumbnail(url: track.thumbnailURL, size: 36)
+                    if showsNowPlayingInfo {
+                        MusicThumbnail(url: track.thumbnailURL, size: 36)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(track.title)
-                            .font(DesignTokens.Typography.rowNameBold)
-                            .lineLimit(1)
-                        if let error = player.error {
-                            Text(error)
-                                .font(DesignTokens.Typography.rowDescription)
-                                .foregroundStyle(DesignTokens.Colors.mutedIndicator)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(track.title)
+                                .font(DesignTokens.Typography.rowNameBold)
                                 .lineLimit(1)
-                        } else {
-                            MusicArtistLine(artist: track.artist, links: track.artistLinks)
+                            if let error = player.error {
+                                Text(error)
+                                    .font(DesignTokens.Typography.rowDescription)
+                                    .foregroundStyle(DesignTokens.Colors.mutedIndicator)
+                                    .lineLimit(1)
+                            } else {
+                                MusicArtistLine(artist: track.artist, links: track.artistLinks)
+                            }
                         }
                     }
 
@@ -207,6 +212,8 @@ struct MusicThumbnail: View {
     let size: CGFloat
     var circular = false
     var placeholder = "music.note"
+    /// The corner radius of a square cover; the button radius when nil.
+    var cornerRadius: CGFloat?
 
     var body: some View {
         AsyncImage(url: url) { phase in
@@ -218,7 +225,7 @@ struct MusicThumbnail: View {
             }
         }
         .frame(width: size, height: size)
-        .clipShape(MusicCoverShape(circular: circular))
+        .clipShape(MusicCoverShape(circular: circular, radius: cornerRadius))
     }
 }
 
@@ -228,6 +235,10 @@ struct MusicThumbnail: View {
 struct MusicPinBadge: View {
     let coverSize: CGFloat
     var circular = false
+    /// A size and an inset the design fixes for a cover (18 on a tile, 20 on a Top Picks card); the rule below
+    /// when nil.
+    var diameterOverride: CGFloat?
+    var insetOverride: CGFloat?
 
     /// The dot is about a fifth of the cover, never under `minDiameter`: 18 on a 96 tile, 14 on a row.
     static let minDiameter: CGFloat = 14
@@ -242,8 +253,8 @@ struct MusicPinBadge: View {
     }
 
     var body: some View {
-        let diameter = Self.diameter(coverSize: coverSize)
-        let inset = Self.inset(coverSize: coverSize, circular: circular)
+        let diameter = diameterOverride ?? Self.diameter(coverSize: coverSize)
+        let inset = insetOverride ?? Self.inset(coverSize: coverSize, circular: circular)
         Image(systemName: "pin.fill")
             .font(.system(size: diameter * 0.55, weight: .bold))
             .foregroundStyle(.white)
@@ -259,10 +270,16 @@ struct MusicPinBadge: View {
 extension View {
     /// Puts the pin badge on this cover's top-right corner while `isPinned`. Apply it after the playing overlay, so
     /// the badge stays on top while the song plays.
-    func musicPinBadge(_ isPinned: Bool, coverSize: CGFloat, circular: Bool = false) -> some View {
+    func musicPinBadge(
+        _ isPinned: Bool,
+        coverSize: CGFloat,
+        circular: Bool = false,
+        diameter: CGFloat? = nil,
+        inset: CGFloat? = nil
+    ) -> some View {
         overlay(alignment: .topTrailing) {
             if isPinned {
-                MusicPinBadge(coverSize: coverSize, circular: circular)
+                MusicPinBadge(coverSize: coverSize, circular: circular, diameterOverride: diameter, insetOverride: inset)
             }
         }
     }
@@ -286,11 +303,13 @@ struct MusicCoverPlaceholder: View {
 /// The cover clip: the button radius, or a circle for artists.
 struct MusicCoverShape: Shape {
     let circular: Bool
+    /// The corner radius of a square cover; the button radius when nil.
+    var radius: CGFloat?
 
     func path(in rect: CGRect) -> Path {
         circular
             ? Circle().path(in: rect)
-            : RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius).path(in: rect)
+            : RoundedRectangle(cornerRadius: radius ?? DesignTokens.Dimensions.buttonRadius, style: .continuous).path(in: rect)
     }
 }
 

@@ -23,6 +23,9 @@ struct MusicArtistLine: View {
     let links: [MusicArtistLink]
     /// Set by a row whose own accessibility label already reads the whole line, so VoiceOver does not say it twice.
     var hidesPlainTextFromVoiceOver = false
+    /// The line's look. The defaults are the song rows'; the shell's mini player and player screens set their own.
+    var font: Font = DesignTokens.Typography.rowDescription
+    var color: Color = DesignTokens.Colors.textSecondary
 
     @Environment(\.openMusicArtist) private var openArtist
 
@@ -44,7 +47,7 @@ struct MusicArtistLine: View {
     @ViewBuilder
     private func piece(_ segment: MusicArtistSegment, open: @escaping @MainActor (MusicCollection) -> Void) -> some View {
         if let link = segment.link {
-            MusicArtistButton(link: link, open: open)
+            MusicArtistButton(link: link, font: font, color: color, open: open)
         } else {
             plain(segment.text)
         }
@@ -52,8 +55,8 @@ struct MusicArtistLine: View {
 
     private func plain(_ text: String) -> some View {
         Text(text)
-            .font(DesignTokens.Typography.rowDescription)
-            .foregroundStyle(DesignTokens.Colors.textSecondary)
+            .font(font)
+            .foregroundStyle(color)
             .lineLimit(1)
             .accessibilityHidden(hidesPlainTextFromVoiceOver)
     }
@@ -62,6 +65,8 @@ struct MusicArtistLine: View {
 /// One artist name as a plain button: underlined under the pointer, with the hand cursor.
 private struct MusicArtistButton: View {
     let link: MusicArtistLink
+    let font: Font
+    let color: Color
     let open: @MainActor (MusicCollection) -> Void
     @State private var isHovered = false
 
@@ -70,8 +75,8 @@ private struct MusicArtistButton: View {
             open(link.opener)
         } label: {
             Text(link.name)
-                .font(DesignTokens.Typography.rowDescription)
-                .foregroundStyle(isHovered ? DesignTokens.Colors.textPrimary : DesignTokens.Colors.textSecondary)
+                .font(font)
+                .foregroundStyle(isHovered ? DesignTokens.Colors.textPrimary : color)
                 .underline(isHovered)
                 .lineLimit(1)
                 .contentShape(Rectangle())

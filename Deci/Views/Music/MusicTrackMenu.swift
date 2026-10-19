@@ -145,12 +145,14 @@ struct MusicPlaylistPickerView: View {
     var body: some View {
         VStack(spacing: DesignTokens.Spacing.xs) {
             MusicPageTopBar(title: "Save to playlist", onBack: onBack)
+                .padding(.horizontal, MusicStyle.Spacing.page)
+                .padding(.top, 8)
 
             Text(picker.track.title)
                 .font(DesignTokens.Typography.caption)
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .lineLimit(1)
-                .padding(.horizontal, DesignTokens.Spacing.sm)
+                .padding(.horizontal, MusicStyle.Spacing.page)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             content
@@ -173,7 +175,9 @@ struct MusicPlaylistPickerView: View {
                     ForEach(options, id: \.playlistId) { option in
                         MusicPlaylistOptionRow(option: option) { onChoose(option) }
                     }
+                    MusicBottomInsetSpacer()
                 }
+                .padding(.horizontal, 12)
             }
             .scrollIndicators(.never)
             // A save is out: the list waits for its answer, so a second tap sends nothing more.

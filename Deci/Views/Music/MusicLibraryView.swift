@@ -1,28 +1,48 @@
 // Deci/Views/Music/MusicLibraryView.swift
 import SwiftUI
 
-/// The Library root: Liked music pinned on top, then the saved playlists, albums or artists.
+/// The Library root: a large title, the Playlists / Albums / Artists switch, then the saved list, with Liked music
+/// first on Playlists. One scroll view, so the title scrolls away with the content.
 struct MusicLibraryView: View {
-    @Bindable var browse: MusicBrowseStore
+    let service: MusicService
     @Environment(\.musicCollectionPin) private var collectionPin
 
+    private var browse: MusicBrowseStore { service.browse }
     private var section: MusicLibrarySection { browse.librarySection }
 
-    var body: some View {
-        VStack(spacing: DesignTokens.Spacing.xs) {
-            MusicCollectionRow(collection: MusicBrowseStore.likedMusic, symbol: "heart.fill") {
-                browse.open(MusicBrowseStore.likedMusic)
-            }
+    private static let topID = "library-top"
 
-            HStack {
-                MusicSegmentSwitch(segments: MusicLibrarySection.segments, selection: section, height: 20) {
+    var body: some View {
+        ScrollViewReader { proxy in
+            scroll
+                // Another section starts at the top, as its own list did before the title joined the scroll.
+                .onChange(of: section) {
+                    proxy.scrollTo(Self.topID, anchor: .top)
+                }
+        }
+    }
+
+    private var scroll: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                MusicScreenHeader(title: "Library", account: service.account)
+                    .id(Self.topID)
+
+                MusicSegmentSwitch(segments: MusicLibrarySection.segments, selection: section) {
                     browse.librarySection = $0
                 }
-                Spacer()
-            }
+                .padding(.horizontal, MusicStyle.Spacing.page)
+                .padding(.top, 12)
+                .padding(.bottom, MusicStyle.Spacing.sectionContent)
 
-            list
+                // Always first on Playlists, whatever state the list under it is in.
+                likedMusic
+                list
+
+                MusicBottomInsetSpacer()
+            }
         }
+        .scrollIndicators(.never)
         .onAppear { browse.loadLibraryIfNeeded(section) }
         .onChange(of: section) { _, newSection in
             browse.loadLibraryIfNeeded(newSection)
@@ -37,42 +57,45 @@ struct MusicLibraryView: View {
     private var list: some View {
         switch browse.libraryState(section) {
         case .idle, .loading:
-            MusicLoadingView()
+            MusicLoadingCard()
         case .failed(let message):
-            MusicFailedView(message: message) { browse.reloadLibrary(section) }
+            MusicFailedCard(message: message) { browse.reloadLibrary(section) }
         case .loaded(let items) where items.isEmpty:
-            MusicEmptyView(text: section.emptyText)
+            MusicStateCard(message: section.emptyText)
         case .loaded(let items):
             let loadingMore = browse.loadingMoreLibrary.contains(section)
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
-                        let row = MusicCollectionRow(
-                            collection: collection,
-                            isPinned: collectionPin?.isPinned(collection) == true
-                        ) {
-                            browse.open(collection)
-                        }
-                        if let collectionPin, let listenAgain = collectionPin.pin(collection) {
-                            row.contextMenu {
-                                MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
-                            }
-                        } else {
-                            row
-                        }
+            ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
+                let row = MusicCollectionRow(
+                    collection: collection,
+                    isPinned: collectionPin?.isPinned(collection) == true
+                ) {
+                    browse.open(collection)
+                }
+                if let collectionPin, let listenAgain = collectionPin.pin(collection) {
+                    row.contextMenu {
+                        MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
                     }
-
-                    if browse.libraryHasMore.contains(section) || loadingMore {
-                        MusicLoadMoreFooter(isLoading: loadingMore) {
-                            guard !browse.loadingMoreLibrary.contains(section) else { return }
-                            browse.loadMoreLibrary(section)
-                        }
-                    }
+                } else {
+                    row
                 }
             }
-            .scrollIndicators(.never)
-            // A fresh list per section, so switching sections starts at the top.
-            .id(section)
+
+            if browse.libraryHasMore.contains(section) || loadingMore {
+                MusicLoadMoreFooter(isLoading: loadingMore) {
+                    guard !browse.loadingMoreLibrary.contains(section) else { return }
+                    browse.loadMoreLibrary(section)
+                }
+            }
+        }
+    }
+
+    /// Liked music is the first row of Playlists, whatever the list below it holds.
+    @ViewBuilder
+    private var likedMusic: some View {
+        if section == .playlists {
+            MusicCollectionRow(collection: MusicBrowseStore.likedMusic, symbol: "heart.fill") {
+                browse.open(MusicBrowseStore.likedMusic)
+            }
         }
     }
 }
@@ -86,37 +109,49 @@ struct MusicCollectionRow: View {
     var isPinned = false
     let action: () -> Void
 
-    static let coverSize: CGFloat = 40
+    static let coverSize: CGFloat = 56
+
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: DesignTokens.Spacing.sm) {
+            HStack(spacing: 12) {
                 cover
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(collection.title)
-                        .font(DesignTokens.Typography.rowName)
-                        .foregroundStyle(DesignTokens.Colors.textPrimary)
-                        .lineLimit(1)
-                    if !collection.subtitle.isEmpty {
-                        Text(collection.subtitle)
-                            .font(DesignTokens.Typography.rowDescription)
-                            .foregroundStyle(DesignTokens.Colors.textSecondary)
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(collection.title)
+                            .musicText(MusicStyle.Typeface.row15M)
+                            .foregroundStyle(.white)
                             .lineLimit(1)
+                        if !collection.subtitle.isEmpty {
+                            Text(MusicHomeText.subtitle(collection.subtitle))
+                                .musicText(MusicStyle.Typeface.caption12)
+                                .foregroundStyle(MusicStyle.Palette.textSecondary)
+                                .lineLimit(1)
+                        }
                     }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(MusicStyle.Palette.textQuaternary)
+                        .accessibilityHidden(true)
                 }
-
-                Spacer(minLength: DesignTokens.Spacing.sm)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
-                    .accessibilityHidden(true)
+                .frame(maxHeight: .infinity)
+                .padding(.trailing, 4)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1)
+                }
             }
-            .hoverableRow()
+            .padding(.horizontal, MusicStyle.Spacing.page)
+            .frame(height: 64)
+            .background(isHovered ? MusicStyle.Palette.fillHover : .clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(.isButton)
@@ -130,23 +165,33 @@ struct MusicCollectionRow: View {
     @ViewBuilder
     private var cover: some View {
         if let symbol {
-            ZStack {
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius)
-                    .fill(DesignTokens.Colors.glassFillStrong)
-                Image(systemName: symbol)
-                    .font(.system(size: 16))
-                    .foregroundStyle(DesignTokens.Colors.accentPrimary)
-            }
-            .frame(width: Self.coverSize, height: Self.coverSize)
-            .accessibilityHidden(true)
+            RoundedRectangle(cornerRadius: MusicStyle.Radius.art, style: .continuous)
+                .fill(MusicStyle.Palette.likedGradient)
+                .frame(width: Self.coverSize, height: Self.coverSize)
+                .overlay {
+                    Image(systemName: symbol)
+                        .font(.system(size: 26))
+                        .foregroundStyle(.white)
+                }
+                .accessibilityHidden(true)
         } else {
+            let circular = collection.kind == .artist
             MusicThumbnail(
                 url: collection.thumbnailURL,
                 size: Self.coverSize,
-                circular: collection.kind == .artist,
-                placeholder: collection.kind.placeholderSymbol
+                circular: circular,
+                placeholder: collection.kind.placeholderSymbol,
+                cornerRadius: MusicStyle.Radius.art
             )
-            .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: collection.kind == .artist)
+            .overlay {
+                if circular {
+                    Circle().strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
+                } else {
+                    RoundedRectangle(cornerRadius: MusicStyle.Radius.art, style: .continuous)
+                        .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
+                }
+            }
+            .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: circular, diameter: 14, inset: 4)
         }
     }
 }

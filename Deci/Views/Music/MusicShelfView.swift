@@ -167,6 +167,8 @@ struct MusicPlayingOverlay: View {
     let isPlaying: Bool
     var circular = false
     var symbolSize: CGFloat = 14
+    /// The corner radius of a square cover; the button radius when nil.
+    var radius: CGFloat?
 
     var body: some View {
         ZStack {
@@ -176,7 +178,7 @@ struct MusicPlayingOverlay: View {
                 .foregroundStyle(.white)
                 .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isPlaying)
         }
-        .clipShape(MusicCoverShape(circular: circular))
+        .clipShape(MusicCoverShape(circular: circular, radius: radius))
         .accessibilityHidden(true)
     }
 }
