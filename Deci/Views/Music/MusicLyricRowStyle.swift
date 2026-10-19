@@ -13,10 +13,10 @@ enum MusicLyricPosition: Sendable {
 struct MusicLyricRowStyle: Equatable {
     static let fontSize: CGFloat = 17
     static let fontWeight = Font.Weight.bold
-    /// The room between the wrapped lines of one row.
-    static let lineSpacing: CGFloat = 3
-    /// The room above and below each row.
-    static let verticalPadding: CGFloat = 6
+    /// The room between the wrapped lines of one row: with the font's own leading it makes the design's 22 pt line.
+    static let lineSpacing: CGFloat = 2
+    /// The room above and below each row: two of them are the design's 14 pt gap between lines.
+    static let verticalPadding: CGFloat = 7
 
     static let upcomingOpacity = 0.35
     static let pastOpacity = 0.65

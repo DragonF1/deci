@@ -39,6 +39,8 @@ enum MusicStyle {
         static let textSung = Color.white.opacity(0.65)
         static let textSecondary = Color.white.opacity(0.55)
         static let textSecondaryAlt = Color.white.opacity(0.60)
+        /// The artist under the title on the player screens.
+        static let playerSubtitle = Color.white.opacity(0.62)
         static let textOnCard = Color.white.opacity(0.72)
         static let textTertiary = Color.white.opacity(0.45)
         static let textQuaternary = Color.white.opacity(0.35)
@@ -56,6 +58,12 @@ enum MusicStyle {
         static let fillSelected = Color.white.opacity(0.16)
         static let fillActive = Color.white.opacity(0.24)
         static let sliderTrack = Color.white.opacity(0.22)
+        /// The filled part of the player's scrubber and volume slider.
+        static let sliderLevel = Color.white.opacity(0.90)
+        /// The lit panel circle of the player (Lyrics or Up next while open).
+        static let activeCircle = Color.white.opacity(0.92)
+        /// The glyph on the lit panel circle.
+        static let activeCircleInk = hex(0x1C1C1E)
 
         // Lines
         static let lineHairline = Color.white.opacity(0.08)
@@ -189,6 +197,10 @@ enum MusicStyle {
 
         static let glass = Shadow(color: .black.opacity(0.35), radius: 14, y: 10)
         static let button = Shadow(color: .black.opacity(0.30), radius: 12, y: 8)
+        /// Under the big cover of Now Playing.
+        static let npArt = Shadow(color: .black.opacity(0.45), radius: 22, y: 18)
+        /// Under the small cover in the Lyrics and Up next header.
+        static let headerArt = Shadow(color: .black.opacity(0.35), radius: 8, y: 6)
         /// Under the raised segment of a segmented control only.
         static let segment = Shadow(color: .black.opacity(0.25), radius: 1.5, y: 1)
     }

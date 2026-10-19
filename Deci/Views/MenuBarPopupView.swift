@@ -1312,12 +1312,11 @@ struct MenuBarPopupView: View {
     /// result — `defaultDeviceUID` can be briefly nil during device switchover
     /// and we don't want the main view to show zero rows in that window.
     private func updateSortedDevices() {
-        let all = audioEngine.prioritySortedOutputDevices
-        let defaultUID = deviceVolumeMonitor.defaultDeviceUID
-        let filtered = all.filter { device in
-            device.uid == defaultUID || !audioEngine.settingsManager.isOutputDeviceHidden(device.uid)
-        }
-        sortedDevices = filtered.isEmpty ? all : filtered
+        sortedDevices = OutputDeviceVisibility.visible(
+            sorted: audioEngine.prioritySortedOutputDevices,
+            defaultUID: deviceVolumeMonitor.defaultDeviceUID,
+            isHidden: { audioEngine.settingsManager.isOutputDeviceHidden($0) }
+        )
     }
 
     /// Recomputes sorted input devices, filtering hidden ones.

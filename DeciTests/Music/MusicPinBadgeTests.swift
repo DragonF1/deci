@@ -12,7 +12,6 @@ struct MusicPinBadgeTests {
 
     @Test("The dot is 14 on a row and on the covers of the page rows")
     func diameters() {
-        #expect(MusicPinBadge.diameter(coverSize: MusicResultRow.coverSize) == 14)
         #expect(MusicPinBadge.diameter(coverSize: MusicCollectionRow.coverSize) == 14)
         #expect(MusicPinBadge.diameter(coverSize: MusicSongRowLayout.playlist.coverSize ?? 0) == 14)
     }
@@ -43,7 +42,7 @@ struct MusicPinBadgeTests {
     @Test("The badge stays inside the cover's square on every cover the Music tab draws")
     func badgeFitsTheSquare() {
         let covers: [CGFloat] = [
-            MusicStyle.Size.coverTile, MusicResultRow.coverSize, MusicCollectionRow.coverSize,
+            MusicStyle.Size.coverTile, MusicCollectionRow.coverSize,
             MusicSongRowLayout.playlist.coverSize ?? 0,
         ]
         for size in covers {

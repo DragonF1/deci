@@ -96,9 +96,9 @@ struct MusicLyricRowStyleTests {
         #expect(value.font == Font.system(size: 17, weight: .bold))
     }
 
-    @Test("Rows have 6 points above and below, with a little room between wrapped lines")
+    @Test("Rows have 7 points above and below, so two rows are 14 points apart, with a little room between wrapped lines")
     func spacing() {
-        #expect(MusicLyricRowStyle.verticalPadding == 6)
+        #expect(MusicLyricRowStyle.verticalPadding * 2 == 14)
         #expect(MusicLyricRowStyle.lineSpacing > 0)
     }
 

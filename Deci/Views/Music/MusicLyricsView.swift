@@ -1,22 +1,41 @@
 // Deci/Views/Music/MusicLyricsView.swift
 import SwiftUI
 
-/// The lyrics panel of the Music tab: it replaces the content area while the lyrics button is on, like Up next.
-/// Synced lyrics scroll with the song and a tap on a line jumps there; plain lyrics are just text.
+/// The lyrics panel of the Music tab: a caption, the lines (or the card that says why there are none) and, under them,
+/// where the lyrics came from. Synced lyrics scroll with the song and a tap on a line jumps there; plain lyrics are just
+/// text. The Lyrics screen puts it between its header and the transport.
 struct MusicLyricsView: View {
     let store: MusicLyricsStore
     /// Jumps the song to a time in seconds.
     let seek: (TimeInterval) -> Void
 
+    /// The margin of the caption, the lines and the state cards; the lines' own 8 pt row padding makes up the rest.
+    static let margin: CGFloat = 32
+    private static let linesInset: CGFloat = margin - 8
+
     var body: some View {
-        VStack(spacing: DesignTokens.Spacing.xs) {
-            Text("Lyrics")
-                .font(DesignTokens.Typography.caption)
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
+        VStack(spacing: 0) {
+            Text(MusicLyricsCaption.text(for: store.state))
+                .musicText(MusicStyle.Typeface.callout)
+                .foregroundStyle(MusicStyle.Palette.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Self.margin)
 
             content
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 6)
+
+            MusicLyricsCredit(text: creditText)
+                .padding(.horizontal, Self.margin)
+                .padding(.top, 8)
+        }
+    }
+
+    /// The source line shows under lyrics that are on screen, never under a state card.
+    private var creditText: String? {
+        switch store.state {
+        case .loaded(.synced), .loaded(.plain): store.credit
+        default: nil
         }
     }
 
@@ -25,32 +44,50 @@ struct MusicLyricsView: View {
         switch store.state {
         case .idle:
             if store.track == nil {
-                MusicEmptyView(text: "Play a song to see its lyrics.")
+                MusicStateCard(message: "Play a song to see its lyrics.", minHeight: 60, margin: Self.margin)
             } else {
-                MusicLoadingView()
+                loading
             }
         case .loading:
-            MusicLoadingView()
+            loading
         case .failed(let message, let retryAfter):
             if let retryAfter {
                 MusicLyricsWaitView(message: message, until: retryAfter) { store.retry() }
             } else {
-                MusicFailedView(message: message) { store.retry() }
+                MusicLyricsWaitView(message: message, until: .distantPast) { store.retry() }
             }
         case .busy(let until):
             MusicLyricsWaitView(message: MusicLyricsStore.busyMessage, until: until) { store.retry() }
         case .loaded(.synced(let lines)):
             // Keyed on the track, so a direct change from one synced song to the next starts a fresh list (follow
             // state, scroll position and current line) instead of carrying the last song's over.
-            MusicSyncedLyricsList(store: store, lines: lines, credit: store.credit, seek: seek)
+            MusicSyncedLyricsList(store: store, lines: lines, seek: seek)
+                .padding(.horizontal, Self.linesInset)
                 .id(store.track?.videoId)
         case .loaded(.plain(let text)):
-            MusicPlainLyricsView(text: text, credit: store.credit)
+            MusicPlainLyricsView(text: text)
+                .padding(.horizontal, Self.linesInset)
         case .loaded(.instrumental):
-            MusicEmptyView(text: "Instrumental")
+            MusicStateCard(margin: Self.margin) {
+                HStack(spacing: 8) {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 15))
+                        .foregroundStyle(MusicStyle.Palette.textSung)
+                        .accessibilityHidden(true)
+                    MusicStateCardMessage(text: "Instrumental")
+                }
+            }
         case .loaded(.notFound):
-            MusicEmptyView(text: "No lyrics for this song.")
+            MusicStateCard(message: "No lyrics for this song.", margin: Self.margin)
         }
+    }
+
+    private var loading: some View {
+        MusicStateCard(margin: Self.margin) {
+            MusicSpinner()
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading")
     }
 }
 
@@ -73,34 +110,25 @@ private struct MusicLyricsWaitView: View {
     }
 
     private func content(canRetry: Bool) -> some View {
-        VStack(spacing: DesignTokens.Spacing.sm) {
-            Text(message)
-                .font(DesignTokens.Typography.rowDescription)
-                .foregroundStyle(DesignTokens.Colors.textSecondary)
-                .multilineTextAlignment(.center)
+        MusicStateCard(minHeight: 88, margin: MusicLyricsView.margin) {
+            MusicStateCardMessage(text: message)
             if canRetry {
-                Button("Retry", action: retry)
-                    .buttonStyle(.plain)
-                    .font(DesignTokens.Typography.pickerText)
-                    .foregroundStyle(DesignTokens.Colors.textPrimary)
-                    .glassButtonStyle()
-                    .contentShape(Rectangle())
+                MusicRetryPill(action: retry)
             }
         }
-        .padding(.horizontal, DesignTokens.Spacing.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
 private extension View {
-    /// Fades the first and last few points of a scrolling list, so a line cut by the edge does not look clipped.
+    /// Fades the top and the bottom of a scrolling list, so a line cut by the edge does not look clipped: clear at the
+    /// edges, opaque from 16 to 82 percent of the height.
     func lyricsEdgeFade() -> some View {
         mask(
             LinearGradient(
                 stops: [
                     .init(color: .clear, location: 0),
-                    .init(color: .black, location: 0.035),
-                    .init(color: .black, location: 0.965),
+                    .init(color: .black, location: 0.16),
+                    .init(color: .black, location: 0.82),
                     .init(color: .clear, location: 1),
                 ],
                 startPoint: .top,
@@ -111,45 +139,36 @@ private extension View {
 }
 
 /// The line under the lyrics that says where they came from, as the lyrics source worded it ("Lyrics from LRCLIB").
-/// Nothing at all when the source named no one.
+/// It keeps its height when there is none, so the lines above do not move.
 private struct MusicLyricsCredit: View {
     let text: String?
 
     var body: some View {
-        if let text {
-            Text(text)
-                .font(DesignTokens.Typography.caption)
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, DesignTokens.Spacing.sm)
-                .padding(.vertical, DesignTokens.Spacing.md)
-        }
+        Text(text ?? "")
+            .musicText(MusicStyle.Typeface.caption11)
+            .foregroundStyle(MusicStyle.Palette.textTertiary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 14, alignment: .leading)
     }
 }
 
-/// Lyrics with no timing: text to read, marked as not synced. The font of the synced lines, in the colour of sung ones.
+/// Lyrics with no timing: text to read, in the colour of sung lines and no brighter, semibold. The Lyrics caption above
+/// says they are not synced.
 private struct MusicPlainLyricsView: View {
     let text: String
-    let credit: String?
 
     private let style = MusicLyricRowStyle(position: .past)
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
-                Text("Not synced")
-                    .font(DesignTokens.Typography.caption)
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
-                Text(text)
-                    .font(style.font)
-                    .lineSpacing(MusicLyricRowStyle.lineSpacing)
-                    .foregroundStyle(style.color)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                MusicLyricsCredit(text: credit)
-                    .padding(.horizontal, -DesignTokens.Spacing.sm)
-            }
-            .padding(.horizontal, DesignTokens.Spacing.sm)
-            .padding(.top, DesignTokens.Spacing.md)
+            Text(text)
+                .font(.system(size: MusicLyricRowStyle.fontSize, weight: .semibold))
+                .lineSpacing(MusicLyricRowStyle.lineSpacing)
+                .foregroundStyle(style.color)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, DesignTokens.Spacing.sm)
+                .padding(.top, 18)
+                .padding(.bottom, 18)
         }
         .scrollIndicators(.never)
         .lyricsEdgeFade()
@@ -231,7 +250,6 @@ private struct MusicLyricRow: View, Equatable {
 private struct MusicSyncedLyricsList: View {
     let store: MusicLyricsStore
     let lines: [LyricLine]
-    let credit: String?
     let seek: (TimeInterval) -> Void
     /// Set from the tracker's readings, so only the rows whose position changed redraw as the song moves.
     @State private var currentIndex: Int?
@@ -266,7 +284,6 @@ private struct MusicSyncedLyricsList: View {
                     .id(index)
                     .lyricsRowFrame(index, to: driver)
                 }
-                MusicLyricsCredit(text: credit)
                 Color.clear
                     .containerRelativeFrame(.vertical) { height, _ in height * (1 - MusicLyricScroll.anchorFraction) }
             }

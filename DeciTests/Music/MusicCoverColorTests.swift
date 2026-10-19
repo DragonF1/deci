@@ -179,27 +179,50 @@ private actor FetchCounter {
     }
 }
 
-/// Counts the fetches a fake cover fetch started and how many it saw cancelled, and waits for the first to start.
+/// Counts the fetches a fake cover fetch started and how many it saw cancelled. Two event gates keep the tests off the
+/// wall clock: one opens when a fetch starts, the other holds a fetch until the test lets it go. Neither has a deadline
+/// of its own; the tests carry a time limit as the guard against a hang.
 private actor FetchProbe {
     private(set) var startedCount = 0
     private(set) var cancelledCount = 0
 
+    private let startEvents: AsyncStream<Void>
+    private let startSignal: AsyncStream<Void>.Continuation
+    private let releaseEvents: AsyncStream<Void>
+    private let releaseSignal: AsyncStream<Void>.Continuation
+
+    init() {
+        let start = AsyncStream.makeStream(of: Void.self)
+        startEvents = start.stream
+        startSignal = start.continuation
+        let release = AsyncStream.makeStream(of: Void.self)
+        releaseEvents = release.stream
+        releaseSignal = release.continuation
+    }
+
     /// Returns which fetch this is, counting from 1.
     func started() -> Int {
         startedCount += 1
+        startSignal.yield()
         return startedCount
     }
 
     func cancelled() { cancelledCount += 1 }
 
-    /// True once a fetch has started; false if none did within about two seconds.
+    /// Suspends until a fetch has started, however long that takes. False only if the waiting task was cancelled.
     func waitUntilStarted() async -> Bool {
-        for _ in 0..<400 {
-            if startedCount > 0 { return true }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        return false
+        var events = startEvents.makeAsyncIterator()
+        return await events.next() != nil
     }
+
+    /// Called by a fetch to hold still until `release()`. False if the fetch was cancelled while it waited.
+    func waitForRelease() async -> Bool {
+        for await _ in releaseEvents {}
+        return !Task.isCancelled
+    }
+
+    /// Lets every fetch waiting in `waitForRelease` go on, now and later.
+    func release() { releaseSignal.finish() }
 }
 
 /// A clock the test moves by hand.
@@ -306,7 +329,7 @@ struct MusicCoverTintStoreTests {
         #expect(await counter.count == 4)
     }
 
-    @Test("the only caller cancelling cancels the fetch, which is not a failure and costs no decode")
+    @Test("the only caller cancelling cancels the fetch, which is not a failure and costs no decode", .timeLimit(.minutes(1)))
     func lastWaiterCancelsFetch() async throws {
         let probe = FetchProbe()
         let data = red
@@ -329,15 +352,14 @@ struct MusicCoverTintStoreTests {
         #expect(store.failureCount == 0)
     }
 
-    @Test("a fetch another caller still waits for keeps going when one caller cancels")
+    @Test("a fetch another caller still waits for keeps going when one caller cancels", .timeLimit(.minutes(1)))
     func otherWaiterKeepsFetch() async throws {
         let probe = FetchProbe()
         let data = red
         let store = MusicCoverTintStore(fetch: { _ in
             await probe.started()
-            do {
-                try await Task.sleep(for: .milliseconds(150))
-            } catch {
+            // Holds until the test lets it go, so the fetch cannot end before both callers have come and one has left.
+            guard await probe.waitForRelease() else {
                 await probe.cancelled()
                 return nil
             }
@@ -347,16 +369,20 @@ struct MusicCoverTintStoreTests {
         let leaving = Task { await store.tint(for: target) }
         try #require(await probe.waitUntilStarted())
         let staying = Task { await store.tint(for: target) }
-        // Let the second caller join before the first one goes.
-        try await Task.sleep(for: .milliseconds(20))
+        // Both callers and the cancellation's bookkeeping run on the main actor in the order they were queued, so the
+        // second caller has joined the fetch before the first one is counted out.
+        await Task.yield()
         leaving.cancel()
+        await Task.yield()
+        await probe.release()
         #expect(await staying.value != nil)
+        _ = await leaving.value
         #expect(await probe.startedCount == 1)
         #expect(await probe.cancelledCount == 0)
         #expect(store.cachedTint(for: target) != nil)
     }
 
-    @Test("after the last waiter left, asking again starts a fresh fetch")
+    @Test("after the last waiter left, asking again starts a fresh fetch", .timeLimit(.minutes(1)))
     func askAgainAfterCancel() async throws {
         let probe = FetchProbe()
         let data = red

@@ -87,10 +87,12 @@ struct MusicTrackMenuItems: View {
 
 /// The "..." button. It is a button of its own, so a click on it opens the menu and never plays the row under it.
 struct MusicTrackMoreButton: View {
-    /// How the button is drawn: the bare dots of the older rows, or the 24 pt round button of the redesigned song row.
+    /// How the button is drawn: the bare dots of the older rows, the 24 pt round button of the redesigned song row, or
+    /// the 30 pt one of the player.
     enum Style {
         case plain
         case round
+        case player
     }
 
     let track: MusicTrack
@@ -117,6 +119,13 @@ struct MusicTrackMoreButton: View {
                     .frame(width: Self.roundSize, height: Self.roundSize)
                     .background(Circle().fill(MusicStyle.Palette.fillSelected))
                     .contentShape(Circle())
+            case .player:
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.95))
+                    .frame(width: Self.playerSize, height: Self.playerSize)
+                    .background(Circle().fill(MusicStyle.Palette.fillControl3))
+                    .contentShape(Circle())
             }
         }
         .menuStyle(.button)
@@ -131,11 +140,14 @@ struct MusicTrackMoreButton: View {
     static let width: CGFloat = 22
     /// The round button the redesigned song row shows under the pointer.
     static let roundSize: CGFloat = 24
+    /// The round button of the player's Now Playing and header.
+    static let playerSize: CGFloat = 30
 }
 
 /// The "..." button of the song in the player: always visible, with the same actions as a row and no page.
 struct MusicNowPlayingMenu: View {
     let track: MusicTrack
+    var style: MusicTrackMoreButton.Style = .plain
     @Environment(\.musicTrackMenu) private var menu
 
     var body: some View {
@@ -146,7 +158,8 @@ struct MusicNowPlayingMenu: View {
                     track: track,
                     actions: actions,
                     perform: { menu.perform($0, track, .none) },
-                    tint: DesignTokens.Colors.textTertiary
+                    tint: DesignTokens.Colors.textTertiary,
+                    style: style
                 )
             }
         }

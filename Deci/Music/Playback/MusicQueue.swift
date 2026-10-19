@@ -43,12 +43,6 @@ struct MusicQueue: Equatable {
         return tracks[(currentIndex + 1)...]
     }
 
-    /// The current track and everything after it: what the "Up next" list shows.
-    var fromCurrent: ArraySlice<MusicTrack> {
-        guard let currentIndex else { return tracks[...] }
-        return tracks[currentIndex...]
-    }
-
     var upcomingCount: Int { upcoming.count }
     var hasNext: Bool { upcomingCount > 0 }
     var hasPrevious: Bool { (currentIndex ?? 0) > 0 }

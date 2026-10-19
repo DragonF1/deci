@@ -10,6 +10,15 @@ import Testing
 @MainActor
 final class FakeMusicMixerEnvironment: MusicMixerEnvironment {
     var outputDevices: [AudioDevice] = []
+    /// UIDs the user has hidden from the pickers.
+    var hiddenDeviceUIDs: Set<String> = []
+    var visibleOutputDevices: [AudioDevice] {
+        OutputDeviceVisibility.visible(
+            sorted: outputDevices,
+            defaultUID: defaultOutputDeviceUID,
+            isHidden: { hiddenDeviceUIDs.contains($0) }
+        )
+    }
     var defaultOutputDeviceUID: String?
     /// Active AutoEQ profile per device UID, as the engine's lookup would answer it.
     var autoEQProfiles: [String: AutoEQProfile] = [:]
@@ -532,5 +541,107 @@ struct MusicMixerStateTests {
         #expect(settings.getMute(for: key) == nil)
         #expect(settings.getBoost(for: key) == nil)
         #expect(settings.getDeviceRouting(for: key) == nil)
+    }
+
+    // MARK: - The player's volume slider and output label
+
+    @Test("the slider position follows the volume by the Mixer row's curve, and a muted row reads as empty")
+    func sliderPositionFollowsVolume() {
+        let (state, _, _) = makeState()
+        #expect(state.sliderPosition == 1)
+        state.setVolume(0.25)
+        #expect(abs(state.sliderPosition - 0.5) < 0.000_001)
+        state.setMuted(true)
+        #expect(state.sliderPosition == 0)
+        #expect(state.volume == 0.25, "mute keeps the volume")
+    }
+
+    @Test("moving the slider sets the volume by the same curve and lifts a mute")
+    func settingTheSliderPosition() {
+        let (state, settings, _) = makeState()
+        state.setMuted(true)
+        state.setSliderPosition(0.5)
+        #expect(!state.isMuted)
+        #expect(abs(state.volume - 0.25) < 0.000_001)
+        #expect(settings.getMute(for: MusicMixerState.settingsKey) == false)
+        state.setSliderPosition(3)
+        #expect(state.volume == 1)
+        state.setSliderPosition(-1)
+        #expect(state.volume == 0)
+        state.setSliderPosition(0.5)
+        state.setSliderPosition(.nan)
+        #expect(abs(state.volume - 0.25) < 0.000_001, "a non-finite position is ignored")
+    }
+
+    @Test("the output label names the device in use and the AutoEQ profile on it")
+    func outputLabelNamesDeviceAndProfile() {
+        let environment = FakeMusicMixerEnvironment()
+        environment.outputDevices = [FakeMusicMixerEnvironment.device("uid-a", id: 1), FakeMusicMixerEnvironment.device("uid-b", id: 2)]
+        environment.defaultOutputDeviceUID = "uid-a"
+        let (state, _, _) = makeState(environment: environment)
+        #expect(state.outputLabel == "Device uid-a")
+        #expect(state.outputDevices.map(\.uid) == ["uid-a", "uid-b"])
+
+        environment.autoEQProfiles["uid-b"] = profile("Flat Studio")
+        state.selectDevice(uid: "uid-b")
+        #expect(state.outputLabel == "Device uid-b \u{00B7} Flat Studio")
+
+        state.followDefaultDevice()
+        #expect(state.outputLabel == "Device uid-a", "back on the default, the other device's profile is gone")
+    }
+
+    @Test("with no output device known the label reads as the default output")
+    func outputLabelWithoutDevices() {
+        let (state, _, _) = makeState()
+        #expect(state.outputLabel == "Default output")
+    }
+
+    @Test("a chosen device that disappears drops out of the list, is flagged missing and the music falls back to the default")
+    func chosenDeviceDisappears() {
+        let environment = FakeMusicMixerEnvironment()
+        environment.outputDevices = [FakeMusicMixerEnvironment.device("uid-a", id: 1), FakeMusicMixerEnvironment.device("uid-b", id: 2)]
+        environment.defaultOutputDeviceUID = "uid-a"
+        let (state, _, _) = makeState(environment: environment)
+        state.selectDevice(uid: "uid-b")
+        #expect(state.outputDeviceUID == "uid-b")
+        #expect(!state.isChosenDeviceMissing)
+        #expect(state.outputLabel == "Device uid-b")
+
+        environment.outputDevices.removeAll { $0.uid == "uid-b" }
+        state.outputDevicesChanged()
+        #expect(state.selectedDeviceUID == "uid-b", "the choice stays the user's intent")
+        #expect(state.outputDeviceUID == nil, "so the menu checks the default, not the missing device")
+        #expect(state.isChosenDeviceMissing)
+        #expect(state.outputDevices.map(\.uid) == ["uid-a"])
+        #expect(state.outputLabel == "Device uid-a")
+
+        environment.outputDevices.append(FakeMusicMixerEnvironment.device("uid-b", id: 2))
+        state.outputDevicesChanged()
+        #expect(state.outputDeviceUID == "uid-b")
+        #expect(!state.isChosenDeviceMissing)
+
+        state.followDefaultDevice()
+        #expect(!state.isChosenDeviceMissing, "following the default is never a missing device")
+    }
+
+    @Test("the output list leaves out hidden devices like the Mixer, but keeps the default and a chosen device still routes")
+    func hiddenDevicesAreNotListed() {
+        let environment = FakeMusicMixerEnvironment()
+        environment.outputDevices = [
+            FakeMusicMixerEnvironment.device("uid-a", id: 1),
+            FakeMusicMixerEnvironment.device("uid-b", id: 2),
+            FakeMusicMixerEnvironment.device("uid-c", id: 3),
+        ]
+        environment.defaultOutputDeviceUID = "uid-a"
+        let (state, _, _) = makeState(environment: environment)
+        state.selectDevice(uid: "uid-b")
+
+        environment.hiddenDeviceUIDs = ["uid-a", "uid-b"]
+        #expect(state.outputDevices.map(\.uid) == ["uid-a", "uid-c"], "the default stays even when hidden")
+        #expect(state.outputDeviceUID == "uid-b", "hiding a device only takes it off the list")
+
+        environment.hiddenDeviceUIDs = ["uid-a", "uid-b", "uid-c"]
+        environment.defaultOutputDeviceUID = nil
+        #expect(state.outputDevices.map(\.uid) == ["uid-a", "uid-b", "uid-c"], "never an empty list")
     }
 }

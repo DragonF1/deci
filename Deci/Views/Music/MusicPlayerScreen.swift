@@ -1,174 +1,207 @@
 // Deci/Views/Music/MusicPlayerScreen.swift
 import SwiftUI
 
-/// What is behind a player screen: the base colour with the tint of the song poured over it. The tint comes from a
-/// palette keyed by the song, the same every run, because the player does not read the cover's pixels.
-struct MusicPlayerBackdrop: View {
-    let track: MusicTrack?
-
-    var body: some View {
-        let tint = track.map { MusicTint.forKey($0.videoId) }
-        ZStack {
-            MusicStyle.Palette.base
-            if let tint {
-                LinearGradient(colors: [tint.page, tint.pageBottom], startPoint: .top, endPoint: .bottom)
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.4), value: track?.videoId)
-    }
-}
-
-/// Now Playing, Lyrics and Up next. They fill the popover over the browse screen and share one transport card and
-/// one row of panel buttons; only the middle changes. Leaving them is the chevron in the popup's header, or Esc.
+/// Now Playing, Lyrics and Up next. They fill the popover over the browse screen and share one backdrop (the blurred
+/// cover over its tint); each page lays out its own controls. Leaving them is the chevron in the popup's header, or Esc.
 struct MusicPlayerScreen: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
     let screen: MusicShellScreen
+    /// The Mixer's state, for the volume slider and the output control. Nil where there is no Mixer (tests, previews).
+    var mixer: MusicMixerState?
+
+    /// The colour of the cover once it is known; until then the player wears the hash palette's tint of the song's id.
+    @State private var coverTint: MusicTint?
+
+    init(service: MusicService, navigation: MusicSearchNavigation, screen: MusicShellScreen, mixer: MusicMixerState? = nil) {
+        self.service = service
+        self.navigation = navigation
+        self.screen = screen
+        self.mixer = mixer
+        _coverTint = State(initialValue: MusicCoverTintStore.shared.cachedTint(for: service.player.nowPlaying?.thumbnailURL))
+    }
 
     var body: some View {
         if let track = service.player.nowPlaying {
-            VStack(spacing: DesignTokens.Spacing.sm) {
-                switch screen {
-                case .lyrics:
-                    songLine(track)
-                    MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
-                        .frame(maxHeight: .infinity)
-                case .queue:
-                    queueList
-                case .nowPlaying, .browse:
-                    nowPlaying(track)
+            let tint = coverTint ?? MusicTint.forKey(track.videoId)
+            page(track: track, tint: tint)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    // The backdrop covers the popover's header strip too, which the shell's padding leaves above us.
+                    MusicPlayerBackdrop(coverURL: track.thumbnailURL, tint: tint, screen: screen)
+                        .padding(.top, -MusicPopupMetrics.headerHeight)
                 }
-
-                MusicMiniTransport(service: service, showsNowPlayingInfo: false)
-
-                panelButtons
-            }
-            .padding(.horizontal, MusicStyle.Spacing.page)
-            .padding(.top, 8)
-            .padding(.bottom, 16)
+                .animation(DesignTokens.Animation.quick, value: screen)
+                // The cover's colour: from the cache at once, else after the cover is fetched. Failing leaves the
+                // hash palette's tint. The previous song's colour stays until the new one is known.
+                .task(id: track.thumbnailURL) { await loadTint(for: track.thumbnailURL) }
         } else {
             Color.clear
         }
     }
 
-    // MARK: - Now Playing
-
-    private func nowPlaying(_ track: MusicTrack) -> some View {
-        VStack(spacing: 14) {
-            Spacer(minLength: 0)
-            MusicThumbnail(url: track.thumbnailURL, size: 220, cornerRadius: MusicStyle.Radius.card)
-                .overlay(
-                    RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous)
-                        .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.4), radius: 20, y: 12)
-                .accessibilityHidden(true)
-
-            VStack(spacing: 4) {
-                Text(track.title)
-                    .musicText(MusicStyle.Typeface.title3)
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                if let error = service.player.error {
-                    Text(error)
-                        .musicText(MusicStyle.Typeface.body14)
-                        .foregroundStyle(MusicStyle.Palette.textSecondary)
-                        .lineLimit(1)
-                } else {
-                    MusicArtistLine(
-                        artist: track.artist,
-                        links: track.artistLinks,
-                        font: MusicStyle.Typeface.body14.font,
-                        color: MusicStyle.Palette.textSecondaryAlt
-                    )
-                    .frame(maxWidth: .infinity, alignment: .center)
-                }
-            }
-            Spacer(minLength: 0)
+    private func loadTint(for url: URL?) async {
+        guard let url else {
+            coverTint = nil
+            return
         }
-        .frame(maxWidth: .infinity)
+        if let cached = MusicCoverTintStore.shared.cachedTint(for: url) {
+            coverTint = cached
+            return
+        }
+        let tint = await MusicCoverTintStore.shared.tint(for: url)
+        guard !Task.isCancelled else { return }
+        withAnimation(.easeInOut(duration: 0.35)) { coverTint = tint }
     }
 
-    /// The cover, title and artist as one small line over the lyrics.
-    private func songLine(_ track: MusicTrack) -> some View {
+    @ViewBuilder
+    private func page(track: MusicTrack, tint: MusicTint) -> some View {
+        switch screen {
+        case .lyrics:
+            VStack(spacing: 0) {
+                MusicPlayerHeader(track: track)
+                MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
+                    .frame(maxHeight: .infinity)
+                    .padding(.top, 6)
+                MusicPlayerFooter(service: service, navigation: navigation)
+                    .padding(.horizontal, MusicLyricsView.margin)
+                    .padding(.top, 26)
+                    .padding(.bottom, Self.footerBottom)
+            }
+            .transition(.opacity)
+        case .queue:
+            VStack(spacing: 0) {
+                MusicPlayerHeader(track: track)
+                MusicQueueView(service: service)
+                    .frame(maxHeight: .infinity)
+                MusicPlayerFooter(service: service, navigation: navigation)
+                    .padding(.horizontal, MusicLyricsView.margin)
+                    .padding(.top, 8)
+                    .padding(.bottom, Self.footerBottom)
+            }
+            .transition(.opacity)
+        case .nowPlaying, .browse:
+            MusicNowPlayingPage(service: service, navigation: navigation, mixer: mixer, track: track, tint: tint)
+                .transition(.opacity)
+        }
+    }
+
+    /// The space under the footer on Lyrics and Up next (the mock's 50).
+    private static let footerBottom: CGFloat = 50
+}
+
+/// The song at the top of Lyrics and Up next: a small cover, the title and artist, and the "..." button.
+private struct MusicPlayerHeader: View {
+    let track: MusicTrack
+
+    var body: some View {
         HStack(spacing: 12) {
-            MusicThumbnail(url: track.thumbnailURL, size: 36, cornerRadius: MusicStyle.Radius.art)
+            MusicThumbnail(url: track.thumbnailURL, size: 48, cornerRadius: MusicStyle.Radius.small)
+                .overlay(
+                    RoundedRectangle(cornerRadius: MusicStyle.Radius.small, style: .continuous)
+                        .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
+                )
+                .shadow(
+                    color: MusicStyle.Shadow.headerArt.color,
+                    radius: MusicStyle.Shadow.headerArt.radius,
+                    y: MusicStyle.Shadow.headerArt.y
+                )
                 .accessibilityHidden(true)
+
             VStack(alignment: .leading, spacing: 1) {
                 Text(track.title)
-                    .musicText(MusicStyle.Typeface.miniTitle)
+                    .musicText(MusicStyle.Typeface.row15SB)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 MusicArtistLine(
                     artist: track.artist,
                     links: track.artistLinks,
-                    font: MusicStyle.Typeface.caption12.font,
-                    color: MusicStyle.Palette.textSecondaryAlt
+                    font: MusicStyle.Typeface.body13.font,
+                    color: MusicStyle.Palette.playerSubtitle
                 )
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            MusicNowPlayingMenu(track: track, style: .player)
+        }
+        .padding(.horizontal, MusicStyle.Spacing.page)
+        .padding(.top, 8)
+    }
+}
+
+/// Now Playing: the big cover, the title and artist, the scrubber, the transport, the volume and the row that opens
+/// Lyrics and Up next. The gaps between the blocks stretch a little when the popover is taller than the mock.
+private struct MusicNowPlayingPage: View {
+    let service: MusicService
+    let navigation: MusicSearchNavigation
+    let mixer: MusicMixerState?
+    let track: MusicTrack
+    let tint: MusicTint
+
+    /// The side margin of every block under the cover.
+    private static let margin: CGFloat = 32
+
+    var body: some View {
+        VStack(spacing: 0) {
+            artwork
+                .padding(.top, 20)
+            Spacer(minLength: 20)
+            titleBlock
+                .padding(.horizontal, Self.margin)
+            Spacer(minLength: 13)
+            MusicPlayerScrubber(service: service)
+                .padding(.horizontal, Self.margin)
+            Spacer(minLength: 13)
+            MusicPlayerTransport(service: service)
+            if let mixer {
+                Spacer(minLength: 20)
+                MusicPlayerVolumeRow(mixer: mixer)
+                    .padding(.horizontal, Self.margin)
+            }
+            Spacer(minLength: 22)
+            MusicPlayerBottomRow(service: service, navigation: navigation, mixer: mixer, tint: tint)
+                .padding(.horizontal, Self.margin)
+                .padding(.bottom, 38)
         }
     }
 
-    // MARK: - Up next
-
-    private var queueList: some View {
-        VStack(spacing: DesignTokens.Spacing.xs) {
-            MusicQueueHeader(isAutoplayOn: service.isAutoplayOn) {
-                service.setAutoplay(!service.isAutoplayOn)
-            }
-
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(service.queue.fromCurrent) { track in
-                        MusicResultRow(
-                            track: track,
-                            isCurrent: service.queue.current?.videoId == track.videoId,
-                            isPlaying: service.queue.current?.videoId == track.videoId && service.player.isPlaying
-                        ) {
-                            service.jump(to: track)
-                        }
-                    }
-                }
-            }
-            .scrollIndicators(.never)
-        }
-        .frame(maxHeight: .infinity)
+    private var artwork: some View {
+        MusicThumbnail(url: track.thumbnailURL, size: 220, cornerRadius: MusicStyle.Radius.card)
+            .overlay(
+                RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous)
+                    .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
+            )
+            .shadow(
+                color: MusicStyle.Shadow.npArt.color,
+                radius: MusicStyle.Shadow.npArt.radius,
+                y: MusicStyle.Shadow.npArt.y
+            )
+            .accessibilityHidden(true)
     }
 
-    // MARK: - Panel buttons
-
-    /// Lyrics and Up next, each only while it has something to show. The open one is lit; pressing it again goes
-    /// back to Now Playing.
-    private var panelButtons: some View {
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            if service.lyrics.track != nil {
-                chip("Lyrics", systemImage: "quote.bubble", isOn: navigation.showsLyrics) { navigation.toggleLyrics() }
-            }
-            if !service.queue.isEmpty {
-                chip("Up next", systemImage: "list.bullet", isOn: navigation.showsQueue) { navigation.toggleQueue() }
+    /// The title over the artist, both on the left. A playback error takes the artist's place.
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(track.title)
+                .musicText(MusicStyle.Typeface.title3)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .help(track.title)
+            if let error = service.player.error {
+                Text(error)
+                    .musicText(MusicStyle.Typeface.body17)
+                    .foregroundStyle(MusicStyle.Palette.playerSubtitle)
+                    .lineLimit(1)
+            } else {
+                MusicArtistLine(
+                    artist: track.artist,
+                    links: track.artistLinks,
+                    font: MusicStyle.Typeface.body17.font,
+                    color: MusicStyle.Palette.playerSubtitle
+                )
             }
         }
-    }
-
-    private func chip(_ title: String, systemImage: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 14))
-                Text(title)
-                    .musicText(MusicStyle.Typeface.callout)
-            }
-            .foregroundStyle(isOn ? MusicStyle.Palette.accent : Color.white)
-            .padding(.leading, 12)
-            .padding(.trailing, 14)
-            .frame(height: 36)
-            .background(Capsule().fill(isOn ? MusicStyle.Palette.accentFill : MusicStyle.Palette.fillControl))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isOn ? .isSelected : [])
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

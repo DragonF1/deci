@@ -9,7 +9,12 @@ struct MusicTabView: View {
     var body: some View {
         Group {
             if let service = host.service, let navigation = host.navigation {
-                MusicServiceView(service: service, navigation: navigation, isAccountCardOpen: $host.isAccountCardOpen)
+                MusicServiceView(
+                    service: service,
+                    navigation: navigation,
+                    mixer: host.mixer,
+                    isAccountCardOpen: $host.isAccountCardOpen
+                )
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -24,6 +29,7 @@ struct MusicTabView: View {
 private struct MusicServiceView: View {
     @Bindable var service: MusicService
     let navigation: MusicSearchNavigation
+    let mixer: MusicMixerState?
     @Binding var isAccountCardOpen: Bool
 
     var body: some View {
@@ -38,7 +44,7 @@ private struct MusicServiceView: View {
         case .signingIn:
             MusicSignedOutView(service: service, isSigningIn: true)
         case .signedIn:
-            MusicSignedInView(service: service, navigation: navigation, isAccountCardOpen: $isAccountCardOpen)
+            MusicSignedInView(service: service, navigation: navigation, mixer: mixer, isAccountCardOpen: $isAccountCardOpen)
         }
     }
 }
@@ -51,6 +57,8 @@ private struct MusicSignedInView: View {
     /// Owned by the host, so it outlives this view: the popup unmounts the player when the Music icon is hidden and
     /// builds it again.
     let navigation: MusicSearchNavigation
+    /// The Mixer's state, for the player's volume slider and output control. Nil where there is no Mixer.
+    let mixer: MusicMixerState?
     /// Owned by the host so the popup's Escape key can close the card.
     @Binding var isAccountCardOpen: Bool
 
@@ -63,7 +71,7 @@ private struct MusicSignedInView: View {
         let screen = navigation.screen
         GeometryReader { proxy in
             ZStack(alignment: .bottom) {
-                backdrop(isPlayer: screen.isPlayer)
+                backdrop
 
                 content(screen: screen)
                     .padding(.top, MusicPopupMetrics.headerHeight)
@@ -145,14 +153,10 @@ private struct MusicSignedInView: View {
 
     // MARK: - Layers
 
-    /// The base colour, and over it the song's tint on the player screens.
-    private func backdrop(isPlayer: Bool) -> some View {
-        ZStack {
-            MusicStyle.Palette.base
-            MusicPlayerBackdrop(track: nowPlaying)
-                .opacity(isPlayer ? 1 : 0)
-        }
-        .accessibilityHidden(true)
+    /// The base colour. The player screens draw their own backdrop (the cover's tint and the blurred cover) over it.
+    private var backdrop: some View {
+        MusicStyle.Palette.base
+            .accessibilityHidden(true)
     }
 
     /// Whether the browse screen is the one in view: it is not under the player screens or the playlist picker.
@@ -177,7 +181,7 @@ private struct MusicSignedInView: View {
                     onRetry: { service.trackActions.openPicker(for: picker.track) }
                 )
             } else if screen.isPlayer {
-                MusicPlayerScreen(service: service, navigation: navigation, screen: screen)
+                MusicPlayerScreen(service: service, navigation: navigation, screen: screen, mixer: mixer)
                     .transition(.opacity)
             }
         }
@@ -287,140 +291,5 @@ private struct MusicSignedInView: View {
             .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// "Up next" and the Autoplay toggle: when a playlist or an album ends, recommended songs carry on.
-struct MusicQueueHeader: View {
-    let isAutoplayOn: Bool
-    let onToggleAutoplay: () -> Void
-
-    var body: some View {
-        HStack(spacing: DesignTokens.Spacing.xs) {
-            Text("Up next")
-                .font(DesignTokens.Typography.caption)
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button(action: onToggleAutoplay) {
-                Label("Autoplay", systemImage: "infinity")
-                    .labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(.plain)
-            .font(DesignTokens.Typography.caption)
-            .foregroundStyle(isAutoplayOn ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
-            .contentShape(Rectangle())
-            .accessibilityAddTraits(isAutoplayOn ? .isSelected : [])
-            .help("Keep playing recommended songs after a playlist or an album ends")
-        }
-    }
-}
-
-/// A song row with the playing indicator, for search results, the queue, Quick picks and pages.
-struct MusicResultRow: View {
-    let track: MusicTrack
-    let isCurrent: Bool
-    /// True only on the current row while audio plays, so play and pause redraw one row. The
-    /// speaker animates then and holds still while paused.
-    let isPlaying: Bool
-    let action: () -> Void
-
-    /// Set while Full Keyboard Access has put keyboard focus on the row, so it shows the hover surface.
-    @FocusState private var isKeyboardFocused: Bool
-    @State private var isHovered = false
-    @Environment(\.musicTrackMenu) private var menu
-    @Environment(\.musicTrackContext) private var context
-
-    static let coverSize: CGFloat = 40
-
-    private var offeredActions: [MusicTrackAction] { menu?.actions(track, context) ?? [] }
-
-    /// Pinned to Listen again, as last left this session: the cover wears the pin badge.
-    private var isPinned: Bool { menu?.isPinned(track) == true }
-
-    private func perform(_ action: MusicTrackAction) {
-        menu?.perform(action, track, context)
-    }
-
-    private var accessibilityText: String {
-        var text = "\(track.title), \(track.artist)"
-        if isPinned { text += ", pinned" }
-        if isPlaying { text += ", playing" }
-        return text
-    }
-
-    var body: some View {
-        let actions = offeredActions
-        // The row plays on a tap. It is not one Button, because the artist names inside it are buttons of their
-        // own, and a button nested in another button's label is unreliable for clicks and for VoiceOver.
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            MusicThumbnail(url: track.thumbnailURL, size: Self.coverSize)
-                .overlay {
-                    if isCurrent {
-                        MusicPlayingOverlay(isPlaying: isPlaying)
-                    }
-                }
-                .musicPinBadge(isPinned, coverSize: Self.coverSize)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(track.title)
-                    .font(DesignTokens.Typography.rowName)
-                    .foregroundStyle(isCurrent ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textPrimary)
-                    .lineLimit(1)
-                    .accessibilityHidden(true)
-                MusicArtistLine(artist: track.artist, links: track.artistLinks, hidesPlainTextFromVoiceOver: true)
-            }
-
-            Spacer(minLength: DesignTokens.Spacing.sm)
-
-            if let seconds = track.durationSeconds {
-                Text(MusicTimeFormat.string(TimeInterval(seconds)))
-                    .font(DesignTokens.Typography.percentage)
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
-                    .accessibilityHidden(true)
-            }
-
-            // Its room is kept whether or not it shows, so the duration never moves when the pointer arrives. A
-            // button of its own, like the artist names: its click opens the menu and does not play the row. It stays
-            // clickable while faded: an open menu can end the row's hover, and the button must not vanish under it.
-            if !actions.isEmpty {
-                let showsMore = isHovered || isKeyboardFocused
-                MusicTrackMoreButton(track: track, actions: actions, perform: perform)
-                    .opacity(showsMore ? 1 : 0)
-                    .accessibilityHidden(!showsMore)
-                    .animation(DesignTokens.Animation.hover, value: showsMore)
-            }
-        }
-        .hoverableRow(isFocused: isCurrent || isKeyboardFocused)
-        .onHover { isHovered = $0 }
-        .contentShape(Rectangle())
-        // The same actions as the "..." button, for a right click anywhere on the row.
-        .contextMenu {
-            MusicTrackMenuItems(actions: actions, perform: perform)
-        }
-        // A name's own button takes its click first; a click anywhere else on the row plays.
-        .onTapGesture(perform: action)
-        // What the Button gave the row: reachable with Full Keyboard Access only (a plain Tab stays on the search
-        // field and the popup's arrow keys), and Space or Return plays. A key goes to the row only while it has
-        // focus, so typing in the search field never reaches it.
-        .focusable(interactions: .activate)
-        .focused($isKeyboardFocused)
-        .onKeyPress(keys: [.space, .return], phases: .down) { _ in
-            action()
-            return .handled
-        }
-        // A container, so each artist name inside stays its own button for VoiceOver; the row plays by its action.
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(accessibilityText)
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
-        .accessibilityAction(named: "Play", action)
-        .accessibilityAction(.default, action)
-        // The "..." button hides until the pointer or the keyboard is on the row; VoiceOver gets the actions here.
-        .accessibilityActions {
-            ForEach(actions, id: \.self) { action in
-                Button(action.title) { perform(action) }
-            }
-        }
     }
 }

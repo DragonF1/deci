@@ -99,7 +99,7 @@ struct MusicQueueTests {
         let queue = makeQueue(["a", "b", "c", "d"], current: 2)
         #expect(ids(queue.upcoming) == ["d"])
         #expect(queue.upcomingCount == 1)
-        #expect(ids(queue.fromCurrent) == ["c", "d"])
+        #expect(queue.current?.videoId == "c")
     }
 
     @Test("jump moves to the named track and ignores unknown ones")

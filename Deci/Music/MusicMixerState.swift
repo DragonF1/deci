@@ -7,6 +7,9 @@ import Observation
 @MainActor
 protocol MusicMixerEnvironment: AnyObject {
     var outputDevices: [AudioDevice] { get }
+    /// The devices a picker lists: `outputDevices` in the user's priority order, without the hidden ones (the same list
+    /// the Mixer shows).
+    var visibleOutputDevices: [AudioDevice] { get }
     /// UID of the system default output device.
     var defaultOutputDeviceUID: String? { get }
     /// The AutoEQ profile in effect for `uid`, from memory. nil when there is none or it is not cached yet.
@@ -30,6 +33,15 @@ final class EngineMusicEnvironment: MusicMixerEnvironment {
     }
 
     var outputDevices: [AudioDevice] { engine.outputDevices }
+
+    var visibleOutputDevices: [AudioDevice] {
+        OutputDeviceVisibility.visible(
+            sorted: engine.prioritySortedOutputDevices,
+            defaultUID: defaultOutputDeviceUID,
+            isHidden: { engine.settingsManager.isOutputDeviceHidden($0) }
+        )
+    }
+
     var defaultOutputDeviceUID: String? { engine.deviceVolumeMonitor.defaultDeviceUID }
 
     func autoEQProfile(forDeviceUID uid: String) -> AutoEQProfile? {
@@ -75,6 +87,8 @@ final class MusicMixerState: InProcessAudioSink {
     private(set) var outputDeviceUID: String?
     /// True once an engine was attached. Stays true if that engine goes away: the state is only meaningful per app run.
     private(set) var hasEngine = false
+    /// The name of the AutoEQ profile in effect on the device in use, for the player's output label. nil when none.
+    private(set) var autoEQProfileName: String?
 
     /// The volume and mute the watchtime pings report, as the web player's 0 to 100 slider: the row's slider
     /// position, boost left out.
@@ -130,6 +144,24 @@ final class MusicMixerState: InProcessAudioSink {
         isMuted ? 0 : volume * boost.rawValue
     }
 
+    /// Where the volume sits on a 0...1 slider, by the curve the Mixer row uses; a muted row reads as empty.
+    var sliderPosition: Double {
+        isMuted ? 0 : VolumeMapping.gainToSlider(volume)
+    }
+
+    /// The output devices the player's output menu lists: the Mixer's own list, in priority order and without the
+    /// hidden ones.
+    var outputDevices: [AudioDevice] { environment.visibleOutputDevices }
+
+    /// A device was chosen but is not connected: the music plays on the default output until it comes back.
+    var isChosenDeviceMissing: Bool { selectedDeviceUID != nil && outputDeviceUID == nil }
+
+    /// What the player's output control says: the device the music comes out of and the EQ profile on it.
+    var outputLabel: String {
+        let name = effectiveDeviceUID.flatMap { uid in environment.outputDevices.first { $0.uid == uid }?.name }
+        return MusicOutputLabel.text(deviceName: name, profileName: autoEQProfileName)
+    }
+
     // MARK: - The row's controls
 
     func setVolume(_ newVolume: Float) {
@@ -144,6 +176,14 @@ final class MusicMixerState: InProcessAudioSink {
         isMuted = muted
         settings.setMute(for: Self.settingsKey, to: muted)
         pushGain()
+    }
+
+    /// Sets the volume from a 0...1 slider position, by the curve the Mixer row uses. Moving the slider lifts a mute,
+    /// as it does there.
+    func setSliderPosition(_ fraction: Double) {
+        guard fraction.isFinite else { return }
+        if isMuted { setMuted(false) }
+        setVolume(VolumeMapping.sliderToGain(fraction))
     }
 
     func setBoost(_ newBoost: BoostLevel) {
@@ -306,18 +346,24 @@ final class MusicMixerState: InProcessAudioSink {
         autoEQTask?.cancel()
         autoEQTask = nil
         guard let uid = effectiveDeviceUID else {
-            chain.setAutoEQProfile(nil)
+            applyAutoEQ(nil)
             return
         }
         if let profile = environment.autoEQProfile(forDeviceUID: uid) {
-            chain.setAutoEQProfile(profile)
+            applyAutoEQ(profile)
             return
         }
-        chain.setAutoEQProfile(nil)
+        applyAutoEQ(nil)
         autoEQTask = Task { [weak self, environment] in
             let profile = await environment.resolveAutoEQProfile(forDeviceUID: uid)
             guard !Task.isCancelled, let self, self.effectiveDeviceUID == uid else { return }
-            self.chain.setAutoEQProfile(profile)
+            self.applyAutoEQ(profile)
         }
+    }
+
+    /// Hands the profile to the chain and keeps its name for the output label.
+    private func applyAutoEQ(_ profile: AutoEQProfile?) {
+        chain.setAutoEQProfile(profile)
+        autoEQProfileName = profile?.name
     }
 }

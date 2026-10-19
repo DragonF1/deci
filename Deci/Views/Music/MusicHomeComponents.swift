@@ -160,13 +160,16 @@ struct MusicSectionHeader: View {
 // MARK: - State cards
 
 /// The card a loading, empty or failed list shows where its content would be. `minHeight` keeps a card at the height
-/// its screen draws it (Search states are 72); without one it hugs its content.
+/// its screen draws it (Search states are 72); without one it hugs its content. `margin` is the space on both sides
+/// (the page's 20; the lyrics lines area keeps 32).
 struct MusicStateCard<Content: View>: View {
     var minHeight: CGFloat?
+    var margin: CGFloat
     @ViewBuilder let content: Content
 
-    init(minHeight: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+    init(minHeight: CGFloat? = nil, margin: CGFloat = MusicStyle.Spacing.page, @ViewBuilder content: () -> Content) {
         self.minHeight = minHeight
+        self.margin = margin
         self.content = content()
     }
 
@@ -185,14 +188,14 @@ struct MusicStateCard<Content: View>: View {
             RoundedRectangle(cornerRadius: MusicStyle.Radius.stateCard, style: .continuous)
                 .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
         )
-        .padding(.horizontal, MusicStyle.Spacing.page)
+        .padding(.horizontal, margin)
     }
 }
 
 extension MusicStateCard where Content == MusicStateCardMessage {
     /// A card that says one thing.
-    init(message: String, minHeight: CGFloat? = nil) {
-        self.init(minHeight: minHeight) { MusicStateCardMessage(text: message) }
+    init(message: String, minHeight: CGFloat? = nil, margin: CGFloat = MusicStyle.Spacing.page) {
+        self.init(minHeight: minHeight, margin: margin) { MusicStateCardMessage(text: message) }
     }
 }
 
