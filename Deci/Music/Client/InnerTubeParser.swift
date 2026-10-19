@@ -172,7 +172,8 @@ enum InnerTubeParser {
             artist: subtitle.artists.joined(separator: ", "),
             album: subtitle.album ?? laterColumnAlbum,
             durationSeconds: subtitle.durationSeconds ?? duration(of: fixedRuns),
-            thumbnailURL: thumbnailURL(in: renderer)
+            thumbnailURL: thumbnailURL(in: renderer),
+            artistLinks: subtitle.artistLinks
         )
     }
 
@@ -185,6 +186,8 @@ enum InnerTubeParser {
 
     struct Subtitle {
         var artists: [String] = []
+        /// The artists above that have a page, in the order shown.
+        var artistLinks: [MusicArtistLink] = []
         var album: String?
         var durationSeconds: Int?
     }
@@ -205,6 +208,7 @@ enum InnerTubeParser {
         }
         if let artistSegment = segments.first {
             result.artists = artistNames(in: artistSegment)
+            result.artistLinks = artistLinks(in: artistSegment)
         }
         if segments.count > 1, let album = segments.dropFirst().first(where: isAlbumSegment) {
             result.album = text(of: album)
@@ -231,6 +235,23 @@ enum InnerTubeParser {
                   !text.isEmpty, text != ",", text != "&"
             else { return nil }
             return text
+        }
+    }
+
+    /// The artists in `segment` that have a page behind them: a run whose destination is an artist, or a library
+    /// artist (which opens the channel page, as everywhere else). Each artist once, in the order shown. A name with
+    /// no destination, or with a page of another kind (album, playlist, user channel), has no link.
+    static func artistLinks(in segment: [[String: Any]]) -> [MusicArtistLink] {
+        var seen = Set<String>()
+        return segment.compactMap { run in
+            guard let name = (run["text"] as? String)?.trimmingCharacters(in: .whitespaces),
+                  !name.isEmpty, name != ",", name != "&",
+                  let browse = path(run, "navigationEndpoint", "browseEndpoint") as? [String: Any],
+                  collectionKind(of: browse) == .artist,
+                  var browseId = string(browse["browseId"])
+            else { return nil }
+            if browseId.hasPrefix("MPLAUC") { browseId.removeFirst(4) }
+            return seen.insert(browseId).inserted ? MusicArtistLink(name: name, browseId: browseId) : nil
         }
     }
 
@@ -304,7 +325,8 @@ enum InnerTubeParser {
             artist: artistNames(in: segments.first ?? []).joined(separator: ", "),
             album: segments.dropFirst().first(where: isAlbumSegment).flatMap(text(of:)),
             durationSeconds: duration(of: runs(renderer["lengthText"])),
-            thumbnailURL: largestThumbnailURL(in: renderer)
+            thumbnailURL: largestThumbnailURL(in: renderer),
+            artistLinks: artistLinks(in: segments.first ?? [])
         )
     }
 

@@ -32,6 +32,9 @@ final class MusicService {
     private(set) var isAddingAccount = false
     var query = ""
     private(set) var results: [MusicTrack] = []
+    /// The artists the search found, best match first, for the shelf above the songs. Never more than
+    /// `maxArtistResults`; empty when the artists search found none or failed.
+    private(set) var artistResults: [MusicCollection] = []
     private(set) var isSearching = false
     /// One short human line for the UI; never contains cookies or URLs.
     private(set) var lastError: String?
@@ -88,6 +91,8 @@ final class MusicService {
         case failed
     }
 
+    /// How many artists the search shelf shows: one row of tiles, not a second list.
+    static let maxArtistResults = 6
     /// Previous restarts the track instead of going back once it has played this long.
     private static let restartThreshold: TimeInterval = 3
     /// Consecutive tracks that may fail before playback stops with an error.
@@ -105,6 +110,8 @@ final class MusicService {
     @ObservationIgnored private let nowPlaying: NowPlayingController
     /// The clock the watchtime schedule and `lact` read.
     @ObservationIgnored private let now: () -> Date
+    /// How long a search waits for the artists after the songs have landed. Past it the songs show alone.
+    @ObservationIgnored private let artistGrace: Duration
     /// When the listener last touched a control: the `lact` of every watchtime ping.
     @ObservationIgnored private var lastActivity: Date
     /// The player volume (0 to 100) and mute the watchtime pings report: the Mixer tab's music player row (shown as Deci).
@@ -174,6 +181,7 @@ final class MusicService {
         savePinnedArtists: @escaping @MainActor ([MusicPinnedArtist]) -> Void = { _ in },
         // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
         shuffleSeed: UInt64? = nil,
+        artistGrace: Duration = .milliseconds(1500),
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -187,6 +195,7 @@ final class MusicService {
         self.raiseSignInWindow = raiseSignInWindow
         self.nowPlaying = nowPlaying
         self.now = now
+        self.artistGrace = artistGrace
         self.listenerLevel = listenerLevel
         self.isShuffleOn = preferences.shuffle
         self.loopMode = preferences.loop
@@ -275,6 +284,7 @@ final class MusicService {
         player.stop()
         session = nil
         results = []
+        artistResults = []
         query = ""
         lastError = nil
         authState = .signedOut
@@ -377,6 +387,7 @@ final class MusicService {
         cancelReport()
         stopPlayback(reportFinal: false)
         results = []
+        artistResults = []
         query = ""
         lastError = nil
         authState = .signedIn
@@ -508,6 +519,7 @@ final class MusicService {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             results = []
+            artistResults = []
             isSearching = false
             searchTask = nil
             return
@@ -519,17 +531,59 @@ final class MusicService {
         }
     }
 
+    /// Songs and artists are asked for at the same time. They land together, so the shelf never pops in above
+    /// songs the owner is already reading. Only the songs decide success: if they fail the search fails as
+    /// before and the artists are dropped; if only the artists fail, the songs show and the shelf stays empty.
+    /// Once the songs are in, the artists get `artistGrace` more to arrive; a slower artist request is cancelled
+    /// and the songs show with no shelf, so they never wait out its timeout.
     private func runSearch(_ term: String, generation: Int) async {
+        let backend = self.backend
+        // Not `async let`: that is awaited when the scope ends, which would keep the songs back for as long as
+        // the artist request lives. This task is cancelled instead, and hands over what it found by a stream.
+        let (arrivals, arrive) = AsyncStream.makeStream(of: [MusicCollection]?.self)
+        let artistsTask = Task { arrive.yield(await Self.searchArtistsQuietly(term, through: backend)) }
+        var timer: Task<Void, Never>?
+        defer {
+            artistsTask.cancel()
+            timer?.cancel()
+        }
         do {
             let found = try await backend.search(term)
+            let grace = artistGrace
+            timer = Task {
+                do {
+                    try await Task.sleep(for: grace)
+                    arrive.yield(nil)
+                } catch {}
+            }
+            // The first of the two to arrive: the artists, or the end of the grace. A cancelled search ends the wait.
+            var artists: [MusicCollection] = []
+            for await arrived in arrivals {
+                artists = arrived ?? []
+                break
+            }
             guard generation == searchGeneration, !Task.isCancelled else { return }
             results = found
+            artistResults = Array(artists.prefix(Self.maxArtistResults))
             isSearching = false
             MusicMemoryLog.log("search")
         } catch {
             guard generation == searchGeneration else { return }
             isSearching = false
             handle(error)
+        }
+    }
+
+    /// The artists for a search, or none when the request fails: the shelf is a bonus, so it never shows an
+    /// error. A real failure leaves one log line with the error kind only, never the query, a name or a URL.
+    private static func searchArtistsQuietly(_ term: String, through backend: any MusicBackend) async -> [MusicCollection] {
+        do {
+            return try await backend.searchArtists(term)
+        } catch {
+            if !isCancellation(error) {
+                logger.info("artist search failed: \(logDescription(of: error), privacy: .public)")
+            }
+            return []
         }
     }
 

@@ -43,7 +43,8 @@ private struct Harness {
     let player: MusicPlayer
     let service: MusicService
 
-    init(signedIn: Bool = true) {
+    /// `artistGrace` is long by default, so a search waits for a held artist call; a test of the grace passes a short one.
+    init(signedIn: Bool = true, artistGrace: Duration = .seconds(60)) {
         let backend = FakeMusicBackend(signedIn: signedIn)
         let engine = self.engine
         let probe = self.probe
@@ -68,6 +69,7 @@ private struct Harness {
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
             listenerLevel: { (level.volume, level.muted) },
+            artistGrace: artistGrace,
             refreshOnCreate: false
         )
         service.onNativePlayingChange = { probe.nativeChanges.append($0) }
@@ -1262,6 +1264,415 @@ struct MusicServiceSearchTests {
         #expect(h.service.authState == .signedIn)
         #expect(h.service.results == tracks)
         #expect(h.service.lastError == "Network problem. Check your connection.")
+    }
+
+    // MARK: Artists next to the songs
+
+    private static func artists(_ ids: String...) -> [MusicCollection] {
+        ids.map { MusicSamples.collection($0, kind: .artist, title: "Artist \($0)", subtitle: "Artist") }
+    }
+
+    @Test("artists are searched with the songs, with the same trimmed query, and fill artistResults")
+    func artistsFill() async {
+        let h = Harness()
+        let found = Self.artists("UCa", "UCb")
+        await h.backend.setSearch("some band", results: [MusicSamples.track("s1")])
+        await h.backend.setArtistSearch("some band", results: found)
+
+        h.service.query = "  some band \n"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        #expect(h.service.artistResults == found)
+        #expect(h.service.results.map(\.videoId) == ["s1"])
+        #expect(await h.backend.searchedArtistQueries == ["some band"])
+        #expect(await h.backend.searchedQueries == ["some band"])
+        #expect(h.service.isSearching == false)
+    }
+
+    @Test("no artists found leaves an empty list and the songs as they are")
+    func noArtists() async {
+        let h = Harness()
+        await h.backend.setSearch("q", results: [MusicSamples.track("s1")])
+
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.results.count == 1)
+    }
+
+    @Test("at most six artists are kept, in the order the backend gave them")
+    func artistsCappedAtSix() async {
+        let h = Harness()
+        let ids = (1...9).map { "UC\($0)" }
+        await h.backend.setSearch("q", results: [MusicSamples.track("s1")])
+        await h.backend.setArtistSearch("q", results: ids.map { MusicSamples.collection($0, kind: .artist) })
+
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        #expect(MusicService.maxArtistResults == 6)
+        #expect(h.service.artistResults.map(\.browseId) == Array(ids.prefix(6)))
+    }
+
+    @Test("exactly six artists are all kept")
+    func sixArtistsKept() async {
+        let h = Harness()
+        let found = Self.artists("UC1", "UC2", "UC3", "UC4", "UC5", "UC6")
+        await h.backend.setArtistSearch("q", results: found)
+
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        #expect(h.service.artistResults == found)
+    }
+
+    @Test("an emptied query clears the songs and the artists and calls neither search")
+    func emptyQueryClearsArtists() async {
+        let h = Harness()
+        await h.backend.setSearch("x", results: [MusicSamples.track()])
+        await h.backend.setArtistSearch("x", results: Self.artists("UCa"))
+        h.service.query = "x"
+        h.service.search()
+        await h.service.searchTask?.value
+        #expect(h.service.artistResults.count == 1)
+
+        h.service.query = "   "
+        h.service.search()
+
+        #expect(h.service.results.isEmpty)
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.isSearching == false)
+        #expect(await h.backend.searchedQueries == ["x"])
+        #expect(await h.backend.searchedArtistQueries == ["x"])
+    }
+
+    @Test("the songs and the artists are asked for at the same time, not one after the other")
+    func searchesRunConcurrently() async {
+        let h = Harness()
+        let songsGate = MusicTestGate()
+        await h.backend.setSearch("q", results: [MusicSamples.track("s1")])
+        await h.backend.setSearchGate("q", songsGate)
+        await h.backend.setArtistSearch("q", results: Self.artists("UCa"))
+
+        h.service.query = "q"
+        h.service.search()
+        let task = h.service.searchTask
+
+        // The songs are still held, and the artists request has already gone out.
+        #expect(await h.eventually { await h.backend.searchedArtistQueries == ["q"] })
+        #expect(h.service.isSearching)
+        await songsGate.open()
+        await task?.value
+        #expect(h.service.artistResults.count == 1)
+        #expect(h.service.results.count == 1)
+    }
+
+    @Test("a slow artists search holds both lists back, so they land together")
+    func slowArtistsLandWithSongs() async {
+        let h = Harness()
+        let artistsGate = MusicTestGate()
+        await h.backend.setSearch("q", results: [MusicSamples.track("s1")])
+        await h.backend.setArtistSearch("q", results: Self.artists("UCa"))
+        await h.backend.setArtistSearchGate("q", artistsGate)
+
+        h.service.query = "q"
+        h.service.search()
+        let task = h.service.searchTask
+        #expect(await h.eventually { await h.backend.searchedArtistQueries == ["q"] })
+        #expect(h.service.results.isEmpty)
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.isSearching)
+
+        await artistsGate.open()
+        await task?.value
+        #expect(h.service.results.count == 1)
+        #expect(h.service.artistResults.count == 1)
+        #expect(h.service.isSearching == false)
+    }
+
+    @Test("an artists search that outlasts the grace is dropped and cancelled, and the songs show without it")
+    func slowArtistsAreDroppedAfterTheGrace() async {
+        let h = Harness(artistGrace: .milliseconds(20))
+        let artistsGate = MusicTestGate()
+        await h.backend.setSearch("q", results: [MusicSamples.track("s1")])
+        await h.backend.setArtistSearch("q", results: Self.artists("UCa"))
+        await h.backend.setArtistSearchGate("q", artistsGate)
+
+        h.service.query = "q"
+        h.service.search()
+
+        // The artists call never returns, and the search still ends. Polled, so a search that waits for it fails
+        // here instead of hanging the run.
+        #expect(await h.eventually { h.service.isSearching == false })
+        #expect(h.service.results.map(\.videoId) == ["s1"])
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.lastError == nil)
+        #expect(await h.eventually { h.backend.artistSearchCancelCount == 1 })
+
+        // A reply that comes after the grace changes nothing.
+        await artistsGate.open()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.results.map(\.videoId) == ["s1"])
+    }
+
+    @Test("a songs failure does not wait for a slow artists search, and cancels it")
+    func songsFailureDoesNotWaitForArtists() async {
+        let h = Harness()
+        let artistsGate = MusicTestGate()
+        await h.backend.setSearchError("bad", MusicError.http(503))
+        await h.backend.setArtistSearchGate("bad", artistsGate)
+
+        h.service.query = "bad"
+        h.service.search()
+
+        #expect(await h.eventually { h.service.isSearching == false })
+        #expect(h.service.lastError != nil)
+        #expect(h.service.artistResults.isEmpty)
+        #expect(await h.eventually { h.backend.artistSearchCancelCount == 1 })
+        await artistsGate.open()
+    }
+
+    @Test("a newer search replaces the artists of one still in flight")
+    func newerSearchReplacesArtists() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await h.backend.setSearch("one", results: [MusicSamples.track("slow")])
+        await h.backend.setArtistSearch("one", results: Self.artists("UCslow"))
+        await h.backend.setArtistSearchGate("one", gate)
+        await h.backend.setSearch("two", results: [MusicSamples.track("fast")])
+        await h.backend.setArtistSearch("two", results: Self.artists("UCfast"))
+
+        h.service.query = "one"
+        h.service.search()
+        let first = h.service.searchTask
+        h.service.query = "two"
+        h.service.search()
+        await h.service.searchTask?.value
+        #expect(h.service.artistResults.map(\.browseId) == ["UCfast"])
+        // The first search's artists call was told to stop as soon as the second search replaced it.
+        #expect(await h.eventually { h.backend.artistSearchCancelCount == 1 })
+
+        await gate.open()
+        await first?.value
+        #expect(h.service.artistResults.map(\.browseId) == ["UCfast"])
+        #expect(h.service.results.map(\.videoId) == ["fast"])
+        #expect(h.service.isSearching == false)
+    }
+
+    @Test("a newer search with no artists clears the artists of the one before")
+    func newSearchDropsOldArtists() async {
+        let h = Harness()
+        await h.backend.setSearch("one", results: [MusicSamples.track("a")])
+        await h.backend.setArtistSearch("one", results: Self.artists("UCa"))
+        await h.backend.setSearch("two", results: [MusicSamples.track("b")])
+        h.service.query = "one"
+        h.service.search()
+        await h.service.searchTask?.value
+        #expect(h.service.artistResults.count == 1)
+
+        h.service.query = "two"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.results.map(\.videoId) == ["b"])
+    }
+
+    @Test("a songs failure shows the usual error line and keeps the list that was there, artists included")
+    func songsFailureKeepsOldPair() async {
+        let h = Harness()
+        await h.service.refreshAuth()
+        let tracks = [MusicSamples.track()]
+        let found = Self.artists("UCold")
+        await h.backend.setSearch("ok", results: tracks)
+        await h.backend.setArtistSearch("ok", results: found)
+        h.service.query = "ok"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        await h.backend.setSearchError("bad", URLError(.notConnectedToInternet))
+        await h.backend.setArtistSearch("bad", results: Self.artists("UCnew"))
+        h.service.query = "bad"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        #expect(h.service.lastError == "Network problem. Check your connection.")
+        #expect(h.service.results == tracks)
+        #expect(h.service.artistResults == found)
+        #expect(h.service.isSearching == false)
+        #expect(h.service.authState == .signedIn)
+    }
+
+    @Test("a songs failure never lets this search's artists in")
+    func songsFailureDropsNewArtists() async {
+        let h = Harness()
+        await h.service.refreshAuth()
+        await h.backend.setSearchError("bad", MusicError.http(503))
+        await h.backend.setArtistSearch("bad", results: Self.artists("UCnew"))
+
+        h.service.query = "bad"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.results.isEmpty)
+        #expect(h.service.lastError == "YouTube Music returned an error (503).")
+    }
+
+    @Test("a signedOut songs error signs out as before and shows no artists")
+    func songsSignedOutDropsArtists() async {
+        let h = Harness()
+        await h.service.refreshAuth()
+        await h.backend.setSearchError("q", MusicError.signedOut)
+        await h.backend.setArtistSearch("q", results: Self.artists("UCa"))
+
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(h.service.lastError == nil)
+        #expect(h.service.artistResults.isEmpty)
+        #expect(await h.backend.signOutCount == 1)
+    }
+
+    @Test("a cancelled songs search is dropped without an error line or artists")
+    func songsCancelledDropsArtists() async {
+        let errors: [any Error] = [CancellationError(), URLError(.cancelled)]
+        for error in errors {
+            let h = Harness()
+            await h.service.refreshAuth()
+            await h.backend.setSearchError("q", error)
+            await h.backend.setArtistSearch("q", results: Self.artists("UCa"))
+
+            h.service.query = "q"
+            h.service.search()
+            await h.service.searchTask?.value
+
+            #expect(h.service.lastError == nil)
+            #expect(h.service.artistResults.isEmpty)
+            #expect(h.service.isSearching == false)
+        }
+    }
+
+    @Test("an artists-only failure shows no error, keeps the songs and leaves no artists")
+    func artistsFailureIsSilent() async {
+        let errors: [any Error] = [
+            MusicError.http(503),
+            MusicError.parse("bad body"),
+            URLError(.notConnectedToInternet),
+            CancellationError(),
+            URLError(.cancelled),
+            MusicError.signedOut,
+        ]
+        for error in errors {
+            let h = Harness()
+            await h.service.refreshAuth()
+            let tracks = [MusicSamples.track("s1"), MusicSamples.track("s2")]
+            await h.backend.setSearch("q", results: tracks)
+            await h.backend.setArtistSearchError("q", error)
+
+            h.service.query = "q"
+            h.service.search()
+            await h.service.searchTask?.value
+
+            #expect(h.service.results == tracks)
+            #expect(h.service.artistResults.isEmpty)
+            #expect(h.service.lastError == nil)
+            #expect(h.service.isSearching == false)
+            #expect(h.service.authState == .signedIn)
+            #expect(await h.backend.signOutCount == 0)
+        }
+    }
+
+    @Test("an artists failure on a later search clears the artists of the earlier one")
+    func artistsFailureClearsOldArtists() async {
+        let h = Harness()
+        await h.service.refreshAuth()
+        await h.backend.setSearch("one", results: [MusicSamples.track("a")])
+        await h.backend.setArtistSearch("one", results: Self.artists("UCa"))
+        await h.backend.setSearch("two", results: [MusicSamples.track("b")])
+        await h.backend.setArtistSearchError("two", MusicError.http(500))
+        h.service.query = "one"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        h.service.query = "two"
+        h.service.search()
+        await h.service.searchTask?.value
+
+        #expect(h.service.results.map(\.videoId) == ["b"])
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.lastError == nil)
+    }
+
+    @Test("sign-out clears the artists with the songs and the query")
+    func signOutClearsArtists() async {
+        let h = Harness()
+        await h.service.refreshAuth()
+        await h.backend.setSearch("q", results: [MusicSamples.track()])
+        await h.backend.setArtistSearch("q", results: Self.artists("UCa"))
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        #expect(h.service.artistResults.count == 1)
+
+        h.service.signOut()
+        await h.service.signOutTask?.value
+
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.results.isEmpty)
+        #expect(h.service.query.isEmpty)
+    }
+
+    @Test("a sign-out while the search is in flight keeps its artists from landing")
+    func signOutDuringSearchDropsArtists() async {
+        let h = Harness()
+        await h.service.refreshAuth()
+        let gate = MusicTestGate()
+        await h.backend.setSearch("q", results: [MusicSamples.track()])
+        await h.backend.setArtistSearch("q", results: Self.artists("UCa"))
+        await h.backend.setArtistSearchGate("q", gate)
+        h.service.query = "q"
+        h.service.search()
+        let task = h.service.searchTask
+        #expect(await h.eventually { await h.backend.searchedArtistQueries == ["q"] })
+
+        h.service.signOut()
+        await gate.open()
+        await task?.value
+        await h.service.signOutTask?.value
+
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.results.isEmpty)
+        #expect(h.service.isSearching == false)
+    }
+
+    @Test("an account swap throws the old account's artists away too")
+    func swapClearsArtists() async {
+        let h = Harness(signedIn: true)
+        await h.service.refreshAuth()
+        await h.backend.setSearch("q", results: [MusicSamples.track("s1")])
+        await h.backend.setArtistSearch("q", results: Self.artists("UCa"))
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        #expect(h.service.artistResults.count == 1)
+
+        h.service.useAnotherAccount()
+        h.probe.completion?([StoredCookie(MusicSamples.cookie("__Secure-3PAPISID", domain: ".youtube.com"))])
+        await h.service.addAccountTask?.value
+
+        #expect(h.service.artistResults.isEmpty)
+        #expect(h.service.results.isEmpty)
+        #expect(h.service.query.isEmpty)
     }
 }
 

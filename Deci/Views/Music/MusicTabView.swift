@@ -8,8 +8,8 @@ struct MusicTabView: View {
 
     var body: some View {
         Group {
-            if let service = host.service {
-                MusicServiceView(service: service, isAccountCardOpen: $host.isAccountCardOpen)
+            if let service = host.service, let navigation = host.navigation {
+                MusicServiceView(service: service, navigation: navigation, isAccountCardOpen: $host.isAccountCardOpen)
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -22,6 +22,7 @@ struct MusicTabView: View {
 
 private struct MusicServiceView: View {
     @Bindable var service: MusicService
+    let navigation: MusicSearchNavigation
     @Binding var isAccountCardOpen: Bool
 
     var body: some View {
@@ -42,7 +43,7 @@ private struct MusicServiceView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .signedIn:
-            MusicSignedInView(service: service, isAccountCardOpen: $isAccountCardOpen)
+            MusicSignedInView(service: service, navigation: navigation, isAccountCardOpen: $isAccountCardOpen)
         }
     }
 
@@ -75,42 +76,12 @@ private struct MusicServiceView: View {
 
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
+    /// What shows over Home and Library (results, Up next, Lyrics) and how an artist page opens. Owned by the host,
+    /// so it outlives this view: the popup unmounts the tab on a switch to Mixer and builds it again.
+    let navigation: MusicSearchNavigation
     /// Owned by the host so the popup's Escape key can close the card.
     @Binding var isAccountCardOpen: Bool
     @FocusState private var searchFocused: Bool
-    /// The Up next button shows the queue over whatever is on screen.
-    @State private var queueForced = false
-    /// The query last sent with Return, so a search that found nothing still shows its result.
-    @State private var submittedQuery: String?
-
-    private var trimmedQuery: String {
-        service.query.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var searchIsEmpty: Bool {
-        trimmedQuery.isEmpty
-    }
-
-    /// The queue shows only when the Up next button asks for it.
-    private var showsQueue: Bool {
-        !service.queue.isEmpty && queueForced
-    }
-
-    /// The lyrics panel is open for the loaded track. The store owns the flag (it also gates the fetch), and
-    /// Up next and Lyrics are never both on: turning one on turns the other off.
-    private var showsLyrics: Bool {
-        service.lyrics.isPanelOpen && service.lyrics.track != nil
-    }
-
-    /// Search results show while there is a query and a search for it is running, has results,
-    /// or came back empty. Otherwise Home, Library or an open page shows.
-    private var showsResults: Bool {
-        !searchIsEmpty && (service.isSearching || !service.results.isEmpty || submittedQuery == trimmedQuery)
-    }
-
-    private var isBrowsing: Bool {
-        !showsQueue && !showsResults && !showsLyrics
-    }
 
     var body: some View {
         VStack(spacing: DesignTokens.Spacing.sm) {
@@ -124,8 +95,8 @@ private struct MusicSignedInView: View {
             }
 
             HStack {
-                MusicSegmentSwitch(segments: MusicBrowseStore.Tab.segments, selection: isBrowsing ? service.browse.tab : nil) {
-                    select($0)
+                MusicSegmentSwitch(segments: MusicBrowseStore.Tab.segments, selection: navigation.isBrowsing ? service.browse.tab : nil) {
+                    navigation.select($0)
                 }
                 Spacer()
             }
@@ -133,15 +104,15 @@ private struct MusicSignedInView: View {
             ZStack {
                 // Stays alive under search and the queue so it keeps its place.
                 MusicBrowseView(service: service)
-                    .opacity(isBrowsing ? 1 : 0)
-                    .allowsHitTesting(isBrowsing)
-                    .accessibilityHidden(!isBrowsing)
+                    .opacity(navigation.isBrowsing ? 1 : 0)
+                    .allowsHitTesting(navigation.isBrowsing)
+                    .accessibilityHidden(!navigation.isBrowsing)
 
-                if showsLyrics {
+                if navigation.showsLyrics {
                     MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
-                } else if showsQueue {
+                } else if navigation.showsQueue {
                     queueList
-                } else if showsResults {
+                } else if navigation.showsResults {
                     resultsList
                 }
             }
@@ -149,6 +120,8 @@ private struct MusicSignedInView: View {
 
             MusicMiniTransport(service: service)
         }
+        // Every artist name under a song, on any list or in the player, opens the artist through here.
+        .environment(\.openMusicArtist, { navigation.openArtist($0) })
         .overlay(alignment: .topTrailing) {
             if isAccountCardOpen {
                 accountCardLayer
@@ -159,33 +132,20 @@ private struct MusicSignedInView: View {
         .onDisappear {
             isAccountCardOpen = false
             service.lyrics.setPanelOpen(false)
+            navigation.queueForced = false
         }
         .task { searchFocused = true }
         .onChange(of: service.query) {
-            queueForced = false
-            service.lyrics.setPanelOpen(false)
-            // An emptied field stops the search and drops its results, back to browsing.
-            if searchIsEmpty, service.isSearching || !service.results.isEmpty {
-                service.search()
-            }
+            navigation.queryChanged()
         }
         // The queue ended: the next song played must not pop Up next open again.
         .onChange(of: service.queue.isEmpty) { _, isEmpty in
-            if isEmpty { queueForced = false }
+            if isEmpty { navigation.queueForced = false }
         }
         // Nothing is loaded any more: the button is gone, so the panel goes with it.
         .onChange(of: service.lyrics.track == nil) { _, noTrack in
             if noTrack { service.lyrics.setPanelOpen(false) }
         }
-    }
-
-    /// Home or Library from the switch: leaves search and the queue and goes to the tab's root.
-    private func select(_ tab: MusicBrowseStore.Tab) {
-        queueForced = false
-        service.lyrics.setPanelOpen(false)
-        if showsResults { service.query = "" }
-        service.browse.tab = tab
-        service.browse.popToRoot()
     }
 
     private var searchRow: some View {
@@ -199,10 +159,7 @@ private struct MusicSignedInView: View {
                     .font(DesignTokens.Typography.rowName)
                     .focused($searchFocused)
                     .onSubmit {
-                        queueForced = false
-                        service.lyrics.setPanelOpen(false)
-                        submittedQuery = trimmedQuery
-                        service.search()
+                        navigation.submit()
                     }
                 if service.isSearching {
                     ProgressView()
@@ -235,26 +192,24 @@ private struct MusicSignedInView: View {
 
             if service.lyrics.track != nil {
                 Button("Lyrics", systemImage: "quote.bubble") {
-                    queueForced = false
-                    service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
+                    navigation.toggleLyrics()
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
                 .font(.system(size: 12))
-                .foregroundStyle(showsLyrics ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
-                .accessibilityAddTraits(showsLyrics ? .isSelected : [])
+                .foregroundStyle(navigation.showsLyrics ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
+                .accessibilityAddTraits(navigation.showsLyrics ? .isSelected : [])
             }
 
             if !service.queue.isEmpty {
                 Button("Up next", systemImage: "list.bullet") {
-                    service.lyrics.setPanelOpen(false)
-                    queueForced.toggle()
+                    navigation.toggleQueue()
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
                 .font(.system(size: 12))
-                .foregroundStyle(showsQueue ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
-                .accessibilityAddTraits(showsQueue ? .isSelected : [])
+                .foregroundStyle(navigation.showsQueue ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textTertiary)
+                .accessibilityAddTraits(navigation.showsQueue ? .isSelected : [])
             }
 
             MusicAccountButton(account: service.account, isOpen: isAccountCardOpen) {
@@ -300,14 +255,29 @@ private struct MusicSignedInView: View {
 
     @ViewBuilder
     private var resultsList: some View {
-        if service.results.isEmpty {
-            Text(emptyResultsText)
+        if !navigation.hasResults {
+            Text(navigation.emptyResultsText)
                 .font(DesignTokens.Typography.rowDescription)
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                LazyVStack(spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    // The artists the search found, as a row of tiles above the songs.
+                    if let artists = navigation.artistsShelf {
+                        MusicShelfView(
+                            shelf: artists,
+                            nowPlayingId: service.player.nowPlaying?.videoId,
+                            isPlaying: service.player.isPlaying,
+                            onPlay: { service.play($0) },
+                            onOpen: { navigation.openArtist($0) }
+                        )
+                        if !service.results.isEmpty {
+                            MusicSectionTitle(text: "Songs")
+                                .padding(.top, DesignTokens.Spacing.md)
+                                .padding(.bottom, DesignTokens.Spacing.xs)
+                        }
+                    }
                     ForEach(service.results) { track in
                         MusicResultRow(
                             track: track,
@@ -321,11 +291,6 @@ private struct MusicSignedInView: View {
             }
             .scrollIndicators(.never)
         }
-    }
-
-    private var emptyResultsText: String {
-        if service.isSearching { return "Searching..." }
-        return service.lastError == nil ? "No songs found." : "Search failed. Press Return to try again."
     }
 
     private var queueList: some View {
@@ -387,40 +352,57 @@ struct MusicResultRow: View {
     let isPlaying: Bool
     let action: () -> Void
 
+    /// Set while Full Keyboard Access has put keyboard focus on the row, so it shows the hover surface.
+    @FocusState private var isKeyboardFocused: Bool
+
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: DesignTokens.Spacing.sm) {
-                MusicThumbnail(url: track.thumbnailURL, size: 40)
-                    .overlay {
-                        if isCurrent {
-                            MusicPlayingOverlay(isPlaying: isPlaying)
-                        }
+        // The row plays on a tap. It is not one Button, because the artist names inside it are buttons of their
+        // own, and a button nested in another button's label is unreliable for clicks and for VoiceOver.
+        HStack(spacing: DesignTokens.Spacing.sm) {
+            MusicThumbnail(url: track.thumbnailURL, size: 40)
+                .overlay {
+                    if isCurrent {
+                        MusicPlayingOverlay(isPlaying: isPlaying)
                     }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(track.title)
-                        .font(DesignTokens.Typography.rowName)
-                        .foregroundStyle(isCurrent ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textPrimary)
-                        .lineLimit(1)
-                    Text(track.artist)
-                        .font(DesignTokens.Typography.rowDescription)
-                        .foregroundStyle(DesignTokens.Colors.textSecondary)
-                        .lineLimit(1)
                 }
+                .accessibilityHidden(true)
 
-                Spacer(minLength: DesignTokens.Spacing.sm)
-
-                if let seconds = track.durationSeconds {
-                    Text(MusicTimeFormat.string(TimeInterval(seconds)))
-                        .font(DesignTokens.Typography.percentage)
-                        .foregroundStyle(DesignTokens.Colors.textTertiary)
-                }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(track.title)
+                    .font(DesignTokens.Typography.rowName)
+                    .foregroundStyle(isCurrent ? DesignTokens.Colors.accentPrimary : DesignTokens.Colors.textPrimary)
+                    .lineLimit(1)
+                    .accessibilityHidden(true)
+                MusicArtistLine(artist: track.artist, links: track.artistLinks, hidesPlainTextFromVoiceOver: true)
             }
-            .hoverableRow(isFocused: isCurrent)
-            .contentShape(Rectangle())
+
+            Spacer(minLength: DesignTokens.Spacing.sm)
+
+            if let seconds = track.durationSeconds {
+                Text(MusicTimeFormat.string(TimeInterval(seconds)))
+                    .font(DesignTokens.Typography.percentage)
+                    .foregroundStyle(DesignTokens.Colors.textTertiary)
+                    .accessibilityHidden(true)
+            }
         }
-        .buttonStyle(.plain)
+        .hoverableRow(isFocused: isCurrent || isKeyboardFocused)
+        .contentShape(Rectangle())
+        // A name's own button takes its click first; a click anywhere else on the row plays.
+        .onTapGesture(perform: action)
+        // What the Button gave the row: reachable with Full Keyboard Access only (a plain Tab stays on the search
+        // field and the popup's arrow keys), and Space or Return plays. A key goes to the row only while it has
+        // focus, so typing in the search field never reaches it.
+        .focusable(interactions: .activate)
+        .focused($isKeyboardFocused)
+        .onKeyPress(keys: [.space, .return], phases: .down) { _ in
+            action()
+            return .handled
+        }
+        // A container, so each artist name inside stays its own button for VoiceOver; the row plays by its action.
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(isPlaying ? "\(track.title), \(track.artist), playing" : "\(track.title), \(track.artist)")
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
+        .accessibilityAction(named: "Play", action)
+        .accessibilityAction(.default, action)
     }
 }

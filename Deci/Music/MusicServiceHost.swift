@@ -7,6 +7,10 @@ import Observation
 @Observable
 final class MusicServiceHost {
     private(set) var service: MusicService?
+    /// What the Music tab shows over Home and Library, made with the service. Lives here, not in the tab's view:
+    /// the popup unmounts that view on a switch to Mixer and builds it again, and the view takes this one back,
+    /// so an artist opened from the search results is still open (and Back still returns to the results).
+    private(set) var navigation: MusicSearchNavigation?
     /// Told when native playback starts or stops. Set before or after the service exists.
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
     /// Whether the account card in the Music tab's search row is open. Lives here, not in the tab's
@@ -90,6 +94,7 @@ final class MusicServiceHost {
         service.onNativePlayingChange = { [weak self] playing in self?.onNativePlayingChange?(playing) }
         service.lyrics.setPopupVisible(isPopupVisible)
         self.service = service
+        navigation = MusicSearchNavigation(service: service)
     }
 
     /// Escape on the Music tab: closes the account card if it is open. True when it was open, so the

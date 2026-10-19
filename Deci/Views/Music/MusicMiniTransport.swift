@@ -53,10 +53,14 @@ struct MusicMiniTransport: View {
                         Text(track.title)
                             .font(DesignTokens.Typography.rowNameBold)
                             .lineLimit(1)
-                        Text(player.error ?? track.artist)
-                            .font(DesignTokens.Typography.rowDescription)
-                            .foregroundStyle(player.error == nil ? DesignTokens.Colors.textSecondary : DesignTokens.Colors.mutedIndicator)
-                            .lineLimit(1)
+                        if let error = player.error {
+                            Text(error)
+                                .font(DesignTokens.Typography.rowDescription)
+                                .foregroundStyle(DesignTokens.Colors.mutedIndicator)
+                                .lineLimit(1)
+                        } else {
+                            MusicArtistLine(artist: track.artist, links: track.artistLinks)
+                        }
                     }
 
                     Spacer(minLength: DesignTokens.Spacing.sm)

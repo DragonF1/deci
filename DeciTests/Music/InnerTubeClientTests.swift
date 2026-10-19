@@ -83,6 +83,71 @@ struct InnerTubeClientTests {
         #expect(body["query"] as? String == "夜に駆ける \"quoted\" 🎵 \\ ' --; DROP")
     }
 
+    // MARK: - Artist search
+
+    @Test("Artist search sends the artists filter with the same auth headers and returns the artist rows")
+    func searchArtistsRequestShape() async throws {
+        let youtube = FakeYouTube { $0.searchBody = (try? MusicFixtures.data("search-artists.json")) ?? Data() }
+        let artists = try await makeClient(youtube).searchArtists("alpha")
+        #expect(artists.map(\.browseId) == ["UCartistA", "UCartistB", "UCartistD", "UCartistZ"])
+
+        let request = try #require(youtube.requests(path: "/youtubei/v1/search").first)
+        #expect(request.method == "POST")
+        #expect(request.url.absoluteString == "https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
+        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH 1800000000_") == true)
+        #expect(request.headers["X-Goog-AuthUser"] == "0")
+        #expect(request.headers["Origin"] == "https://music.youtube.com")
+        let body = FakeYouTube.jsonBody(request)
+        #expect(Self.clientObject(body)?["clientName"] as? String == "WEB_REMIX")
+        #expect(body["query"] as? String == "alpha")
+        #expect(body["params"] as? String == "EgWKAQIgAWoMEA4QChADEAQQCRAF")
+        #expect(InnerTubeClient.artistsSearchParams == "EgWKAQIgAWoMEA4QChADEAQQCRAF")
+        // The songs filter is its own constant and stays as it was.
+        #expect(InnerTubeClient.songsSearchParams == "EgWKAQIIAWoMEA4QChADEAQQCRAF")
+    }
+
+    @Test("Artist search trims the query, and a blank one returns nothing and makes no request")
+    func searchArtistsBlankAndTrimmed() async throws {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        #expect(try await client.searchArtists("  \n ").isEmpty)
+        #expect(youtube.requests.isEmpty)
+
+        _ = try await client.searchArtists("  alpha \n")
+        let body = FakeYouTube.jsonBody(try #require(youtube.requests(path: "/youtubei/v1/search").first))
+        #expect(body["query"] as? String == "alpha")
+    }
+
+    @Test("Signed out: artist search fails with signedOut and touches no network, even for a blank query")
+    func searchArtistsSignedOut() async {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube, store: MemorySecretStore())
+        await #expect(throws: MusicError.signedOut) { try await client.searchArtists("x") }
+        await #expect(throws: MusicError.signedOut) { try await client.searchArtists("  ") }
+        #expect(youtube.requests.isEmpty)
+    }
+
+    @Test("Artist search errors map like song search: other statuses are http, bad bodies are parse")
+    func searchArtistsErrors() async {
+        let youtube = FakeYouTube()
+        let client = makeClient(youtube)
+        youtube.update { $0.searchStatus = 503 }
+        await #expect(throws: MusicError.http(503)) { try await client.searchArtists("a") }
+        youtube.update {
+            $0.searchStatus = 200
+            $0.searchBody = Data("<html>".utf8)
+        }
+        await #expect(throws: MusicError.self) { try await client.searchArtists("a") }
+    }
+
+    @Test("Special characters and emoji in an artist query reach the body intact")
+    func searchArtistsUnicodeQuery() async throws {
+        let youtube = FakeYouTube()
+        _ = try await makeClient(youtube).searchArtists("夜に駆ける \"quoted\" 🎵 \\ ' --; DROP")
+        let body = FakeYouTube.jsonBody(try #require(youtube.requests(path: "/youtubei/v1/search").first))
+        #expect(body["query"] as? String == "夜に駆ける \"quoted\" 🎵 \\ ' --; DROP")
+    }
+
     // MARK: - Sign-in state
 
     @Test("Signed out: search fails with signedOut and touches no network")

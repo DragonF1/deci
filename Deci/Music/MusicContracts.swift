@@ -13,8 +13,26 @@ struct MusicTrack: Sendable, Hashable, Identifiable {
     let album: String?
     let durationSeconds: Int?
     let thumbnailURL: URL?
+    /// The names in `artist` that have an artist page behind them, in the order they are shown. Empty when the
+    /// row's artist runs carry no page (or the source has none), so the line is plain text.
+    var artistLinks: [MusicArtistLink] = []
 
     var id: String { videoId }
+}
+
+/// An artist's name under a song with the page it opens.
+struct MusicArtistLink: Sendable, Hashable {
+    let name: String
+    /// The artist's channel id ("UC...").
+    let browseId: String
+
+    /// What opens this artist's page. It has no photo: the page's own header shows it.
+    var opener: MusicCollection {
+        MusicCollection(browseId: browseId, kind: .artist, title: name, subtitle: "", thumbnailURL: nil)
+    }
+
+    /// What VoiceOver says for the name's button.
+    var openLabel: String { "Open \(name)" }
 }
 
 /// A playable audio stream for one track, valid until `expiresAt`.
@@ -240,6 +258,8 @@ protocol MusicBackend: Sendable {
     /// account header. Throws `.signedOut` when YouTube says the session is gone.
     func accountInfo() async throws -> MusicAccount?
     func search(_ query: String) async throws -> [MusicTrack]
+    /// Artists matching `query`, for the Artists shelf over the search results.
+    func searchArtists(_ query: String) async throws -> [MusicCollection]
     func resolve(videoId: String) async throws -> ResolvedStream
     /// First page of the radio seeded by `seedVideoId` (playlist RDAMVM<seedVideoId>).
     func radio(seedVideoId: String) async throws -> MusicQueuePage

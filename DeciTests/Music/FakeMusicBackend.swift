@@ -55,6 +55,9 @@ actor FakeMusicBackend: MusicBackend {
     private var searchResults: [String: [Deci.MusicTrack]] = [:]
     private var searchErrors: [String: any Error] = [:]
     private var searchGates: [String: MusicTestGate] = [:]
+    private var artistSearchResults: [String: [MusicCollection]] = [:]
+    private var artistSearchErrors: [String: any Error] = [:]
+    private var artistSearchGates: [String: MusicTestGate] = [:]
     private var streams: [String: ResolvedStream] = [:]
     private var resolveErrors: [String: any Error] = [:]
     private var resolveGates: [String: MusicTestGate] = [:]
@@ -95,6 +98,7 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var pageCalls: [String] = []
     private(set) var moreTracksCalls: [MoreTracksCall] = []
     private(set) var searchedQueries: [String] = []
+    private(set) var searchedArtistQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
     private(set) var reportAttempts: [Report] = []
     private(set) var signInCookies: [[StoredCookie]] = []
@@ -110,6 +114,12 @@ actor FakeMusicBackend: MusicBackend {
     private nonisolated let cookieFlushes = OSAllocatedUnfairLock(initialState: 0)
 
     nonisolated var cookieFlushCount: Int { cookieFlushes.withLock { $0 } }
+
+    /// How many artist searches were cancelled while held at their gate. Counted outside the actor, because the
+    /// cancellation handler runs on the cancelling task.
+    private nonisolated let artistCancels = OSAllocatedUnfairLock(initialState: 0)
+
+    nonisolated var artistSearchCancelCount: Int { artistCancels.withLock { $0 } }
 
     init(signedIn: Bool = true) {
         self.signedIn = signedIn
@@ -128,6 +138,10 @@ actor FakeMusicBackend: MusicBackend {
     func setSearch(_ query: String, results: [Deci.MusicTrack]) { searchResults[query] = results }
     func setSearchError(_ query: String, _ error: any Error) { searchErrors[query] = error }
     func setSearchGate(_ query: String, _ gate: MusicTestGate) { searchGates[query] = gate }
+    /// What the artists filter of a search answers with. An error or a gate holds for that query only.
+    func setArtistSearch(_ query: String, results: [MusicCollection]) { artistSearchResults[query] = results }
+    func setArtistSearchError(_ query: String, _ error: any Error) { artistSearchErrors[query] = error }
+    func setArtistSearchGate(_ query: String, _ gate: MusicTestGate) { artistSearchGates[query] = gate }
     func setStream(_ stream: ResolvedStream) { streams[stream.videoId] = stream }
     func setResolveError(_ videoId: String, _ error: any Error) { resolveErrors[videoId] = error }
     func clearResolveError(_ videoId: String) { resolveErrors[videoId] = nil }
@@ -290,6 +304,20 @@ actor FakeMusicBackend: MusicBackend {
         if let gate = searchGates[query] { await gate.wait() }
         if let error = searchErrors[query] { throw error }
         return searchResults[query] ?? []
+    }
+
+    func searchArtists(_ query: String) async throws -> [MusicCollection] {
+        searchedArtistQueries.append(query)
+        if let gate = artistSearchGates[query] {
+            // The gate itself does not end early on a cancel, so a test can hold the call past it and see that it was told.
+            await withTaskCancellationHandler {
+                await gate.wait()
+            } onCancel: {
+                artistCancels.withLock { $0 += 1 }
+            }
+        }
+        if let error = artistSearchErrors[query] { throw error }
+        return artistSearchResults[query] ?? []
     }
 
     func resolve(videoId: String) async throws -> ResolvedStream {

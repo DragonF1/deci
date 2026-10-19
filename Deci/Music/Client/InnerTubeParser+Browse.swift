@@ -171,13 +171,15 @@ extension InnerTubeParser {
             // Album rows leave out what the page already says: the artist, the album and the cover.
             let artist = headerArtists(of: header.renderer)
             tracks = tracks.map { track in
-                MusicTrack(
+                let ownArtist = !track.artist.isEmpty
+                return MusicTrack(
                     videoId: track.videoId,
                     title: track.title,
-                    artist: track.artist.isEmpty ? artist : track.artist,
+                    artist: ownArtist ? track.artist : artist.names,
                     album: track.album ?? title,
                     durationSeconds: track.durationSeconds,
-                    thumbnailURL: track.thumbnailURL ?? cover
+                    thumbnailURL: track.thumbnailURL ?? cover,
+                    artistLinks: ownArtist ? track.artistLinks : artist.links
                 )
             }
         }
@@ -264,15 +266,17 @@ extension InnerTubeParser {
         return subscribers ?? text(of: runs(header["monthlyListenerCount"]))
     }
 
-    /// The album's artists: the strapline, or the artist links in an older header's subtitle line.
-    private static func headerArtists(of header: [String: Any]) -> String {
-        let strapline = artistNames(in: runs(header["straplineTextOne"]))
-        if !strapline.isEmpty { return strapline.joined(separator: ", ") }
+    /// The album's artists, joined for display, and the ones with a page: the strapline, or the artist links in an
+    /// older header's subtitle line.
+    private static func headerArtists(of header: [String: Any]) -> (names: String, links: [MusicArtistLink]) {
+        let strapline = runs(header["straplineTextOne"])
+        let names = artistNames(in: strapline)
+        if !names.isEmpty { return (names.joined(separator: ", "), artistLinks(in: strapline)) }
         let linked = runs(header["subtitle"]).filter { run in
             let browse = path(run, "navigationEndpoint", "browseEndpoint") as? [String: Any]
             return browse.flatMap(collectionKind(of:)) == .artist
         }
-        return artistNames(in: linked).joined(separator: ", ")
+        return (artistNames(in: linked).joined(separator: ", "), artistLinks(in: linked))
     }
 
     private static func uniqueTracks(_ tracks: [MusicTrack]) -> [MusicTrack] {
@@ -315,6 +319,44 @@ extension InnerTubeParser {
         return lists.isEmpty
     }
 
+    // MARK: - Artist search
+
+    /// The artists of a search made with the artists filter: one per artist, in the order YouTube lists them.
+    /// Albums, songs, user channels, greyed-out rows and rows with no usable id are left out.
+    static func searchArtists(from data: Data) throws -> [MusicCollection] {
+        let root = try jsonObject(data, what: "artist search response")
+        var rows: [[String: Any]] = []
+        collect("musicResponsiveListItemRenderer", in: root, into: &rows)
+        var seen = Set<String>()
+        return rows.compactMap(artistResult(from:)).filter { seen.insert($0.browseId).inserted }
+    }
+
+    /// An artist row has no video; its destination is the row's own browse endpoint. It shows the largest photo
+    /// the row offers, and under the name what YouTube says after the "Artist" label (a follower count).
+    private static func artistResult(from row: [String: Any]) -> MusicCollection? {
+        guard !isGreyedOut(row), string(path(row, "playlistItemData", "videoId")) == nil,
+              let browse = path(row, "navigationEndpoint", "browseEndpoint") as? [String: Any]
+        else { return nil }
+        let columns = flexColumnRuns(of: row)
+        guard let title = text(of: columns.first ?? []),
+              case .collection(let artist)? = collection(
+                  browse,
+                  title: title,
+                  subtitle: artistSearchSubtitle(columns.count > 1 ? columns[1] : []),
+                  thumbnail: pickThumbnail(row["thumbnail"], near: nil)
+              ),
+              artist.kind == .artist
+        else { return nil }
+        return artist
+    }
+
+    /// "Artist • 1.2M monthly audience" reads "1.2M monthly audience"; a row that says only "Artist" keeps it.
+    private static func artistSearchSubtitle(_ runs: [[String: Any]]) -> String {
+        var parts = bulletSegments(of: runs).compactMap(text(of:))
+        if parts.first == "Artist" { parts.removeFirst() }
+        return parts.isEmpty ? "Artist" : parts.joined(separator: " \u{2022} ")
+    }
+
     // MARK: - Tiles and rows
 
     /// One tile or row as Deci shows it. Nil for what Deci cannot open: podcasts, episodes (and the
@@ -346,7 +388,8 @@ extension InnerTubeParser {
                     artist: subtitle.artists.joined(separator: ", "),
                     album: subtitle.album,
                     durationSeconds: subtitle.durationSeconds,
-                    thumbnailURL: thumbnail
+                    thumbnailURL: thumbnail,
+                    artistLinks: subtitle.artistLinks
                 ))
             }
             return mix(playlistId: string(watch["playlistId"]), title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)
@@ -393,7 +436,7 @@ extension InnerTubeParser {
 
     /// By YouTube's page type. A destination without one is told apart by its id prefix instead;
     /// a page type Deci does not know (podcast, user channel, audiobook) is nil.
-    private static func collectionKind(of browse: [String: Any]) -> MusicCollection.Kind? {
+    static func collectionKind(of browse: [String: Any]) -> MusicCollection.Kind? {
         let configs = browse["browseEndpointContextSupportedConfigs"] as? [String: Any]
         let pageType = string((configs?["browseEndpointContextMusicConfig"] as? [String: Any])?["pageType"])
         switch pageType {

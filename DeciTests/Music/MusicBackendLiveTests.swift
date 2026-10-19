@@ -85,6 +85,26 @@ struct MusicBackendLiveTests {
         #expect(tracks.allSatisfy { !$0.videoId.isEmpty && !$0.title.isEmpty })
     }
 
+    @Test("Artist search returns the parsed artists")
+    func searchArtists() async throws {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update { $0.searchBody = (try? MusicFixtures.data("search-artists.json")) ?? Data() }
+        let artists = try await harness.backend.searchArtists("alpha")
+        #expect(artists.map(\.title) == ["Artist Alpha", "Artist Beta", "Artist Delta", "Artist Zeta"])
+        #expect(artists.allSatisfy { $0.kind == .artist })
+        let body = FakeYouTube.jsonBody(try #require(harness.youtube.requests(path: "/youtubei/v1/search").first))
+        #expect(body["params"] as? String == InnerTubeClient.artistsSearchParams)
+    }
+
+    @Test("Artist search while signed out fails before any network request")
+    func searchArtistsSignedOut() async {
+        let harness = makeHarness(signedIn: false)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.searchArtists("some band") }
+        #expect(harness.youtube.requests.isEmpty)
+    }
+
     @Test("Radio returns the first queue page, seed first, with its continuation")
     func radio() async throws {
         let harness = makeHarness(signedIn: true)
