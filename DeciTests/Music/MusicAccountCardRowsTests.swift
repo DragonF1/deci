@@ -39,18 +39,28 @@ struct MusicAccountCardRowsTests {
         #expect(!rows.switchChannel.isEnabled)
     }
 
-    @Test("the show-window row has its own symbol, not the flow's")
-    func showWindowSymbol() {
+    @Test("the show-window row keeps the flow's own icon and chevron, and a row that is only off keeps both too")
+    func showWindowKeepsIcon() {
         let idle = MusicAccountCardRows(isSwitchingChannel: false, isAddingAccount: false)
         let switching = MusicAccountCardRows(isSwitchingChannel: true, isAddingAccount: false)
         let adding = MusicAccountCardRows(isSwitchingChannel: false, isAddingAccount: true)
-        #expect(switching.switchChannel.symbol == MusicAccountCardRows.showWindowSymbol)
-        #expect(adding.useAnotherAccount.symbol == MusicAccountCardRows.showWindowSymbol)
-        #expect(switching.switchChannel.symbol != idle.switchChannel.symbol)
-        #expect(adding.useAnotherAccount.symbol != idle.useAnotherAccount.symbol)
-        // A row that is only off keeps its own symbol.
+        #expect(switching.switchChannel.symbol == idle.switchChannel.symbol)
+        #expect(adding.useAnotherAccount.symbol == idle.useAnotherAccount.symbol)
         #expect(switching.useAnotherAccount.symbol == idle.useAnotherAccount.symbol)
         #expect(adding.switchChannel.symbol == idle.switchChannel.symbol)
+        #expect(switching.switchChannel.hasChevron)
+        #expect(adding.switchChannel.hasChevron)
+    }
+
+    @Test("only Switch channel has a chevron, and only Sign out is destructive")
+    func chevronAndTint() {
+        let idle = MusicAccountCardRows(isSwitchingChannel: false, isAddingAccount: false)
+        #expect(idle.switchChannel.hasChevron)
+        #expect(!idle.useAnotherAccount.hasChevron)
+        #expect(!MusicAccountCardRows.signOut.hasChevron)
+        #expect(MusicAccountCardRows.signOut.isDestructive)
+        #expect(!idle.switchChannel.isDestructive)
+        #expect(!idle.useAnotherAccount.isDestructive)
     }
 
     @Test("both flows at once cannot happen, and turns both rows off rather than guessing a window")

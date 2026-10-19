@@ -87,20 +87,37 @@ struct MusicTrackMenuItems: View {
 
 /// The "..." button. It is a button of its own, so a click on it opens the menu and never plays the row under it.
 struct MusicTrackMoreButton: View {
+    /// How the button is drawn: the bare dots of the older rows, or the 24 pt round button of the redesigned song row.
+    enum Style {
+        case plain
+        case round
+    }
+
     let track: MusicTrack
     let actions: [MusicTrackAction]
     let perform: (MusicTrackAction) -> Void
     var tint: Color = DesignTokens.Colors.textSecondary
+    var style: Style = .plain
 
     var body: some View {
         Menu {
             MusicTrackMenuItems(actions: actions, perform: perform)
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(tint)
-                .frame(width: Self.width, height: 28)
-                .contentShape(Rectangle())
+            switch style {
+            case .plain:
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: Self.width, height: 28)
+                    .contentShape(Rectangle())
+            case .round:
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: Self.roundSize, height: Self.roundSize)
+                    .background(Circle().fill(MusicStyle.Palette.fillSelected))
+                    .contentShape(Circle())
+            }
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
@@ -112,6 +129,8 @@ struct MusicTrackMoreButton: View {
 
     /// Wide enough for a click, the same as the transport buttons beside it in the player.
     static let width: CGFloat = 22
+    /// The round button the redesigned song row shows under the pointer.
+    static let roundSize: CGFloat = 24
 }
 
 /// The "..." button of the song in the player: always visible, with the same actions as a row and no page.

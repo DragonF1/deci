@@ -42,7 +42,11 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
                         if isSelected {
                             RoundedRectangle(cornerRadius: 13, style: .continuous)
                                 .fill(MusicStyle.Palette.fillSelected)
-                                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                                .shadow(
+                                    color: MusicStyle.Shadow.segment.color,
+                                    radius: MusicStyle.Shadow.segment.radius,
+                                    y: MusicStyle.Shadow.segment.y
+                                )
                                 .matchedGeometryEffect(id: "segment", in: namespace)
                         }
                     }

@@ -129,37 +129,53 @@ struct MusicSearchNavigationTests {
         #expect(h.nav.isBrowsing)
     }
 
-    // MARK: - The empty and Artists parts
+    // MARK: - What the Search tab shows under the field
 
-    @Test("with no artists there is no Artists shelf")
-    func noShelfWithoutArtists() async {
-        let h = NavHarness()
-        await h.search("q")
-        #expect(h.nav.artistsShelf == nil)
-    }
-
-    @Test("the Artists shelf holds the artists as tiles, in order")
-    func artistsShelfItems() async {
-        let h = NavHarness()
-        let artists = [NavHarness.artist("UCa"), NavHarness.artist("UCb")]
-        await h.search("q", artists: artists)
-        let shelf = h.nav.artistsShelf
-        #expect(shelf?.title == "Artists")
-        #expect(shelf?.items == artists.map { .collection($0) })
-    }
-
-    @Test("the empty text says songs or artists, and the search states win over it")
-    func emptyTexts() async {
+    @Test("the panel says no songs or artists, and the searching and failed states win over it")
+    func panelStates() async {
         let h = NavHarness()
         await h.search("nothing", songs: [])
-        #expect(h.nav.emptyResultsText == "No songs or artists found.")
+        #expect(h.nav.panel == .noResults)
 
         await h.backend.setSearchError("bad", MusicError.http(500))
         h.service.query = "bad"
         h.nav.submit()
-        #expect(h.nav.emptyResultsText == "Searching...")
+        #expect(h.nav.panel == .searching)
         await h.service.searchTask?.value
-        #expect(h.nav.emptyResultsText == "Search failed. Press Return to try again.")
+        #expect(h.nav.panel == .failed)
+    }
+
+    @Test("the panel invites a search, then asks for Return, then lists what was found")
+    func panelInviteAndResults() async {
+        let h = NavHarness()
+        #expect(h.nav.panel == .invite)
+        h.service.query = "da"
+        #expect(h.nav.panel == .pressReturn)
+        await h.search("daft")
+        #expect(h.nav.panel == .results)
+    }
+
+    @Test("each panel resolves from the search state, and only the list has no message")
+    func panelResolve() {
+        func resolve(
+            empty: Bool = false, shows: Bool = true, has: Bool = false, searching: Bool = false, failed: Bool = false
+        ) -> MusicSearchPanel {
+            MusicSearchPanel.resolve(
+                queryIsEmpty: empty, showsResults: shows, hasResults: has, isSearching: searching, hasFailed: failed
+            )
+        }
+        #expect(resolve(empty: true, shows: false) == .invite)
+        #expect(resolve(shows: false) == .pressReturn)
+        #expect(resolve(has: true) == .results)
+        #expect(resolve(has: true, searching: true) == .results)
+        #expect(resolve(searching: true, failed: true) == .searching)
+        #expect(resolve(failed: true) == .failed)
+        #expect(resolve() == .noResults)
+
+        let panels: [MusicSearchPanel] = [.invite, .pressReturn, .searching, .noResults, .failed]
+        #expect(panels.allSatisfy { $0.message != nil })
+        #expect(MusicSearchPanel.results.message == nil)
+        #expect(MusicSearchPanel.failed.message == "Search failed. Press Return to try again.")
     }
 
     // MARK: - Return, typing and clearing

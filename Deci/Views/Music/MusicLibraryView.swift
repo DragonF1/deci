@@ -33,7 +33,7 @@ struct MusicLibraryView: View {
                 }
                 .padding(.horizontal, MusicStyle.Spacing.page)
                 .padding(.top, 12)
-                .padding(.bottom, MusicStyle.Spacing.sectionContent)
+                .padding(.bottom, 16)
 
                 // Always first on Playlists, whatever state the list under it is in.
                 likedMusic
@@ -110,10 +110,19 @@ struct MusicCollectionRow: View {
     let action: () -> Void
 
     static let coverSize: CGFloat = 56
+    static let height: CGFloat = 64
 
     @State private var isHovered = false
 
+    /// Liked music keeps its own line ("Auto playlist"); every other row leads with its kind.
+    private var subtitleText: String {
+        if symbol != nil { return MusicHomeText.subtitle(collection.subtitle) }
+        return MusicHomeText.librarySubtitle(kind: collection.kind, youtubeSubtitle: collection.subtitle)
+    }
+
     var body: some View {
+        // Worked out once per draw: the text, the "is there a line" check and the VoiceOver label all use it.
+        let subtitle = subtitleText
         Button(action: action) {
             HStack(spacing: 12) {
                 cover
@@ -121,11 +130,11 @@ struct MusicCollectionRow: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(collection.title)
-                            .musicText(MusicStyle.Typeface.row15M)
+                            .musicText(symbol == nil ? MusicStyle.Typeface.row15M : MusicStyle.Typeface.row15SB)
                             .foregroundStyle(.white)
                             .lineLimit(1)
-                        if !collection.subtitle.isEmpty {
-                            Text(MusicHomeText.subtitle(collection.subtitle))
+                        if !subtitle.isEmpty {
+                            Text(subtitle)
                                 .musicText(MusicStyle.Typeface.caption12)
                                 .foregroundStyle(MusicStyle.Palette.textSecondary)
                                 .lineLimit(1)
@@ -137,6 +146,7 @@ struct MusicCollectionRow: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(MusicStyle.Palette.textQuaternary)
+                        .frame(width: 16, height: 16)
                         .accessibilityHidden(true)
                 }
                 .frame(maxHeight: .infinity)
@@ -145,20 +155,20 @@ struct MusicCollectionRow: View {
                     Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1)
                 }
             }
+            .frame(height: Self.height)
+            .musicRowHover(isHovered)
             .padding(.horizontal, MusicStyle.Spacing.page)
-            .frame(height: 64)
-            .background(isHovered ? MusicStyle.Palette.fillHover : .clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityText)
+        .accessibilityLabel(accessibilityText(subtitle: subtitle))
         .accessibilityAddTraits(.isButton)
     }
 
-    private var accessibilityText: String {
-        let base = collection.subtitle.isEmpty ? collection.title : "\(collection.title), \(collection.subtitle)"
+    private func accessibilityText(subtitle: String) -> String {
+        let base = subtitle.isEmpty ? collection.title : "\(collection.title), \(subtitle)"
         return isPinned ? base + ", pinned" : base
     }
 

@@ -54,6 +54,23 @@ struct MusicAccountCardContentTests {
         #expect(MusicAccountCardContent(account: nil, isBrandChannel: false).kind == "Your own channel")
     }
 
+    @Test("only a brand channel gets the badge under the name")
+    func brandBadge() {
+        #expect(MusicAccountCardContent(account: account, isBrandChannel: true).brandBadge == "Brand channel")
+        #expect(MusicAccountCardContent(account: account, isBrandChannel: false).brandBadge == nil)
+        #expect(MusicAccountCardContent(account: account, isBrandChannel: nil).brandBadge == nil)
+    }
+
+    @Test("VoiceOver hears the name, the handle and the channel kind, skipping what is unknown")
+    func spokenLine() {
+        #expect(
+            MusicAccountCardContent(account: account, isBrandChannel: false).spokenLine
+                == "Test Listener, @testlistener, Your own channel"
+        )
+        #expect(MusicAccountCardContent(account: account, isBrandChannel: nil).spokenLine == "Test Listener, @testlistener")
+        #expect(MusicAccountCardContent(account: nil, isBrandChannel: true).spokenLine == "Signed in, Brand channel")
+    }
+
     @Test("a long name is kept whole, the view truncates it")
     func longName() {
         let long = String(repeating: "Name ", count: 40)

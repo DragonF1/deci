@@ -168,6 +168,25 @@ struct MusicHomeTextTests {
         #expect(MusicHomeText.songSubtitle(artist: "", album: "First Record") == "First Record")
         #expect(MusicHomeText.songSubtitle(artist: "", album: nil) == "")
     }
+
+    @Test("a Library row leads with its kind, keeps YouTube's line, and does not say the kind twice")
+    func librarySubtitle() {
+        #expect(MusicHomeText.librarySubtitle(kind: .playlist, youtubeSubtitle: "42 songs") == "Playlist \u{00B7} 42 songs")
+        #expect(MusicHomeText.librarySubtitle(kind: .album, youtubeSubtitle: "Some Band") == "Album \u{00B7} Some Band")
+        #expect(MusicHomeText.librarySubtitle(kind: .artist, youtubeSubtitle: "") == "Artist")
+        #expect(MusicHomeText.librarySubtitle(kind: .artist, youtubeSubtitle: "   ") == "Artist")
+        // YouTube's bullet becomes a middle dot, and a line that already starts with the kind is left alone.
+        #expect(
+            MusicHomeText.librarySubtitle(kind: .album, youtubeSubtitle: "Album \u{2022} Some Band \u{2022} 2013")
+                == "Album \u{00B7} Some Band \u{00B7} 2013"
+        )
+        #expect(MusicHomeText.librarySubtitle(kind: .playlist, youtubeSubtitle: "playlist by someone") == "playlist by someone")
+        // The kind has to be a whole word: "Albums by X" is not an album line, and a word after a dot or dash is.
+        #expect(MusicHomeText.librarySubtitle(kind: .album, youtubeSubtitle: "Albums by Some Band") == "Album \u{00B7} Albums by Some Band")
+        #expect(MusicHomeText.librarySubtitle(kind: .artist, youtubeSubtitle: "Artists to watch") == "Artist \u{00B7} Artists to watch")
+        #expect(MusicHomeText.librarySubtitle(kind: .album, youtubeSubtitle: "Album") == "Album")
+        #expect(MusicHomeText.librarySubtitle(kind: .album, youtubeSubtitle: "Album, 2013") == "Album, 2013")
+    }
 }
 
 @Suite("MusicTint")

@@ -2,6 +2,47 @@
 import Foundation
 import Observation
 
+/// What the Search tab shows under its field. Kept apart from the view so each combination is tested.
+nonisolated enum MusicSearchPanel: Equatable {
+    /// Nothing typed: the tab invites a search.
+    case invite
+    /// Typed but not sent yet: Return runs the search.
+    case pressReturn
+    /// A search is running and has nothing to show yet.
+    case searching
+    /// The search came back with no songs or artists.
+    case noResults
+    /// The search failed.
+    case failed
+    /// Artists and songs to list.
+    case results
+
+    static func resolve(
+        queryIsEmpty: Bool,
+        showsResults: Bool,
+        hasResults: Bool,
+        isSearching: Bool,
+        hasFailed: Bool
+    ) -> MusicSearchPanel {
+        guard showsResults else { return queryIsEmpty ? .invite : .pressReturn }
+        if hasResults { return .results }
+        if isSearching { return .searching }
+        return hasFailed ? .failed : .noResults
+    }
+
+    /// What a card of this panel says; nil for the results, which are a list.
+    var message: String? {
+        switch self {
+        case .invite: "Search YouTube Music for songs and artists."
+        case .pressReturn: "Press Return to search."
+        case .searching: "Searching..."
+        case .noResults: "No songs or artists found."
+        case .failed: "Search failed. Press Return to try again."
+        case .results: nil
+        }
+    }
+}
+
 /// What the Music tab shows over Home and Library (search results, Up next, Lyrics, the add-to-playlist picker), and
 /// the one way every artist, album name or tile opens its page, and every "..." menu action runs. It lives here, not
 /// in the view, so the rules can be tested. One instance
@@ -86,16 +127,15 @@ final class MusicSearchNavigation {
         hidesResults && service.browse.path.count > resultsDepth
     }
 
-    /// The Artists shelf above the songs; nil when the search found no artists.
-    var artistsShelf: MusicShelf? {
-        guard !service.artistResults.isEmpty else { return nil }
-        return MusicShelf(title: "Artists", items: service.artistResults.map { .collection($0) })
-    }
-
-    /// What the results area says when it has nothing to list.
-    var emptyResultsText: String {
-        if service.isSearching { return "Searching..." }
-        return service.lastError == nil ? "No songs or artists found." : "Search failed. Press Return to try again."
+    /// What the Search tab shows under the field.
+    var panel: MusicSearchPanel {
+        MusicSearchPanel.resolve(
+            queryIsEmpty: trimmedQuery.isEmpty,
+            showsResults: showsResults,
+            hasResults: hasResults,
+            isSearching: service.isSearching,
+            hasFailed: service.lastError != nil
+        )
     }
 
     // MARK: - Search field

@@ -55,6 +55,7 @@ enum MusicStyle {
         static let fillControl3 = Color.white.opacity(0.14)
         static let fillSelected = Color.white.opacity(0.16)
         static let fillActive = Color.white.opacity(0.24)
+        static let sliderTrack = Color.white.opacity(0.22)
 
         // Lines
         static let lineHairline = Color.white.opacity(0.08)
@@ -132,6 +133,7 @@ enum MusicStyle {
         static let caption11R = TextStyle(11)
         static let tab = TextStyle(10, .semibold)
         static let kicker = TextStyle(10, .semibold, tracking: 0.5)
+        static let badge10 = TextStyle(10, .semibold, tracking: 0.2)
     }
 
     // MARK: - Radii
@@ -159,6 +161,7 @@ enum MusicStyle {
         static let sectionGap: CGFloat = 16
         static let shelfGap: CGFloat = 12
         static let pinnedGap: CGFloat = 10
+        static let searchArtistGap: CGFloat = 14
     }
 
     enum Size {
@@ -186,6 +189,8 @@ enum MusicStyle {
 
         static let glass = Shadow(color: .black.opacity(0.35), radius: 14, y: 10)
         static let button = Shadow(color: .black.opacity(0.30), radius: 12, y: 8)
+        /// Under the raised segment of a segmented control only.
+        static let segment = Shadow(color: .black.opacity(0.25), radius: 1.5, y: 1)
     }
 }
 

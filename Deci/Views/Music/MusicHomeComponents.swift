@@ -57,6 +57,24 @@ nonisolated enum MusicHomeText {
         youtubeSubtitle.replacingOccurrences(of: " \u{2022} ", with: " \u{00B7} ")
     }
 
+    /// The second line of a Library row: the kind first ("Playlist · 42 songs", "Album · artist", "Artist"), then
+    /// whatever YouTube says of it. YouTube's line is kept, so an artist keeps its song count and a playlist its owner;
+    /// the kind is not repeated when YouTube's line already starts with it as a whole word ("Albums by X" does not).
+    static func librarySubtitle(kind: MusicCollection.Kind, youtubeSubtitle: String) -> String {
+        let word = switch kind {
+        case .playlist: "Playlist"
+        case .album: "Album"
+        case .artist: "Artist"
+        }
+        let line = subtitle(youtubeSubtitle).trimmingCharacters(in: .whitespacesAndNewlines)
+        if line.isEmpty { return word }
+        if let found = line.range(of: word, options: [.caseInsensitive, .anchored]),
+           line[found.upperBound...].first.map({ !$0.isLetter }) ?? true {
+            return line
+        }
+        return word + " \u{00B7} " + line
+    }
+
     /// "artist · album", or whichever of the two there is.
     static func songSubtitle(artist: String, album: String?) -> String {
         [artist, album ?? ""].filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
@@ -141,9 +159,16 @@ struct MusicSectionHeader: View {
 
 // MARK: - State cards
 
-/// The card a loading, empty or failed list shows where its content would be.
+/// The card a loading, empty or failed list shows where its content would be. `minHeight` keeps a card at the height
+/// its screen draws it (Search states are 72); without one it hugs its content.
 struct MusicStateCard<Content: View>: View {
+    var minHeight: CGFloat?
     @ViewBuilder let content: Content
+
+    init(minHeight: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+        self.minHeight = minHeight
+        self.content = content()
+    }
 
     var body: some View {
         VStack(spacing: MusicStyle.Spacing.sectionContent) {
@@ -151,6 +176,7 @@ struct MusicStateCard<Content: View>: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 20)
+        .frame(minHeight: minHeight)
         .background(
             RoundedRectangle(cornerRadius: MusicStyle.Radius.stateCard, style: .continuous)
                 .fill(MusicStyle.Palette.fillCard)
@@ -165,8 +191,8 @@ struct MusicStateCard<Content: View>: View {
 
 extension MusicStateCard where Content == MusicStateCardMessage {
     /// A card that says one thing.
-    init(message: String) {
-        self.init { MusicStateCardMessage(text: message) }
+    init(message: String, minHeight: CGFloat? = nil) {
+        self.init(minHeight: minHeight) { MusicStateCardMessage(text: message) }
     }
 }
 
@@ -181,13 +207,41 @@ struct MusicStateCardMessage: View {
     }
 }
 
+/// The spinner of the design: a faint ring with a white arc of a quarter turn that goes round once per 0.8 s. Sizes
+/// and line widths in the mock: 11 / 1.2, 15 / 1.6, 20 / 2.2, 22 / 2.4, 30 / 3.3. It has no accessibility label of its
+/// own: the card or row that holds it says what is loading.
+struct MusicSpinner: View {
+    var size: CGFloat = 22
+    var lineWidth: CGFloat = 2.4
+
+    private static let period: TimeInterval = 0.8
+
+    /// Flips once on appear; the repeating linear animation does the turning, with no redraw of the view per frame.
+    @State private var isTurning = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(MusicStyle.Palette.sliderTrack, lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: 0.25)
+                .stroke(.white, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(isTurning ? 360 : 0))
+                .animation(.linear(duration: Self.period).repeatForever(autoreverses: false), value: isTurning)
+        }
+        // The ring sits inside its box, as drawn: its diameter is three quarters of the box.
+        .frame(width: size * 0.75, height: size * 0.75)
+        .frame(width: size, height: size)
+        .onAppear { isTurning = true }
+        .accessibilityHidden(true)
+    }
+}
+
 /// A spinner on a state card.
 struct MusicLoadingCard: View {
     var body: some View {
         MusicStateCard {
-            ProgressView()
-                .controlSize(.small)
-                .environment(\.colorScheme, .dark)
+            MusicSpinner()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Loading")
@@ -246,7 +300,27 @@ private struct MusicHoverScale: ViewModifier {
     }
 }
 
+/// The hover of a list row as the design draws it: a rounded fill behind the row and its content nudged 6 in.
+private struct MusicRowHover: ViewModifier {
+    let isHovered: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.leading, isHovered ? 6 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: MusicStyle.Radius.hoverRow, style: .continuous)
+                    .fill(isHovered ? MusicStyle.Palette.fillHover : .clear)
+            )
+            .animation(DesignTokens.Animation.hover, value: isHovered)
+    }
+}
+
 extension View {
+    /// The row under the pointer (or with the keyboard on it) gets the hover fill, and its content slides in by 6.
+    func musicRowHover(_ isHovered: Bool) -> some View {
+        modifier(MusicRowHover(isHovered: isHovered))
+    }
+
     /// A cover or card grows by two percent under the pointer.
     func musicHoverScale() -> some View {
         modifier(MusicHoverScale())

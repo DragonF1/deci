@@ -248,7 +248,7 @@ private struct MusicSignedInView: View {
 
             Circle()
                 .strokeBorder(MusicStyle.Palette.lineFocus, lineWidth: 2)
-                .frame(width: rect.width + 6, height: rect.height + 6)
+                .frame(width: rect.width + 4, height: rect.height + 4)
                 .position(x: rect.midX, y: rect.midY)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
