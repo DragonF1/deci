@@ -40,7 +40,10 @@ struct MusicLyricsView: View {
         case .busy(let until):
             MusicLyricsWaitView(message: MusicLyricsStore.busyMessage, until: until) { store.retry() }
         case .loaded(.synced(let lines)):
+            // Keyed on the track, so a direct change from one synced song to the next starts a fresh list (follow
+            // state, scroll position and current line) instead of carrying the last song's over.
             MusicSyncedLyricsList(store: store, lines: lines, credit: store.credit, seek: seek)
+                .id(store.track?.videoId)
         case .loaded(.plain(let text)):
             MusicPlainLyricsView(text: text, credit: store.credit)
         case .loaded(.instrumental):
@@ -124,10 +127,12 @@ private struct MusicLyricsCredit: View {
     }
 }
 
-/// Lyrics with no timing: text to read, marked as not synced.
+/// Lyrics with no timing: text to read, marked as not synced. The font of the synced lines, in the colour of sung ones.
 private struct MusicPlainLyricsView: View {
     let text: String
     let credit: String?
+
+    private let style = MusicLyricRowStyle(position: .past)
 
     var body: some View {
         ScrollView {
@@ -136,8 +141,9 @@ private struct MusicPlainLyricsView: View {
                     .font(DesignTokens.Typography.caption)
                     .foregroundStyle(DesignTokens.Colors.textTertiary)
                 Text(text)
-                    .font(DesignTokens.Typography.rowName)
-                    .foregroundStyle(DesignTokens.Colors.textSecondary)
+                    .font(style.font)
+                    .lineSpacing(MusicLyricRowStyle.lineSpacing)
+                    .foregroundStyle(style.color)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 MusicLyricsCredit(text: credit)
                     .padding(.horizontal, -DesignTokens.Spacing.sm)
@@ -150,103 +156,166 @@ private struct MusicPlainLyricsView: View {
     }
 }
 
-/// Where a line is relative to the song: sung, being sung, or still to come.
-private enum MusicLyricPosition {
-    case past, current, upcoming
-}
-
-/// How much the current line is enlarged: a transform, so the text keeps its size and its wrapping.
-private let lyricCurrentScale: CGFloat = 1.08
-
-/// The room kept on the right of every row for the current line's scale: 8% of the row, the same on all rows, so
-/// nothing reflows when the current line changes and the enlarged line stays inside the panel.
-private let lyricTrailingInset: CGFloat = 36
-
-private struct MusicLyricRow: View {
+/// One timed line. Equatable on what it shows, so when the list redraws as the song moves only the rows whose position
+/// changed redraw: the closure is left out of the comparison, and `time` is in it so a row that now seeks somewhere
+/// else is never left holding the old closure. A row's own hover is its own state and redraws only that row.
+private struct MusicLyricRow: View, Equatable {
     let text: String
+    let time: TimeInterval
     let position: MusicLyricPosition
-    let action: () -> Void
+    let reduceMotion: Bool
+    let select: () -> Void
 
-    private var isCurrent: Bool { position == .current }
+    @State private var isHovered = false
+
+    static func == (lhs: MusicLyricRow, rhs: MusicLyricRow) -> Bool {
+        lhs.text == rhs.text && lhs.time == rhs.time && lhs.position == rhs.position && lhs.reduceMotion == rhs.reduceMotion
+    }
 
     var body: some View {
-        Button(action: action) {
-            // An empty timed line is an instrumental gap. One font size for every row: the current line is
-            // emphasised with weight, colour and a scale, never a size change that would re-lay-out the list.
-            Text(text.isEmpty ? "\u{266A}" : text)
-                .font(.system(size: 13, weight: isCurrent ? .semibold : .regular))
-                .foregroundStyle(color)
+        let style = MusicLyricRowStyle(position: position, isHovered: isHovered)
+        Button(action: select) {
+            Text(MusicLyricRowStyle.shownText(text))
+                .font(style.font)
+                .lineSpacing(MusicLyricRowStyle.lineSpacing)
+                .foregroundStyle(style.color)
+                // The one thing on a row that animates: its colour, on its own short fade, so it is never tangled
+                // with the scroll. Nothing here changes the layout, so the list does not shift under the glide.
+                .animation(reduceMotion ? nil : .easeOut(duration: MusicLyricRowStyle.colorFadeDuration), value: style.opacity)
                 .multilineTextAlignment(.leading)
-                .scaleEffect(isCurrent ? lyricCurrentScale : 1, anchor: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, DesignTokens.Spacing.sm)
-                .padding(.trailing, DesignTokens.Spacing.sm + lyricTrailingInset)
-                .padding(.vertical, 5)
+                .padding(.horizontal, DesignTokens.Spacing.sm)
+                .padding(.vertical, MusicLyricRowStyle.verticalPadding)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(text.isEmpty ? "Instrumental break" : text)
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
-    }
-
-    private var color: Color {
-        switch position {
-        case .current: DesignTokens.Colors.textPrimary
-        case .past: DesignTokens.Colors.textTertiary
-        case .upcoming: DesignTokens.Colors.textSecondary
-        }
+        .pointerStyle(.link)
+        .onHover { isHovered = $0 }
+        .accessibilityLabel(MusicLyricRowStyle.spokenText(text))
+        .accessibilityAddTraits(position == .current ? .isSelected : [])
     }
 }
 
-/// Timed lines with the current one highlighted and kept near the middle of the panel.
+/// Timed lines with the current one lit and kept a third of the way down the panel. The list glides to each new line
+/// on one long smooth curve. A scroll by hand pauses that (the highlight still moves); 3 seconds after the user's
+/// scroll goes idle the list glides back, and a tap on a line seeks there and follows again at once.
 private struct MusicSyncedLyricsList: View {
     let store: MusicLyricsStore
     let lines: [LyricLine]
     let credit: String?
     let seek: (TimeInterval) -> Void
-    /// Written by the tracker, so only the rows whose position changed redraw as the song moves.
+    /// Set from the tracker's readings, so only the rows whose position changed redraw as the song moves.
     @State private var currentIndex: Int?
+    @State private var scrollPosition = ScrollPosition(idType: Int.self)
+    @State private var follow = LyricsFollowState()
+    /// False until the list has been put on a line: the first reading jumps there, later ones glide.
+    @State private var hasPositioned = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                // A plain stack: lyrics are a few dozen lines, and a lazy one re-measures rows as they scroll in.
-                VStack(spacing: 0) {
-                    ForEach(lines.indices, id: \.self) { index in
-                        MusicLyricRow(text: lines[index].text, position: position(of: index)) {
-                            seek(lines[index].time)
-                        }
-                        .id(index)
+        ScrollView {
+            // A plain stack: lyrics are a few dozen lines, and a lazy one re-measures rows as they scroll in. The
+            // spacers at both ends are the part of the visible height above and below the anchor, so the first
+            // and the last line can reach it too instead of stopping where the scroll runs out.
+            VStack(spacing: 0) {
+                Color.clear
+                    .containerRelativeFrame(.vertical) { height, _ in height * MusicLyricScroll.anchorFraction }
+                ForEach(lines.indices, id: \.self) { index in
+                    MusicLyricRow(
+                        text: lines[index].text,
+                        time: lines[index].time,
+                        position: MusicLyricRowStyle.position(of: index, current: currentIndex),
+                        reduceMotion: reduceMotion
+                    ) {
+                        select(index)
                     }
-                    MusicLyricsCredit(text: credit)
+                    .equatable()
+                    .id(index)
                 }
-                .padding(.top, DesignTokens.Spacing.md)
+                MusicLyricsCredit(text: credit)
+                Color.clear
+                    .containerRelativeFrame(.vertical) { height, _ in height * (1 - MusicLyricScroll.anchorFraction) }
             }
-            .scrollIndicators(.never)
-            .lyricsEdgeFade()
-            .background {
-                MusicLyricsPlayheadTracker(store: store, lines: lines, index: $currentIndex)
-            }
-            .accessibilityHint("Select a line to jump to it in the song")
-            .onChange(of: currentIndex) { old, new in
-                // The first reading (the panel opens mid-song) jumps; later ones glide.
-                let glide = old != nil && !reduceMotion
-                withAnimation(glide ? .easeInOut(duration: 0.35) : nil) {
-                    if let new {
-                        proxy.scrollTo(new, anchor: .center)
-                    } else {
-                        proxy.scrollTo(0, anchor: .top)
-                    }
+            .scrollTargetLayout()
+        }
+        // The anchor goes on the modifier: an anchor passed to `ScrollPosition.scrollTo(id:)` had no effect when tried,
+        // and without one a line lands on the nearest edge instead of a third of the way down.
+        .scrollPosition($scrollPosition, anchor: MusicLyricScroll.anchor)
+        .scrollIndicators(.never)
+        .lyricsEdgeFade()
+        .background {
+            MusicLyricsPlayheadTracker(store: store, lines: lines, report: reading)
+        }
+        .accessibilityHint("Select a line to jump to it in the song")
+        .onScrollPhaseChange { _, phase in
+            follow.scrollPhaseChanged(LyricsScrollPhase(phase))
+        }
+        .onChange(of: currentIndex) { _, new in
+            // Left where the user scrolled it: the highlight moves, the list stays until following resumes.
+            guard follow.isFollowing else { return }
+            // The first line the list is put on (the panel opens mid-song) is a jump; later ones glide.
+            scroll(to: new, animated: hasPositioned)
+            hasPositioned = true
+        }
+        .onChange(of: store.isWatching) { _, watching in
+            // The popup stays mounted while hidden, so a scroll the user was in the middle of when it hid may never
+            // report its idle. Nothing is scrolling when it shows again: follow, and put the list on the line the
+            // song is at (the playhead has just been re-read, so a change of line also arrives on its own).
+            guard watching else { return }
+            follow.resume()
+            scroll(to: currentIndex, animated: false)
+        }
+        .task(id: follow.resumeAt) {
+            // One wait per `resumeAt`: a new user scroll changes it, which cancels this task and starts over.
+            while let due = follow.resumeAt {
+                try? await Task.sleep(for: .seconds(max(0.05, due.timeIntervalSinceNow)))
+                guard !Task.isCancelled else { return }
+                if follow.resumeIfDue() {
+                    scroll(to: currentIndex, animated: true)
+                    return
                 }
             }
         }
     }
 
-    private func position(of index: Int) -> MusicLyricPosition {
-        guard let currentIndex else { return .upcoming }
-        if index == currentIndex { return .current }
-        return index < currentIndex ? .past : .upcoming
+    /// What the tracker read: the current line, once at the start and again whenever it changes.
+    private func reading(_ new: Int?) {
+        if currentIndex != new { currentIndex = new }
+        // The list starts at the top, so a first reading of no line yet needs no move: the line that starts first
+        // is reached by a glide from there, like any later one.
+        if new == nil { hasPositioned = true }
+    }
+
+    /// A tap seeks to the line and follows again at once, heading for the tapped line, which is about to be current.
+    private func select(_ index: Int) {
+        seek(lines[index].time)
+        follow.resume()
+        scroll(to: index, animated: true)
+    }
+
+    /// Puts a line at the anchor (the top when no line has started yet): a glide, or a jump when `animated` is
+    /// false or Reduce Motion is on.
+    private func scroll(to index: Int?, animated: Bool) {
+        withAnimation(animated && !reduceMotion ? MusicLyricScroll.glide : nil) {
+            if let index {
+                scrollPosition.scrollTo(id: index)
+            } else {
+                scrollPosition.scrollTo(edge: .top)
+            }
+        }
+    }
+}
+
+private extension LyricsScrollPhase {
+    /// SwiftUI's scroll phase, one to one.
+    init(_ phase: ScrollPhase) {
+        switch phase {
+        case .idle: self = .idle
+        case .tracking: self = .tracking
+        case .interacting: self = .interacting
+        case .decelerating: self = .decelerating
+        case .animating: self = .animating
+        }
     }
 }
 
@@ -256,16 +325,15 @@ private struct MusicSyncedLyricsList: View {
 private struct MusicLyricsPlayheadTracker: View {
     let store: MusicLyricsStore
     let lines: [LyricLine]
-    @Binding var index: Int?
+    /// Told the line at the start and each time it changes (nil before the first line begins).
+    let report: (Int?) -> Void
 
     var body: some View {
         let playhead = store.playhead
         TimelineView(.animation(minimumInterval: 0.1, paused: !(store.isWatching && playhead.isPlaying))) { context in
             let found = LRCParser.currentIndex(in: lines, at: playhead.position(at: context.date))
             Color.clear
-                .onChange(of: found, initial: true) { _, new in
-                    if index != new { index = new }
-                }
+                .onChange(of: found, initial: true) { _, new in report(new) }
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)

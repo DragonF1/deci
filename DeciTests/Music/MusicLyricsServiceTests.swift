@@ -140,6 +140,19 @@ struct MusicLyricsServiceTests {
         #expect(h.lyrics.playhead.time == 42)
     }
 
+    @Test("A seek while paused moves the playhead at once and leaves it paused")
+    func seekWhilePausedMovesThePlayhead() async {
+        let h = Harness()
+        h.lyrics.setPanelOpen(true)
+        await h.play("a", duration: 200)
+        h.engine.tick(10, playing: true)
+        h.service.togglePlayback()
+        #expect(!h.player.isPlaying)
+        h.service.seek(to: 77)
+        #expect(h.lyrics.playhead.time == 77)
+        #expect(!h.lyrics.playhead.isPlaying)
+    }
+
     @Test("A closed panel or a hidden popup does not follow the player")
     func hiddenIgnoresTicks() async {
         let h = Harness()
