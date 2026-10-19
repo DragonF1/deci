@@ -31,13 +31,13 @@ final class MenuBarPopupController: MenuBarPopupControlling {
         category: "MenuBarPopupController"
     )
 
-    /// Accessibility title used to identify FineTune's status item among any
-    /// other status items in the same process. `FluidMenuBarExtra` sets this on
-    /// the button via `setAccessibilityTitle(title)` where `title` is the first
-    /// argument we pass to `FluidMenuBarExtra(...)` in `FineTuneApp`.
+    /// Accessibility title used to identify the Mixer's status item among any
+    /// other status items in the same process, the Music item included.
+    /// `FluidMenuBarExtra` sets this on the button via `setAccessibilityTitle(title)`
+    /// where `title` is the first argument we pass to `FluidMenuBarExtra(...)` in `DeciApp`.
     private let accessibilityTitle: String
 
-    init(accessibilityTitle: String = "Deci") {
+    init(accessibilityTitle: String = MenuBarItemID.mixer.title) {
         self.accessibilityTitle = accessibilityTitle
     }
 
@@ -103,15 +103,9 @@ final class MenuBarPopupController: MenuBarPopupControlling {
             return item
         }
 
-        // Direct fallback via FluidMenuBarExtraWindow
-        for window in NSApp.windows {
-            if window.className.contains("FluidMenuBarExtraWindow"),
-               let fluidStatusItem = window.value(forKey: "statusItem") as? NSObject,
-               let item = fluidStatusItem.value(forKey: "statusItem") as? NSStatusItem {
-                return item
-            }
-        }
-        return nil
+        // Direct fallback via the popup window with the same title. Both menu bar items have a popup
+        // window of the same class, so the title decides which one this controller toggles.
+        return MenuBarStatusItems.statusItem(titled: accessibilityTitle)
     }
 
     /// Pulls the `statusItem` private key off an `NSStatusBarWindow`.

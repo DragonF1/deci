@@ -31,11 +31,9 @@ struct MenuBarPopupView: View {
     /// wired in `FineTuneApp.init`.
     let mediaKeyMonitor: MediaKeyMonitor
 
-    /// Owns the Music tab's service; the heavy parts are built when the tab is first opened.
+    /// The music player's host. The Mixer needs it for the Deci row, which shows only once a track is
+    /// loaded; the Music popup is what builds the service.
     let musicHost: MusicServiceHost
-
-    /// Which top-level tab the popup shows. Survives the popup closing and reopening.
-    @State private var popupTab: PopupTab = .mixer
 
     /// Memoized sorted output devices - only recomputed when device list or default changes
     @State private var sortedDevices: [AudioDevice] = []
@@ -110,56 +108,40 @@ struct MenuBarPopupView: View {
 
     // MARK: - Resolved Dimensions
 
-    /// The Music tab has a fixed body height, capped by the popup size setting.
-    private static let musicTabHeight: CGFloat = 520
-
     private var popupDimensions: PopupDimensions {
         audioEngine.settingsManager.appSettings.popupSize.dimensions
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DesignTokens.Spacing.sm) {
-            HStack(alignment: .center) {
-                PopupTabSwitch(selection: $popupTab)
+            HStack(alignment: .top) {
+                deviceTabsHeader
                 Spacer()
-                if popupTab == .music {
-                    settingsButton
+                if isEditingDevicePriority {
+                    Text("Drag or type a number to set priority")
+                        .font(.system(size: 11))
+                        .foregroundStyle(DesignTokens.Colors.textSecondary)
+                } else {
+                    defaultDevicesStatus
                 }
+                Spacer()
+                editPriorityButton
+                settingsButton
             }
+            .padding(.bottom, DesignTokens.Spacing.xs)
 
-            switch popupTab {
-            case .mixer:
-                HStack(alignment: .top) {
-                    deviceTabsHeader
-                    Spacer()
-                    if isEditingDevicePriority {
-                        Text("Drag or type a number to set priority")
-                            .font(.system(size: 11))
-                            .foregroundStyle(DesignTokens.Colors.textSecondary)
-                    } else {
-                        defaultDevicesStatus
-                    }
-                    Spacer()
-                    editPriorityButton
-                    settingsButton
+            ScrollViewReader { proxy in
+                ScrollView {
+                    mainContent(scrollProxy: proxy)
                 }
-                .padding(.bottom, DesignTokens.Spacing.xs)
-
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        mainContent(scrollProxy: proxy)
-                    }
-                    .scrollIndicators(.never)
-                    .frame(maxHeight: popupDimensions.maxContentHeight)
-                    .onChange(of: selectedRow) { _, newFocus in
-                        guard let newFocus else { return }
-                        withAnimation(DesignTokens.Animation.hover) {
-                            proxy.scrollTo(newFocus, anchor: .center)
-                        }
+                .scrollIndicators(.never)
+                .frame(maxHeight: popupDimensions.maxContentHeight)
+                .onChange(of: selectedRow) { _, newFocus in
+                    guard let newFocus else { return }
+                    withAnimation(DesignTokens.Animation.hover) {
+                        proxy.scrollTo(newFocus, anchor: .center)
                     }
                 }
-            case .music:
-                MusicTabView(host: musicHost, height: min(popupDimensions.maxContentHeight, Self.musicTabHeight))
             }
         }
         .padding(popupDimensions.contentPadding)
@@ -203,15 +185,6 @@ struct MenuBarPopupView: View {
                 selectedRow = navModel.defaultFocus(defaultOutputUID: currentDefaultDeviceUID())
             }
         }
-        .onChange(of: popupTab) { _, tab in
-            exitEditModeSaving()
-            textEntry.buffer = nil
-            hasKeyboardEngaged = false
-            selectedRow = nil
-            anchorFocused = tab == .mixer
-            musicHost.isAccountCardOpen = false
-            if tab == .music { musicHost.loadIfNeeded() }
-        }
         .onChange(of: audioEngine.apps) { _, _ in
             syncNavOrder()
         }
@@ -237,34 +210,30 @@ struct MenuBarPopupView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
             // Global notification — fires for every window in the process. Filter to
-            // FluidMenuBarExtra's popup window so unrelated windows (the HID-tap
-            // primer, NSAlert panels, etc.) don't mark the popup as visible and
-            // suppress the HUD.
+            // this popup's own window (by title, the Music popup is the same class) so
+            // unrelated windows (the HID-tap primer, NSAlert panels, the Music popup,
+            // etc.) don't mark the popup as visible and suppress the HUD.
             guard let window = notification.object as? NSWindow,
-                  String(describing: type(of: window)).contains("FluidMenuBarExtra")
+                  MenuBarStatusItems.itemID(of: window) == .mixer
             else { return }
             isPopupVisible = true
-            popupVisibility.isVisible = true
-            musicHost.isPopupVisible = true
+            popupVisibility.setOpen(.mixer, true)
             audioEngine.bluetoothDeviceMonitor.refresh()
             requestChromeTabs()
             syncNavOrder()
             hasKeyboardEngaged = false
             selectedRow = nil
             textEntry.buffer = nil
-            anchorFocused = popupTab == .mixer
+            anchorFocused = true
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
             guard let window = notification.object as? NSWindow,
-                  String(describing: type(of: window)).contains("FluidMenuBarExtra")
+                  MenuBarStatusItems.itemID(of: window) == .mixer
             else { return }
             isPopupVisible = false
-            popupVisibility.isVisible = false
-            musicHost.isPopupVisible = false
+            popupVisibility.setOpen(.mixer, false)
             hasKeyboardEngaged = false
             selectedRow = nil
-            // A card left open must not greet the next open of the popup.
-            musicHost.isAccountCardOpen = false
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             // SwiftUI Menu tracking (e.g. sample-rate picker in the device
@@ -364,13 +333,6 @@ struct MenuBarPopupView: View {
         // in-progress keyboard entry is cancelled here too.
         if textEntry.buffer != nil {
             textEntry.buffer = nil
-            return
-        }
-        // The mixer's expanded panels are hidden on the Music tab, so Escape closes the account
-        // card if it is open and otherwise just dismisses.
-        if popupTab == .music {
-            if musicHost.closeAccountCard() { return }
-            NSApp.keyWindow?.resignKey()
             return
         }
         if expandedDeviceUID != nil {
@@ -1418,8 +1380,6 @@ struct MenuBarPopupView: View {
     }
 
     private func handleKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
-        // The Music tab has its own text field and buttons; mixer nav must not eat their keys.
-        if popupTab == .music { return .ignored }
         // `.onKeyPress` also fires for focused descendants; yield while a TextField is editing so its Return commits via onSubmit instead of activating a row.
         if NSApp.keyWindow?.firstResponder is NSTextView { return .ignored }
         // Keyboard entry mode: the popup owns every key so the anchor keeps first responder.

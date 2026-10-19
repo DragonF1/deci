@@ -91,6 +91,16 @@ struct GeneralTab: View {
             ) {
                 PopupSizeTilePicker(selection: $settings.appSettings.popupSize)
             }
+            SettingsRowDivider()
+            SettingsRow(
+                "Show Music in menu bar",
+                description: "A second icon for the music player. Playback keeps going when it is hidden."
+            ) {
+                Toggle("", isOn: $settings.appSettings.showMusicInMenuBar)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
         }
     }
 

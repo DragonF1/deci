@@ -5,8 +5,8 @@ import Observation
 /// What the Music tab shows over Home and Library (search results, Up next, Lyrics, the add-to-playlist picker), and
 /// the one way every artist, album name or tile opens its page, and every "..." menu action runs. It lives here, not
 /// in the view, so the rules can be tested. One instance
-/// belongs to each `MusicService` (`MusicServiceHost` makes it): the popup unmounts the Music tab's view on a
-/// switch to Mixer and builds it again, and the view takes this one back, so what was open is still open.
+/// belongs to each `MusicService` (`MusicServiceHost` makes it): the Music popup unmounts the player's view when the
+/// icon is hidden and builds it again, and the view takes this one back, so what was open is still open.
 @MainActor
 @Observable
 final class MusicSearchNavigation {

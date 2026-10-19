@@ -79,6 +79,9 @@ struct DeciApp: App {
     /// default-device volume/mute. The coordinator keeps it in sync afterwards.
     private let launchIconImage: NSImage
 
+    /// The Music icon. It never changes, so there is no coordinator behind it.
+    private let launchMusicIconImage: NSImage
+
     var body: some Scene {
         // Declared before FluidMenuBarExtra so this Settings scene wins over
         // FluidMenuBarExtra's `Settings {}` placeholder. Both ⌘, and the
@@ -96,9 +99,29 @@ struct DeciApp: App {
                 onSettingsReset: { musicHost.settingsDidReset() }
             )
         }
-        FluidMenuBarExtra("Deci", image: launchIconImage) {
+        // Scene order is creation order: the Mixer stays first, so it keeps the status item
+        // autosave name "Item-0" and the icon stays where the owner put it.
+        FluidMenuBarExtra(MenuBarItemID.mixer.title, image: launchIconImage) {
             menuBarContent
         }
+        FluidMenuBarExtra(MenuBarItemID.music.title, image: launchMusicIconImage, isInserted: musicItemInserted) {
+            musicMenuBarContent
+        }
+    }
+
+    /// Whether the Music icon is in the menu bar, backed by the setting. FluidMenuBarExtra writes
+    /// to this when the icon is removed with cmd-drag, which turns the setting off.
+    private var musicItemInserted: Binding<Bool> {
+        let settings = audioEngine.settingsManager
+        return Binding(
+            get: { settings.appSettings.showMusicInMenuBar },
+            set: { shown in
+                // Not while the item is being renamed: a visibility change AppKit makes then is not the owner's.
+                guard !MenuBarStatusItems.isConfiguringMusicItem,
+                      settings.appSettings.showMusicInMenuBar != shown else { return }
+                settings.appSettings.showMusicInMenuBar = shown
+            }
+        )
     }
 
     @ViewBuilder
@@ -122,6 +145,15 @@ struct DeciApp: App {
             // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
             shortcutsRegistry.start()
         }
+    }
+
+    @ViewBuilder
+    private var musicMenuBarContent: some View {
+        MusicPopupView(
+            musicHost: musicHost,
+            settings: audioEngine.settingsManager,
+            popupVisibility: popupVisibility
+        )
     }
 
     /// Tells the Chrome bridge which tabs to track. While tabs are on, also makes sure Chrome
@@ -225,6 +257,10 @@ struct DeciApp: App {
         monitor.iconCoordinator = coordinator
         // Defer start() so NSApplication.shared is fully bootstrapped before we walk NSApp.windows.
         DispatchQueue.main.async { [coordinator] in coordinator.start() }
+        // The Music scene builds its status item at the same time, so it is named the same way.
+        DispatchQueue.main.async { [settings] in
+            MenuBarStatusItems.configureMusicItem { settings.appSettings.showMusicInMenuBar }
+        }
         _iconCoordinator = State(initialValue: coordinator)
 
 
@@ -245,8 +281,12 @@ struct DeciApp: App {
         )
         // The fallback must go through the shared canvas too, or the status
         // item launches at natural symbol width and jumps on the first apply().
-        launchIconImage = launchState.image.nsImage()
+        let mixerIcon = launchState.image.nsImage()
             ?? MenuBarIconImage.systemSymbol("speaker.wave.2").nsImage()!
+        launchIconImage = mixerIcon
+        // Same canvas as the Mixer icon, so the two items are the same width.
+        launchMusicIconImage = MenuBarIconImage.systemSymbol("music.note")
+            .nsImage(accessibilityDescription: MenuBarItemID.music.title) ?? mixerIcon
 
         // Start Accessibility polling immediately so `isTrustedCached` is live
         // before the user first opens Settings. The trust-flip callback wires
@@ -286,6 +326,11 @@ struct DeciApp: App {
         // Only this boolean reaches Chrome: while Deci plays, the extension stops auto-clicking "Switch".
         music.onNativePlayingChange = { ChromeExtensionManager.shared.setNativeMusicPlaying($0) }
         _musicHost = State(initialValue: music)
+        // The icon follows the setting from here, not from the views: the scenes' own change handlers only
+        // run while their views are live.
+        settings.onShowMusicInMenuBarChange = { [popupService, music] shown in
+            MenuBarStatusItems.applyMusicVisibility(shown, popupVisibility: popupService, musicHost: music)
+        }
 
         // Pass engine to AppDelegate
         _appDelegate.wrappedValue.audioEngine = engine

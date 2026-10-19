@@ -2,27 +2,27 @@
 import Observation
 
 /// Created at app launch; builds the real `MusicService` (AVPlayer, backend, JavaScriptCore) only
-/// when the Music tab is first opened, so users who never open it pay nothing.
+/// when the Music popup is first opened, so users who never open it pay nothing.
 @MainActor
 @Observable
 final class MusicServiceHost {
     private(set) var service: MusicService?
-    /// What the Music tab shows over Home and Library, made with the service. Lives here, not in the tab's view:
-    /// the popup unmounts that view on a switch to Mixer and builds it again, and the view takes this one back,
-    /// so an artist opened from the search results is still open (and Back still returns to the results).
+    /// What the Music popup shows over Home and Library, made with the service. Lives here, not in the tab's view:
+    /// the player is unmounted when the Music icon is hidden in Settings and built again when it is shown, and the
+    /// view takes this one back, so an artist opened from the search results is still open (and Back still returns to the results).
     private(set) var navigation: MusicSearchNavigation?
     /// Told when native playback starts or stops. Set before or after the service exists.
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
-    /// Whether the account card in the Music tab's search row is open. Lives here, not in the tab's
+    /// Whether the account card in the Music popup's search row is open. Lives here, not in the tab's
     /// view, so the popup's Escape handler can close the card before it dismisses the popup.
     var isAccountCardOpen = false
-    /// The popup is on screen. It stays mounted while hidden, so `MenuBarPopupView` reports it here; the lyrics
+    /// The Music popup is on screen. It stays mounted while hidden, so `MusicPopupView` reports it here; the lyrics
     /// panel fetches and animates only while this is true. Remembered for a service that is created later.
     var isPopupVisible = true {
         didSet { service?.lyrics.setPopupVisible(isPopupVisible) }
     }
 
-    /// The music player row's model in the Mixer tab (shown there as Deci). Lives here, not in the service, so the row's settings load at
+    /// The music player row's model in the Mixer popup (shown there as Deci). Lives here, not in the service, so the row's settings load at
     /// launch and the service stays lazy. nil in tests that do not care about audio.
     let mixer: MusicMixerState?
 
@@ -80,8 +80,8 @@ final class MusicServiceHost {
         return MusicPlayer(engine: engine)
     }
 
-    /// A track is loaded in the player, playing or paused, so the Mixer tab shows the music player row (as Deci). False before
-    /// the Music tab was ever used: reading it never creates the service.
+    /// A track is loaded in the player, playing or paused, so the Mixer popup shows the music player row (as Deci). False before
+    /// the Music popup was ever used: reading it never creates the service.
     var hasLoadedTrack: Bool {
         guard let player = service?.player else { return false }
         return player.nowPlaying != nil && (player.isLoading || player.hasStream)
@@ -97,7 +97,7 @@ final class MusicServiceHost {
         navigation = MusicSearchNavigation(service: service)
     }
 
-    /// Escape on the Music tab: closes the account card if it is open. True when it was open, so the
+    /// Escape in the Music popup: closes the account card if it is open. True when it was open, so the
     /// key is used up and the popup stays; false lets Escape go on to dismiss the popup.
     func closeAccountCard() -> Bool {
         guard isAccountCardOpen else { return false }
@@ -106,7 +106,7 @@ final class MusicServiceHost {
     }
 
     /// Reset all settings: the music options and pins held in memory go back to their defaults too. Nothing to do
-    /// before the Music tab was ever used, since a later service starts from the cleared settings.
+    /// before the Music popup was ever used, since a later service starts from the cleared settings.
     func settingsDidReset() {
         service?.settingsDidReset()
     }

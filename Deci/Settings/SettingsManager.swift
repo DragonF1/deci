@@ -55,6 +55,7 @@ nonisolated struct AppSettings: Codable, Equatable {
 
     // Popup
     var popupSize: MenuBarPopupSize = .comfortable  // Overall menu bar popup size and density
+    var showMusicInMenuBar: Bool = true            // The second menu bar icon, for the music player
 
     // Chrome
     var chromeTabsEnabled: Bool = true             // Show Chrome tabs and let the extension send them
@@ -91,6 +92,7 @@ nonisolated struct AppSettings: Codable, Equatable {
         customShortcuts = try c.decodeIfPresent([String: ShortcutCodable].self, forKey: .customShortcuts) ?? [:]
         appearance = try c.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
         popupSize = try c.decodeIfPresent(MenuBarPopupSize.self, forKey: .popupSize) ?? .comfortable
+        showMusicInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showMusicInMenuBar) ?? true
         chromeTabsEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeTabsEnabled) ?? true
         chromeIncognitoEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeIncognitoEnabled) ?? false
         chromeYTMusicAutoSwitch = try c.decodeIfPresent(Bool.self, forKey: .chromeYTMusicAutoSwitch) ?? true
@@ -848,6 +850,11 @@ final class SettingsManager {
     /// from the UI or a reset.
     var onChromeYTMusicAutoSwitchChange: ((Bool) -> Void)?
 
+    /// Called with the new value whenever the "Show Music in menu bar" setting really changes, from the UI
+    /// or a reset. The one place the menu bar hears about it; not called for a same-value write, for other
+    /// settings, or when the file is loaded.
+    var onShowMusicInMenuBarChange: ((Bool) -> Void)?
+
     func updateAppSettings(_ newSettings: AppSettings) {
         // Handle launch at login separately via ServiceManagement
         if newSettings.launchAtLogin != settings.appSettings.launchAtLogin {
@@ -857,6 +864,13 @@ final class SettingsManager {
         settings.appSettings = newSettings
         scheduleSave()
         notifyChromeSettingsIfChanged(from: previous)
+        notifyMusicMenuBarIfChanged(from: previous)
+    }
+
+    private func notifyMusicMenuBarIfChanged(from previous: AppSettings) {
+        let current = settings.appSettings.showMusicInMenuBar
+        guard previous.showMusicInMenuBar != current else { return }
+        onShowMusicInMenuBarChange?(current)
     }
 
     private func notifyChromeSettingsIfChanged(from previous: AppSettings) {
@@ -931,6 +945,7 @@ final class SettingsManager {
 
         scheduleSave()
         notifyChromeSettingsIfChanged(from: previousAppSettings)
+        notifyMusicMenuBarIfChanged(from: previousAppSettings)
         logger.info("Reset all settings to defaults")
     }
 

@@ -1,7 +1,7 @@
 // Deci/Views/Music/MusicSegmentSwitch.swift
 import SwiftUI
 
-/// A small pill switch in the `PopupTabSwitch` style, for "Home | Library" and the library
+/// A small pill switch in the style of the Output / Input toggle in the Mixer popup, for "Home | Library" and the library
 /// sections. A nil selection highlights nothing (search results or the queue are on screen).
 /// Tapping a segment always reports it, even the selected one, so it can pop back to the root.
 struct MusicSegmentSwitch<Value: Hashable>: View {

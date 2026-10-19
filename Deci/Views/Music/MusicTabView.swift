@@ -77,7 +77,7 @@ private struct MusicServiceView: View {
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
     /// What shows over Home and Library (results, Up next, Lyrics) and how an artist page opens. Owned by the host,
-    /// so it outlives this view: the popup unmounts the tab on a switch to Mixer and builds it again.
+    /// so it outlives this view: the popup unmounts the player when the Music icon is hidden and builds it again.
     let navigation: MusicSearchNavigation
     /// Owned by the host so the popup's Escape key can close the card.
     @Binding var isAccountCardOpen: Bool

@@ -117,14 +117,10 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
     private func ensureStatusItemVisible() {
         UserDefaults.standard.set(1, forKey: "NSStatusItem VisibleCC Item-0")
         UserDefaults.standard.set(1, forKey: "NSStatusItem Visible Item-0")
-        for window in NSApp.windows {
-            if window.className.contains("FluidMenuBarExtraWindow") {
-                if let fluidStatusItem = window.value(forKey: "statusItem") as? NSObject,
-                   let statusItem = fluidStatusItem.value(forKey: "statusItem") as? NSStatusItem {
-                    statusItem.behavior = []
-                    statusItem.isVisible = true
-                }
-            }
+        // Only the Mixer's item: the Music item is shown and hidden by its own setting.
+        if let statusItem = MenuBarStatusItems.statusItem(for: .mixer) {
+            statusItem.behavior = []
+            statusItem.isVisible = true
         }
     }
 
@@ -194,18 +190,14 @@ final class MenuBarIconCoordinator: MediaKeyIconFlashing {
     private func resolveButton() -> NSStatusBarButton? {
         if let cached = cachedButton { return cached }
 
-        for window in NSApp.windows {
-            if window.className.contains("FluidMenuBarExtraWindow") {
-                if let fluidStatusItem = window.value(forKey: "statusItem") as? NSObject,
-                   let statusItem = fluidStatusItem.value(forKey: "statusItem") as? NSStatusItem {
-                    statusItem.behavior = []
-                    statusItem.isVisible = true
-                    if let btn = statusItem.button {
-                        btn.wantsLayer = true
-                        cachedButton = btn
-                        return btn
-                    }
-                }
+        // The Mixer's item only: the Music item has its own fixed icon and must not get speaker symbols.
+        if let statusItem = MenuBarStatusItems.statusItem(for: .mixer) {
+            statusItem.behavior = []
+            statusItem.isVisible = true
+            if let btn = statusItem.button {
+                btn.wantsLayer = true
+                cachedButton = btn
+                return btn
             }
         }
 
