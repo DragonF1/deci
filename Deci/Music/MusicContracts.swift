@@ -16,8 +16,45 @@ struct MusicTrack: Sendable, Hashable, Identifiable {
     /// The names in `artist` that have an artist page behind them, in the order they are shown. Empty when the
     /// row's artist runs carry no page (or the source has none), so the line is plain text.
     var artistLinks: [MusicArtistLink] = []
+    /// The album's page ("MPRE...") when the row's album run links to one. Nil when the row names no album or
+    /// the run carries no page.
+    var albumBrowseId: String?
+    /// YouTube's id for this row's place in a playlist, which removing the row needs. Nil on rows that are not
+    /// playlist items. Public playlists carry it too, so whether the user may edit the playlist is the page's
+    /// `isEditable`, not this.
+    var playlistSetVideoId: String?
+    /// The row menu's "Pin to Listen again" toggle, when YouTube offers one for this row.
+    var listenAgainPin: MusicFeedbackToggle?
 
     var id: String { videoId }
+}
+
+/// A two-state YouTube menu toggle that is sent as a feedback token: "Pin to Listen again" and its undo.
+/// YouTube hands out one token for each direction, so the toggle keeps both and which way it is facing.
+struct MusicFeedbackToggle: Sendable, Hashable {
+    var isPinned: Bool
+    let pinToken: String?
+    let unpinToken: String?
+
+    /// The token that moves the toggle to its other state, nil when YouTube sent none for that direction.
+    var nextToken: String? { isPinned ? unpinToken : pinToken }
+
+    /// The same toggle after the move succeeded.
+    func flipped() -> MusicFeedbackToggle {
+        MusicFeedbackToggle(isPinned: !isPinned, pinToken: pinToken, unpinToken: unpinToken)
+    }
+}
+
+/// One playlist the user can add a song to, from the "Save to playlist" picker.
+struct MusicPlaylistOption: Sendable, Hashable, Identifiable {
+    /// The playlist id without the "VL" a browse id carries.
+    let playlistId: String
+    let title: String
+    let thumbnailURL: URL?
+    /// Whether the song is already in this playlist.
+    let containsVideo: Bool
+
+    var id: String { playlistId }
 }
 
 /// An artist's name under a song with the page it opens.
@@ -216,6 +253,8 @@ struct MusicBrowsePage: Sendable, Equatable {
     let continuation: String?
     /// Shelves under the songs (an artist's albums, singles, playlists); empty for playlists and albums.
     let shelves: [MusicShelf]
+    /// Whether the user can change this playlist's songs (their own playlist, not Liked Music or an album).
+    var isEditable = false
 }
 
 /// Who the session is signed in as, from YouTube's account menu. Shown on the Music tab's account card.
@@ -236,6 +275,8 @@ enum MusicError: Error, Sendable, Equatable {
     case unplayable(String)
     case noAudioFormat
     case solver(String)
+    /// A write call (save, remove, pin) came back without the success marker.
+    case rejected
 }
 
 /// Everything the player/UI side needs from the YouTube Music backend.
@@ -277,6 +318,14 @@ protocol MusicBackend: Sendable {
     func page(browseId: String) async throws -> MusicBrowsePage
     /// The tracks after `continuation` on a playlist page.
     func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage
+    /// The playlists the user can add `videoId` to, each marked when it already holds the song.
+    func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption]
+    /// Adds `videoId` to the playlist (a leading "VL" is ignored). Throws `.rejected` when YouTube does not say it worked.
+    func addToPlaylist(videoId: String, playlistId: String) async throws
+    /// Removes one row of the playlist, named by its `setVideoId`. Throws `.rejected` when YouTube does not say it worked.
+    func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws
+    /// Sends one feedback token (pin to or unpin from Listen again). Throws `.rejected` when it was not processed.
+    func sendFeedback(token: String) async throws
     /// Sends one history ping and returns the HTTP status YouTube answered with (200 or 204 when
     /// it took the ping). Throws on any other status, when signed out, or when the URL is not YouTube's.
     func reportHistory(_ ping: HistoryPing) async throws -> Int

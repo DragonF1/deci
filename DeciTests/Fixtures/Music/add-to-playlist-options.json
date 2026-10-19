@@ -1,0 +1,62 @@
+{
+  "responseContext": { "visitorData": "fixtureVisitor" },
+  "contents": [
+    {
+      "addToPlaylistRenderer": {
+        "playlists": [
+          {
+            "playlistAddToOptionRenderer": {
+              "playlistId": "PLfixtureRoadTrip0001",
+              "title": { "runs": [{ "text": "Fixture Road Trip" }] },
+              "thumbnails": [
+                { "thumbnails": [
+                  { "url": "https://img.example.test/road=w48-h48", "width": 48, "height": 48 },
+                  { "url": "https://img.example.test/road=w226-h226", "width": 226, "height": 226 }
+                ] }
+              ],
+              "containsSelectedVideos": "NONE",
+              "privacy": "PRIVATE"
+            }
+          },
+          {
+            "playlistAddToOptionRenderer": {
+              "playlistId": "PLfixtureWorkout0002",
+              "title": { "runs": [{ "text": "Fixture " }, { "text": "Workout" }] },
+              "thumbnails": [
+                { "thumbnails": [{ "url": "https://img.example.test/workout=w48-h48", "width": 48, "height": 48 }] }
+              ],
+              "containsSelectedVideos": "ALL",
+              "privacy": "PUBLIC"
+            }
+          },
+          {
+            "playlistAddToOptionRenderer": {
+              "playlistId": "LM",
+              "title": { "runs": [{ "text": "Fixture Liked" }] },
+              "containsSelectedVideos": "NONE"
+            }
+          },
+          {
+            "playlistAddToOptionRenderer": {
+              "playlistId": "PLfixtureNoCover0003",
+              "title": { "runs": [{ "text": "Fixture No Cover" }] },
+              "containsSelectedVideos": "NONE"
+            }
+          },
+          {
+            "playlistAddToOptionRenderer": {
+              "playlistId": "PLfixtureNoTitle0004",
+              "containsSelectedVideos": "NONE"
+            }
+          },
+          {
+            "playlistAddToOptionRenderer": {
+              "title": { "runs": [{ "text": "Fixture No Id" }] },
+              "containsSelectedVideos": "NONE"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

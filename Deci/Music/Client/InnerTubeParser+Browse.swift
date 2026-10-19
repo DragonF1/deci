@@ -164,8 +164,8 @@ extension InnerTubeParser {
         let sections = pageSections(in: root)
         let cover = pickThumbnail(header.renderer["thumbnail"] ?? header.renderer["foregroundThumbnail"], near: nil)
         let rows = trackShelf(in: sections)
-        var tracks = (rows?["contents"] as? [[String: Any]] ?? [])
-            .compactMap { ($0["musicResponsiveListItemRenderer"] as? [String: Any]).flatMap(browseTrack(from:)) }
+        let rowRenderers = (rows?["contents"] as? [[String: Any]] ?? []).compactMap { $0["musicResponsiveListItemRenderer"] as? [String: Any] }
+        var tracks = rowRenderers.compactMap(browseTrack(from:))
 
         if browseId.hasPrefix("MPRE") {
             // Album rows leave out what the page already says: the artist, the album and the cover.
@@ -179,7 +179,10 @@ extension InnerTubeParser {
                     album: track.album ?? title,
                     durationSeconds: track.durationSeconds,
                     thumbnailURL: track.thumbnailURL ?? cover,
-                    artistLinks: ownArtist ? track.artistLinks : artist.links
+                    artistLinks: ownArtist ? track.artistLinks : artist.links,
+                    albumBrowseId: track.albumBrowseId ?? browseId,
+                    playlistSetVideoId: track.playlistSetVideoId,
+                    listenAgainPin: track.listenAgainPin
                 )
             }
         }
@@ -194,7 +197,8 @@ extension InnerTubeParser {
             thumbnailURL: cover,
             tracks: uniqueTracks(tracks),
             continuation: rows.flatMap { continuationToken(in: $0, items: $0["contents"] as? [[String: Any]] ?? []) },
-            shelves: shelves
+            shelves: shelves,
+            isEditable: isEditablePlaylist(root: root, browseId: browseId, rows: rowRenderers)
         )
     }
 
@@ -382,6 +386,7 @@ extension InnerTubeParser {
             if let videoId = string(watch["videoId"]) {
                 guard !isPodcastEpisode(watch) else { return nil }
                 let subtitle = parseSubtitle(subtitleRuns)
+                let options = rowOptions(in: tile)
                 return .track(MusicTrack(
                     videoId: videoId,
                     title: title,
@@ -389,7 +394,9 @@ extension InnerTubeParser {
                     album: subtitle.album,
                     durationSeconds: subtitle.durationSeconds,
                     thumbnailURL: thumbnail,
-                    artistLinks: subtitle.artistLinks
+                    artistLinks: subtitle.artistLinks,
+                    albumBrowseId: subtitle.albumBrowseId ?? options.albumBrowseId,
+                    listenAgainPin: options.pin
                 ))
             }
             return mix(playlistId: string(watch["playlistId"]), title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)

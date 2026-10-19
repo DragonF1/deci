@@ -165,15 +165,20 @@ enum InnerTubeParser {
         // both in the second column instead.
         let fixed = (renderer["fixedColumns"] as? [[String: Any]])?.first
         let fixedRuns = runs(path(fixed, "musicResponsiveListItemFixedColumnRenderer", "text"))
-        let laterColumnAlbum = columns.dropFirst(2).first(where: isAlbumSegment).flatMap(text(of:))
+        let laterColumnAlbum = columns.dropFirst(2).first(where: isAlbumSegment)
+        // The album's page comes from its run, else from the row menu's "Go to album" item.
+        let options = rowOptions(in: renderer)
         return MusicTrack(
             videoId: videoId,
             title: title,
             artist: subtitle.artists.joined(separator: ", "),
-            album: subtitle.album ?? laterColumnAlbum,
+            album: subtitle.album ?? laterColumnAlbum.flatMap(text(of:)),
             durationSeconds: subtitle.durationSeconds ?? duration(of: fixedRuns),
             thumbnailURL: thumbnailURL(in: renderer),
-            artistLinks: subtitle.artistLinks
+            artistLinks: subtitle.artistLinks,
+            albumBrowseId: subtitle.albumBrowseId ?? laterColumnAlbum.flatMap(albumBrowseId(in:)) ?? options.albumBrowseId,
+            playlistSetVideoId: options.setVideoId ?? string(path(renderer, "playlistItemData", "playlistSetVideoId")),
+            listenAgainPin: options.pin
         )
     }
 
@@ -189,6 +194,8 @@ enum InnerTubeParser {
         /// The artists above that have a page, in the order shown.
         var artistLinks: [MusicArtistLink] = []
         var album: String?
+        /// The album's page, when its run links to one.
+        var albumBrowseId: String?
         var durationSeconds: Int?
     }
 
@@ -212,6 +219,7 @@ enum InnerTubeParser {
         }
         if segments.count > 1, let album = segments.dropFirst().first(where: isAlbumSegment) {
             result.album = text(of: album)
+            result.albumBrowseId = albumBrowseId(in: album)
         }
         return result
     }
@@ -319,14 +327,18 @@ enum InnerTubeParser {
         guard !title.isEmpty else { return nil }
 
         let segments = bulletSegments(of: runs(renderer["longBylineText"]))
+        let albumSegment = segments.dropFirst().first(where: isAlbumSegment)
+        let options = rowOptions(in: renderer)
         return MusicTrack(
             videoId: videoId,
             title: title,
             artist: artistNames(in: segments.first ?? []).joined(separator: ", "),
-            album: segments.dropFirst().first(where: isAlbumSegment).flatMap(text(of:)),
+            album: albumSegment.flatMap(text(of:)),
             durationSeconds: duration(of: runs(renderer["lengthText"])),
             thumbnailURL: largestThumbnailURL(in: renderer),
-            artistLinks: artistLinks(in: segments.first ?? [])
+            artistLinks: artistLinks(in: segments.first ?? []),
+            albumBrowseId: albumSegment.flatMap(albumBrowseId(in:)) ?? options.albumBrowseId,
+            listenAgainPin: options.pin
         )
     }
 

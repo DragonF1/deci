@@ -65,7 +65,11 @@ struct MusicMiniTransport: View {
 
                     Spacer(minLength: DesignTokens.Spacing.sm)
 
-                    transportButtons
+                    HStack(spacing: DesignTokens.Spacing.xs) {
+                        transportButtons
+                        // The playing song's own actions, on no page. Always shown: the player has no hover.
+                        MusicNowPlayingMenu(track: track)
+                    }
                 }
 
                 progressRow

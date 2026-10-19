@@ -317,7 +317,8 @@ final class MusicBrowseStore {
             thumbnailURL: page.thumbnailURL,
             tracks: page.tracks + fresh,
             continuation: more.continuation == token ? nil : more.continuation,
-            shelves: page.shelves
+            shelves: page.shelves,
+            isEditable: page.isEditable
         ))
     }
 
@@ -326,6 +327,29 @@ final class MusicBrowseStore {
         loadingMoreTracks.remove(browseId)
         logger.info("more tracks failed: \(MusicService.logDescription(of: error), privacy: .public)")
         expireIfSignedOut(error)
+    }
+
+    /// Takes one row out of a loaded playlist page after YouTube removed it from the playlist. The row is named by its
+    /// `setVideoId`, since the same song can sit in a playlist twice. A page that is not loaded, or has no such row,
+    /// is left as it is. Returns whether a row went. The playing queue is not touched.
+    @discardableResult
+    func removeTrack(setVideoId: String, from browseId: String) -> Bool {
+        guard !setVideoId.isEmpty, case .loaded(let page)? = pages[browseId],
+              let index = page.tracks.firstIndex(where: { $0.playlistSetVideoId == setVideoId }) else { return false }
+        var tracks = page.tracks
+        tracks.remove(at: index)
+        sortedPages[browseId] = nil
+        pages[browseId] = .loaded(MusicBrowsePage(
+            browseId: page.browseId,
+            title: page.title,
+            subtitle: page.subtitle,
+            thumbnailURL: page.thumbnailURL,
+            tracks: tracks,
+            continuation: page.continuation,
+            shelves: page.shelves,
+            isEditable: page.isEditable
+        ))
+        return true
     }
 
     // MARK: - Sorting
@@ -364,7 +388,8 @@ final class MusicBrowseStore {
             thumbnailURL: page.thumbnailURL,
             tracks: sort.sorted(Array(page.tracks.prefix(Self.sortTrackCap))),
             continuation: nil,
-            shelves: page.shelves
+            shelves: page.shelves,
+            isEditable: page.isEditable
         )
         sortedPages[browseId] = (sort, sorted)
         return sorted

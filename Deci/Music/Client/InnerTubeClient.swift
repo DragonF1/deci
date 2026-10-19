@@ -285,6 +285,59 @@ actor InnerTubeClient {
         return page
     }
 
+    // MARK: - Song actions
+
+    /// The playlists the user can add `videoId` to, each marked when it already holds the song. Only the count is logged.
+    func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption] {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let id = videoId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return [] }
+        let session = try await sessionOrFallback()
+        let data = try await post("playlist/get_add_to_playlist", session: session, body: ["videoIds": [id]])
+        let options = try InnerTubeParser.addToPlaylistOptions(from: data)
+        Self.log.info("add to playlist picker returned \(options.count) playlists")
+        return options
+    }
+
+    /// Adds one song to a playlist. A song the playlist already holds is skipped, not added twice.
+    func addVideo(_ videoId: String, toPlaylist playlistId: String) async throws {
+        guard !videoId.isEmpty else { throw MusicError.parse("playlist edit has no video id") }
+        let action: [String: Any] = ["action": "ACTION_ADD_VIDEO", "addedVideoId": videoId, "dedupeOption": "DEDUPE_OPTION_SKIP"]
+        try await editPlaylist(playlistId, action: action, what: "add")
+    }
+
+    /// Removes one row of a playlist, named by its `setVideoId` (the same song twice is two rows).
+    func removeVideo(_ videoId: String, setVideoId: String, fromPlaylist playlistId: String) async throws {
+        guard !videoId.isEmpty, !setVideoId.isEmpty else { throw MusicError.parse("playlist edit has no video id") }
+        let action: [String: Any] = ["action": "ACTION_REMOVE_VIDEO", "setVideoId": setVideoId, "removedVideoId": videoId]
+        try await editPlaylist(playlistId, action: action, what: "remove")
+    }
+
+    /// Sends one feedback token (pin to or unpin from Listen again). The token is never logged.
+    func sendFeedback(token: String) async throws {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        guard !token.isEmpty else { throw MusicError.parse("feedback has no token") }
+        let session = try await sessionOrFallback()
+        let data = try await post("feedback", session: session, body: ["feedbackTokens": [token]])
+        let processed = try InnerTubeParser.feedbackProcessed(in: data)
+        Self.log.info("feedback processed \(processed, privacy: .public)")
+        guard processed else { throw MusicError.rejected }
+    }
+
+    /// One `browse/edit_playlist` call. The playlist id goes without the "VL" a browse id carries. Only whether it
+    /// worked is logged, never an id.
+    private func editPlaylist(_ playlistId: String, action: [String: Any], what: String) async throws {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        var id = playlistId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if id.hasPrefix("VL") { id.removeFirst(2) }
+        guard !id.isEmpty else { throw MusicError.parse("playlist edit has no playlist id") }
+        let session = try await sessionOrFallback()
+        let data = try await post("browse/edit_playlist", session: session, body: ["playlistId": id, "actions": [action]])
+        let succeeded = try InnerTubeParser.playlistEditSucceeded(in: data)
+        Self.log.info("playlist \(what, privacy: .public) succeeded \(succeeded, privacy: .public)")
+        guard succeeded else { throw MusicError.rejected }
+    }
+
     private func browse(browseId: String) async throws -> Data {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         let session = try await sessionOrFallback()

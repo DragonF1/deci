@@ -40,7 +40,13 @@ struct MusicPageView: View {
                     )
                     .padding(.bottom, DesignTokens.Spacing.sm)
 
+                    // The page the songs sit on decides whether they can leave the playlist or go to this album.
                     tracks(of: page)
+                        .environment(\.musicTrackContext, MusicTrackContext(
+                            pageBrowseId: page.browseId,
+                            pageTitle: page.title,
+                            pageIsEditable: page.isEditable
+                        ))
 
                     ForEach(Array(page.shelves.enumerated()), id: \.offset) { _, shelf in
                         MusicShelfView(

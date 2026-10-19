@@ -45,6 +45,8 @@ final class MusicService {
     let browse: MusicBrowseStore
     /// Synced lyrics of the playing track, for the lyrics panel.
     let lyrics: MusicLyricsStore
+    /// The song actions (save to playlist, remove from playlist, pin to Listen again) and their notice line.
+    let trackActions: MusicTrackActionsStore
     /// The artists pinned to the top of Home. Remembered across launches, and kept through sign-out and account
     /// switches: an artist is a public channel, not part of an account.
     let pinnedArtists: MusicPinnedArtists
@@ -185,7 +187,9 @@ final class MusicService {
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
-        self.browse = MusicBrowseStore(backend: backend)
+        let browse = MusicBrowseStore(backend: backend)
+        self.browse = browse
+        self.trackActions = MusicTrackActionsStore(backend: backend, browse: browse)
         self.lyrics = lyrics
         self.pinnedArtists = MusicPinnedArtists(artists: pinnedArtists, save: savePinnedArtists)
         self.player = player
@@ -217,6 +221,7 @@ final class MusicService {
         player.onStateChange = { [weak self] in self?.playerStateChanged() }
         nowPlaying.onCommand = { [weak self] command in self?.handleRemote(command) }
         browse.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
+        trackActions.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         browse.onPageLoaded = { [weak self] page, opener in self?.pageLoaded(page, opener: opener) }
         if refreshOnCreate {
             Task { [weak self] in await self?.refreshAuth() }
@@ -298,6 +303,7 @@ final class MusicService {
         closeSignInWindow()
         browse.reset()
         lyrics.reset()
+        trackActions.reset()
         signOutTask = Task { [backend] in await backend.signOut() }
     }
 
@@ -395,6 +401,7 @@ final class MusicService {
         isBrandChannel = nil
         browse.reset()
         lyrics.reset()
+        trackActions.reset()
         clearAccount()
         refreshIdentity()
     }
@@ -458,6 +465,7 @@ final class MusicService {
                 self.isBrandChannel = nil
                 // Home and the library belong to the channel: what is loaded is the old one's.
                 self.browse.reset()
+                self.trackActions.reset()
                 // The card shows the channel that was picked, not the one that was left.
                 self.clearAccount()
                 self.refreshAccount()
@@ -1264,6 +1272,7 @@ final class MusicService {
             cancelReport()
             session = nil
             browse.reset()
+            trackActions.reset()
             clearAccount()
             signOutTask = Task { [backend] in await backend.signOut() }
             return
@@ -1308,6 +1317,8 @@ final class MusicService {
                 return "No audio stream for this track."
             case .solver:
                 return "Couldn't prepare the stream. Try again."
+            case .rejected:
+                return "YouTube Music didn't accept that. Try again."
             }
         }
         if error is URLError {
@@ -1326,6 +1337,7 @@ final class MusicService {
             case .unplayable: return "unplayable"
             case .noAudioFormat: return "noAudioFormat"
             case .solver: return "solver"
+            case .rejected: return "rejected"
             }
         }
         let nsError = error as NSError

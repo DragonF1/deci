@@ -2,8 +2,9 @@
 import Foundation
 import Observation
 
-/// What the Music tab shows over Home and Library (search results, Up next, Lyrics), and the one way every artist
-/// name and tile opens an artist page. It lives here, not in the view, so the rules can be tested. One instance
+/// What the Music tab shows over Home and Library (search results, Up next, Lyrics, the add-to-playlist picker), and
+/// the one way every artist, album name or tile opens its page, and every "..." menu action runs. It lives here, not
+/// in the view, so the rules can be tested. One instance
 /// belongs to each `MusicService` (`MusicServiceHost` makes it): the popup unmounts the Music tab's view on a
 /// switch to Mixer and builds it again, and the view takes this one back, so what was open is still open.
 @MainActor
@@ -57,8 +58,14 @@ final class MusicSearchNavigation {
         return service.isSearching || hasResults || submittedQuery == trimmedQuery
     }
 
+    /// The add-to-playlist picker is open. The store owns it; like Up next and Lyrics it sits over whatever is under
+    /// it, and is never on together with either of them.
+    var showsPicker: Bool {
+        service.trackActions.picker != nil
+    }
+
     var isBrowsing: Bool {
-        !showsQueue && !showsResults && !showsLyrics
+        !showsQueue && !showsResults && !showsLyrics && !showsPicker
     }
 
     private var isHidingResults: Bool {
@@ -100,17 +107,25 @@ final class MusicSearchNavigation {
 
     func toggleQueue() {
         service.lyrics.setPanelOpen(false)
+        service.trackActions.closePicker()
         queueForced.toggle()
     }
 
     func toggleLyrics() {
         queueForced = false
+        service.trackActions.closePicker()
         service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
     }
 
     private func closePanels() {
         queueForced = false
         service.lyrics.setPanelOpen(false)
+        service.trackActions.closePicker()
+    }
+
+    /// Back from the picker, to whatever was under it.
+    func closePicker() {
+        service.trackActions.closePicker()
     }
 
     // MARK: - Opening pages
@@ -124,17 +139,46 @@ final class MusicSearchNavigation {
         service.browse.popToRoot()
     }
 
-    /// An artist name or tile was tapped, from anywhere. It opens on top of the pages already open. Over search
-    /// results the results step aside, keeping the query and those pages, and Back returns to them. Up next and
-    /// Lyrics close before the open, so the artist page is not hidden behind the panel.
+    /// An artist name or tile was tapped, from anywhere.
     func openArtist(_ artist: MusicCollection) {
+        openCollection(artist)
+    }
+
+    /// An artist or an album (a name, a tile or Go to album) was opened, from anywhere. It opens on top of the pages
+    /// already open. Over search results the results step aside, keeping the query and those pages, and Back returns
+    /// to them. Up next, Lyrics and the picker close before the open, so the page is not hidden behind the panel.
+    func openCollection(_ collection: MusicCollection) {
         let fromResults = showsResults
         closePanels()
-        service.browse.open(artist)
+        service.browse.open(collection)
         if fromResults {
             // Opening the page already on top adds nothing, so count from the end of the path, not the start.
             resultsDepth = service.browse.path.count - 1
             hidesResults = true
+        }
+    }
+
+    // MARK: - Song actions
+
+    /// The "..." menu of a song: what it offers here, in menu order.
+    func actions(for track: MusicTrack, in context: MusicTrackContext) -> [MusicTrackAction] {
+        service.trackActions.actions(for: track, in: context)
+    }
+
+    /// Runs a menu item. Save to playlist opens the picker over whatever shows; Go to album opens the album page;
+    /// Remove and Pin go to the actions store, which shows what happened as a short line.
+    func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
+        switch action {
+        case .goToAlbum:
+            if let album = MusicTrackActions.albumCollection(for: track) { openCollection(album) }
+        case .saveToPlaylist:
+            queueForced = false
+            service.lyrics.setPanelOpen(false)
+            service.trackActions.openPicker(for: track)
+        case .removeFromPlaylist:
+            service.trackActions.remove(track, in: context)
+        case .pinToListenAgain, .unpinFromListenAgain:
+            service.trackActions.togglePin(track)
         }
     }
 }

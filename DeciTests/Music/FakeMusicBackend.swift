@@ -50,6 +50,17 @@ actor FakeMusicBackend: MusicBackend {
         let continuation: String
     }
 
+    nonisolated struct AddToPlaylistCall: Hashable, Sendable {
+        let videoId: String
+        let playlistId: String
+    }
+
+    nonisolated struct RemoveFromPlaylistCall: Hashable, Sendable {
+        let videoId: String
+        let setVideoId: String
+        let playlistId: String
+    }
+
     private var signedIn: Bool
     private var signInError: (any Error)?
     private var searchResults: [String: [Deci.MusicTrack]] = [:]
@@ -88,6 +99,15 @@ actor FakeMusicBackend: MusicBackend {
     private var moreTracksPages: [MoreTracksCall: MusicQueuePage] = [:]
     private var moreTracksErrors: [MoreTracksCall: any Error] = [:]
     private var moreTracksGates: [MoreTracksCall: MusicTestGate] = [:]
+    private var playlistOptions: [String: [MusicPlaylistOption]] = [:]
+    private var playlistOptionsErrors: [String: any Error] = [:]
+    private var playlistOptionsGates: [String: MusicTestGate] = [:]
+    private var addToPlaylistError: (any Error)?
+    private var addToPlaylistGate: MusicTestGate?
+    private var removeFromPlaylistError: (any Error)?
+    private var removeFromPlaylistGate: MusicTestGate?
+    private var feedbackError: (any Error)?
+    private var feedbackGate: MusicTestGate?
 
     private(set) var radioSeeds: [String] = []
     private(set) var moreRadioCalls: [MoreRadioCall] = []
@@ -97,6 +117,10 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var moreLibraryCalls: [MoreLibraryCall] = []
     private(set) var pageCalls: [String] = []
     private(set) var moreTracksCalls: [MoreTracksCall] = []
+    private(set) var playlistOptionsCalls: [String] = []
+    private(set) var addToPlaylistCalls: [AddToPlaylistCall] = []
+    private(set) var removeFromPlaylistCalls: [RemoveFromPlaylistCall] = []
+    private(set) var feedbackTokens: [String] = []
     private(set) var searchedQueries: [String] = []
     private(set) var searchedArtistQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
@@ -209,6 +233,18 @@ actor FakeMusicBackend: MusicBackend {
         moreTracksGates[MoreTracksCall(browseId: browseId, continuation: continuation)] = gate
     }
 
+    // Song actions. The picker's list is scripted per video; the three write calls share one error and one gate each
+    // and are recorded. A gate holds the call after it was recorded; nil removes a gate or an error.
+    func setPlaylistOptions(videoId: String, _ options: [MusicPlaylistOption]) { playlistOptions[videoId] = options }
+    func setPlaylistOptionsError(videoId: String, _ error: (any Error)?) { playlistOptionsErrors[videoId] = error }
+    func setPlaylistOptionsGate(videoId: String, _ gate: MusicTestGate?) { playlistOptionsGates[videoId] = gate }
+    func setAddToPlaylistError(_ error: (any Error)?) { addToPlaylistError = error }
+    func setAddToPlaylistGate(_ gate: MusicTestGate?) { addToPlaylistGate = gate }
+    func setRemoveFromPlaylistError(_ error: (any Error)?) { removeFromPlaylistError = error }
+    func setRemoveFromPlaylistGate(_ gate: MusicTestGate?) { removeFromPlaylistGate = gate }
+    func setFeedbackError(_ error: (any Error)?) { feedbackError = error }
+    func setFeedbackGate(_ gate: MusicTestGate?) { feedbackGate = gate }
+
     // MARK: MusicBackend
 
     func isSignedIn() async -> Bool { signedIn }
@@ -297,6 +333,36 @@ actor FakeMusicBackend: MusicBackend {
         if let gate { await gate.wait() }
         if let error { throw error }
         return page
+    }
+
+    func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption] {
+        playlistOptionsCalls.append(videoId)
+        let gate = playlistOptionsGates[videoId], error = playlistOptionsErrors[videoId]
+        let options = playlistOptions[videoId] ?? []
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return options
+    }
+
+    func addToPlaylist(videoId: String, playlistId: String) async throws {
+        addToPlaylistCalls.append(AddToPlaylistCall(videoId: videoId, playlistId: playlistId))
+        let gate = addToPlaylistGate, error = addToPlaylistError
+        if let gate { await gate.wait() }
+        if let error { throw error }
+    }
+
+    func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws {
+        removeFromPlaylistCalls.append(RemoveFromPlaylistCall(videoId: videoId, setVideoId: setVideoId, playlistId: playlistId))
+        let gate = removeFromPlaylistGate, error = removeFromPlaylistError
+        if let gate { await gate.wait() }
+        if let error { throw error }
+    }
+
+    func sendFeedback(token: String) async throws {
+        feedbackTokens.append(token)
+        let gate = feedbackGate, error = feedbackError
+        if let gate { await gate.wait() }
+        if let error { throw error }
     }
 
     func search(_ query: String) async throws -> [Deci.MusicTrack] {
@@ -440,8 +506,29 @@ final class FakeNowPlayingSurface: NowPlayingSurface {
 }
 
 nonisolated enum MusicSamples {
-    static func track(_ id: String = "vid1", title: String = "Song", artist: String = "Artist", seconds: Int? = 200) -> Deci.MusicTrack {
-        Deci.MusicTrack(videoId: id, title: title, artist: artist, album: nil, durationSeconds: seconds, thumbnailURL: nil)
+    static func track(
+        _ id: String = "vid1",
+        title: String = "Song",
+        artist: String = "Artist",
+        seconds: Int? = 200,
+        albumBrowseId: String? = nil,
+        setVideoId: String? = nil,
+        pin: MusicFeedbackToggle? = nil
+    ) -> Deci.MusicTrack {
+        var track = Deci.MusicTrack(videoId: id, title: title, artist: artist, album: nil, durationSeconds: seconds, thumbnailURL: nil)
+        track.albumBrowseId = albumBrowseId
+        track.playlistSetVideoId = setVideoId
+        track.listenAgainPin = pin
+        return track
+    }
+
+    /// A pin toggle with both tokens, facing the given way.
+    static func pinToggle(isPinned: Bool = false, pin: String? = "pin-token", unpin: String? = "unpin-token") -> MusicFeedbackToggle {
+        MusicFeedbackToggle(isPinned: isPinned, pinToken: pin, unpinToken: unpin)
+    }
+
+    static func playlistOption(_ id: String, title: String? = nil, contains: Bool = false) -> MusicPlaylistOption {
+        MusicPlaylistOption(playlistId: id, title: title ?? "Playlist \(id)", thumbnailURL: nil, containsVideo: contains)
     }
 
     static func tracks(_ ids: String...) -> [Deci.MusicTrack] {
@@ -470,7 +557,8 @@ nonisolated enum MusicSamples {
         tracks: [Deci.MusicTrack] = [],
         continuation: String? = nil,
         title: String = "Page",
-        shelves: [MusicShelf] = []
+        shelves: [MusicShelf] = [],
+        isEditable: Bool = false
     ) -> MusicBrowsePage {
         MusicBrowsePage(
             browseId: browseId,
@@ -479,7 +567,8 @@ nonisolated enum MusicSamples {
             thumbnailURL: nil,
             tracks: tracks,
             continuation: continuation,
-            shelves: shelves
+            shelves: shelves,
+            isEditable: isEditable
         )
     }
 

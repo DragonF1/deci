@@ -108,7 +108,14 @@ private struct MusicSignedInView: View {
                     .allowsHitTesting(navigation.isBrowsing)
                     .accessibilityHidden(!navigation.isBrowsing)
 
-                if navigation.showsLyrics {
+                if let picker = service.trackActions.picker {
+                    MusicPlaylistPickerView(
+                        picker: picker,
+                        onBack: { navigation.closePicker() },
+                        onChoose: { service.trackActions.choose($0) },
+                        onRetry: { service.trackActions.openPicker(for: picker.track) }
+                    )
+                } else if navigation.showsLyrics {
                     MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
                 } else if navigation.showsQueue {
                     queueList
@@ -117,11 +124,24 @@ private struct MusicSignedInView: View {
                 }
             }
             .frame(maxHeight: .infinity)
+            // What a song action did ("Saved to ...", "Removed from ..."), over the bottom of the list.
+            .overlay(alignment: .bottom) {
+                if let notice = service.trackActions.notice {
+                    MusicNoticeLine(notice: notice) { service.trackActions.dismissNotice() }
+                        .transition(.opacity)
+                }
+            }
+            .animation(DesignTokens.Animation.quick, value: service.trackActions.notice)
 
             MusicMiniTransport(service: service)
         }
         // Every artist name under a song, on any list or in the player, opens the artist through here.
         .environment(\.openMusicArtist, { navigation.openArtist($0) })
+        // Every song row's "..." button and right click menu, and the one in the player, run through here.
+        .environment(\.musicTrackMenu, MusicTrackMenuHandler(
+            actions: { navigation.actions(for: $0, in: $1) },
+            perform: { navigation.perform($0, for: $1, in: $2) }
+        ))
         .overlay(alignment: .topTrailing) {
             if isAccountCardOpen {
                 accountCardLayer
@@ -132,6 +152,7 @@ private struct MusicSignedInView: View {
         .onDisappear {
             isAccountCardOpen = false
             service.lyrics.setPanelOpen(false)
+            service.trackActions.closePicker()
             navigation.queueForced = false
         }
         .task { searchFocused = true }
@@ -145,6 +166,12 @@ private struct MusicSignedInView: View {
         // Nothing is loaded any more: the button is gone, so the panel goes with it.
         .onChange(of: service.lyrics.track == nil) { _, noTrack in
             if noTrack { service.lyrics.setPanelOpen(false) }
+        }
+        // A screen reader hears the line that says what a song action did.
+        .onChange(of: service.trackActions.notice?.id) {
+            if let text = service.trackActions.notice?.text {
+                AccessibilityNotification.Announcement(text).post()
+            }
         }
     }
 
@@ -354,8 +381,18 @@ struct MusicResultRow: View {
 
     /// Set while Full Keyboard Access has put keyboard focus on the row, so it shows the hover surface.
     @FocusState private var isKeyboardFocused: Bool
+    @State private var isHovered = false
+    @Environment(\.musicTrackMenu) private var menu
+    @Environment(\.musicTrackContext) private var context
+
+    private var offeredActions: [MusicTrackAction] { menu?.actions(track, context) ?? [] }
+
+    private func perform(_ action: MusicTrackAction) {
+        menu?.perform(action, track, context)
+    }
 
     var body: some View {
+        let actions = offeredActions
         // The row plays on a tap. It is not one Button, because the artist names inside it are buttons of their
         // own, and a button nested in another button's label is unreliable for clicks and for VoiceOver.
         HStack(spacing: DesignTokens.Spacing.sm) {
@@ -384,9 +421,25 @@ struct MusicResultRow: View {
                     .foregroundStyle(DesignTokens.Colors.textTertiary)
                     .accessibilityHidden(true)
             }
+
+            // Its room is kept whether or not it shows, so the duration never moves when the pointer arrives. A
+            // button of its own, like the artist names: its click opens the menu and does not play the row.
+            if !actions.isEmpty {
+                let showsMore = isHovered || isKeyboardFocused
+                MusicTrackMoreButton(track: track, actions: actions, perform: perform)
+                    .opacity(showsMore ? 1 : 0)
+                    .allowsHitTesting(showsMore)
+                    .accessibilityHidden(!showsMore)
+                    .animation(DesignTokens.Animation.hover, value: showsMore)
+            }
         }
         .hoverableRow(isFocused: isCurrent || isKeyboardFocused)
+        .onHover { isHovered = $0 }
         .contentShape(Rectangle())
+        // The same actions as the "..." button, for a right click anywhere on the row.
+        .contextMenu {
+            MusicTrackMenuItems(actions: actions, perform: perform)
+        }
         // A name's own button takes its click first; a click anywhere else on the row plays.
         .onTapGesture(perform: action)
         // What the Button gave the row: reachable with Full Keyboard Access only (a plain Tab stays on the search
@@ -404,5 +457,11 @@ struct MusicResultRow: View {
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
         .accessibilityAction(named: "Play", action)
         .accessibilityAction(.default, action)
+        // The "..." button hides until the pointer or the keyboard is on the row; VoiceOver gets the actions here.
+        .accessibilityActions {
+            ForEach(actions, id: \.self) { action in
+                Button(action.title) { perform(action) }
+            }
+        }
     }
 }
