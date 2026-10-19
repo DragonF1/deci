@@ -299,10 +299,12 @@ actor InnerTubeClient {
         return options
     }
 
-    /// Adds one song to a playlist. A song the playlist already holds is skipped, not added twice.
+    /// Adds one song to a playlist. No `dedupeOption`: "DEDUPE_OPTION_SKIP" skips YouTube's duplicate check and adds
+    /// the song twice (ytmusicapi sends it only for `duplicates=True`). Without it a song the playlist already holds
+    /// is refused, which lands as `.rejected`.
     func addVideo(_ videoId: String, toPlaylist playlistId: String) async throws {
         guard !videoId.isEmpty else { throw MusicError.parse("playlist edit has no video id") }
-        let action: [String: Any] = ["action": "ACTION_ADD_VIDEO", "addedVideoId": videoId, "dedupeOption": "DEDUPE_OPTION_SKIP"]
+        let action: [String: Any] = ["action": "ACTION_ADD_VIDEO", "addedVideoId": videoId]
         try await editPlaylist(playlistId, action: action, what: "add")
     }
 

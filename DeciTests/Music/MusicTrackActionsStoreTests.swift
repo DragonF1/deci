@@ -189,6 +189,24 @@ struct MusicTrackActionsStoreTests {
         #expect(await h.backend.addToPlaylistCalls.count == 1)
     }
 
+    @Test("A save still out is not sent again from a picker closed and opened again")
+    func reopenedPickerDoesNotResend() async {
+        let h = ActionsHarness()
+        await h.openPicker()
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
+        h.store.choose(road)
+        h.store.closePicker()
+        await h.openPicker()
+        h.store.choose(road)
+        #expect(h.store.picker?.isSaving == false)
+        await gate.open()
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        await h.letLateWorkLand()
+        #expect(await h.backend.addToPlaylistCalls.count == 1)
+    }
+
     @Test("A playlist that already holds the song sends nothing and says so")
     func chooseAlreadyIn() async {
         let h = ActionsHarness()
@@ -210,7 +228,8 @@ struct MusicTrackActionsStoreTests {
         h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
 
         #expect(await h.until { h.store.notice != nil })
-        #expect(h.store.notice?.text == MusicService.message(for: MusicError.rejected))
+        // No dedupe option goes out, so a refusal most likely means the song is already there.
+        #expect(h.store.notice?.text == "Not added. Road Trip may already have it.")
         #expect(h.store.notice?.isError == true)
         #expect(h.store.picker?.isSaving == false)
         #expect(h.options?.count == 2)
@@ -465,6 +484,22 @@ struct MusicTrackActionsStoreTests {
         #expect(await h.until { h.store.actions(for: here, in: .none).contains(.unpinFromListenAgain) })
         #expect(h.store.actions(for: elsewhere, in: .none).contains(.unpinFromListenAgain))
         #expect(h.store.actions(for: other, in: .none).contains(.pinToListenAgain))
+    }
+
+    @Test("A row loaded since the pin, with its own state and tokens, shows its own and sends its own token")
+    func reloadedRowShowsItsOwn() async {
+        let h = ActionsHarness()
+        let here = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
+        h.store.togglePin(here)
+        #expect(await h.until { h.store.actions(for: here, in: .none).contains(.unpinFromListenAgain) })
+
+        // Unpinned on the web since: the fresh row says Pin again, with new tokens.
+        let reloaded = MusicSamples.track("v1", pin: MusicSamples.pinToggle(isPinned: false, pin: "pin-2", unpin: "unpin-2"))
+        #expect(h.store.actions(for: reloaded, in: .none).contains(.pinToListenAgain))
+        h.store.togglePin(reloaded)
+        #expect(await h.until { await h.backend.feedbackTokens.count == 2 })
+        #expect(await h.backend.feedbackTokens == ["pin-token", "pin-2"])
+        #expect(h.store.actions(for: reloaded, in: .none).contains(.unpinFromListenAgain))
     }
 
     @Test("A row with no toggle never gains one from another row's pin")

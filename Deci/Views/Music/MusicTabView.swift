@@ -125,13 +125,16 @@ private struct MusicSignedInView: View {
             }
             .frame(maxHeight: .infinity)
             // What a song action did ("Saved to ...", "Removed from ..."), over the bottom of the list.
+            // The animation stays on the line: a removed row lands in the same turn and must not crossfade the list.
             .overlay(alignment: .bottom) {
-                if let notice = service.trackActions.notice {
-                    MusicNoticeLine(notice: notice) { service.trackActions.dismissNotice() }
-                        .transition(.opacity)
+                ZStack {
+                    if let notice = service.trackActions.notice {
+                        MusicNoticeLine(notice: notice) { service.trackActions.dismissNotice() }
+                            .transition(.opacity)
+                    }
                 }
+                .animation(DesignTokens.Animation.quick, value: service.trackActions.notice)
             }
-            .animation(DesignTokens.Animation.quick, value: service.trackActions.notice)
 
             MusicMiniTransport(service: service)
         }
@@ -423,12 +426,12 @@ struct MusicResultRow: View {
             }
 
             // Its room is kept whether or not it shows, so the duration never moves when the pointer arrives. A
-            // button of its own, like the artist names: its click opens the menu and does not play the row.
+            // button of its own, like the artist names: its click opens the menu and does not play the row. It stays
+            // clickable while faded: an open menu can end the row's hover, and the button must not vanish under it.
             if !actions.isEmpty {
                 let showsMore = isHovered || isKeyboardFocused
                 MusicTrackMoreButton(track: track, actions: actions, perform: perform)
                     .opacity(showsMore ? 1 : 0)
-                    .allowsHitTesting(showsMore)
                     .accessibilityHidden(!showsMore)
                     .animation(DesignTokens.Animation.hover, value: showsMore)
             }

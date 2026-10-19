@@ -91,7 +91,8 @@ struct InnerTubeClientRowActionsTests {
         #expect(sent.count == 1)
         #expect(sent.first?["action"] as? String == "ACTION_ADD_VIDEO")
         #expect(sent.first?["addedVideoId"] as? String == "vid-1")
-        #expect(sent.first?["dedupeOption"] as? String == "DEDUPE_OPTION_SKIP")
+        // DEDUPE_OPTION_SKIP would skip YouTube's duplicate check and add the song twice.
+        #expect(sent.first?["dedupeOption"] == nil)
         #expect(sent.first?["setVideoId"] == nil)
     }
 

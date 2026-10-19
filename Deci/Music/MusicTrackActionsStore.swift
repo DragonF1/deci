@@ -29,9 +29,15 @@ final class MusicTrackActionsStore {
 
     private(set) var picker: Picker?
     private(set) var notice: Notice?
-    /// The pin state of songs pinned or unpinned this session, over what the row said when it loaded. Keyed by song:
-    /// every row of the same song shows the same Pin / Unpin.
-    private var pins: [String: MusicFeedbackToggle] = [:]
+    /// A pin or unpin made this session, over what the row said when it loaded.
+    struct PinOverride: Equatable {
+        /// The row's own toggle when it was flipped. A row loaded since (new state or new tokens) shows its own.
+        let source: MusicFeedbackToggle
+        let toggle: MusicFeedbackToggle
+    }
+
+    /// Keyed by song: every row of the same song, from the same load, shows the same Pin / Unpin.
+    private var pins: [String: PinOverride] = [:]
 
     @ObservationIgnored private let backend: any MusicBackend
     @ObservationIgnored private let browse: MusicBrowseStore
@@ -63,9 +69,9 @@ final class MusicTrackActionsStore {
 
     /// Only a song YouTube offered the toggle for has one; another row's pin never gives one to a row that has none.
     private func withPinState(_ track: MusicTrack) -> MusicTrack {
-        guard track.listenAgainPin != nil, let toggle = pins[track.videoId] else { return track }
+        guard let own = track.listenAgainPin, let override = pins[track.videoId], override.source == own else { return track }
         var pinned = track
-        pinned.listenAgainPin = toggle
+        pinned.listenAgainPin = override.toggle
         return pinned
     }
 
@@ -103,15 +109,18 @@ final class MusicTrackActionsStore {
             post("Already in \(option.title)")
             return
         }
+        let videoId = current.track.videoId
+        // Also guards a reopened picker: `isSaving` goes with the picker, this does not.
+        let key = busyKey("save:\(option.playlistId):\(videoId)")
+        guard busy.insert(key).inserted else { return }
         picker?.isSaving = true
         let run = pickerRun, session = sessionRun
-        let videoId = current.track.videoId
         Task { [weak self, backend] in
             do {
                 try await backend.addToPlaylist(videoId: videoId, playlistId: option.playlistId)
-                self?.landSave(option, run: run, session: session)
+                self?.landSave(option, key: key, run: run, session: session)
             } catch {
-                self?.failSave(error, run: run, session: session)
+                self?.failSave(error, option: option, key: key, run: run, session: session)
             }
         }
     }
@@ -129,17 +138,26 @@ final class MusicTrackActionsStore {
         expireIfSignedOut(error)
     }
 
-    private func landSave(_ option: MusicPlaylistOption, run: Int, session: Int) {
+    private func landSave(_ option: MusicPlaylistOption, key: String, run: Int, session: Int) {
+        busy.remove(key)
         guard sessionRun == session else { return }
         if pickerRun == run { closePicker() }
         post("Saved to \(option.title)")
     }
 
-    private func failSave(_ error: any Error, run: Int, session: Int) {
+    /// YouTube refuses an add the playlist already holds (no dedupe option is sent), so a refusal most likely means
+    /// the list was out of date and it is already there.
+    private func failSave(_ error: any Error, option: MusicPlaylistOption, key: String, run: Int, session: Int) {
+        busy.remove(key)
         guard sessionRun == session else { return }
         logger.error("save failed: \(MusicService.logDescription(of: error), privacy: .public)")
         if pickerRun == run { picker?.isSaving = false }
-        if !expireIfSignedOut(error) { post(MusicService.message(for: error), isError: true) }
+        guard !expireIfSignedOut(error) else { return }
+        if (error as? MusicError) == .rejected {
+            post("Not added. \(option.title) may already have it.", isError: true)
+        } else {
+            post(MusicService.message(for: error), isError: true)
+        }
     }
 
     // MARK: - Remove from playlist
@@ -149,7 +167,7 @@ final class MusicTrackActionsStore {
     func remove(_ track: MusicTrack, in context: MusicTrackContext) {
         guard MusicTrackActions.available(for: track, in: context).contains(.removeFromPlaylist),
               let setVideoId = track.playlistSetVideoId, let pageId = context.pageBrowseId else { return }
-        let key = "remove:\(pageId):\(setVideoId)"
+        let key = busyKey("remove:\(pageId):\(setVideoId)")
         guard busy.insert(key).inserted else { return }
         let session = sessionRun
         let videoId = track.videoId
@@ -181,30 +199,36 @@ final class MusicTrackActionsStore {
     /// Pins the song to Listen again, or unpins it, whichever the row offers. The row flips to the other word only
     /// once YouTube says it worked.
     func togglePin(_ track: MusicTrack) {
-        let track = withPinState(track)
-        guard let toggle = track.listenAgainPin, let token = toggle.nextToken, !token.isEmpty else { return }
-        let key = "pin:\(track.videoId)"
+        guard let source = track.listenAgainPin else { return }
+        guard let toggle = withPinState(track).listenAgainPin, let token = toggle.nextToken, !token.isEmpty else { return }
+        let key = busyKey("pin:\(track.videoId)")
         guard busy.insert(key).inserted else { return }
         let session = sessionRun
         let videoId = track.videoId
         Task { [weak self, backend] in
             do {
                 try await backend.sendFeedback(token: token)
-                self?.landPin(toggle.flipped(), videoId: videoId, key: key, session: session)
+                self?.landPin(PinOverride(source: source, toggle: toggle.flipped()), videoId: videoId, key: key, session: session)
             } catch {
                 self?.failWrite(error, key: key, session: session)
             }
         }
     }
 
-    private func landPin(_ toggle: MusicFeedbackToggle, videoId: String, key: String, session: Int) {
+    private func landPin(_ override: PinOverride, videoId: String, key: String, session: Int) {
         busy.remove(key)
         guard sessionRun == session else { return }
-        pins[videoId] = toggle
-        post(toggle.isPinned ? "Pinned to Listen again" : "Unpinned from Listen again")
+        pins[videoId] = override
+        post(override.toggle.isPinned ? "Pinned to Listen again" : "Unpinned from Listen again")
     }
 
     // MARK: - Shared
+
+    /// A busy key carries its session: an older session's call that lands after `reset` frees only its own key,
+    /// never the same write started in the new session.
+    private func busyKey(_ base: String) -> String {
+        "\(sessionRun)|\(base)"
+    }
 
     /// A write that failed: the session going away signs out, anything else shows its line and leaves the page as it was.
     private func failWrite(_ error: any Error, key: String, session: Int) {
