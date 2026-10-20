@@ -67,6 +67,41 @@ struct MusicQueueListingTests {
         #expect(listing.upcoming.isEmpty)
     }
 
+    @Test("a shuffled page lists every other song of the page, in the shuffled order")
+    func shuffledPage() {
+        var queue = MusicQueue()
+        let tracks = ["a", "b", "c", "d", "e"].map { MusicSamples.track($0) }
+        queue.start(page: tracks, playing: tracks[2], browseId: "VLPLsample", continuation: nil)
+        var generator = MusicShuffleGenerator(seed: 5)
+        queue.shuffle(mixingEarlier: true, using: &generator)
+        let listing = MusicQueueListing(queue: queue)
+        #expect(listing.current?.videoId == "c")
+        #expect(ids(listing.upcoming) == ids(Array(queue.tracks.dropFirst())))
+        #expect(Set(ids(listing.upcoming)) == ["a", "b", "d", "e"])
+    }
+
+    @Test("under Loop playlist the next lap follows: the songs before the current one, from the start")
+    func nextLap() {
+        var queue = MusicQueue()
+        let tracks = ["a", "b", "c", "d", "e"].map { MusicSamples.track($0) }
+        queue.start(page: tracks, playing: tracks[2], browseId: "VLPLsample", continuation: nil)
+        #expect(ids(MusicQueueListing(queue: queue, listsNextLap: true).upcoming) == ["d", "e", "a", "b"])
+        var single = MusicQueue()
+        single.start(page: [tracks[0]], playing: tracks[0], browseId: "VLPLsample", continuation: nil)
+        #expect(ids(MusicQueueListing(queue: single, listsNextLap: true).upcoming) == ["a"])
+    }
+
+    @Test("with Autoplay the staged radio follows the page; without it, or on a radio, nothing is added")
+    func autoplayRows() {
+        var queue = MusicQueue()
+        let tracks = ["a", "b", "c"].map { MusicSamples.track($0) }
+        queue.start(page: tracks, playing: tracks[1], browseId: "VLPLsample", continuation: nil)
+        queue.stageAutoplay(MusicSamples.tracks("r1", "r2"), continuation: nil, seed: "c")
+        #expect(ids(MusicQueueListing(queue: queue, listsAutoplay: true).upcoming) == ["c", "r1", "r2"])
+        #expect(ids(MusicQueueListing(queue: queue).upcoming) == ["c"])
+        #expect(ids(MusicQueueListing(queue: queue, listsNextLap: true, listsAutoplay: true).upcoming) == ["c", "a"])
+    }
+
     @Test("a radio queue says it comes from the radio")
     func radioSource() {
         var queue = MusicQueue()

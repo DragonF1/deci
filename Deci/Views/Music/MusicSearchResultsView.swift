@@ -138,8 +138,6 @@ struct MusicSearchArtistTile: View {
 /// row of round photos, all as faint bars. It reads as one "Searching" element.
 private struct MusicSearchSkeleton: View {
     private static let rowCount = 4
-    private static let titleWidths: [CGFloat] = [150, 118, 172, 132]
-    private static let subtitleWidths: [CGFloat] = [96, 124, 84, 108]
     private static let artistCount = 4
 
     private static let fill = Color.white.opacity(0.07)
@@ -151,7 +149,7 @@ private struct MusicSearchSkeleton: View {
                     .padding(.horizontal, MusicStyle.Spacing.page)
                     .frame(height: 16)
                 ForEach(0..<Self.rowCount, id: \.self) { index in
-                    row(index: index)
+                    MusicSkeletonSongRow(index: index)
                 }
             }
             VStack(alignment: .leading, spacing: MusicBrowseLayout.tileTitleGap) {
@@ -172,7 +170,22 @@ private struct MusicSearchSkeleton: View {
         .accessibilityLabel("Searching")
     }
 
-    private func row(index: Int) -> some View {
+    private func bar(width: CGFloat, height: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(Self.fill)
+            .frame(width: width, height: height)
+    }
+}
+
+/// One song row as faint bars, for a list that is still loading (search results, Up next). `index` varies the widths.
+struct MusicSkeletonSongRow: View {
+    let index: Int
+
+    private static let titleWidths: [CGFloat] = [150, 118, 172, 132]
+    private static let subtitleWidths: [CGFloat] = [96, 124, 84, 108]
+    private static let fill = Color.white.opacity(0.07)
+
+    var body: some View {
         HStack(spacing: MusicSongRowLayout.search.contentGap) {
             RoundedRectangle(cornerRadius: MusicSongRowLayout.search.coverRadius, style: .continuous)
                 .fill(Self.fill)

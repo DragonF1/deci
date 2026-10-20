@@ -23,7 +23,13 @@ private struct ModesHarness {
     let player: MusicPlayer
     let service: MusicService
 
-    init(preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(), seed: UInt64 = 1) {
+    /// `queueRetryDelay` is long by default, so a retry never fires inside an ordinary test; a test of the retries
+    /// passes a short one and polls.
+    init(
+        preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(),
+        seed: UInt64 = 1,
+        queueRetryDelay: Duration = .seconds(60)
+    ) {
         let engine = self.engine
         let clock = self.clock
         let sink = self.sink
@@ -41,6 +47,7 @@ private struct ModesHarness {
             preferences: preferences,
             savePreferences: { sink.saved.append($0) },
             shuffleSeed: seed,
+            queueRetryDelay: queueRetryDelay,
             refreshOnCreate: false
         )
     }
@@ -84,6 +91,17 @@ private struct ModesHarness {
 
     func page(_ ids: [String], continuation: String? = nil) -> MusicBrowsePage {
         MusicSamples.page("VLPL1", tracks: ids.map { MusicSamples.track($0, title: "Song \($0)") }, continuation: continuation)
+    }
+
+    /// A radio of `seed` long enough that more than three songs follow its first one, so the queue does not start
+    /// another radio the moment this one has landed.
+    func setLongRadio(seed: String) async {
+        await backend.setRadio(seed: seed, tracks: MusicSamples.tracks(seed, "r1", "r2", "r3", "r4", "r5"))
+    }
+
+    /// What the Up next screen lists for the queue as it stands now.
+    var listing: MusicQueueListing {
+        MusicQueueListing(queue: service.queue, listsNextLap: service.listsNextLap, listsAutoplay: service.playsAutoplay)
     }
 
     /// A playlist of `pages` pages of `size` songs: the ids of the first page are returned, the later pages are
@@ -265,10 +283,53 @@ struct MusicServiceShuffleTests {
         await h.startPage(letters, tap: "d")
 
         #expect(h.service.queue.current?.videoId == "d")
+        #expect(h.queuedIDs.first == "d")
+        #expect(h.queuedIDs.count == letters.count)
         #expect(h.service.queue.hasPrevious == false)
         #expect(Set(h.upcomingIDs) == Set(letters.filter { $0 != "d" }))
         #expect(h.loadedIDs == ["d"])
         #expect(await h.backend.radioSeeds.isEmpty)
+    }
+
+    @Test("a shuffled playlist holds every song once with the tapped one first, and Up next is the rest in the shuffled order")
+    func shuffledPlaylistUpNext() async {
+        let h = ModesHarness(preferences: MusicPlaybackPreferences(shuffle: true))
+        let first = await h.longPlaylist(pages: 3, size: 10)
+        let everything = first + h.songs("p1_", 10) + h.songs("p2_", 10)
+        await h.startPage(first, tap: "p0_4", continuation: "t1")
+
+        #expect(h.queuedIDs.first == "p0_4")
+        #expect(h.service.queue.currentIndex == 0)
+        #expect(h.queuedIDs.count == 30)
+        #expect(Set(h.queuedIDs) == Set(everything))
+        let listing = h.listing
+        #expect(listing.upcoming.map(\.videoId) == Array(h.queuedIDs.dropFirst()))
+        #expect(listing.upcoming.map(\.videoId) != everything.filter { $0 != "p0_4" })
+        // The later pages are mixed in with the first, not added after it.
+        let firstPageTail = listing.upcoming.prefix(9).map(\.videoId)
+        #expect(firstPageTail.contains { !$0.hasPrefix("p0_") })
+    }
+
+    @Test("turning shuffle on in the middle of a page puts the current song first and mixes every other row after it")
+    func shuffleOnMidPage() async {
+        let h = ModesHarness()
+        await h.startPage(letters, tap: "d")
+        #expect(h.service.queue.hasPrevious)
+
+        h.service.setShuffle(true)
+
+        #expect(h.service.queue.isShuffled)
+        #expect(h.queuedIDs.first == "d")
+        #expect(h.service.queue.currentIndex == 0)
+        #expect(h.service.queue.hasPrevious == false)
+        #expect(h.queuedIDs.count == letters.count)
+        #expect(Set(h.upcomingIDs) == Set(letters.filter { $0 != "d" }))
+        #expect(h.upcomingIDs != letters.filter { $0 != "d" })
+        #expect(h.loadedIDs == ["d"])
+
+        h.service.setShuffle(false)
+        #expect(h.queuedIDs == letters)
+        #expect(h.service.queue.current?.videoId == "d")
     }
 
     @Test("turning shuffle off after a shuffled page tap brings the page order back")
@@ -295,7 +356,7 @@ struct MusicServiceShuffleTests {
         let gate = MusicTestGate()
         await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
         await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t1", tracks: MusicSamples.tracks("v", "w", "x", "y", "z"))
-        // Three tracks after the current one is where the queue starts asking for more.
+        // A page asks for its next page at once, so the fetch is held at the gate while the first page plays.
         h.service.play(MusicSamples.track("a"), in: h.page(["a", "b", "c", "d"], continuation: "t1"))
         await h.service.playTask?.value
         let held = await h.eventually { await h.backend.moreTracksCalls.count == 1 }
@@ -324,6 +385,8 @@ struct MusicServiceShuffleTests {
         let started = h.service.queue.current!.videoId
         #expect(letters.contains(started))
         #expect(h.loadedIDs == [started])
+        #expect(h.queuedIDs.first == started)
+        #expect(h.queuedIDs.count == letters.count)
         #expect(Set(h.upcomingIDs) == Set(letters.filter { $0 != started }))
         #expect(h.service.queue.hasPrevious == false)
         #expect(h.service.queue.source == .page(browseId: "VLPL1"))
@@ -399,32 +462,44 @@ struct MusicServiceShuffleTests {
         #expect(h.upcomingIDs.prefix(10).contains { !$0.hasPrefix("p0_") })
     }
 
-    @Test("with shuffle off a playlist still loads its next page only when three songs are left")
-    func unshuffledPagesWait() async {
+    @Test("with shuffle off a playlist loads every page at once too, and Up next is everything after the tapped row in page order")
+    func unshuffledPlaylistLoadsEverything() async {
         let h = ModesHarness()
         let first = await h.longPlaylist(pages: 3, size: 10)
-        await h.startPage(first, continuation: "t1")
-        #expect(await h.backend.moreTracksCalls.isEmpty)
-        #expect(h.queuedIDs == first)
+        let everything = first + h.songs("p1_", 10) + h.songs("p2_", 10)
+        await h.startPage(first, tap: "p0_4", continuation: "t1")
+
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2"])
+        #expect(h.queuedIDs == everything)
+        #expect(h.service.queue.continuation == nil)
+        #expect(h.service.queue.current?.videoId == "p0_4")
+        let listing = h.listing
+        #expect(listing.upcoming.map(\.videoId) == Array(everything.dropFirst(5)))
+        #expect(await h.backend.radioSeeds.isEmpty)
     }
 
-    @Test("turning shuffle on in the middle of a playlist loads the rest and mixes it in, and turning it off restores the order")
-    func shuffleOnLoadsTheRest() async {
+    @Test("turning shuffle on in a playlist that is loaded mixes all of it with the current song first, and turning it off restores the order")
+    func shuffleOnMixesTheLoadedPlaylist() async {
         let h = ModesHarness()
         let first = await h.longPlaylist(pages: 4, size: 10)
-        await h.startPage(first, continuation: "t1")
-        #expect(await h.backend.moreTracksCalls.isEmpty)
+        let everything = first + h.songs("p1_", 10) + h.songs("p2_", 10) + h.songs("p3_", 10)
+        await h.startPage(first, tap: "p0_3", continuation: "t1")
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2", "t3"])
+        #expect(h.queuedIDs == everything)
 
         h.service.setShuffle(true)
         await h.settle()
 
         #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2", "t3"])
         #expect(h.queuedIDs.count == 40)
-        #expect(h.service.queue.current?.videoId == first[0])
+        #expect(Set(h.queuedIDs) == Set(everything))
+        #expect(h.queuedIDs.first == "p0_3")
+        #expect(h.service.queue.currentIndex == 0)
         #expect(h.upcomingIDs.prefix(10).contains { !$0.hasPrefix("p0_") })
 
         h.service.setShuffle(false)
-        #expect(h.queuedIDs == first + h.songs("p1_", 10) + h.songs("p2_", 10) + h.songs("p3_", 10))
+        #expect(h.queuedIDs == everything)
+        #expect(h.service.queue.current?.videoId == "p0_3")
     }
 
     @Test("Shuffle and start on a long playlist loads the other pages and mixes them in")
@@ -540,7 +615,7 @@ struct MusicServiceLoopSongTests {
         #expect(h.loadedIDs == ["a", "a"])
     }
 
-    @Test("the last track of a page keeps repeating while the radio waits behind it for Next")
+    @Test("the last track of a page keeps repeating while the radio waits staged behind it for Next")
     func lastTrackRepeats() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(loop: .song))
         await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1"))
@@ -549,7 +624,8 @@ struct MusicServiceLoopSongTests {
         await h.finishTrack()
         #expect(h.loadedIDs == ["b", "b", "b"])
         #expect(await h.backend.radioSeeds == ["b"])
-        #expect(h.queuedIDs == ["a", "b", "r1"])
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1"])
     }
 
     @Test("a Next parked behind the radio survives the track ending: the radio's first track plays, the song is not repeated")
@@ -573,12 +649,12 @@ struct MusicServiceLoopSongTests {
         #expect(h.service.queue.current?.videoId == "r1")
     }
 
-    @Test("a Next parked behind a radio that then fails ends playback instead of repeating the song")
+    @Test("a Next parked behind a radio that the server then rejects ends playback instead of repeating the song")
     func parkedNextWithoutRadio() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(loop: .song))
         let gate = MusicTestGate()
         await h.backend.setRadioGate(seed: "b", gate)
-        await h.backend.setRadioError(seed: "b", URLError(.notConnectedToInternet))
+        await h.backend.setRadioError(seed: "b", MusicError.http(404))
         h.service.play(MusicSamples.track("b"), in: h.page(["a", "b"]))
         await h.service.playTask?.value
         let held = await h.eventually { await h.backend.radioSeeds.count == 1 }
@@ -653,6 +729,26 @@ struct MusicServiceLoopPlaylistTests {
         #expect(h.player.nowPlaying?.videoId == "a")
     }
 
+    @Test("a lone song waiting for its first radio lists no lap, so Up next shows the loading rows and not the song again")
+    func noLapWhileTheFirstRadioLoads() async {
+        let h = ModesHarness(preferences: MusicPlaybackPreferences(loop: .playlist))
+        let gate = MusicTestGate()
+        await h.backend.setRadioGate(seed: "a", gate)
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b", "c"))
+        h.service.play(MusicSamples.track("a"))
+        let held = await h.eventually { await h.backend.radioSeeds.count == 1 }
+        #expect(held)
+
+        #expect(h.service.isFillingQueue)
+        #expect(h.service.listsNextLap == false)
+        #expect(h.listing.upcoming.isEmpty)
+
+        await gate.open()
+        await h.settle()
+        #expect(h.service.listsNextLap)
+        #expect(h.listing.upcoming.map(\.videoId) == ["b", "c"])
+    }
+
     @Test("Next stays on at the last track so the button can wrap, and only Loop playlist does that")
     func nextButtonStaysOn() async {
         let looping = ModesHarness(preferences: MusicPlaybackPreferences(loop: .playlist))
@@ -723,11 +819,62 @@ struct MusicServiceLoopPlaylistTests {
         #expect(h.loadedIDs == ["a", "a"])
     }
 
-    @Test("with shuffle on every lap is a new mix of the same songs, and it does not open on the song that just played")
+    @Test("a playlist with several pages is loaded in full, loops through every page, and then wraps to its first row")
+    func loopsThroughEveryPage() async {
+        let h = ModesHarness(preferences: MusicPlaybackPreferences(loop: .playlist))
+        let first = await h.longPlaylist(pages: 3, size: 2)
+        await h.startPage(first, tap: "p0_1", continuation: "t1")
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2"])
+        for _ in 0..<5 { await h.finishTrack() }
+
+        #expect(h.loadedIDs == ["p0_1", "p1_0", "p1_1", "p2_0", "p2_1", "p0_0"])
+        #expect(await h.backend.radioSeeds.isEmpty)
+    }
+
+    @Test("Up next lists the next lap after the last song, and the radio is not part of it")
+    func upNextListsTheNextLap() async {
+        let h = ModesHarness(preferences: MusicPlaybackPreferences(loop: .playlist))
+        await h.startPage(["a", "b", "c"], tap: "b")
+
+        #expect(h.service.listsNextLap)
+        #expect(h.service.playsAutoplay == false)
+        #expect(h.listing.upcoming.map(\.videoId) == ["c", "a"])
+        #expect(await h.backend.radioSeeds.isEmpty)
+    }
+
+    @Test("a radio staged before Loop playlist was turned on is never played and stays out of Up next: the lap wraps, and the radio plays again once Loop is off")
+    func stagedRadioIsNotPlayed() async {
+        let h = ModesHarness()
+        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1"))
+        await h.startPage(["a", "b"], tap: "b")
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1"])
+
+        h.service.setLoopMode(.playlist)
+        #expect(h.listing.upcoming.map(\.videoId) == ["a"])
+        h.service.next()
+        await h.settle()
+
+        #expect(h.loadedIDs == ["b", "a"])
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.isPage)
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1"])
+        #expect(await h.backend.radioSeeds == ["b"])
+
+        h.service.setLoopMode(.off)
+        h.service.next()
+        await h.settle()
+        h.service.next()
+        await h.settle()
+        #expect(h.service.queue.current?.videoId == "r1")
+        #expect(h.loadedIDs == ["b", "a", "b", "r1"])
+    }
+
+    @Test("with shuffle on the loop wraps to the start of the shuffled order, and the lap is the same mix again")
     func wrapsShuffled() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(shuffle: true, loop: .playlist))
-        await h.startPage(letters)
+        await h.startPage(letters, tap: "d")
         let lap = h.queuedIDs
+        #expect(lap.first == "d")
         for _ in 0..<(letters.count - 1) {
             await h.finishTrack()
         }
@@ -735,31 +882,28 @@ struct MusicServiceLoopPlaylistTests {
         await h.finishTrack()
 
         #expect(h.loadedIDs.count == letters.count + 1)
-        #expect(Set(h.queuedIDs) == Set(letters))
-        #expect(h.queuedIDs != lap)
-        #expect(h.service.queue.current?.videoId == h.queuedIDs.first)
-        #expect(h.service.queue.current?.videoId != lap.last)
+        #expect(h.queuedIDs == lap)
+        #expect(h.service.queue.currentIndex == 0)
+        #expect(h.loadedIDs.last == lap.first)
         #expect(h.service.queue.isShuffled)
     }
 
-    @Test("the second lap plays in its own new order, and turning shuffle off afterwards restores the playlist order")
-    func secondLapFollowsTheNewMix() async {
+    @Test("the second lap plays in the same shuffled order as the first, and turning shuffle off afterwards restores the playlist order")
+    func secondLapKeepsTheMix() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(shuffle: true, loop: .playlist))
-        await h.startPage(letters)
-        for _ in 0..<letters.count {
-            await h.finishTrack()
-        }
-        let secondLap = h.queuedIDs
-        for _ in 0..<(letters.count - 1) {
+        await h.startPage(letters, tap: "d")
+        let lap = h.queuedIDs
+        for _ in 0..<(letters.count * 2 - 1) {
             await h.finishTrack()
         }
 
-        #expect(Array(h.loadedIDs.suffix(letters.count)) == secondLap)
-        #expect(Array(h.loadedIDs.prefix(letters.count)) != secondLap)
+        #expect(h.loadedIDs.count == letters.count * 2)
+        #expect(Array(h.loadedIDs.prefix(letters.count)) == lap)
+        #expect(Array(h.loadedIDs.suffix(letters.count)) == lap)
 
         h.service.setShuffle(false)
         #expect(h.queuedIDs == letters)
-        #expect(h.service.queue.current?.videoId == secondLap.last)
+        #expect(h.service.queue.current?.videoId == lap.last)
     }
 
     @Test("with shuffle off the loop plays the same order every lap")
@@ -848,47 +992,83 @@ struct MusicServiceLoopPlaylistTests {
 @MainActor
 @Suite("MusicService autoplay")
 struct MusicServiceAutoplayTests {
-    @Test("a page that reaches its last track fetches the radio of that track and appends it")
+    @Test("a page near its end stages the radio of its last track, Up next lists it, and it joins the queue when the page runs out")
     func handsOverToRadio() async {
         let h = ModesHarness()
-        await h.backend.setRadio(seed: "c", tracks: MusicSamples.tracks("c", "r1", "r2"))
+        let radio = ["r1", "r2", "r3", "r4", "r5"]
+        await h.setLongRadio(seed: "c")
         await h.startPage(["a", "b", "c"])
-        #expect(await h.backend.radioSeeds.isEmpty)
+
+        #expect(await h.backend.radioSeeds == ["c"])
+        #expect(h.queuedIDs == ["a", "b", "c"])
+        #expect(h.service.queue.isPage)
+        #expect(h.service.queue.autoplay.map(\.videoId) == radio)
+        #expect(h.listing.upcoming.map(\.videoId) == ["b", "c"] + radio)
 
         h.service.next()
         await h.settle()
-        #expect(await h.backend.radioSeeds.isEmpty)
+        h.service.next()
+        await h.settle()
+        #expect(h.service.queue.current?.videoId == "c")
+        #expect(h.queuedIDs == ["a", "b", "c"])
         h.service.next()
         await h.settle()
 
         #expect(await h.backend.radioSeeds == ["c"])
-        #expect(h.queuedIDs == ["a", "b", "c", "r1", "r2"])
+        #expect(h.queuedIDs == ["a", "b", "c"] + radio)
         #expect(h.service.queue.source == .radio(seedVideoId: "c"))
-        #expect(h.service.queue.current?.videoId == "c")
+        #expect(h.service.queue.current?.videoId == "r1")
+        #expect(h.service.queue.autoplay.isEmpty)
+        #expect(h.loadedIDs == ["a", "b", "c", "r1"])
     }
 
-    @Test("tapping the last row of a page hands over at once")
+    @Test("tapping the last row of a page stages the radio at once")
     func tapLastRow() async {
         let h = ModesHarness()
         await h.backend.setRadio(seed: "c", tracks: MusicSamples.tracks("c", "r1"))
         await h.startPage(["a", "b", "c"], tap: "c")
-        #expect(h.queuedIDs == ["a", "b", "c", "r1"])
+        #expect(h.queuedIDs == ["a", "b", "c"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1"])
+        #expect(await h.backend.radioSeeds == ["c"])
     }
 
-    @Test("a page with more tracks to load loads them first and only then hands over")
-    func morePagesFirst() async {
+    @Test("the radio is staged once three songs or fewer are left after the current one, and not before")
+    func stagesWithThreeLeft() async {
         let h = ModesHarness()
-        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t1", tracks: MusicSamples.tracks("c", "d"))
-        await h.backend.setRadio(seed: "d", tracks: MusicSamples.tracks("d", "r1"))
-        await h.startPage(["a", "b"], continuation: "t1")
-        #expect(h.queuedIDs == ["a", "b", "c", "d"])
+        let page = ["a", "b", "c", "d", "e"]
+        await h.setLongRadio(seed: "e")
+        await h.startPage(page)
         #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(h.service.queue.autoplay.isEmpty)
 
-        for _ in 0..<3 { h.service.next() }
+        h.service.next()
         await h.settle()
 
+        #expect(await h.backend.radioSeeds == ["e"])
+        #expect(h.service.queue.autoplay.count == 5)
+        #expect(h.queuedIDs == page)
+    }
+
+    @Test("a page with more tracks to load loads them first and only then stages the radio of its last track")
+    func morePagesFirst() async {
+        let h = ModesHarness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
+        await h.backend.setMoreTracks(browseId: "VLPL1", continuation: "t1", tracks: MusicSamples.tracks("c", "d"))
+        await h.backend.setRadio(seed: "d", tracks: MusicSamples.tracks("d", "r1"))
+        h.service.play(MusicSamples.track("a", title: "Song a"), in: h.page(["a", "b"], continuation: "t1"))
+        await h.service.playTask?.value
+        let held = await h.eventually { await h.backend.moreTracksCalls.count == 1 }
+        #expect(held)
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(h.queuedIDs == ["a", "b"])
+
+        await gate.open()
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a", "b", "c", "d"])
         #expect(await h.backend.radioSeeds == ["d"])
-        #expect(h.queuedIDs == ["a", "b", "c", "d", "r1"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1"])
     }
 
     @Test("the hand-over is gapless: the last track ending while the radio loads starts the radio's first track when it lands")
@@ -913,28 +1093,34 @@ struct MusicServiceAutoplayTests {
         #expect(h.service.queue.current?.videoId == "r1")
     }
 
-    @Test("after the hand-over the radio keeps loading pages like a radio queue does")
+    @Test("the staged radio's own next page is loaded once the radio has joined the queue, and not before")
     func radioKeepsPaging() async {
         let h = ModesHarness()
-        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1", "r2"), continuation: "m1")
-        await h.backend.setMoreRadio(seed: "b", continuation: "m1", tracks: MusicSamples.tracks("r3", "r4"))
+        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1", "r2", "r3"), continuation: "m1")
+        await h.backend.setMoreRadio(seed: "b", continuation: "m1", tracks: MusicSamples.tracks("r4", "r5", "r6", "r7"))
         await h.startPage(["a", "b"], tap: "b")
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1", "r2", "r3"])
+
+        h.service.next()
+        await h.settle()
 
         #expect(await h.backend.moreRadioCalls == [FakeMusicBackend.MoreRadioCall(seed: "b", continuation: "m1")])
-        #expect(h.queuedIDs == ["a", "b", "r1", "r2", "r3", "r4"])
+        #expect(h.queuedIDs == ["a", "b", "r1", "r2", "r3", "r4", "r5", "r6", "r7"])
         #expect(h.service.queue.continuation == nil)
     }
 
-    @Test("the hand-over asks for the radio once however many tracks follow")
+    @Test("no radio is asked for twice, however many songs play")
     func onlyOnce() async {
         let h = ModesHarness()
         await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1", "r2"))
+        await h.backend.setRadio(seed: "r2", tracks: MusicSamples.tracks("r2", "r3", "r4", "r5", "r6", "r7"))
         await h.startPage(["a", "b"], tap: "b")
-        await h.finishTrack()
-        await h.finishTrack()
-        await h.finishTrack()
-        #expect(await h.backend.radioSeeds == ["b"])
-        #expect(h.loadedIDs == ["b", "r1", "r2"])
+        for _ in 0..<3 { await h.finishTrack() }
+
+        #expect(await h.backend.radioSeeds == ["b", "r2"])
+        #expect(h.loadedIDs == ["b", "r1", "r2", "r3"])
     }
 
     @Test("with Autoplay off the page ends as before and nothing is fetched")
@@ -990,7 +1176,7 @@ struct MusicServiceAutoplayTests {
         #expect(h.queuedIDs == ["a", "b", "c", "d"])
     }
 
-    @Test("turning Autoplay on while the last track of a page plays hands over then")
+    @Test("turning Autoplay on while the last track of a page plays stages the radio then")
     func turnedOnAtTheEnd() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(autoplay: false))
         await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1"))
@@ -1001,7 +1187,24 @@ struct MusicServiceAutoplayTests {
         await h.settle()
 
         #expect(await h.backend.radioSeeds == ["b"])
-        #expect(h.queuedIDs == ["a", "b", "r1"])
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1"])
+    }
+
+    @Test("turning Autoplay off after the radio was staged keeps it out of Up next and out of the queue")
+    func offHidesTheStagedRadio() async {
+        let h = ModesHarness()
+        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1"))
+        await h.startPage(["a", "b"], tap: "b")
+        #expect(h.listing.upcoming.map(\.videoId) == ["r1"])
+
+        h.service.setAutoplay(false)
+        #expect(h.listing.upcoming.isEmpty)
+        #expect(h.service.canGoNext == false)
+        h.service.next()
+
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.service.queue.isEmpty)
     }
 
     @Test("turning Autoplay on lets a radio queue that was held back load its next page")
@@ -1017,7 +1220,7 @@ struct MusicServiceAutoplayTests {
         #expect(h.queuedIDs == ["a", "b", "x", "y"])
     }
 
-    @Test("turning Loop off at the end of a page hands over to the radio")
+    @Test("turning Loop off at the end of a page stages the radio")
     func loopTurnedOffAtTheEnd() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(loop: .playlist))
         await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1"))
@@ -1029,17 +1232,19 @@ struct MusicServiceAutoplayTests {
         await h.settle()
 
         #expect(await h.backend.radioSeeds == ["b"])
-        #expect(h.queuedIDs == ["a", "b", "r1"])
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1"])
     }
 
-    @Test("Loop song still hands over: only Loop playlist keeps Autoplay from the radio")
+    @Test("Loop song still stages the radio: only Loop playlist keeps Autoplay from it")
     func loopSongStillHandsOver() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(loop: .song))
         await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1", "r2"))
         await h.startPage(["a", "b"], tap: "b")
         #expect(await h.backend.radioSeeds == ["b"])
-        #expect(h.queuedIDs == ["a", "b", "r1", "r2"])
-        #expect(h.service.queue.source == .radio(seedVideoId: "b"))
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1", "r2"])
+        #expect(h.service.queue.source == .page(browseId: "VLPL1"))
     }
 
     @Test("Loop song with Autoplay off fetches no radio")
@@ -1136,7 +1341,7 @@ struct MusicServiceAutoplayTests {
         #expect(empty.service.canGoNext == false)
     }
 
-    @Test("a radio that cannot be fetched leaves the page ended, silently")
+    @Test("a radio that cannot be fetched leaves the page ended, silently, while its retries wait")
     func handOverFails() async {
         let h = ModesHarness()
         await h.backend.setRadioError(seed: "b", URLError(.notConnectedToInternet))
@@ -1148,9 +1353,10 @@ struct MusicServiceAutoplayTests {
         #expect(h.queuedIDs == ["a", "b"])
         #expect(h.player.hasEnded)
         #expect(h.loadedIDs == ["b"])
+        #expect(h.service.queueRetryTask != nil)
     }
 
-    @Test("a hand-over that failed keeps the page as it was, so Next tries the radio again and plays it")
+    @Test("a hand-over that failed for a passing reason is asked for again by Next, which then plays the radio")
     func failedHandOverRetriesOnNext() async {
         let h = ModesHarness()
         await h.backend.setRadioError(seed: "b", URLError(.notConnectedToInternet))
@@ -1159,14 +1365,14 @@ struct MusicServiceAutoplayTests {
         #expect(await h.backend.radioSeeds == ["b"])
 
         await h.backend.setRadioError(seed: "b", nil)
-        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1", "r2"))
+        await h.setLongRadio(seed: "b")
         #expect(h.service.canGoNext)
         h.service.next()
         await h.settle()
 
         #expect(await h.backend.radioSeeds == ["b", "b"])
         #expect(h.loadedIDs == ["b", "r1"])
-        #expect(h.queuedIDs == ["a", "b", "r1", "r2"])
+        #expect(h.queuedIDs == ["a", "b", "r1", "r2", "r3", "r4", "r5"])
         #expect(h.service.queue.source == .radio(seedVideoId: "b"))
     }
 
@@ -1183,7 +1389,7 @@ struct MusicServiceAutoplayTests {
         #expect(h.loadedIDs == ["b", "r1"])
     }
 
-    @Test("a hand-over that failed is tried again when Autoplay is switched off and on")
+    @Test("a hand-over that failed for a passing reason is asked for again when Autoplay is switched off and on")
     func failedHandOverRetriesOnToggle() async {
         let h = ModesHarness()
         await h.backend.setRadioError(seed: "b", URLError(.networkConnectionLost))
@@ -1195,10 +1401,11 @@ struct MusicServiceAutoplayTests {
         h.service.setAutoplay(true)
         await h.settle()
 
-        #expect(h.queuedIDs == ["a", "b", "r1"])
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1"])
     }
 
-    @Test("a radio the server rejects is not asked for again")
+    @Test("a radio the server rejects is not asked for again, only the radio of the song before it is tried")
     func rejectedHandOverIsNotRetried() async {
         let h = ModesHarness()
         await h.backend.setRadioError(seed: "b", MusicError.http(404))
@@ -1207,22 +1414,24 @@ struct MusicServiceAutoplayTests {
         h.service.setAutoplay(false)
         h.service.setAutoplay(true)
         await h.settle()
-        #expect(await h.backend.radioSeeds == ["b"])
+        #expect(await h.backend.radioSeeds == ["b", "a"])
         #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queueRetryTask == nil)
     }
 
-    @Test("a hand-over that fails over and over only asks again on the listener's own actions")
+    @Test("a hand-over that fails over and over is not asked for again before its retry wait has passed")
     func failedHandOverDoesNotLoop() async {
         let h = ModesHarness()
         await h.backend.setRadioError(seed: "b", URLError(.notConnectedToInternet))
         await h.startPage(["a", "b"], tap: "b")
         await h.settle()
         #expect(await h.backend.radioSeeds == ["b"])
+        #expect(h.service.queueRetryTask != nil)
     }
 
     // MARK: A page that stops paging hands over too
 
-    @Test("a page whose next page the server rejects hands over to the radio from its last loaded track")
+    @Test("a page whose next page the server rejects stages the radio of its last loaded track")
     func rejectedContinuationHandsOver() async {
         let h = ModesHarness()
         await h.backend.setMoreTracksError(browseId: "VLPL1", continuation: "t1", MusicError.http(404))
@@ -1230,7 +1439,8 @@ struct MusicServiceAutoplayTests {
         await h.startPage(["a", "b"], tap: "b", continuation: "t1")
 
         #expect(await h.backend.radioSeeds == ["b"])
-        #expect(h.queuedIDs == ["a", "b", "r1", "r2"])
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == ["r1", "r2"])
         #expect(h.service.queue.continuation == nil)
     }
 
@@ -1240,7 +1450,7 @@ struct MusicServiceAutoplayTests {
         let gate = MusicTestGate()
         await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
         await h.backend.setMoreTracksError(browseId: "VLPL1", continuation: "t1", MusicError.parse("bad page"))
-        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1"))
+        await h.setLongRadio(seed: "b")
         h.service.play(MusicSamples.track("b"), in: h.page(["a", "b"], continuation: "t1"))
         await h.service.playTask?.value
         let held = await h.eventually { await h.backend.moreTracksCalls.count == 1 }
@@ -1289,7 +1499,7 @@ struct MusicServiceAutoplayTests {
         #expect(h.loadedIDs == ["b"])
     }
 
-    @Test("a radio that adds nothing new leaves the page ended")
+    @Test("a radio that adds nothing new leaves the page ended, after the radio of the song before it was tried")
     func handOverAddsNothing() async {
         let h = ModesHarness()
         await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "a"))
@@ -1297,34 +1507,192 @@ struct MusicServiceAutoplayTests {
         h.engine.emit(.ended)
         await h.settle()
         #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.isEmpty)
         #expect(h.loadedIDs == ["b"])
         #expect(h.player.hasEnded)
-        #expect(await h.backend.radioSeeds == ["b"])
+        #expect(await h.backend.radioSeeds == ["b", "a"])
     }
 
-    @Test("with shuffle on the radio is seeded with the last track of the shuffled order")
+    @Test("with shuffle on the radio is seeded with the last track of the shuffled order, and it plays after that track")
     func shuffledHandOver() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(shuffle: true))
+        let radio = ["r1", "r2", "r3", "r4", "r5"]
+        for id in ["a", "b", "c"] { await h.setLongRadio(seed: id) }
         await h.startPage(["a", "b", "c"], tap: "a")
-        let last = h.queuedIDs.last!
-        await h.backend.setRadio(seed: last, tracks: MusicSamples.tracks(last, "r1"))
-        h.service.next()
-        await h.settle()
-        h.service.next()
-        await h.settle()
+        let order = h.queuedIDs
+        let last = order.last!
+
+        #expect(order.first == "a")
         #expect(await h.backend.radioSeeds == [last])
-        #expect(h.queuedIDs.last == "r1")
+        #expect(h.service.queue.autoplay.map(\.videoId) == radio)
+        for _ in 0..<2 {
+            h.service.next()
+            await h.settle()
+        }
+        #expect(h.service.queue.current?.videoId == last)
+        h.service.next()
+        await h.settle()
+
+        #expect(Array(h.queuedIDs.prefix(3)) == order)
+        #expect(Array(h.queuedIDs.suffix(5)) == radio)
+        #expect(h.service.queue.current?.videoId == "r1")
     }
 
-    @Test("a radio queue that runs out of pages simply ends with Autoplay on")
+    @Test("a radio queue that runs out of pages asks for the radio of its last track and carries on from it, never asking a track twice")
     func radioQueueEnds() async {
         let h = ModesHarness()
+        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "c", "d", "e", "f", "g"))
         await h.startRadio(["a", "b"])
+        #expect(await h.backend.radioSeeds == ["a", "b"])
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "g"])
+        #expect(h.service.queue.source == .radio(seedVideoId: "b"))
+        #expect(h.service.queue.seedVideoId == "b")
+
+        for _ in 0..<6 {
+            h.service.next()
+            await h.settle()
+        }
+        let seeds = await h.backend.radioSeeds
+        #expect(Set(seeds).count == seeds.count)
+        #expect(seeds.prefix(2) == ["a", "b"])
+        #expect(h.service.queue.current?.videoId == "g")
+    }
+
+    // MARK: Staged radio, shuffle and tapping
+
+    @Test("a radio the server rejects makes the page stage the radio of the song before it instead")
+    func rejectedRadioFallsBack() async {
+        let h = ModesHarness()
+        await h.backend.setRadioError(seed: "b", MusicError.http(404))
+        await h.setLongRadio(seed: "a")
+        await h.startPage(["a", "b"], tap: "b")
+        let radio = ["r1", "r2", "r3", "r4", "r5"]
+
+        #expect(await h.backend.radioSeeds == ["b", "a"])
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == radio)
+
         h.service.next()
         await h.settle()
-        h.engine.emit(.ended)
+        #expect(h.service.queue.current?.videoId == "r1")
+        #expect(h.service.queue.source == .radio(seedVideoId: "a"))
+        #expect(h.queuedIDs == ["a", "b"] + radio)
+    }
+
+    @Test("turning shuffle on mixes the page but never the staged radio, which still plays after the last song")
+    func shuffleKeepsTheStagedRadioApart() async {
+        let h = ModesHarness()
+        let radio = ["r1", "r2", "r3", "r4", "r5"]
+        await h.setLongRadio(seed: "d")
+        await h.startPage(["a", "b", "c", "d"])
+        #expect(h.service.queue.autoplay.map(\.videoId) == radio)
+
+        h.service.setShuffle(true)
+
+        #expect(Set(h.queuedIDs) == ["a", "b", "c", "d"])
+        #expect(h.queuedIDs.first == "a")
+        #expect(h.service.queue.autoplay.map(\.videoId) == radio)
+        let order = h.queuedIDs
+        for _ in 0..<3 {
+            h.service.next()
+            await h.settle()
+        }
+        #expect(h.service.queue.current?.videoId == order.last)
+        h.service.next()
         await h.settle()
-        #expect(h.player.hasEnded)
-        #expect(await h.backend.radioSeeds == ["a"])
+
+        #expect(h.queuedIDs == order + radio)
+        #expect(h.service.queue.current?.videoId == "r1")
+    }
+
+    @Test("tapping a row of the staged radio plays it and brings the whole radio into the queue")
+    func jumpToStagedTrack() async {
+        let h = ModesHarness()
+        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1", "r2", "r3", "r4", "r5", "r6"))
+        await h.startPage(["a", "b"], tap: "b")
+        #expect(h.queuedIDs == ["a", "b"])
+
+        h.service.jump(to: MusicSamples.track("r2", title: "Song r2"))
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a", "b", "r1", "r2", "r3", "r4", "r5", "r6"])
+        #expect(h.service.queue.current?.videoId == "r2")
+        #expect(h.service.queue.hasPrevious)
+        #expect(h.service.queue.source == .radio(seedVideoId: "b"))
+        #expect(h.service.queue.autoplay.isEmpty)
+        #expect(h.loadedIDs == ["b", "r2"])
+    }
+
+    @Test("Next at the last row of a page is on while a radio is staged or Loop playlist wraps, and off once nothing can follow")
+    func nextButtonWithAStagedRadio() async {
+        let staged = ModesHarness()
+        await staged.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "r1"))
+        await staged.startPage(["a", "b"], tap: "b")
+        #expect(staged.service.queue.hasNext == false)
+        #expect(staged.service.queue.autoplay.map(\.videoId) == ["r1"])
+        #expect(staged.service.canGoNext)
+
+        let looping = ModesHarness(preferences: MusicPlaybackPreferences(loop: .playlist))
+        await looping.startPage(["a", "b"], tap: "b")
+        #expect(looping.service.canGoNext)
+
+        let off = ModesHarness(preferences: MusicPlaybackPreferences(autoplay: false))
+        await off.startPage(["a", "b"], tap: "b")
+        #expect(off.service.canGoNext == false)
+
+        // Every radio was turned down: nothing is staged and nothing can follow.
+        let rejected = ModesHarness()
+        await rejected.backend.setRadioError(seed: "a", MusicError.http(404))
+        await rejected.backend.setRadioError(seed: "b", MusicError.http(404))
+        await rejected.startPage(["a", "b"], tap: "b")
+        #expect(rejected.service.queue.autoplay.isEmpty)
+        #expect(rejected.service.canGoNext == false)
+    }
+
+    // MARK: Retries and the filling state
+
+    @Test("a track that ends while the hand-over radio keeps failing waits for the retries, then plays the radio's first track")
+    func parkedEndWaitsForTheRetry() async {
+        let h = ModesHarness(queueRetryDelay: .milliseconds(5))
+        await h.backend.setRadioFailures(seed: "b", URLError(.timedOut), times: 2)
+        await h.setLongRadio(seed: "b")
+        h.service.play(MusicSamples.track("b"), in: h.page(["a", "b"]))
+        await h.service.playTask?.value
+        h.engine.emit(.playingChanged(true))
+        h.engine.emit(.ended)
+
+        let played = await h.eventually { h.loadedIDs == ["b", "r1"] }
+        #expect(played)
+        await h.settle()
+        #expect(h.service.queue.current?.videoId == "r1")
+        #expect(h.service.queue.source == .radio(seedVideoId: "b"))
+        #expect(h.service.isFillingQueue == false)
+    }
+
+    @Test("the queue says it is filling while a radio loads or a retry waits, a new fetch replaces the waiting retry, and nothing is left at the end")
+    func fillingWhileLoadingOrWaiting() async {
+        let h = ModesHarness()
+        let gate = MusicTestGate()
+        await h.backend.setRadioGate(seed: "b", gate)
+        await h.backend.setRadioFailures(seed: "b", URLError(.timedOut), times: 1)
+        await h.setLongRadio(seed: "b")
+        h.service.play(MusicSamples.track("b"), in: h.page(["a", "b"]))
+        await h.service.playTask?.value
+        let held = await h.eventually { await h.backend.radioSeeds.count == 1 }
+        #expect(held)
+        #expect(h.service.isFillingQueue)
+
+        await gate.open()
+        await h.settle()
+        // The first ask failed for a passing reason: the retry waits (a minute here) and the queue is still filling.
+        #expect(h.service.queueRetryTask != nil)
+        #expect(h.service.isFillingQueue)
+
+        h.service.next()
+        await h.settle()
+        #expect(h.service.queueRetryTask == nil)
+        #expect(h.service.isFillingQueue == false)
+        #expect(await h.backend.radioSeeds == ["b", "b"])
+        #expect(h.service.queue.current?.videoId == "r1")
     }
 }

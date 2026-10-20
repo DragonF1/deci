@@ -78,6 +78,7 @@ actor FakeMusicBackend: MusicBackend {
     private var radioPages: [String: MusicQueuePage] = [:]
     private var radioErrors: [String: any Error] = [:]
     private var radioGates: [String: MusicTestGate] = [:]
+    private var radioFailures: [String: (error: any Error, remaining: Int)] = [:]
     private var morePages: [MoreRadioCall: MusicQueuePage] = [:]
     private var moreErrors: [MoreRadioCall: any Error] = [:]
     private var moreGates: [MoreRadioCall: MusicTestGate] = [:]
@@ -182,6 +183,8 @@ actor FakeMusicBackend: MusicBackend {
     }
     func setRadioError(seed: String, _ error: (any Error)?) { radioErrors[seed] = error }
     func setRadioGate(seed: String, _ gate: MusicTestGate) { radioGates[seed] = gate }
+    /// The radio of `seed` fails with `error` for the next `times` calls, then answers as scripted.
+    func setRadioFailures(seed: String, _ error: any Error, times: Int) { radioFailures[seed] = (error, times) }
     func setMoreRadio(seed: String, continuation: String, tracks: [Deci.MusicTrack], next: String? = nil) {
         morePages[MoreRadioCall(seed: seed, continuation: continuation)] = MusicQueuePage(tracks: tracks, continuation: next)
     }
@@ -396,6 +399,11 @@ actor FakeMusicBackend: MusicBackend {
     func radio(seedVideoId: String) async throws -> MusicQueuePage {
         radioSeeds.append(seedVideoId)
         if let gate = radioGates[seedVideoId] { await gate.wait() }
+        if var failing = radioFailures[seedVideoId], failing.remaining > 0 {
+            failing.remaining -= 1
+            radioFailures[seedVideoId] = failing
+            throw failing.error
+        }
         if let error = radioErrors[seedVideoId] { throw error }
         return radioPages[seedVideoId] ?? MusicQueuePage(tracks: [], continuation: nil)
     }

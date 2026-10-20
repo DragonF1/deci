@@ -44,7 +44,9 @@ private struct Harness {
     let service: MusicService
 
     /// `artistGrace` is long by default, so a search waits for a held artist call; a test of the grace passes a short one.
-    init(signedIn: Bool = true, artistGrace: Duration = .seconds(60)) {
+    /// `queueRetryDelay` is long by default, so a retry never fires inside an ordinary test; a test of the retries
+    /// passes a short one and polls.
+    init(signedIn: Bool = true, artistGrace: Duration = .seconds(60), queueRetryDelay: Duration = .seconds(60)) {
         let backend = FakeMusicBackend(signedIn: signedIn)
         let engine = self.engine
         let probe = self.probe
@@ -70,6 +72,7 @@ private struct Harness {
             now: { clock.now },
             listenerLevel: { (level.volume, level.muted) },
             artistGrace: artistGrace,
+            queueRetryDelay: queueRetryDelay,
             refreshOnCreate: false
         )
         service.onNativePlayingChange = { probe.nativeChanges.append($0) }
@@ -2116,13 +2119,13 @@ struct MusicServiceQueueTests {
     @Test("a tapped track starts a queue of one, then the radio's tracks follow it")
     func tapThenRadio() async {
         let h = Harness()
-        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b", "c"))
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b", "c", "d", "e", "f"))
         h.service.play(MusicSamples.track("a"))
         #expect(h.queuedIDs == ["a"])
 
         await h.settle()
 
-        #expect(h.queuedIDs == ["a", "b", "c"])
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f"])
         #expect(await h.backend.radioSeeds == ["a"])
         #expect(h.service.queue.current?.videoId == "a")
         #expect(h.service.canGoNext)
@@ -2151,24 +2154,119 @@ struct MusicServiceQueueTests {
         #expect(h.loadedIDs == ["a"])
     }
 
+    @Test("a first radio page that fails for a passing reason is asked for again after the retry wait, and its tracks land")
+    func firstRadioRetries() async {
+        // A timeout (408) or a rate limit (429) is a passing reason too, unlike the other 4xx answers.
+        let errors: [any Error] = [MusicError.http(503), URLError(.timedOut), MusicError.http(408), MusicError.http(429)]
+        for error in errors {
+            let h = Harness(queueRetryDelay: .milliseconds(5))
+            await h.backend.setRadioFailures(seed: "a", error, times: 1)
+            await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b", "c", "d", "e", "f"))
+            h.service.play(MusicSamples.track("a"))
+            await h.settle()
+
+            let landed = await h.eventually { h.queuedIDs == ["a", "b", "c", "d", "e", "f"] }
+            #expect(landed)
+            await h.settle()
+            #expect(await h.backend.radioSeeds == ["a", "a"])
+            #expect(h.service.lastError == nil)
+            #expect(h.service.queueRetryTask == nil)
+            #expect(h.service.isFillingQueue == false)
+            #expect(h.player.nowPlaying?.videoId == "a")
+        }
+    }
+
+    @Test("a radio that keeps failing is asked for once and retried three times, then left alone, and a Next parked behind it settles")
+    func retriesRunOut() async {
+        let h = Harness(queueRetryDelay: .milliseconds(5))
+        await h.backend.setRadioError(seed: "a", URLError(.timedOut))
+        h.service.play(MusicSamples.track("a"))
+        h.service.next()
+
+        let stopped = await h.eventually { h.service.queue.isEmpty }
+        #expect(stopped)
+        // Nothing asks again once the retries are used up.
+        try? await Task.sleep(for: .milliseconds(60))
+
+        #expect(await h.backend.radioSeeds == ["a", "a", "a", "a"])
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.service.queueRetryTask == nil)
+        #expect(h.service.radioTask == nil)
+        #expect(h.service.isFillingQueue == false)
+        #expect(h.service.lastError == nil)
+    }
+
+    @Test("a page that lands resets the retry count, so the next radio that fails is retried three times too")
+    func successResetsRetries() async {
+        let h = Harness(queueRetryDelay: .milliseconds(5))
+        await h.backend.setRadioFailures(seed: "a", URLError(.timedOut), times: 2)
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b"))
+        await h.backend.setRadioError(seed: "b", URLError(.timedOut))
+        h.service.play(MusicSamples.track("a"))
+
+        let done = await h.eventually { await h.backend.radioSeeds.count == 7 }
+        #expect(done)
+        try? await Task.sleep(for: .milliseconds(60))
+
+        #expect(await h.backend.radioSeeds == ["a", "a", "a", "b", "b", "b", "b"])
+        #expect(h.queuedIDs == ["a", "b"])
+        #expect(h.service.queueRetryTask == nil)
+        #expect(h.service.isFillingQueue == false)
+    }
+
+    @Test("Next is on while the first radio page of a tapped song loads, and off when it comes back with nothing")
+    func nextWhileFirstRadioLoads() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await h.backend.setRadioGate(seed: "a", gate)
+        h.service.play(MusicSamples.track("a"))
+        let held = await h.eventually { await h.backend.radioSeeds.count == 1 }
+        #expect(held)
+        #expect(h.service.isFillingQueue)
+        #expect(h.service.canGoNext)
+
+        await gate.open()
+        await h.settle()
+
+        #expect(h.service.isFillingQueue == false)
+        #expect(h.service.canGoNext == false)
+    }
+
+    @Test("with Autoplay off a tapped song still gets its radio, and no other radio is asked for when it runs out")
+    func firstRadioWithAutoplayOff() async {
+        let h = Harness()
+        h.service.setAutoplay(false)
+        await h.startQueue(["a", "b", "c"])
+        #expect(h.queuedIDs == ["a", "b", "c"])
+
+        for _ in 0..<2 {
+            h.service.next()
+            await h.settle()
+        }
+        h.service.next()
+
+        #expect(await h.backend.radioSeeds == ["a"])
+        #expect(h.service.queue.isEmpty)
+    }
+
     @Test("a new seed ignores the page its predecessor was still fetching")
     func staleRadioIgnored() async {
         let h = Harness()
         let gate = MusicTestGate()
         await h.backend.setRadioGate(seed: "a", gate)
         await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "old1", "old2"))
-        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "new1"))
+        await h.backend.setRadio(seed: "b", tracks: MusicSamples.tracks("b", "new1", "new2", "new3", "new4"))
 
         h.service.play(MusicSamples.track("a"))
         let stale = h.service.radioTask
         h.service.play(MusicSamples.track("b"))
         await h.settle()
-        #expect(h.queuedIDs == ["b", "new1"])
+        #expect(h.queuedIDs == ["b", "new1", "new2", "new3", "new4"])
 
         await gate.open()
         await stale?.value
 
-        #expect(h.queuedIDs == ["b", "new1"])
+        #expect(h.queuedIDs == ["b", "new1", "new2", "new3", "new4"])
         #expect(h.service.queue.seedVideoId == "b")
     }
 
@@ -2312,7 +2410,7 @@ struct MusicServiceQueueTests {
         await h.backend.setMoreRadio(seed: "a", continuation: "c1", tracks: MusicSamples.tracks("b", "c"), next: "c2")
         await h.backend.setMoreRadioGate(seed: "a", continuation: "c2", gate)
         await h.backend.setMoreRadio(seed: "a", continuation: "c2", tracks: MusicSamples.tracks("d"), next: "c3")
-        await h.backend.setRadio(seed: "x", tracks: MusicSamples.tracks("x", "y"))
+        await h.backend.setRadio(seed: "x", tracks: MusicSamples.tracks("x", "y1", "y2", "y3", "y4"))
 
         h.service.play(MusicSamples.track("a"))
         let reachedSecondPage = await h.eventually { await h.backend.moreRadioCalls.count == 2 }
@@ -2321,13 +2419,13 @@ struct MusicServiceQueueTests {
 
         h.service.play(MusicSamples.track("x"))
         await h.settle()
-        #expect(h.queuedIDs == ["x", "y"])
+        #expect(h.queuedIDs == ["x", "y1", "y2", "y3", "y4"])
 
         await gate.open()
         await stale?.value
 
         #expect(await h.backend.moreRadioCalls.count == 2)
-        #expect(h.queuedIDs == ["x", "y"])
+        #expect(h.queuedIDs == ["x", "y1", "y2", "y3", "y4"])
         #expect(h.service.queue.seedVideoId == "x")
     }
 
@@ -2404,9 +2502,10 @@ struct MusicServicePageQueueTests {
         FakeMusicBackend.MoreTracksCall(browseId: browseId, continuation: continuation)
     }
 
-    @Test("a tapped row queues the page in its order, starts on that row and asks for no radio")
+    @Test("a tapped row queues the page in its order and starts on that row, and with Autoplay off asks for no radio")
     func pageOrder() async {
         let h = Harness()
+        h.service.setAutoplay(false)
         await startPage(h, ["a", "b", "c", "d", "e"], tap: "c")
 
         #expect(h.queuedIDs == ["a", "b", "c", "d", "e"])
@@ -2493,24 +2592,24 @@ struct MusicServicePageQueueTests {
         #expect(h.loadedIDs == ["z"])
     }
 
-    @Test("more tracks are fetched once three or fewer are left, and not before")
+    @Test("a page loads all its pages at once, not when three tracks are left")
     func moreTracksAtThree() async {
         let h = Harness()
-        await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("i", "j", "k"))
+        await h.backend.setMoreTracks(
+            browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("i", "j", "k"), next: "t2"
+        )
+        await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t2", tracks: MusicSamples.tracks("l", "m"))
         await startPage(h, ["a", "b", "c", "d", "e", "f", "g", "h"], continuation: "t1")
-        #expect(await h.backend.moreTracksCalls.isEmpty)
+
+        #expect(await h.backend.moreTracksCalls == [call("t1"), call("t2")])
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m"])
+        #expect(h.service.queue.continuation == nil)
 
         for _ in 0..<3 { h.service.next() }
         await h.settle()
-        #expect(h.service.queue.upcomingCount == 4)
-        #expect(await h.backend.moreTracksCalls.isEmpty)
 
-        h.service.next()
-        await h.settle()
-
-        #expect(await h.backend.moreTracksCalls == [call("t1")])
-        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"])
-        #expect(h.service.queue.continuation == nil)
+        #expect(h.service.queue.upcomingCount == 9)
+        #expect(await h.backend.moreTracksCalls == [call("t1"), call("t2")])
         #expect(await h.backend.radioSeeds.isEmpty)
     }
 
@@ -2548,28 +2647,33 @@ struct MusicServicePageQueueTests {
         #expect(h.service.queue.continuation == nil)
     }
 
-    @Test("only one more-tracks fetch runs at a time")
+    @Test("only one more-tracks fetch runs at a time, however many tracks go by while it loads")
     func oneFetchAtATime() async {
         let h = Harness()
+        h.service.setAutoplay(false)
         let gate = MusicTestGate()
         await h.backend.setMoreTracksGate(browseId: Self.browseId, continuation: "t1", gate)
         await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("f", "g"))
-        await startPage(h, ["a", "b", "c", "d", "e"], continuation: "t1")
-        #expect(h.service.radioTask == nil)
-
-        h.service.next()
+        // The page starts its fetch at once, so the gate is closed on a fetch in flight: nothing here settles before it opens.
+        h.service.play(MusicSamples.track("a"), in: page(["a", "b", "c", "d", "e"], continuation: "t1"))
+        await h.service.playTask?.value
         let inFlight = h.service.radioTask
         #expect(inFlight != nil)
+        let held = await h.eventually { await h.backend.moreTracksCalls.count == 1 }
+        #expect(held)
+
+        h.service.next()
         h.service.next()
         h.service.next()
         #expect(h.service.radioTask == inFlight)
+        #expect(h.service.isFillingQueue)
 
         await gate.open()
-        await inFlight?.value
         await h.settle()
 
         #expect(await h.backend.moreTracksCalls == [call("t1")])
         #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "g"])
+        #expect(h.service.isFillingQueue == false)
     }
 
     @Test("a page that cannot be read or that the server rejects ends paging")
@@ -2665,6 +2769,7 @@ struct MusicServicePageQueueTests {
     @Test("playing a single track after a page goes back to a radio queue")
     func radioAfterPage() async {
         let h = Harness()
+        h.service.setAutoplay(false)
         await h.backend.setRadio(seed: "z", tracks: MusicSamples.tracks("z", "r1"))
         await startPage(h, ["a", "b", "c"], continuation: "t1")
 
@@ -2932,8 +3037,24 @@ struct MusicServiceRadioWaitTests {
         #expect(h.probe.nativeChanges == [true, false])
     }
 
-    @Test("next stops as before when the radio fetch fails")
+    @Test("next stops as before when the server rejects the radio fetch")
     func nextEndsWhenRadioFails() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await startHeld(h, gate: gate)
+        await h.backend.setMoreRadioError(seed: "a", continuation: "c1", MusicError.http(404))
+
+        h.service.next()
+        await gate.open()
+        await h.settle()
+
+        #expect(h.service.queue.isEmpty)
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.loadedIDs == ["a"])
+    }
+
+    @Test("next stays parked behind a radio fetch that failed for a passing reason, while its retry waits")
+    func nextWaitsForTheRetry() async {
         let h = Harness()
         let gate = MusicTestGate()
         await startHeld(h, gate: gate)
@@ -2943,9 +3064,69 @@ struct MusicServiceRadioWaitTests {
         await gate.open()
         await h.settle()
 
+        #expect(h.service.queueRetryTask != nil)
+        #expect(h.service.isFillingQueue)
+        #expect(h.queuedIDs == ["a"])
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.loadedIDs == ["a"])
+    }
+
+    @Test("turning Autoplay off drops a radio retry that was waiting, and the Next parked behind it settles at once")
+    func autoplayOffDropsTheRetry() async {
+        let h = Harness()
+        let gate = MusicTestGate()
+        await startHeld(h, gate: gate)
+        await h.backend.setMoreRadioError(seed: "a", continuation: "c1", URLError(.timedOut))
+        h.service.next()
+        await gate.open()
+        await h.settle()
+        #expect(h.service.queueRetryTask != nil)
+
+        h.service.setAutoplay(false)
+        await h.settle()
+
+        #expect(h.service.queueRetryTask == nil)
+        #expect(h.service.isFillingQueue == false)
         #expect(h.service.queue.isEmpty)
         #expect(h.player.nowPlaying == nil)
+        #expect(await h.backend.moreRadioCalls.count == 1)
+    }
+
+    @Test("next stays parked through the retries of a failing radio fetch and stops once they are used up")
+    func nextWaitsThroughRetries() async {
+        let h = Harness(queueRetryDelay: .milliseconds(5))
+        let gate = MusicTestGate()
+        await startHeld(h, gate: gate)
+        await h.backend.setMoreRadioError(seed: "a", continuation: "c1", URLError(.timedOut))
+
+        h.service.next()
+        await gate.open()
+        let stopped = await h.eventually { h.service.queue.isEmpty }
+        #expect(stopped)
+
+        #expect(await h.backend.moreRadioCalls.count == 4)
+        #expect(h.player.nowPlaying == nil)
         #expect(h.loadedIDs == ["a"])
+        #expect(h.service.queueRetryTask == nil)
+        #expect(h.service.isFillingQueue == false)
+    }
+
+    @Test("a next parked behind a first radio page that fails once plays the radio's first track when the retry lands")
+    func nextWaitsForTheFirstRadioRetry() async {
+        let h = Harness(queueRetryDelay: .milliseconds(5))
+        await h.backend.setRadioFailures(seed: "a", URLError(.timedOut), times: 1)
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b", "c", "d", "e", "f"))
+        h.service.play(MusicSamples.track("a"))
+        await h.service.playTask?.value
+        h.engine.emit(.playingChanged(true))
+        h.service.next()
+
+        let moved = await h.eventually { h.loadedIDs == ["a", "b"] }
+        #expect(moved)
+        await h.settle()
+        #expect(h.service.queue.current?.videoId == "b")
+        #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f"])
+        #expect(h.service.isFillingQueue == false)
     }
 
     @Test("a track that ended stays on the finished song when the radio has nothing more")

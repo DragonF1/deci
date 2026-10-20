@@ -220,11 +220,9 @@ struct MusicQueueTests {
         #expect(ids(queue.tracks) == ["z"])
     }
 
-    @Test("a page queue asks for more when three or fewer tracks are left and it has a continuation")
+    @Test("a page queue with a continuation asks for more however many tracks are left, so it loads in full")
     func pageNeedsMore() {
-        var queue = makePageQueue(["a", "b", "c", "d", "e"], tap: "a", continuation: "t1")
-        #expect(queue.needsMore == false)
-        queue.advance()
+        let queue = makePageQueue(["a", "b", "c", "d", "e"], tap: "a", continuation: "t1")
         #expect(queue.needsMore)
         #expect(makePageQueue(["a", "b"], tap: "a").needsMore == false)
     }

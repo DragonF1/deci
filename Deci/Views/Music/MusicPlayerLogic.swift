@@ -19,17 +19,26 @@ nonisolated enum MusicOutputLabel {
     }
 }
 
-/// What the Up next screen lists: the song in the player, the songs after it and where the queue came from. The songs
-/// before the current one are not listed (Previous still reaches them).
+/// What the Up next screen lists: the song in the player, every song that will play after it in play order, and where
+/// the queue came from. After the queue's own songs come the next lap under Loop playlist (the songs before the current
+/// one, from the start of the play order) or, with Autoplay, the radio staged to follow a page.
 @MainActor
 struct MusicQueueListing {
     let current: MusicTrack?
     let upcoming: [MusicTrack]
     let sourceLine: String?
 
-    init(queue: MusicQueue) {
+    init(queue: MusicQueue, listsNextLap: Bool = false, listsAutoplay: Bool = false) {
         current = queue.current
-        upcoming = Array(queue.upcoming)
+        var upcoming = Array(queue.upcoming)
+        if listsNextLap, let currentIndex = queue.currentIndex {
+            upcoming += queue.tracks[..<currentIndex]
+            // A queue of one song loops that song.
+            if upcoming.isEmpty, let current = queue.current { upcoming = [current] }
+        } else if listsAutoplay, queue.isPage {
+            upcoming += queue.autoplay
+        }
+        self.upcoming = upcoming
         sourceLine = Self.sourceLine(for: queue.source)
     }
 

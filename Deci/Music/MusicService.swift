@@ -51,14 +51,18 @@ final class MusicService {
     /// switches: an artist is a public channel, not part of an account.
     let pinnedArtists: MusicPinnedArtists
     /// Next is on while a track follows. At the last track it stays on when something can still follow: Loop playlist
-    /// wraps to the first track, and Autoplay (with Loop playlist off) waits for the page that is loading or hands the
-    /// page over to the radio. A radio that has run out has nothing to go to.
+    /// wraps to the first track, a page waits for its next page or the radio that is loading, and Autoplay (with Loop
+    /// playlist off) plays the staged radio or asks for a new one.
     var canGoNext: Bool {
         if queue.hasNext { return true }
         if queue.isEmpty { return false }
         if loopMode == .playlist { return true }
-        return isAutoplayOn && (queue.continuation != nil || queue.hasReachedPageEnd)
+        if queue.isPage, queue.continuation != nil { return true }
+        if queue.awaitsFirstRadioPage, isFillingQueue { return true }
+        return isAutoplayOn && (isFillingQueue || queue.continuation != nil || !queue.autoplay.isEmpty || queue.refillSeed != nil)
     }
+    /// A queue page or a radio is loading, or about to be asked for again: Up next shows that more is on its way.
+    private(set) var isFillingQueue = false
     /// The queue plays in a shuffled order. Remembered across launches.
     private(set) var isShuffleOn: Bool
     /// What happens when a track or the queue ends. Remembered across launches.
@@ -103,6 +107,9 @@ final class MusicService {
     private static let prefetchLead: TimeInterval = 15
     /// Radio pages overlap, so a page can add nothing new. This many in a row ends a top-up.
     private static let maxEmptyPages = 3
+    /// A queue page that failed for a reason that may pass (network, 5xx) is asked for again this many times, each
+    /// wait twice the last, before the queue waits for the next track change.
+    private static let maxQueueRetries = 3
 
     @ObservationIgnored private let backend: any MusicBackend
     @ObservationIgnored private let presentSignIn: SignInPresenter
@@ -114,6 +121,9 @@ final class MusicService {
     @ObservationIgnored private let now: () -> Date
     /// How long a search waits for the artists after the songs have landed. Past it the songs show alone.
     @ObservationIgnored private let artistGrace: Duration
+    /// The wait before the first retry of a queue page that failed; each later retry waits twice as long.
+    @ObservationIgnored private let queueRetryDelay: Duration
+    @ObservationIgnored private var queueRetryAttempts = 0
     /// When the listener last touched a control: the `lact` of every watchtime ping.
     @ObservationIgnored private var lastActivity: Date
     /// The player volume (0 to 100) and mute the watchtime pings report: the Mixer tab's music player row (shown as Deci).
@@ -149,7 +159,13 @@ final class MusicService {
     @ObservationIgnored private(set) var accountTask: Task<Void, Never>?
     @ObservationIgnored private(set) var addAccountTask: Task<Void, Never>?
     /// The radio or page fetch in flight (first radio page or a continuation); nil when none is running.
-    @ObservationIgnored private(set) var radioTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var radioTask: Task<Void, Never>? {
+        didSet { noteQueueFilling() }
+    }
+    /// The wait before a failed queue page is asked for again; nil when no retry is due.
+    @ObservationIgnored private(set) var queueRetryTask: Task<Void, Never>? {
+        didSet { noteQueueFilling() }
+    }
     @ObservationIgnored private(set) var prefetchTask: Task<Void, Never>?
     @ObservationIgnored private var searchGeneration = 0
     @ObservationIgnored private var playGeneration = 0
@@ -184,6 +200,7 @@ final class MusicService {
         // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
         shuffleSeed: UInt64? = nil,
         artistGrace: Duration = .milliseconds(1500),
+        queueRetryDelay: Duration = .seconds(2),
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -200,6 +217,7 @@ final class MusicService {
         self.nowPlaying = nowPlaying
         self.now = now
         self.artistGrace = artistGrace
+        self.queueRetryDelay = queueRetryDelay
         self.listenerLevel = listenerLevel
         self.isShuffleOn = preferences.shuffle
         self.loopMode = preferences.loop
@@ -239,6 +257,7 @@ final class MusicService {
         accountTask?.cancel()
         addAccountTask?.cancel()
         radioTask?.cancel()
+        queueRetryTask?.cancel()
         prefetchTask?.cancel()
         #if DEBUG
         memoryProbe?.cancel()
@@ -607,12 +626,13 @@ final class MusicService {
         if isShuffleOn { queue.shuffle(using: &shuffleGenerator) }
         direction = .forward
         failureStreak = 0
+        queueRetryAttempts = 0
         startRadio(seed: track.videoId)
         begin(track)
     }
 
-    /// Plays `track` with the rest of `page`'s songs queued after it in page order, with no radio.
-    /// More tracks of a long playlist are fetched as the queue runs low; the queue ends with the page.
+    /// Plays `track` with the rest of `page`'s songs queued after it in page order. The rest of a long playlist is
+    /// loaded at once, so Up next lists all of it. With Autoplay the radio of the last track follows the page.
     func play(_ track: MusicTrack, in page: MusicBrowsePage) {
         noteActivity()
         // A page is its own order: a radio left over from the last queue must not add to it.
@@ -622,6 +642,7 @@ final class MusicService {
         if isShuffleOn { queue.shuffle(mixingEarlier: true, using: &shuffleGenerator) }
         direction = .forward
         failureStreak = 0
+        queueRetryAttempts = 0
         begin(track)
     }
 
@@ -637,13 +658,18 @@ final class MusicService {
 
     // MARK: - Playback modes
 
-    /// Turning shuffle on mixes what comes after the current track; turning it off puts the whole queue back in
-    /// its natural order and carries on from the current track.
+    /// Turning shuffle on mixes a playlist or album whole, with the current track first, so Up next shows the entire
+    /// page in its shuffled order; on a radio only what comes after the current track is mixed. Turning it off puts the
+    /// whole queue back in its natural order and carries on from the current track.
     func setShuffle(_ on: Bool) {
         guard on != isShuffleOn else { return }
         isShuffleOn = on
         if !queue.isEmpty {
-            if on { queue.shuffle(using: &shuffleGenerator) } else { queue.unshuffle() }
+            if on {
+                queue.shuffle(mixingEarlier: queue.isPage, using: &shuffleGenerator)
+            } else {
+                queue.unshuffle()
+            }
         }
         savePlaybackPreferences()
         topUpQueue()
@@ -654,7 +680,7 @@ final class MusicService {
         loopMode = mode
         savePlaybackPreferences()
         // A queue standing at the end of its page may now hand over to the radio.
-        topUpQueue()
+        topUpQueueAfterModeChange()
     }
 
     /// The loop button: Off, Loop playlist, Loop song, Off.
@@ -666,7 +692,7 @@ final class MusicService {
         guard on != isAutoplayOn else { return }
         isAutoplayOn = on
         savePlaybackPreferences()
-        topUpQueue()
+        topUpQueueAfterModeChange()
     }
 
     private func savePlaybackPreferences() {
@@ -706,7 +732,7 @@ final class MusicService {
         noteActivity()
         direction = .forward
         failureStreak = 0
-        guard let track = queue.advance() else {
+        guard let track = advanceQueue() else {
             // The radio may still be loading: keep playing and move on when its page lands.
             if !awaitRadio(for: .skipped), !wrapAround() { stopPlayback() }
             return
@@ -831,7 +857,7 @@ final class MusicService {
             begin(track)
             return
         }
-        guard let track = queue.advance() else {
+        guard let track = advanceQueue() else {
             // At the end of the queue the player stays on the finished track, as with a single song,
             // unless the radio is still loading (then the next track starts when its page lands)
             // or the queue loops.
@@ -841,9 +867,32 @@ final class MusicService {
         begin(track)
     }
 
-    /// Loop playlist: starts the queue over from the first track of its play order. False when the queue does not loop.
+    /// Autoplay plays after a page that has run out, unless Loop playlist starts the page over instead.
+    var playsAutoplay: Bool {
+        isAutoplayOn && loopMode != .playlist
+    }
+
+    /// Up next lists the next lap after the last track: Loop playlist is on and the queue loads no further page.
+    var listsNextLap: Bool {
+        // A tapped song waiting for its first radio has no lap yet: Up next shows the loading rows.
+        guard loopMode == .playlist, !queue.awaitsFirstRadioPage else { return false }
+        if queue.continuation == nil { return true }
+        // A radio without Autoplay stops at the tracks it has.
+        return !queue.isPage && !isAutoplayOn
+    }
+
+    /// The next track of the queue. At the end of a page, with Autoplay, the staged radio joins the queue and its first
+    /// track plays.
+    private func advanceQueue() -> MusicTrack? {
+        if let track = queue.advance() { return track }
+        guard playsAutoplay, queue.takeAutoplay() else { return nil }
+        return queue.advance()
+    }
+
+    /// Loop playlist: starts the queue over from the first track of its play order (a shuffled queue from its shuffled
+    /// start). False when the queue does not loop.
     private func wrapAround() -> Bool {
-        guard loopMode == .playlist, let first = queue.wrapToStart(using: &shuffleGenerator) else { return false }
+        guard loopMode == .playlist, let first = queue.wrapToStart() else { return false }
         direction = .forward
         begin(first)
         return true
@@ -911,7 +960,7 @@ final class MusicService {
         if direction == .forward, queue.upcomingCount == 0, loopMode == .playlist, !queue.isEmpty {
             return wrapAround()
         }
-        guard let neighbour = direction == .forward ? queue.advance() : queue.retreat() else { return false }
+        guard let neighbour = direction == .forward ? advanceQueue() : queue.retreat() else { return false }
         begin(neighbour)
         return true
     }
@@ -941,7 +990,7 @@ final class MusicService {
     /// A skip that is already parked stays one: the listener asked to move on, whatever happens to the track meanwhile.
     private func awaitRadio(for advance: PendingAdvance) -> Bool {
         topUpQueue()
-        guard radioTask != nil else { return false }
+        guard radioTask != nil || queueRetryTask != nil else { return false }
         if pendingAdvance != .skipped { pendingAdvance = advance }
         return true
     }
@@ -955,7 +1004,7 @@ final class MusicService {
         case .skipped: true
         }
         // The listener may have replayed the track or retried it since: then the wait is over.
-        guard applies, let track = queue.advance() else {
+        guard applies, let track = advanceQueue() else {
             if !applies { pendingAdvance = nil }
             return false
         }
@@ -980,29 +1029,33 @@ final class MusicService {
 
     // MARK: - Radio and page paging
 
-    private func startRadio(seed: String) {
+    private func startRadio(seed: String, emptyPages: Int = 0) {
         cancelRadio()
         let generation = radioGeneration
         radioTask = Task { [weak self] in
-            await self?.fetchQueuePage(source: .radio(seedVideoId: seed), continuation: nil, generation: generation)
+            await self?.fetchQueuePage(
+                source: .radio(seedVideoId: seed), continuation: nil, generation: generation, emptyPages: emptyPages
+            )
         }
     }
 
-    /// Asks for the next page of the radio or of the playlist page when the queue is running low.
-    /// One fetch at a time. `emptyPages` counts pages in a row that added nothing after de-duplication.
+    /// Asks for the next page of the radio or of the playlist page, or for a radio to follow, when the queue needs it.
+    /// One fetch at a time; a fetch that starts replaces a retry that was waiting. `emptyPages` counts pages in a row
+    /// that added nothing after de-duplication.
     private func topUpQueue(emptyPages: Int = 0) {
         guard radioTask == nil, emptyPages < Self.maxEmptyPages else { return }
-        // Autoplay: a playlist or album on its last track carries on as the radio of that track, unless Loop playlist
-        // is on (Loop song does not stop it). The radio is asked for while the last track plays, so the hand-over is
-        // gapless. The queue stays a page until the radio has answered, so a radio that could not be reached is
-        // asked for again by the next top-up.
-        if loopMode != .playlist, isAutoplayOn, let seed = queue.radioHandOverSeed {
-            startRadio(seed: seed)
+        // A queue running out with nothing left to page asks for a radio: the first radio of a tapped song always,
+        // then with Autoplay (and Loop playlist off) the radio of the last track. A page stages it while its last
+        // tracks play, so it shows in Up next and the hand-over is gapless; a radio that has run out carries on from
+        // a new seed. A radio that could not be reached is asked for again by the next top-up.
+        if let seed = queue.refillSeed, queue.awaitsFirstRadioPage || playsAutoplay {
+            startRadio(seed: seed, emptyPages: emptyPages)
             return
         }
         // Without Autoplay a radio queue stops at the tracks it has; a page still loads its own later pages.
         if case .radio = queue.source, !isAutoplayOn { return }
         guard queue.needsMore, let source = queue.source, let continuation = queue.continuation else { return }
+        cancelQueueRetry()
         let generation = radioGeneration
         radioTask = Task { [weak self] in
             await self?.fetchQueuePage(source: source, continuation: continuation, generation: generation, emptyPages: emptyPages)
@@ -1031,39 +1084,87 @@ final class MusicService {
             guard generation == radioGeneration else { return }
             radioTask = nil
             logger.info("queue page unavailable: \(Self.logDescription(of: error), privacy: .public)")
-            // A page that cannot be read or that the server rejects would fail the same way again: stop paging.
-            // A dead session is not retried either. Anything else (network, 5xx) keeps the continuation, and a
-            // radio hand-over that failed this way keeps the queue a page, so a later top-up asks again.
-            let signedOut = Self.isSignedOut(error)
-            let final = Self.endsPaging(error) || signedOut
-            if final {
-                // A radio the server turns down is not asked for again either.
-                if case .radio(let seed) = source { queue.adoptRadio(seedVideoId: seed) }
+            if Self.isSignedOut(error) {
+                if case .radio(let seed) = source, continuation == nil { queue.noteAsked(seed) }
                 queue.clearContinuation()
+                handle(error)
+                settlePendingAdvance()
+                return
             }
-            if signedOut { handle(error) }
-            // A page that gave up may leave the queue on its last track: the radio takes over from there.
-            if final, !signedOut { topUpQueue() }
-            if radioTask == nil { settlePendingAdvance() }
+            if Self.endsPaging(error) {
+                // A page that cannot be read or that the server rejects would fail the same way again: stop paging,
+                // and never ask that radio again. The queue then refills from the next seed, counted as an empty
+                // page so a server that rejects every request cannot keep it asking.
+                if case .radio(let seed) = source, continuation == nil { queue.noteAsked(seed) }
+                if continuation != nil { queue.clearContinuation() }
+                topUpQueue(emptyPages: emptyPages + 1)
+            } else {
+                // Anything else (network, 5xx) may pass: the same request is asked for again after a wait.
+                scheduleQueueRetry(emptyPages: emptyPages)
+            }
+            if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
             return
         }
         guard generation == radioGeneration, !Task.isCancelled else { return }
         radioTask = nil
-        // The radio has answered: from here the queue is the radio's, even if it had nothing new to add.
-        if case .radio(let seed) = source { queue.adoptRadio(seedVideoId: seed) }
+        queueRetryAttempts = 0
+        let added: Int
+        if case .radio(let seed) = source, continuation == nil, queue.isPage {
+            // The radio that follows a page waits beside it until the page runs out.
+            added = queue.stageAutoplay(page.tracks, continuation: page.continuation, seed: seed)
+        } else {
+            // The radio has answered: from here the queue is the radio's, even if it had nothing new to add.
+            if case .radio(let seed) = source { queue.adoptRadio(seedVideoId: seed) }
+            added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator)
+        }
+        if added > 0, resumePendingAdvance() { return }
         // Pages overlap heavily: one that adds nothing still has a continuation, so ask again at once,
         // up to `maxEmptyPages` in a row. The next track change starts a fresh attempt.
-        let added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator)
-        if added > 0, resumePendingAdvance() { return }
         topUpQueue(emptyPages: added > 0 ? 0 : emptyPages + 1)
-        if radioTask == nil { settlePendingAdvance() }
+        if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
     }
 
-    /// A page error that retrying will not fix: an unreadable response or a rejected request.
+    /// Asks the top-up again after a wait that doubles each time, so a queue page or radio lost to the network still
+    /// arrives. After `maxQueueRetries` the queue waits for the next track change.
+    private func scheduleQueueRetry(emptyPages: Int) {
+        guard queueRetryAttempts < Self.maxQueueRetries else { return }
+        let delay = queueRetryDelay * (1 << queueRetryAttempts)
+        queueRetryAttempts += 1
+        let generation = radioGeneration
+        queueRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled, generation == self.radioGeneration else { return }
+            self.queueRetryTask = nil
+            self.topUpQueue(emptyPages: emptyPages)
+            if self.radioTask == nil { self.settlePendingAdvance() }
+        }
+    }
+
+    private func cancelQueueRetry() {
+        queueRetryTask?.cancel()
+        queueRetryTask = nil
+    }
+
+    /// Loop or Autoplay changed: the top-up is decided again now. A retry still waiting would hold a parked Next back
+    /// for a refill the new mode may not want, so it is dropped, and a Next with nothing left to wait for goes ahead.
+    private func topUpQueueAfterModeChange() {
+        cancelQueueRetry()
+        topUpQueue()
+        guard radioTask == nil, queueRetryTask == nil, !resumePendingAdvance() else { return }
+        settlePendingAdvance()
+    }
+
+    private func noteQueueFilling() {
+        let filling = radioTask != nil || queueRetryTask != nil
+        if filling != isFillingQueue { isFillingQueue = filling }
+    }
+
+    /// A page error that retrying will not fix: an unreadable response or a rejected request. A timeout (408) or a
+    /// rate limit (429) passes, so those wait for a retry.
     private static func endsPaging(_ error: any Error) -> Bool {
         switch error as? MusicError {
         case .parse: true
-        case .http(let status): (400..<500).contains(status)
+        case .http(let status): (400..<500).contains(status) && status != 408 && status != 429
         default: false
         }
     }
@@ -1072,14 +1173,14 @@ final class MusicService {
         radioGeneration += 1
         radioTask?.cancel()
         radioTask = nil
+        cancelQueueRetry()
     }
 
     // MARK: - Prefetch
 
     private func prefetchNextIfNeeded(position: TimeInterval) {
         let duration = player.duration
-        // Loop song replays the same track, so that is the stream worth resolving ahead.
-        let target = loopMode == .song ? queue.current : queue.upcoming.first
+        let target = prefetchTarget
         guard duration > Self.prefetchLead * 2, duration - position <= Self.prefetchLead,
               let next = target, prefetchAttempt != next.videoId else { return }
         prefetchAttempt = next.videoId
@@ -1088,6 +1189,16 @@ final class MusicService {
             guard let self, !Task.isCancelled, self.prefetchAttempt == next.videoId else { return }
             self.prefetched = stream
         }
+    }
+
+    /// The track that plays after this one. Loop song replays the same track, so that is the stream worth resolving
+    /// ahead. At the end of the queue it is the staged radio's first track, or the first track again under Loop playlist.
+    private var prefetchTarget: MusicTrack? {
+        if loopMode == .song { return queue.current }
+        if let next = queue.upcoming.first { return next }
+        if playsAutoplay { return queue.autoplay.first }
+        if loopMode == .playlist, queue.continuation == nil { return queue.tracks.first }
+        return nil
     }
 
     private func cancelPrefetch() {

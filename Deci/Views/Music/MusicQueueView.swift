@@ -10,7 +10,11 @@ struct MusicQueueView: View {
     let navigation: MusicSearchNavigation
 
     var body: some View {
-        let listing = MusicQueueListing(queue: service.queue)
+        let listing = MusicQueueListing(
+            queue: service.queue,
+            listsNextLap: service.listsNextLap,
+            listsAutoplay: service.playsAutoplay
+        )
         let terms = navigation.queueFilterTerms
         let matches = terms.isEmpty
             ? Array(listing.upcoming.indices)
@@ -41,7 +45,15 @@ struct MusicQueueView: View {
 
     @ViewBuilder
     private func upcoming(_ tracks: [MusicTrack], matches: [Int], terms: [String]) -> some View {
-        if tracks.isEmpty {
+        if tracks.isEmpty, service.isFillingQueue {
+            // The radio or the rest of the playlist is on its way.
+            VStack(spacing: 0) {
+                ForEach(0..<4, id: \.self) { MusicSkeletonSongRow(index: $0) }
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Loading the queue")
+        } else if tracks.isEmpty {
             MusicStateCard(message: "No more songs queued.", minHeight: 48)
                 .frame(maxHeight: .infinity, alignment: .top)
         } else {
