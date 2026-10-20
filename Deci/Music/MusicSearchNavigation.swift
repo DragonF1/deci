@@ -43,19 +43,18 @@ nonisolated enum MusicSearchPanel: Equatable {
     }
 }
 
-/// What the Music tab shows over Home and Library (search results, Up next, Lyrics, the add-to-playlist picker), and
-/// the one way every artist, album name or tile opens its page, and every "..." menu action runs. It lives here, not
-/// in the view, so the rules can be tested. One instance
-/// belongs to each `MusicService` (`MusicServiceHost` makes it): the Music popup unmounts the player's view when the
-/// icon is hidden and builds it again, and the view takes this one back, so what was open is still open.
+/// What the Music popup's right column shows (Home and Library, search results, Up next, Lyrics, the add-to-playlist
+/// picker), and the one way every artist, album name or tile opens its page, and every "..." menu action runs. It lives
+/// here, not in the view, so the rules can be tested. One instance belongs to each `MusicService` (`MusicServiceHost`
+/// makes it): the Music popup unmounts the player's view when the icon is hidden and builds it again, and the view takes
+/// this one back, so what was open is still open.
 @MainActor
 @Observable
 final class MusicSearchNavigation {
-    /// The Up next button shows the queue over whatever is on screen.
+    /// The Up next button shows the queue in the right column in place of whatever is on screen.
     var queueForced = false
-    /// Now Playing is open: the player screen fills the popover over whichever browse screen is under it. Lyrics and
-    /// Up next are player screens too, so they open it as well; Back from them goes to the browse screen.
-    var isNowPlayingOpen = false
+    /// The tab search was opened from, so closing it returns there. nil until search has been opened.
+    private(set) var tabBeforeSearch: MusicBrowseStore.Tab?
     /// The query last sent with Return, so a search that found nothing still shows its result.
     private(set) var submittedQuery: String?
     /// An artist opened from the results is on screen: the results step aside, keeping the query, and come back
@@ -112,15 +111,20 @@ final class MusicSearchNavigation {
         !showsQueue && !showsResults && !showsLyrics && !showsPicker
     }
 
-    /// The screen the shell shows: a browse screen with the tab bar, or one of the player screens.
-    var screen: MusicShellScreen {
-        MusicShellScreen.resolve(
-            isNowPlayingOpen: isNowPlayingOpen,
-            hasTrack: service.player.nowPlaying != nil,
-            showsLyrics: showsLyrics,
-            showsQueue: showsQueue,
-            showsPicker: showsPicker
-        )
+    /// What fills the right column: browse, or Lyrics, Up next or the picker in place of it.
+    var rightColumn: MusicRightColumn {
+        MusicRightColumn.resolve(showsPicker: showsPicker, showsLyrics: showsLyrics, showsQueue: showsQueue)
+    }
+
+    /// The header tab to highlight: Library for Library and the pages opened from it, Home for everything else. While
+    /// search is open it keeps the tab it was opened from.
+    var headerTab: MusicHeaderTab {
+        MusicHeaderTab.resolve(tab: service.browse.tab, tabBeforeSearch: tabBeforeSearch)
+    }
+
+    /// The global search screen is the browse tab.
+    var isSearchOpen: Bool {
+        service.browse.tab == .search
     }
 
     private var isHidingResults: Bool {
@@ -149,8 +153,8 @@ final class MusicSearchNavigation {
     }
 
     /// The query was edited. An emptied field stops the search and drops its results, back to browsing. Typing
-    /// closes the add-to-playlist picker, which sits over the results, but never a player screen: the field is on the
-    /// Search tab, under them, and a key that reaches it must not take Now Playing, Lyrics or Up next away.
+    /// closes the add-to-playlist picker, which sits over the results, but never Lyrics or Up next: the field is under
+    /// them, and a key that reaches it must not take them away.
     func queryChanged() {
         hidesResults = false
         service.trackActions.closePicker()
@@ -161,38 +165,30 @@ final class MusicSearchNavigation {
 
     // MARK: - Panels
 
+    /// The Up next button: the queue takes the right column, or gives it back. Lyrics closes, since they are never both on.
     func toggleQueue() {
         service.lyrics.setPanelOpen(false)
         service.trackActions.closePicker()
         queueForced.toggle()
-        if queueForced { isNowPlayingOpen = true }
     }
 
+    /// The Lyrics button: the lyrics take the right column, or give it back. The lyrics panel is open exactly while its
+    /// view is the right column.
     func toggleLyrics() {
         queueForced = false
         service.trackActions.closePicker()
         service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
-        if service.lyrics.isPanelOpen { isNowPlayingOpen = true }
     }
 
-    /// The mini player was tapped: Now Playing opens over the browse screen.
-    func openNowPlaying() {
-        guard service.player.nowPlaying != nil else { return }
-        service.trackActions.closePicker()
-        isNowPlayingOpen = true
-    }
-
-    /// Leaves Now Playing, Lyrics and Up next, back to the browse screen under them.
-    func dismissPlayer() {
+    /// Lyrics or Up next goes back to browse, the screen under it.
+    func closePanel() {
         queueForced = false
         service.lyrics.setPanelOpen(false)
-        isNowPlayingOpen = false
     }
 
-    /// Everything that sits over the browse screens goes away, the player screens included.
+    /// Everything that sits over the browse screens goes away.
     private func closePanels() {
         queueForced = false
-        isNowPlayingOpen = false
         service.lyrics.setPanelOpen(false)
         service.trackActions.closePicker()
     }
@@ -204,14 +200,51 @@ final class MusicSearchNavigation {
 
     // MARK: - Opening pages
 
-    /// A tab of the tab bar: leaves the queue, the player and any page, and goes to the tab's root. Leaving Search
-    /// for another tab drops its query; the Search tab keeps the query and shows its results again.
+    /// A tab of the header, or search: leaves the panels and any page, and goes to the tab's root. Leaving search for
+    /// another tab drops its query; picking search again keeps the query and shows its results again.
     func select(_ tab: MusicBrowseStore.Tab) {
         closePanels()
         if tab != .search, showsResults || isHidingResults { service.query = "" }
         hidesResults = false
+        let current = service.browse.tab
+        if tab == .search, current != .search { tabBeforeSearch = current }
         service.browse.tab = tab
         service.browse.popToRoot()
+    }
+
+    /// The magnifier: the global search screen takes the right column.
+    func openSearch() {
+        select(.search)
+    }
+
+    /// Leaves search for the tab it was opened from (Home when it was not opened from one).
+    func closeSearch() {
+        select(tabBeforeSearch ?? .home)
+    }
+
+    /// The magnifier is a toggle.
+    func toggleSearch() {
+        if isSearchOpen { closeSearch() } else { openSearch() }
+    }
+
+    /// Escape: closes the topmost thing over the browse screens and says whether there was one. The picker first, then
+    /// whatever covers the column (Lyrics or Up next), then search. Search closes only at its own root: a page opened
+    /// from its results is a page, and Escape never pops the page stack. The account card is the popup's and closes before
+    /// this is asked.
+    func escape() -> Bool {
+        if showsPicker {
+            closePicker()
+            return true
+        }
+        if showsLyrics || showsQueue {
+            closePanel()
+            return true
+        }
+        if isSearchOpen, service.browse.path.isEmpty {
+            closeSearch()
+            return true
+        }
+        return false
     }
 
     /// An artist name or tile was tapped, from anywhere.

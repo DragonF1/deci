@@ -338,6 +338,75 @@ struct MusicDSPChainTests {
         #expect(chain.consumePeak() == 0, "the meter shows what is heard, so mute reads zero")
     }
 
+    @Test("the level is the RMS of the signal before the gain, and resets when read")
+    func levelIsPreGainRMS() {
+        let (chain, lease) = make()
+        chain.setTargetGain(0.25, snap: true)
+        #expect(chain.consumeLevel() == 0)
+
+        render(lease, MusicTestSignal.constant(0.5, frames: 512))
+        // The volume slider must not move the bars: the level reads the source, not what is heard.
+        #expect(abs(chain.consumeLevel() - 0.5) < 1e-4)
+        #expect(chain.consumeLevel() == 0)
+    }
+
+    @Test("the level of a sine is its RMS, peak over root two")
+    func levelOfASine() {
+        let (chain, lease) = make()
+        render(lease, MusicTestSignal.sine(frequency: 1_000, amplitude: 0.4, sampleRate: Self.rate, frames: 4_800))
+        #expect(abs(chain.consumeLevel() - Float(0.4 / 2.0.squareRoot())) < 2e-3)
+    }
+
+    @Test("the level keeps the loudest buffer since the last read")
+    func levelKeepsTheLoudest() {
+        let (chain, lease) = make()
+        render(lease, MusicTestSignal.constant(0.1, frames: 256))
+        render(lease, MusicTestSignal.constant(0.6, frames: 256))
+        render(lease, MusicTestSignal.constant(0.2, frames: 256))
+        #expect(abs(chain.consumeLevel() - 0.6) < 1e-4)
+    }
+
+    @Test("a muted chain reports no level, so the bars rest")
+    func levelRestsWhenMuted() {
+        let (chain, lease) = make()
+        chain.setTargetGain(0, snap: true)
+        render(lease, MusicTestSignal.constant(0.5, frames: 512))
+        #expect(chain.consumeLevel() == 0)
+
+        chain.setTargetGain(1, snap: true)
+        render(lease, MusicTestSignal.constant(0.5, frames: 512))
+        #expect(chain.consumeLevel() > 0.4)
+    }
+
+    @Test("reading the level leaves the peak alone, and reading the peak leaves the level alone")
+    func levelAndPeakAreSeparate() {
+        let (chain, lease) = make()
+        render(lease, MusicTestSignal.constant(0.5, frames: 512))
+
+        #expect(abs(chain.consumeLevel() - 0.5) < 1e-4)
+        #expect(abs(chain.consumePeak() - 0.5) < 1e-3, "the Mixer row's meter still has its reading")
+
+        render(lease, MusicTestSignal.constant(0.3, frames: 512))
+        #expect(abs(chain.consumePeak() - 0.3) < 1e-3)
+        #expect(abs(chain.consumeLevel() - 0.3) < 1e-4)
+    }
+
+    @Test("every layout reports a level, and a buffer of NaN reports none")
+    func levelInEveryLayout() {
+        let (chain, lease) = make()
+        render(lease, MusicTestSignal.constant(0.5, frames: 256, channels: 1))
+        #expect(abs(chain.consumeLevel() - 0.5) < 1e-4)
+
+        render(lease, MusicTestSignal.constant(0.4, frames: 256), layout: .planar)
+        #expect(abs(chain.consumeLevel() - 0.4) < 1e-4)
+
+        render(lease, MusicTestSignal.constant(0.3, frames: 256, channels: 3))
+        #expect(abs(chain.consumeLevel() - 0.3) < 1e-4)
+
+        render(lease, MusicTestSignal.constant(Float.nan, frames: 256))
+        #expect(chain.consumeLevel() == 0)
+    }
+
     @Test("every rendered frame is counted")
     func framesAreCounted() {
         let (chain, lease) = make()

@@ -87,12 +87,10 @@ struct MusicTrackMenuItems: View {
 
 /// The "..." button. It is a button of its own, so a click on it opens the menu and never plays the row under it.
 struct MusicTrackMoreButton: View {
-    /// How the button is drawn: the bare dots of the compact rows, the 22 pt Mixer button of the song row, or the
-    /// 26 pt one of the player.
+    /// How the button is drawn: the bare dots of the compact rows, or the 22 pt Mixer button of the song row.
     enum Style {
         case plain
         case round
-        case player
     }
 
     let track: MusicTrack
@@ -122,16 +120,6 @@ struct MusicTrackMoreButton: View {
                             .fill(DesignTokens.Colors.pickerBackground)
                     )
                     .contentShape(Rectangle())
-            case .player:
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(MusicStyle.Palette.textPrimary)
-                    .frame(width: Self.playerSize, height: Self.playerSize)
-                    .background(
-                        RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
-                            .fill(DesignTokens.Colors.pickerBackground)
-                    )
-                    .contentShape(Rectangle())
             }
         }
         .menuStyle(.button)
@@ -142,34 +130,10 @@ struct MusicTrackMoreButton: View {
         .help("More actions")
     }
 
-    /// Wide enough for a click, the same as the transport buttons beside it in the player.
+    /// Wide enough for a click.
     static let width: CGFloat = 22
     /// The button the song row shows under the pointer.
     static let roundSize: CGFloat = 22
-    /// The button of the player's Now Playing and header.
-    static let playerSize: CGFloat = 26
-}
-
-/// The "..." button of the song in the player: always visible, with the same actions as a row and no page.
-struct MusicNowPlayingMenu: View {
-    let track: MusicTrack
-    var style: MusicTrackMoreButton.Style = .plain
-    @Environment(\.musicTrackMenu) private var menu
-
-    var body: some View {
-        if let menu {
-            let actions = menu.actions(track, .none)
-            if !actions.isEmpty {
-                MusicTrackMoreButton(
-                    track: track,
-                    actions: actions,
-                    perform: { menu.perform($0, track, .none) },
-                    tint: DesignTokens.Colors.textTertiary,
-                    style: style
-                )
-            }
-        }
-    }
 }
 
 /// The add-to-playlist panel: it replaces the content area like Up next and Lyrics. It lists the playlists the song

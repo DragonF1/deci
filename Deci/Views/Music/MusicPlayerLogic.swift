@@ -1,29 +1,9 @@
 // Deci/Views/Music/MusicPlayerLogic.swift
 import SwiftUI
 
-// The rules of the player screens (Now Playing, Lyrics, Up next) kept apart from the views, so they are tested without
-// drawing anything: how dark the backdrop is, what the output control says, what Up next lists, what the lyrics caption
-// reads and where a slider's knob sits.
-
-/// How much black is poured over the blurred cover behind a player screen, as opacities at the top, the middle and the
-/// bottom of the popover. Now Playing lets the cover show; Lyrics and Up next sit under text, so they are darker.
-nonisolated enum MusicPlayerDim {
-    struct Stops: Equatable {
-        let top: Double
-        let middle: Double
-        let bottom: Double
-    }
-
-    static let artwork = Stops(top: 0.32, middle: 0.45, bottom: 0.64)
-    static let text = Stops(top: 0.46, middle: 0.56, bottom: 0.74)
-
-    static func stops(for screen: MusicShellScreen) -> Stops {
-        switch screen {
-        case .browse, .nowPlaying: artwork
-        case .lyrics, .queue: text
-        }
-    }
-}
+// The rules of the player column and the panels beside it (Lyrics, Up next) kept apart from the views, so they are
+// tested without drawing anything: what the output control says, what Up next lists, what the lyrics caption reads and
+// where a slider's knob sits.
 
 /// The small label under the output control: where the music comes out, and the EQ profile in use on it.
 nonisolated enum MusicOutputLabel {

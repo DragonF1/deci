@@ -1,5 +1,5 @@
 // DeciTests/Music/MusicShellTests.swift
-// The pure parts of the Music shell: the popover height, the chrome measures, which screen shows, the tab labels, how
+// The pure parts of the Music shell: the browse measures, what fills the right column, the header tabs, how
 // Home draws its shelves, and the helpers behind the tints and the avatar. Nothing here draws a view.
 
 import CoreGraphics
@@ -9,124 +9,67 @@ import Testing
 
 @Suite("MusicShellLayout")
 struct MusicShellLayoutTests {
-    @Test("the popover is as tall as the old gear row, gap and body inside its padding, at every size", arguments: MenuBarPopupSize.allCases)
-    func totalHeightIsUnchanged(size: MenuBarPopupSize) {
-        let dimensions = size.dimensions
-        let height = MusicPopupMetrics.totalHeight(
-            maxContentHeight: dimensions.maxContentHeight,
-            contentPadding: dimensions.contentPadding
-        )
-        let expected: CGFloat = 2 * dimensions.contentPadding + 32 + 8 + 520
-        #expect(height == expected)
-    }
-
-    @Test("a short popup limit shrinks the body and so the popover")
-    func totalHeightFollowsASmallLimit() {
-        let expected: CGFloat = 24 + 32 + 8 + 400
-        #expect(MusicPopupMetrics.totalHeight(maxContentHeight: 400, contentPadding: 12) == expected)
-    }
-
-    @Test("the mini player spans the popover inside its side margin, and never goes negative")
-    func miniPlayerWidth() {
-        let margin = MusicShellLayout.miniPlayerMargin
-        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 470) == 470 - 2 * margin)
-        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 30) == 10)
-        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 2 * margin - 1) == 0)
-        #expect(MusicShellLayout.miniPlayerWidth(forWidth: 0) == 0)
-    }
-
-    @Test("a list scrolls clear of the mini player while one shows, and keeps the page margin without one")
-    func bottomInset() {
-        let without = MusicShellLayout.bottomInset(hasMiniPlayer: false)
-        let with = MusicShellLayout.bottomInset(hasMiniPlayer: true)
-        #expect(without == MusicShellLayout.pageMargin)
-        #expect(with >= MusicStyle.Size.miniPlayerHeight + MusicShellLayout.miniPlayerBottom)
-        #expect(with > without)
-    }
-
-    @Test("a list's last row scrolls clear of the mini player, and the fade and the click shield cover its footprint")
-    func insetClearsThePlayer() {
-        let footprint = MusicStyle.Size.miniPlayerHeight + MusicShellLayout.miniPlayerBottom
-        #expect(MusicShellLayout.miniPlayerFootprint == footprint)
-        // The inset is the whole footprint plus a real gap, so the last row stops above the player and not under it.
-        #expect(MusicShellLayout.miniPlayerClearance > 0)
-        #expect(MusicShellLayout.bottomInset(hasMiniPlayer: true) == footprint + MusicShellLayout.miniPlayerClearance)
-        // The fade dissolves the rows over the whole player, side margins and bottom gap included.
-        #expect(MusicShellLayout.scrimHeight >= footprint)
-    }
-
-    @Test("the account card hangs clear under the avatar and fits inside the popover, at every size", arguments: MenuBarPopupSize.allCases)
-    @MainActor
-    func accountCardPlacement(size: MenuBarPopupSize) {
-        let dimensions = size.dimensions
-        let padding = dimensions.contentPadding
-        let avatarBottom = padding + (MusicPopupMetrics.headerHeight + MusicStyle.Size.headerButton) / 2
-        let cardTop = MusicPopupMetrics.accountCardTop(contentPadding: padding)
-        #expect(cardTop > avatarBottom)
-        // The card is as wide as it is and ends where the avatar does, so it must fit between that edge and the left one.
-        let cardLeft = dimensions.width - MusicPopupMetrics.avatarTrailingInset(contentPadding: padding) - MusicAccountCard.width
-        #expect(cardLeft >= 0)
-        // The avatar sits left of the gear, one gap apart.
-        let gearLeft = dimensions.width - padding - MusicStyle.Size.headerButton
-        let avatarRight = dimensions.width - MusicPopupMetrics.avatarTrailingInset(contentPadding: padding)
-        #expect(gearLeft - avatarRight == MusicPopupMetrics.headerButtonGap)
-        // The body starts under the header row.
-        #expect(MusicPopupMetrics.contentTop(contentPadding: padding) > padding + MusicPopupMetrics.headerHeight)
+    @Test("a browse page keeps the Mixer's 16 pt side margin, and Quick picks columns sit 12 pt apart")
+    func browseMeasures() {
+        #expect(MusicShellLayout.pageMargin == 16)
+        #expect(MusicShellLayout.quickPickColumnGap == 12)
     }
 }
 
-@Suite("MusicShellScreen")
-struct MusicShellScreenTests {
-    private func screen(
-        open: Bool = false, track: Bool = true, lyrics: Bool = false, queue: Bool = false, picker: Bool = false
-    ) -> MusicShellScreen {
-        MusicShellScreen.resolve(
-            isNowPlayingOpen: open, hasTrack: track, showsLyrics: lyrics, showsQueue: queue, showsPicker: picker
-        )
+@Suite("MusicRightColumn")
+struct MusicRightColumnTests {
+    private func column(lyrics: Bool = false, queue: Bool = false, picker: Bool = false) -> MusicRightColumn {
+        MusicRightColumn.resolve(showsPicker: picker, showsLyrics: lyrics, showsQueue: queue)
     }
 
-    @Test("nothing open is a browse screen")
+    @Test("nothing open is browse")
     func browse() {
-        #expect(screen() == .browse)
-        #expect(screen().isPlayer == false)
+        #expect(column() == .browse)
     }
 
-    @Test("Now Playing shows only with a loaded track")
-    func nowPlaying() {
-        #expect(screen(open: true) == .nowPlaying)
-        #expect(screen(open: true, track: false) == .browse)
-    }
-
-    @Test("Lyrics and Up next are player screens, and Lyrics wins if both were somehow on")
+    @Test("Lyrics and Up next each take the column, and Lyrics wins if both were somehow on")
     func panels() {
-        #expect(screen(lyrics: true) == .lyrics)
-        #expect(screen(queue: true) == .queue)
-        #expect(screen(lyrics: true, queue: true) == .lyrics)
-        #expect(screen(lyrics: true).isPlayer)
-        #expect(screen(queue: true).isPlayer)
+        #expect(column(lyrics: true) == .lyrics)
+        #expect(column(queue: true) == .queue)
+        #expect(column(lyrics: true, queue: true) == .lyrics)
     }
 
-    @Test("the add to playlist picker is a browse screen, even over a player screen")
+    @Test("the add to playlist picker covers both panels")
     func picker() {
-        #expect(screen(open: true, lyrics: true, picker: true) == .browse)
-        #expect(screen(open: true, queue: true, picker: true) == .browse)
+        #expect(column(picker: true) == .picker)
+        #expect(column(lyrics: true, picker: true) == .picker)
+        #expect(column(queue: true, picker: true) == .picker)
     }
 }
 
-@Suite("MusicBrowseStore.Tab labels")
-struct MusicTabLabelTests {
-    @Test("the tabs run Home, Library, Search")
+@Suite("MusicHeaderTab")
+struct MusicHeaderTabTests {
+    @Test("the header has two tabs, Home then Library, and no Search")
     func order() {
-        #expect(MusicBrowseStore.Tab.allCases == [.home, .library, .search])
-        #expect(MusicBrowseStore.Tab.allCases.map(\.title) == ["Home", "Library", "Search"])
+        #expect(MusicHeaderTab.allCases == [.home, .library])
+        #expect(MusicHeaderTab.allCases.map(\.title) == ["Home", "Library"])
     }
 
-    @Test("only Home has a filled icon, and only while selected")
-    func symbols() {
-        #expect(MusicBrowseStore.Tab.home.symbol(selected: false) == "house")
-        #expect(MusicBrowseStore.Tab.home.symbol(selected: true) == "house.fill")
-        #expect(MusicBrowseStore.Tab.library.symbol(selected: true) == MusicBrowseStore.Tab.library.symbol(selected: false))
-        #expect(MusicBrowseStore.Tab.search.symbol(selected: true) == MusicBrowseStore.Tab.search.symbol(selected: false))
+    @Test("a tab that is on screen is the one highlighted")
+    func plainTabs() {
+        #expect(MusicHeaderTab.resolve(tab: .home, tabBeforeSearch: nil) == .home)
+        #expect(MusicHeaderTab.resolve(tab: .library, tabBeforeSearch: nil) == .library)
+        // The stale record of an earlier search does not matter once a real tab is showing.
+        #expect(MusicHeaderTab.resolve(tab: .home, tabBeforeSearch: .library) == .home)
+    }
+
+    @Test("search keeps the tab it was opened from highlighted, Home when it has none")
+    func searchBorrowsTheEarlierTab() {
+        #expect(MusicHeaderTab.resolve(tab: .search, tabBeforeSearch: .library) == .library)
+        #expect(MusicHeaderTab.resolve(tab: .search, tabBeforeSearch: .home) == .home)
+        #expect(MusicHeaderTab.resolve(tab: .search, tabBeforeSearch: nil) == .home)
+        #expect(MusicHeaderTab.resolve(tab: .search, tabBeforeSearch: .search) == .home)
+    }
+
+    @Test("a header tab maps to the browse tab it opens")
+    func browseTab() {
+        #expect(MusicHeaderTab.home.browseTab == .home)
+        #expect(MusicHeaderTab.library.browseTab == .library)
     }
 }
 
@@ -272,6 +215,15 @@ struct MusicAccountInitialsTests {
         #expect(MusicAccountInitials.from("--- ...") == "")
         #expect(MusicAccountInitials.from("  Ada   Lovelace  ") == "AL")
         #expect(MusicAccountInitials.from("\u{00E9}mile z") == "\u{00C9}Z")
+    }
+
+    @Test("the header avatar shows one letter: the first of the name, in capitals")
+    func letter() {
+        #expect(MusicAccountInitials.letter("Ada Lovelace") == "A")
+        #expect(MusicAccountInitials.letter("ada") == "A")
+        #expect(MusicAccountInitials.letter("\u{00E9}mile z") == "\u{00C9}")
+        #expect(MusicAccountInitials.letter("") == "")
+        #expect(MusicAccountInitials.letter("--- ...") == "")
     }
 }
 

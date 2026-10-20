@@ -1,38 +1,11 @@
 // DeciTests/Music/MusicPlayerLogicTests.swift
-// The rules of the player screens kept apart from the views: how dark the cover's backdrop is on each screen, what the
-// output control says, what the Up next list shows and where it comes from, what the lyrics caption reads, and where
-// the slider's knob sits.
+// The rules of the player column and the panels beside it kept apart from the views: what the output control says, what
+// the Up next list shows and where it comes from, what the lyrics caption reads, and where the slider's knob sits.
 
 import SwiftUI
 import Testing
 
 @testable import Deci
-
-@MainActor
-@Suite("MusicPlayerDim")
-struct MusicPlayerDimTests {
-    @Test("every screen darkens more toward the bottom, so the controls stay readable over any cover")
-    func darkensDownward() {
-        for screen in [MusicShellScreen.browse, .nowPlaying, .lyrics, .queue] {
-            let stops = MusicPlayerDim.stops(for: screen)
-            #expect(stops.top < stops.middle)
-            #expect(stops.middle < stops.bottom)
-            #expect(stops.bottom <= 1)
-        }
-    }
-
-    @Test("Lyrics and Up next sit behind text, so they are darker than Now Playing at every height")
-    func textScreensAreDarker() {
-        let art = MusicPlayerDim.stops(for: .nowPlaying)
-        for screen in [MusicShellScreen.lyrics, .queue] {
-            let text = MusicPlayerDim.stops(for: screen)
-            #expect(text.top > art.top)
-            #expect(text.middle > art.middle)
-            #expect(text.bottom > art.bottom)
-        }
-        #expect(MusicPlayerDim.stops(for: .lyrics) == MusicPlayerDim.stops(for: .queue))
-    }
-}
 
 @MainActor
 @Suite("MusicOutputLabel")

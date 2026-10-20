@@ -1,6 +1,6 @@
 // DeciTests/Music/MusicPopupMetricsTests.swift
-// The Music popup keeps the size it had as a tab of the one popup: a 32 pt header row with the
-// gear, then a body capped at 520 pt. These pins catch an accidental resize.
+// The Music popup is a split pane: a 170 pt player column, a 1 pt divider and the right column, inside a 1 pt border
+// and 520 pt tall at every popup size. These pins catch an accidental resize and keep the account card on the avatar.
 
 import CoreGraphics
 import Testing
@@ -8,28 +8,70 @@ import Testing
 
 @Suite("MusicPopupMetrics")
 struct MusicPopupMetricsTests {
-    @Test("the header row is 32 pt, as tall as the old Mixer and Music pill row")
-    func headerHeight() {
+    @Test("the popup is 520 pt tall at every popup size", arguments: MenuBarPopupSize.allCases)
+    func heightAtEverySize(size: MenuBarPopupSize) {
+        #expect(MusicPopupMetrics.height == 520)
+        #expect(size.dimensions.maxContentHeight >= MusicPopupMetrics.height)
+    }
+
+    @Test("the player column is 170 pt wide and the right column takes the rest inside the border and the divider")
+    func columnWidths() {
+        #expect(MusicPopupMetrics.playerColumnWidth == 170)
+        #expect(MusicPopupMetrics.dividerWidth == 1)
+        #expect(MusicPopupMetrics.rightColumnWidth(popupWidth: 510) == 337)
+        #expect(MusicPopupMetrics.rightColumnContentWidth(popupWidth: 510) == 305)
+        #expect(MusicPopupMetrics.rightColumnWidth(popupWidth: 0) == 0)
+    }
+
+    @Test("the player column pads its content 14 pt, which leaves the 142 pt the cover and the spectrum are")
+    func playerColumnContent() {
+        #expect(MusicPopupMetrics.playerColumnPadding == 14)
+        #expect(MusicPopupMetrics.playerColumnContentWidth == 142)
+        #expect(Double(MusicPopupMetrics.playerColumnContentWidth) == MusicSpectrum.boxWidth)
+    }
+
+    @Test("the right column keeps room for content at every popup size", arguments: MenuBarPopupSize.allCases)
+    func rightColumnFits(size: MenuBarPopupSize) {
+        let width = size.dimensions.width
+        let total = 2 * MusicPopupMetrics.borderWidth + MusicPopupMetrics.playerColumnWidth
+            + MusicPopupMetrics.dividerWidth + MusicPopupMetrics.rightColumnWidth(popupWidth: width)
+        #expect(total == width)
+        #expect(MusicPopupMetrics.rightColumnContentWidth(popupWidth: width) >= 250)
+    }
+
+    @Test("the right header is 32 pt tall and starts 8 pt under the border")
+    func header() {
         #expect(MusicPopupMetrics.headerHeight == 32)
+        #expect(MusicPopupMetrics.rightPaddingTop == 8)
+        #expect(MusicPopupMetrics.headerTop == 9)
     }
 
-    @Test("the body is 520 pt at every popup size", arguments: MenuBarPopupSize.allCases)
-    func bodyHeightAtEverySize(size: MenuBarPopupSize) {
-        #expect(MusicPopupMetrics.bodyHeight(maxContentHeight: size.dimensions.maxContentHeight) == 520)
+    @Test("the right column pads its content 16 pt at the sides and 14 pt at the bottom")
+    func rightPadding() {
+        #expect(MusicPopupMetrics.rightPaddingSide == 16)
+        #expect(MusicPopupMetrics.rightPaddingBottom == 14)
     }
 
-    @Test("the body never grows past 520 pt on a tall popup")
-    func bodyCappedAtTheTop() {
-        #expect(MusicPopupMetrics.bodyHeight(maxContentHeight: 2000) == 520)
+    @Test("the account card hangs 6 pt under the avatar and ends where it does")
+    func accountCardPlacement() {
+        // The avatar is centred in the header: 9 + (32 + 22) / 2 = 36 is its bottom edge, and the card sits 6 below it.
+        #expect(MusicPopupMetrics.avatarSize == 22)
+        #expect(MusicPopupMetrics.accountCardTop == 42)
+        // The avatar's right edge: the border and the right column's side padding.
+        #expect(MusicPopupMetrics.accountCardTrailing == 17)
     }
 
-    @Test("a popup limit of exactly 520 pt gives 520 pt")
-    func bodyAtTheBoundary() {
-        #expect(MusicPopupMetrics.bodyHeight(maxContentHeight: 520) == 520)
+    @Test("the account card fits inside the right column at every popup size", arguments: MenuBarPopupSize.allCases)
+    @MainActor
+    func accountCardFits(size: MenuBarPopupSize) {
+        let width = size.dimensions.width
+        let cardLeft = width - MusicPopupMetrics.accountCardTrailing - MusicAccountCard.width
+        let rightColumnLeft = MusicPopupMetrics.borderWidth + MusicPopupMetrics.playerColumnWidth + MusicPopupMetrics.dividerWidth
+        #expect(cardLeft >= rightColumnLeft)
     }
 
-    @Test("a popup limit below 520 pt wins, so a small screen is never overrun")
-    func bodyFollowsSmallerLimit() {
-        #expect(MusicPopupMetrics.bodyHeight(maxContentHeight: 400) == 400)
+    @Test("the popup is a 12 pt rounded rectangle")
+    func corner() {
+        #expect(MusicPopupMetrics.cornerRadius == 12)
     }
 }

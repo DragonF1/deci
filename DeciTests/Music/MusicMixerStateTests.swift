@@ -139,6 +139,20 @@ struct MusicMixerStateTests {
         #expect(state.sampleLevel() == 0)
     }
 
+    @Test("the spectrum level is the chain's own, so the row's meter and the player column never starve each other")
+    func spectrumLevelIsSeparate() {
+        let (state, _, _) = makeState()
+        state.setVolume(0.5)
+        #expect(state.sampleSpectrumLevel() == 0)
+        let lease = MusicRenderLease(chain: state.chain, sampleRate: 48_000, maxFrames: 1_024)
+        let buffers = TestBufferList(channels: MusicTestSignal.constant(0.5, frames: 256), layout: .interleaved)
+        lease.render(buffers.list, frames: 256)
+
+        #expect(abs(state.sampleSpectrumLevel() - 0.5) < 1e-4, "before the volume, so 0.5 and not 0.25")
+        #expect(state.sampleSpectrumLevel() == 0)
+        #expect(state.sampleLevel() > 0, "reading the spectrum level did not take the meter's")
+    }
+
     // MARK: - Persistence
 
     @Test("everything round-trips through SettingsManager under the music key, with no schema change")

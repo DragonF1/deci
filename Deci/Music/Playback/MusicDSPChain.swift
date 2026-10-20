@@ -49,6 +49,9 @@ final class MusicDSPChain: @unchecked Sendable {
     private let targetGainBits = Atomic<UInt32>(Float(1).bitPattern)
     private let snapGain = Atomic<Bool>(false)
     private let peakBits = Atomic<UInt32>(0)
+    /// The loudest buffer RMS since the last read, before the volume gain: for the player column's spectrum. It has its
+    /// own reader, so it never shares `peakBits`, which the Mixer row consumes.
+    private let levelBits = Atomic<UInt32>(0)
     private let frameCount = Atomic<Int>(0)
     private let rateBits: Atomic<UInt64>
     /// The rate the newest lease asked the processors to be rebuilt for.
@@ -131,6 +134,12 @@ final class MusicDSPChain: @unchecked Sendable {
     /// The loudest sample rendered since the last call, post gain: what is heard. Reading resets it.
     func consumePeak() -> Float {
         Float(bitPattern: peakBits.exchange(0, ordering: .relaxed))
+    }
+
+    /// The loudest buffer RMS rendered since the last call, taken before the volume gain (so the volume slider does not
+    /// move it, and mute leaves it at rest). Reading resets it.
+    func consumeLevel() -> Float {
+        Float(bitPattern: levelBits.exchange(0, ordering: .relaxed))
     }
 
     // MARK: - Format diagnostics
@@ -269,6 +278,7 @@ final class MusicDSPChain: @unchecked Sendable {
             memset(samples, 0, sampleCount * MemoryLayout<Float>.size)
             return
         }
+        noteLevel(samples, count: sampleCount)
         currentGain = Self.applyGain(
             samples, frames: frames, channels: 2, startGain: startGain, target: target, coefficient: lease.rampCoefficient
         )
@@ -317,6 +327,7 @@ final class MusicDSPChain: @unchecked Sendable {
                 memset(data, 0, sampleCount * MemoryLayout<Float>.size)
                 continue
             }
+            noteLevel(data, count: sampleCount)
             endGain = Self.applyGain(
                 data, frames: count, channels: channels, startGain: startGain, target: target, coefficient: lease.rampCoefficient
             )
@@ -329,6 +340,20 @@ final class MusicDSPChain: @unchecked Sendable {
     }
 
     // MARK: - Render helpers
+
+    /// Keeps the loudest buffer RMS seen since the level was last read. Takes the buffer as it came in, before the gain.
+    /// A buffer with a NaN or infinity in it measures as non-finite and is skipped.
+    private func noteLevel(_ samples: UnsafePointer<Float>, count: Int) {
+        var rms: Float = 0
+        vDSP_rmsqv(samples, 1, &rms, vDSP_Length(count))
+        guard rms.isFinite, rms > 0 else { return }
+        var current = levelBits.load(ordering: .relaxed)
+        while rms > Float(bitPattern: current) {
+            let result = levelBits.compareExchange(expected: current, desired: rms.bitPattern, ordering: .relaxed)
+            if result.exchanged { return }
+            current = result.original
+        }
+    }
 
     private func notePeak(_ samples: UnsafePointer<Float>, count: Int) {
         var peak: Float = 0

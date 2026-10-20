@@ -22,6 +22,10 @@ final class MusicServiceHost {
         didSet { service?.lyrics.setPopupVisible(isPopupVisible) }
     }
 
+    /// The player column's spectrum: polls the loudness and the position while the popup is on screen and a song plays.
+    /// Lives here for the same reason as the navigation: it keeps the bars it has seen while the popup is closed.
+    let spectrum = MusicSpectrumDriver()
+
     /// The music player row's model in the Mixer popup (shown there as Deci). Lives here, not in the service, so the row's settings load at
     /// launch and the service stays lazy. nil in tests that do not care about audio.
     let mixer: MusicMixerState?
@@ -95,6 +99,12 @@ final class MusicServiceHost {
         service.lyrics.setPopupVisible(isPopupVisible)
         self.service = service
         navigation = MusicSearchNavigation(service: service)
+        spectrum.sources = MusicSpectrumDriver.Sources(
+            level: { [weak mixer = self.mixer] in mixer?.sampleSpectrumLevel() ?? 0 },
+            position: { [weak service] in service?.player.livePosition() ?? 0 },
+            duration: { [weak service] in service?.player.duration ?? 0 },
+            videoId: { [weak service] in service?.player.nowPlaying?.videoId }
+        )
     }
 
     /// Escape in the Music popup: closes the account card if it is open. True when it was open, so the

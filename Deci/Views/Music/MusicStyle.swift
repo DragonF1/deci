@@ -2,10 +2,10 @@
 import AppKit
 import SwiftUI
 
-/// The tokens of the Music popover. It wears the Mixer's look: the same glass background, the same adaptive colours
-/// (`.primary` at an opacity, so light and dark both work), the Mixer's type scale (13 pt rows, 11 pt second lines,
-/// small section headers) and its spacing and radii. The player screens force a dark scheme locally
-/// (`musicDarkScope`), over the dark cover backdrop, where `.primary` is white and the glass is the pinned dark blur.
+/// The tokens of the Music popover: the Mixer's type scale (13 pt rows, 11 pt second lines, small section headers) and
+/// its spacing and radii, on the split pane's fixed dark colours. The popup is dark whatever the Mixer wears: its window
+/// is forced to dark Aqua and `musicDarkScope` pins the scheme, so `.primary` is white and blur surfaces are the pinned
+/// dark blur.
 enum MusicStyle {
 
     // MARK: - Colours
@@ -27,31 +27,17 @@ enum MusicStyle {
             light: NSColor.white.withAlphaComponent(0.92),
             dark: NSColor(srgbRed: 0x3A / 255, green: 0x3A / 255, blue: 0x3C / 255, alpha: 0.96)
         )
-        /// The mini player's glass tint.
-        static let glassFill = DesignTokens.dynamicColor(
-            name: "musicGlassFill",
-            light: NSColor.white.withAlphaComponent(0.45),
-            dark: NSColor(srgbRed: 0x2C / 255, green: 0x2C / 255, blue: 0x2E / 255, alpha: 0.55)
-        )
-        static let cardGlassFill = DesignTokens.dynamicColor(
-            name: "musicCardGlassFill",
-            light: NSColor.white.withAlphaComponent(0.85),
-            dark: NSColor(srgbRed: 0x2C / 255, green: 0x2C / 255, blue: 0x2E / 255, alpha: 0.82)
-        )
 
         // Accent: the system accent, like the Mixer's sliders and selections.
         static let accent = Color.accentColor
         static let accentFill = Color.accentColor.opacity(0.20)
         static let accentRow = Color.accentColor.opacity(0.10)
-        static let destructive = Color(nsColor: .systemRed)
 
         // Text
         static let textPrimary = Color.primary
         static let textSecondary = Color.secondary
         static let textTertiary = DesignTokens.Colors.textTertiary
         static let textQuaternary = DesignTokens.Colors.textQuaternary
-        /// The artist under the title on the player screens.
-        static let playerSubtitle = Color.primary.opacity(0.62)
 
         // Fills
         static let fillControl = Color.primary.opacity(0.10)
@@ -59,12 +45,20 @@ enum MusicStyle {
 
         // Lines
         static let lineHairline = Color.primary.opacity(0.08)
-        static let lineGlass = DesignTokens.Colors.glassBorder
-        static let dimModal = DesignTokens.dynamicColor(
-            name: "musicDimModal",
-            light: NSColor.black.withAlphaComponent(0.20),
-            dark: NSColor.black.withAlphaComponent(0.45)
-        )
+
+        // The split pane: fixed colours, since the Music popup is always dark.
+        /// The popup's background, and the ink on the white play button.
+        static let popupBackground = hex(0x141416)
+        /// The player column's base, under the accent wash.
+        static let playerPanel = hex(0x18181B)
+        /// The column divider and the hairlines between rows.
+        static let hairline = Color.white.opacity(0.07)
+        /// The popup's 1 pt outer border.
+        static let popupBorder = Color.white.opacity(0.10)
+        /// The native style menus (the account card): fill, border and the highlighted row.
+        static let menuFill = hex(0x2A2A2D)
+        static let menuBorder = Color.white.opacity(0.12)
+        static let menuHighlight = hex(0x0A63D8)
 
         static let likedGradient = LinearGradient(
             stops: [
@@ -113,6 +107,14 @@ enum MusicStyle {
         static let button = TextStyle(11, .semibold)
         static let caption = TextStyle(10)
         static let kicker = TextStyle(10, .semibold, tracking: 0.5)
+        /// The song in the player column.
+        static let playerTitle = TextStyle(14, .semibold)
+        /// The hint of an empty player column, and the header's tabs.
+        static let emptyTitle = TextStyle(13, .semibold)
+        static let tabActive = TextStyle(13, .semibold)
+        static let tabInactive = TextStyle(13, .medium)
+        /// The player column's small labels: the view buttons, the output device, the times.
+        static let columnLabel = TextStyle(10, .medium)
     }
 
     // MARK: - Radii
@@ -141,7 +143,6 @@ enum MusicStyle {
     enum Size {
         /// The header's round and pill buttons: the Mixer's 26 pt.
         static let headerButton: CGFloat = 26
-        static let miniPlayerHeight: CGFloat = 42
         static let topPickWidth: CGFloat = 120
         static let topPickHeight: CGFloat = 152
         static let coverTile: CGFloat = 76
@@ -159,9 +160,7 @@ enum MusicStyle {
         let y: CGFloat
 
         static let glass = Shadow(color: .black.opacity(0.25), radius: 8, y: 4)
-        /// Under the cover of Now Playing.
-        static let npArt = Shadow(color: .black.opacity(0.40), radius: 14, y: 8)
-        /// Under the small cover in the Lyrics and Up next header.
+        /// Under the small cover in a page's header.
         static let headerArt = Shadow(color: .black.opacity(0.30), radius: 5, y: 3)
     }
 }
@@ -172,18 +171,6 @@ extension View {
     /// The font and tracking of a Music text style.
     func musicText(_ style: MusicStyle.TextStyle) -> some View {
         font(style.font).tracking(style.appliedTracking)
-    }
-
-    /// One glass surface of the Music popover. On macOS 26 and later it is the system glass tinted with `fill`; on
-    /// earlier systems a frosted blur under the fill. Inside a forced-dark scope (`musicDarkScope`) it is always the
-    /// pinned dark blur, whatever appearance the window wears. The stroke and the shadow are drawn on all of them.
-    func musicGlass<S: InsettableShape>(
-        in shape: S,
-        fill: Color = MusicStyle.Palette.glassFill,
-        stroke: Color? = MusicStyle.Palette.lineGlass,
-        shadow: MusicStyle.Shadow? = .glass
-    ) -> some View {
-        modifier(MusicGlassModifier(shape: shape, fill: fill, stroke: stroke, shadow: shadow))
     }
 
     /// A frosted capsule, card or pill backdrop clipped to `shape`: the system's ultra thin material, or the pinned
@@ -253,36 +240,6 @@ private struct MusicBlurBackground<S: Shape>: View {
             MusicDarkBlur().clipShape(shape)
         } else {
             shape.fill(.ultraThinMaterial)
-        }
-    }
-}
-
-private struct MusicGlassModifier<S: InsettableShape>: ViewModifier {
-    let shape: S
-    let fill: Color
-    let stroke: Color?
-    let shadow: MusicStyle.Shadow?
-    @Environment(\.musicForcedDark) private var forcedDark
-
-    func body(content: Content) -> some View {
-        surface(content)
-            .overlay {
-                if let stroke {
-                    shape.strokeBorder(stroke, lineWidth: 1)
-                }
-            }
-            .shadow(color: shadow?.color ?? .clear, radius: shadow?.radius ?? 0, y: shadow?.y ?? 0)
-    }
-
-    @ViewBuilder
-    private func surface(_ content: Content) -> some View {
-        if #available(macOS 26, *), !forcedDark {
-            content.glassEffect(.regular.tint(fill), in: shape)
-        } else {
-            content.background {
-                MusicBlurBackground(shape: shape)
-                shape.fill(fill)
-            }
         }
     }
 }

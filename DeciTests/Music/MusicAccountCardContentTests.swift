@@ -61,6 +61,16 @@ struct MusicAccountCardContentTests {
         #expect(MusicAccountCardContent(account: account, isBrandChannel: nil).brandBadge == nil)
     }
 
+    @Test("the line under the name is the handle, else the channel kind, else nothing")
+    func subtitle() {
+        #expect(MusicAccountCardContent(account: account, isBrandChannel: true).subtitle == "@testlistener")
+        let plain = MusicAccount(name: "Plain Account", handle: nil, photoURL: nil)
+        #expect(MusicAccountCardContent(account: plain, isBrandChannel: true).subtitle == "Brand channel")
+        #expect(MusicAccountCardContent(account: plain, isBrandChannel: false).subtitle == "Your own channel")
+        #expect(MusicAccountCardContent(account: plain, isBrandChannel: nil).subtitle == nil)
+        #expect(MusicAccountCardContent(account: nil, isBrandChannel: nil).subtitle == nil)
+    }
+
     @Test("VoiceOver hears the name, the handle and the channel kind, skipping what is unknown")
     func spokenLine() {
         #expect(

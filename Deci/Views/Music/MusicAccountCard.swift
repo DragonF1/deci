@@ -24,6 +24,9 @@ struct MusicAccountCardContent: Equatable {
         brandBadge = isBrandChannel == true ? "Brand channel" : nil
     }
 
+    /// The line under the name on the card: the handle, or the channel kind while there is no handle.
+    var subtitle: String? { handle ?? kind }
+
     /// What VoiceOver reads for the header: the name, the handle and the channel kind, including the "Your own channel"
     /// line that the card leaves out of the picture.
     var spokenLine: String {
@@ -33,45 +36,35 @@ struct MusicAccountCardContent: Equatable {
 
 /// How the card's action rows look, from which flow is running. Only one flow runs at a time:
 /// its row turns into "Show sign-in window" (it brings the open window forward, for one lost behind
-/// other windows) and keeps its icon and chevron, and the other row is off. Kept apart from the view so each
-/// combination is tested.
+/// other windows), and the other row is off. Kept apart from the view so each combination is tested.
 struct MusicAccountCardRows: Equatable {
     struct Row: Equatable {
         let title: String
-        let symbol: String
         let isEnabled: Bool
-        /// A chevron at the trailing edge: the row opens a window.
-        var hasChevron = false
-        /// Drawn in the destructive colour, at full strength.
-        var isDestructive = false
     }
 
     let switchChannel: Row
-    let useAnotherAccount: Row
+    let addAccount: Row
 
     init(isSwitchingChannel: Bool, isAddingAccount: Bool) {
-        switchChannel = Self.row(
-            "Switch channel", symbol: "arrow.left.arrow.right", hasChevron: true,
-            isRunning: isSwitchingChannel, otherIsRunning: isAddingAccount
-        )
-        useAnotherAccount = Self.row(
-            "Use another Google account", symbol: "person.badge.plus", hasChevron: false,
-            isRunning: isAddingAccount, otherIsRunning: isSwitchingChannel
-        )
+        switchChannel = Self.row("Switch channel\u{2026}", isRunning: isSwitchingChannel, otherIsRunning: isAddingAccount)
+        addAccount = Self.row("Add account\u{2026}", isRunning: isAddingAccount, otherIsRunning: isSwitchingChannel)
     }
 
-    static let signOut = Row(
-        title: "Sign out", symbol: "rectangle.portrait.and.arrow.right", isEnabled: true, isDestructive: true
-    )
+    static let signOut = Row(title: "Sign out", isEnabled: true)
+    static let settings = Row(title: "Settings", isEnabled: true)
     static let showWindowTitle = "Show sign-in window"
 
-    private static func row(
-        _ title: String, symbol: String, hasChevron: Bool, isRunning: Bool, otherIsRunning: Bool
-    ) -> Row {
+    /// The signed-out card's one account row. The sign-in window, once open, is what finishes it: nothing to press.
+    static func signIn(isSigningIn: Bool) -> Row {
+        Row(title: "Sign in\u{2026}", isEnabled: !isSigningIn)
+    }
+
+    private static func row(_ title: String, isRunning: Bool, otherIsRunning: Bool) -> Row {
         // Both at once cannot happen; if it did, neither row is the one to bring a window forward.
-        if otherIsRunning { return Row(title: title, symbol: symbol, isEnabled: false, hasChevron: hasChevron) }
-        if isRunning { return Row(title: showWindowTitle, symbol: symbol, isEnabled: true, hasChevron: hasChevron) }
-        return Row(title: title, symbol: symbol, isEnabled: true, hasChevron: hasChevron)
+        if otherIsRunning { return Row(title: title, isEnabled: false) }
+        if isRunning { return Row(title: showWindowTitle, isEnabled: true) }
+        return Row(title: title, isEnabled: true)
     }
 }
 
@@ -86,17 +79,74 @@ nonisolated enum MusicAccountInitials {
         guard letters.count > 1, let last = letters.last else { return String(first).uppercased() }
         return (String(first) + String(last)).uppercased()
     }
+
+    /// The first letter alone, for the header's small avatar.
+    static func letter(_ name: String) -> String {
+        String(from(name).prefix(1))
+    }
 }
 
-/// The round avatar in the popup's header strip. Opens and closes the account card.
+/// The round avatar at the trailing edge of the right column's header, 22 pt: a thin ring round the first letter of the
+/// account's name (or round its photo), filled a little while the card is open. Opens and closes the account card.
 struct MusicAccountButton: View {
     let account: MusicAccount?
     let isOpen: Bool
     let action: () -> Void
 
+    @State private var model = MusicAvatarModel()
+
+    private var letter: String {
+        account.map { MusicAccountInitials.letter($0.name) } ?? ""
+    }
+
     var body: some View {
         Button(action: action) {
-            MusicAccountAvatar(url: account?.photoURL, size: Self.size, name: account?.name)
+            ZStack {
+                if let image = model.image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else if !letter.isEmpty {
+                    Text(letter)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.90))
+                } else {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.70))
+                }
+            }
+            .frame(width: Self.size, height: Self.size)
+            .clipShape(Circle())
+            .background(Circle().fill(isOpen ? Color.white.opacity(0.14) : Color.clear))
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.22), lineWidth: 1))
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        // Starts over when the photo changes (the old one is dropped first) and is cancelled when the view leaves.
+        .task(id: account?.photoURL) { await model.load(account?.photoURL) }
+        .accessibilityLabel("Account")
+        .accessibilityAddTraits(isOpen ? .isSelected : [])
+        .help("Account")
+    }
+
+    static let size: CGFloat = MusicPopupMetrics.avatarSize
+}
+
+/// The avatar before there is a session: the same 22 pt ring with a person in it, on a faint fill. It opens the card
+/// with Sign in and Settings.
+struct MusicSignedOutAvatarButton: View {
+    let isOpen: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "person.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.white.opacity(0.60))
+                .frame(width: MusicAccountButton.size, height: MusicAccountButton.size)
+                .background(Circle().fill(Color.white.opacity(isOpen ? 0.14 : 0.06)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -104,20 +154,16 @@ struct MusicAccountButton: View {
         .accessibilityAddTraits(isOpen ? .isSelected : [])
         .help("Account")
     }
-
-    /// The header's button size, the Mixer's 26 pt.
-    static let size: CGFloat = MusicStyle.Size.headerButton
 }
 
-/// The round account photo, in the header button and on the card. It loads through `MusicAvatarModel`,
-/// not `AsyncImage`: the photo URL must stay out of the shared URL cache. While the photo loads, when it fails and
-/// when there is no URL, the avatar shows the account's initials on the avatar gradient, or a person when the
-/// account has no name yet.
+/// The round account photo, on the card. It loads through `MusicAvatarModel`, not `AsyncImage`: the photo URL must stay
+/// out of the shared URL cache. While the photo loads, when it fails and when there is no URL, the avatar shows the
+/// account's initials on the avatar gradient, or a person when the account has no name yet.
 struct MusicAccountAvatar: View {
     let url: URL?
     let size: CGFloat
     var name: String?
-    /// The initials' size when it is not the usual three eighths of the avatar (the card's 56 pt avatar uses 20).
+    /// The initials' size when it is not the usual three eighths of the avatar.
     var initialsSize: CGFloat?
     @State private var model = MusicAvatarModel()
 
@@ -136,7 +182,7 @@ struct MusicAccountAvatar: View {
                     Rectangle().fill(DesignTokens.Colors.deviceBadgeMonoFill)
                     Text(initials)
                         .font(.system(size: initialsSize ?? size * 0.375, weight: .semibold))
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(Color.white)
                 }
             } else {
                 MusicCoverPlaceholder(symbol: "person.fill", size: size)
@@ -149,21 +195,27 @@ struct MusicAccountAvatar: View {
     }
 }
 
-/// The account card under the avatar, drawn like a Mixer popover menu: who is signed in, and the three things to do
-/// about it. A 220 pt glass card, the header (36 pt avatar, name, handle, and a badge for a brand channel), then the two
-/// window rows and Sign out between hairlines. Plain values and closures in, so it draws without a service. The
-/// caller closes it on every action.
+/// The account card under the avatar, drawn as a native dark menu: who is signed in, the account actions, Settings and
+/// Sign out. Plain values and closures in, so it draws without a service. The caller closes it on every action.
+///
+/// The app has no list of accounts to switch between: a session is one Google account, and a second one replaces it
+/// ("Add account"). So the Switch account group holds the account in use, checked, and the channel picker.
 struct MusicAccountCard: View {
     let account: MusicAccount?
     let isBrandChannel: Bool?
     let isSwitchingChannel: Bool
     let isAddingAccount: Bool
     let onSwitchChannel: () -> Void
-    let onUseAnotherAccount: () -> Void
+    let onAddAccount: () -> Void
+    let onSettings: () -> Void
     let onSignOut: () -> Void
+    /// The account in use was picked again: nothing to do but close.
+    let onDismiss: () -> Void
 
-    static let width: CGFloat = 220
-    static let avatarSize: CGFloat = 36
+    static let width: CGFloat = 232
+    static let avatarSize: CGFloat = 32
+    static let rowAvatarSize: CGFloat = 18
+    static let identityHeight: CGFloat = 46
 
     private var content: MusicAccountCardContent {
         MusicAccountCardContent(account: account, isBrandChannel: isBrandChannel)
@@ -174,109 +226,175 @@ struct MusicAccountCard: View {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: DesignTokens.Dimensions.cornerRadius, style: .continuous)
-        VStack(spacing: 0) {
-            header
-            divider
-            VStack(spacing: 2) {
-                MusicAccountActionRow(row: rows.switchChannel, perform: onSwitchChannel)
-                MusicAccountActionRow(row: rows.useAnotherAccount, perform: onUseAnotherAccount)
-            }
-            .padding(DesignTokens.Spacing.xs)
-            divider
-            MusicAccountActionRow(row: MusicAccountCardRows.signOut, perform: onSignOut)
-                .padding(DesignTokens.Spacing.xs)
+        MusicNativeMenu(width: Self.width) {
+            identity
+            MusicNativeMenuSeparator()
+            MusicNativeMenuSectionHead(title: "Switch account")
+            currentAccount
+            MusicNativeMenuItem(
+                title: rows.switchChannel.title,
+                isEnabled: rows.switchChannel.isEnabled,
+                action: onSwitchChannel
+            )
+            MusicNativeMenuItem(
+                title: rows.addAccount.title,
+                isEnabled: rows.addAccount.isEnabled,
+                action: onAddAccount
+            )
+            MusicAccountSettingsItem(action: onSettings)
+            MusicNativeMenuSeparator()
+            MusicNativeMenuItem(title: MusicAccountCardRows.signOut.title, action: onSignOut)
         }
-        .frame(width: Self.width)
-        .clipShape(shape)
-        .musicGlass(in: shape, fill: MusicStyle.Palette.cardGlassFill, stroke: MusicStyle.Palette.lineGlass, shadow: .glass)
     }
 
-    private var divider: some View {
-        Rectangle()
-            .fill(DesignTokens.Colors.separator)
-            .frame(height: 1)
-            .accessibilityHidden(true)
-    }
-
-    private var header: some View {
-        HStack(spacing: DesignTokens.Spacing.md) {
-            MusicAccountAvatar(url: account?.photoURL, size: Self.avatarSize, name: account?.name, initialsSize: 14)
+    /// Who is signed in: the avatar, the name, and under it the handle (or the channel kind).
+    private var identity: some View {
+        HStack(spacing: 10) {
+            MusicAccountAvatar(url: account?.photoURL, size: Self.avatarSize, name: account?.name, initialsSize: 13)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(content.title)
-                        .musicText(MusicStyle.Typeface.heading)
-                        .foregroundStyle(MusicStyle.Palette.textPrimary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(content.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.95))
+                    .lineLimit(1)
+                if let subtitle = content.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.50))
                         .lineLimit(1)
-                    if let handle = content.handle {
-                        Text(handle)
-                            .musicText(MusicStyle.Typeface.secondary)
-                            .foregroundStyle(MusicStyle.Palette.textSecondary)
-                            .lineLimit(1)
-                    }
-                }
-                if let badge = content.brandBadge {
-                    Text(badge)
-                        .musicText(MusicStyle.Typeface.caption)
-                        .foregroundStyle(MusicStyle.Palette.textSecondary)
-                        .lineLimit(1)
-                        .padding(.vertical, 1)
-                        .padding(.horizontal, 5)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .strokeBorder(DesignTokens.Colors.menuBorder, lineWidth: 1)
-                        )
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(DesignTokens.Spacing.md)
+        .padding(EdgeInsets(top: 6, leading: 10, bottom: 8, trailing: 10))
+        .frame(height: Self.identityHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(content.spokenLine)
     }
+
+    /// The account in use: a check, its small avatar, its name, and a "Brand" tag on a brand channel.
+    private var currentAccount: some View {
+        MusicNativeMenuItem(
+            title: content.title,
+            trailing: isBrandChannel == true ? "Brand" : nil,
+            height: MusicNativeMenuMetrics.accountItemHeight,
+            leadingWidth: MusicNativeMenuMetrics.checkSlot + MusicNativeMenuMetrics.itemGap + Self.rowAvatarSize,
+            leading: {
+                HStack(spacing: MusicNativeMenuMetrics.itemGap) {
+                    MusicNativeMenuCheck()
+                        .frame(width: MusicNativeMenuMetrics.checkSlot)
+                    MusicAccountAvatar(
+                        url: account?.photoURL, size: Self.rowAvatarSize, name: account?.name, initialsSize: 8
+                    )
+                    .accessibilityHidden(true)
+                }
+            },
+            action: onDismiss
+        )
+        .accessibilityAddTraits(.isSelected)
+    }
 }
 
-/// One action row of the account card, a Mixer row: a 13 pt icon, the label, and a trailing chevron on a row that
-/// opens a window. The pointer lays the hover fill across the row; a row that is off shows dimmed and takes no click.
-private struct MusicAccountActionRow: View {
-    let row: MusicAccountCardRows.Row
-    let perform: () -> Void
-
-    @State private var isHovered = false
+/// The card shown before there is a session: Sign in and Settings.
+struct MusicSignedOutCard: View {
+    let isSigningIn: Bool
+    let onSignIn: () -> Void
+    let onSettings: () -> Void
 
     var body: some View {
-        Button(action: perform) {
-            HStack(spacing: DesignTokens.Spacing.sm) {
-                Image(systemName: row.symbol)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(row.isDestructive ? MusicStyle.Palette.destructive : MusicStyle.Palette.textSecondary)
-                    .frame(width: 18, height: 18)
-                    .accessibilityHidden(true)
-                Text(row.title)
-                    .musicText(MusicStyle.Typeface.row)
-                    .foregroundStyle(row.isDestructive ? MusicStyle.Palette.destructive : MusicStyle.Palette.textPrimary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if row.hasChevron {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(MusicStyle.Palette.textQuaternary)
-                        .accessibilityHidden(true)
-                }
-            }
-            .padding(.horizontal, DesignTokens.Spacing.sm)
-            .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
-                    .fill(isHovered && row.isEnabled ? DesignTokens.Colors.hoverSurface : Color.clear)
-            )
-            .contentShape(Rectangle())
+        let signIn = MusicAccountCardRows.signIn(isSigningIn: isSigningIn)
+        MusicNativeMenu(width: MusicAccountCard.width) {
+            MusicNativeMenuItem(title: signIn.title, isEnabled: signIn.isEnabled, action: onSignIn)
+            MusicNativeMenuSeparator()
+            MusicAccountSettingsItem(action: onSettings)
         }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .animation(DesignTokens.Animation.hover, value: isHovered)
-        .opacity(row.isEnabled ? 1 : 0.5)
-        .disabled(!row.isEnabled)
+    }
+}
+
+/// Settings, with its gear in the check slot and the shortcut that opens it. The gear is the only way to Settings from
+/// the Music popup, so the card carries it, signed in or not.
+private struct MusicAccountSettingsItem: View {
+    let action: () -> Void
+
+    var body: some View {
+        MusicNativeMenuItem(
+            title: MusicAccountCardRows.settings.title,
+            trailing: "\u{2318},",
+            trailingIsShortcut: true,
+            leading: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .accessibilityHidden(true)
+            },
+            action: action
+        )
+        .keyboardShortcut(",", modifiers: .command)
+    }
+}
+
+/// The account card layer of the popup: an invisible catcher over everything (a tap anywhere closes the card, with no dim
+/// behind it, like a menu) and the card hanging under the avatar. An overlay, not a Menu or popover: the popup is a menu
+/// bar panel, which a nested popover would dismiss. It sits above the header, so the avatar's tap closes the card too.
+/// Signed in it is the account card, otherwise the one with Sign in and Settings.
+struct MusicAccountCardLayer: View {
+    let service: MusicService?
+    @Binding var isOpen: Bool
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { isOpen = false }
+                .accessibilityHidden(true)
+
+            card
+                .padding(.top, MusicPopupMetrics.accountCardTop)
+                .padding(.trailing, MusicPopupMetrics.accountCardTrailing)
+                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topTrailing)))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var card: some View {
+        if let service, service.authState == .signedIn {
+            MusicAccountCard(
+                account: service.account,
+                isBrandChannel: service.isBrandChannel,
+                isSwitchingChannel: service.isSwitchingChannel,
+                isAddingAccount: service.isAddingAccount,
+                onSwitchChannel: {
+                    isOpen = false
+                    service.switchChannel()
+                },
+                onAddAccount: {
+                    isOpen = false
+                    service.useAnotherAccount()
+                },
+                onSettings: {
+                    isOpen = false
+                    onOpenSettings()
+                },
+                onSignOut: {
+                    isOpen = false
+                    service.signOut()
+                },
+                onDismiss: { isOpen = false }
+            )
+        } else {
+            MusicSignedOutCard(
+                isSigningIn: service?.authState == .signingIn,
+                onSignIn: {
+                    isOpen = false
+                    service?.signIn()
+                },
+                onSettings: {
+                    isOpen = false
+                    onOpenSettings()
+                }
+            )
+        }
     }
 }

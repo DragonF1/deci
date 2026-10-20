@@ -147,6 +147,10 @@ struct MusicStateCardMessage: View {
 struct MusicSpinner: View {
     var size: CGFloat = 18
     var lineWidth: CGFloat = 2
+    /// The turning arc, and the ring it runs on. The usual pair reads on the dark popup; the play button's dark
+    /// spinner asks for its own.
+    var color: Color = .primary
+    var track: Color = MusicStyle.Palette.sliderTrack
 
     private static let period: TimeInterval = 0.8
 
@@ -156,10 +160,10 @@ struct MusicSpinner: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(MusicStyle.Palette.sliderTrack, lineWidth: lineWidth)
+                .stroke(track, lineWidth: lineWidth)
             Circle()
                 .trim(from: 0, to: 0.25)
-                .stroke(Color.primary, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(isTurning ? 360 : 0))
                 .animation(.linear(duration: Self.period).repeatForever(autoreverses: false), value: isTurning)
         }

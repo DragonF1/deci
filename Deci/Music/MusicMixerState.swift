@@ -220,6 +220,12 @@ final class MusicMixerState: InProcessAudioSink {
         chain.consumePeak()
     }
 
+    /// The loudest buffer RMS played since the last call, before the volume: for the player column's spectrum. It is
+    /// read apart from `sampleLevel()`, so the Mixer row and the spectrum never take each other's samples.
+    func sampleSpectrumLevel() -> Float {
+        chain.consumeLevel()
+    }
+
     // MARK: - Engine
 
     /// Binds the playback engine and applies the stored output device and level to it. Called when the service is built.
