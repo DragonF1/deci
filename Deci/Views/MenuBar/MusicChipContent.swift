@@ -11,7 +11,8 @@ import QuartzCore
 /// layer at its origin and the pill's rounded bounds clip it while the pill grows or shrinks.
 @MainActor
 final class MusicChipContent {
-    /// Holds the cover and the title and fades as one, so the two cross-fade with the next song's.
+    /// Holds the cover and the title and fades as one, so the two cross-fade with the next song's, and with the play glyph
+    /// a pause brings in.
     let layer = CALayer()
     let spec: MusicChipSpec
     let geometry: MusicChipGeometry
@@ -174,10 +175,11 @@ final class MusicChipContent {
 
     // MARK: - Fades
 
-    /// Fades this content in from nothing to its play strength, as the song before it fades out.
+    /// Fades this content in from nothing to its play strength, as the song before it fades out. Content of a paused song
+    /// stays hidden: the pill shows the play glyph instead.
     func fadeIn() {
         let alpha = Float(MusicChipLayout.contentAlpha(isPlaying: isPlaying))
-        animateOpacity(from: 0, to: alpha)
+        animateOpacity(from: 0, to: alpha, duration: MusicChipMotion.fadeDuration)
     }
 
     /// Fades out, then takes the layer off the pill. The marquee's loops in flight run out with the fade; it is not
@@ -193,7 +195,7 @@ final class MusicChipContent {
         CATransaction.setDisableActions(true)
         layer.opacity = 0
         CATransaction.commit()
-        addOpacityAnimation(from: from, to: 0)
+        addOpacityAnimation(from: from, to: 0, duration: MusicChipMotion.fadeDuration)
         CATransaction.commit()
     }
 
@@ -233,11 +235,16 @@ final class MusicChipContent {
         }
     }
 
-    /// The song started or paused: the content fades to the new strength, and the marquee runs or eases back to the start.
-    func setPlaying(_ playing: Bool) {
+    /// The song started or paused: the content fades in or out over `fadeDuration` seconds (no time: at once), and the
+    /// marquee runs or eases back to the start.
+    func setPlaying(_ playing: Bool, fadeDuration: Double = MusicChipMotion.fadeDuration) {
         guard playing != isPlaying else { return }
         isPlaying = playing
-        animateOpacity(from: layer.presentation()?.opacity ?? layer.opacity, to: Float(MusicChipLayout.contentAlpha(isPlaying: playing)))
+        animateOpacity(
+            from: layer.presentation()?.opacity ?? layer.opacity,
+            to: Float(MusicChipLayout.contentAlpha(isPlaying: playing)),
+            duration: fadeDuration
+        )
         if MusicChipMotion.runsMarquee(scrolls: geometry.scrolls, isPlaying: playing, reduceMotion: spec.reduceMotion) {
             startMarquee()
         } else {
@@ -245,19 +252,24 @@ final class MusicChipContent {
         }
     }
 
-    private func animateOpacity(from: Float, to: Float) {
+    /// Sets the opacity and eases to it from `from`; no duration sets it at once, and a fade still running is dropped.
+    private func animateOpacity(from: Float, to: Float, duration: Double) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.opacity = to
         CATransaction.commit()
-        addOpacityAnimation(from: from, to: to)
+        if duration > 0 {
+            addOpacityAnimation(from: from, to: to, duration: duration)
+        } else {
+            layer.removeAnimation(forKey: Self.opacityKey)
+        }
     }
 
-    private func addOpacityAnimation(from: Float, to: Float) {
+    private func addOpacityAnimation(from: Float, to: Float, duration: Double) {
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = from
         fade.toValue = to
-        fade.duration = MusicChipMotion.fadeDuration
+        fade.duration = duration
         fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         layer.add(fade, forKey: Self.opacityKey)
     }

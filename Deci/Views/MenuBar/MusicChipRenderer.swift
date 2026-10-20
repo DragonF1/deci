@@ -1,7 +1,7 @@
 // Deci/Views/MenuBar/MusicChipRenderer.swift
 // What the Now playing chip's layers are made from: the spec that says what the chip shows, the chip font and how a
-// title measures in it, the pill's colour and the cover's music note. The layers themselves are MusicChipContent's and
-// MusicChipView's; the numbers come from MusicChipLayout.
+// title measures in it, the pill's colour, the cover's music note and the paused pill's play glyph. The layers themselves
+// are MusicChipContent's and MusicChipView's; the numbers come from MusicChipLayout.
 
 import AppKit
 import CoreText
@@ -57,8 +57,26 @@ nonisolated enum MusicChipRenderer {
     /// The white music note of a chip whose cover is missing, drawn into a `side` pt square at `scale` pixels a point.
     @MainActor
     static func noteImage(side: CGFloat, scale: CGFloat) -> CGImage? {
-        let configuration = NSImage.SymbolConfiguration(pointSize: side * 0.62, weight: .bold)
-        guard let symbol = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
+        whiteSymbolImage(named: "music.note", pointSize: side * 0.62, side: side, scale: scale)
+    }
+
+    /// The white play triangle of a paused chip, centred in its square at `scale` pixels a point. The layer that shows it
+    /// is nudged right of the pill's middle (`MusicChipLayout.playGlyphNudge`), so the image itself stays centred.
+    @MainActor
+    static func playGlyphImage(scale: CGFloat) -> CGImage? {
+        whiteSymbolImage(
+            named: "play.fill",
+            pointSize: CGFloat(MusicChipLayout.playGlyphPointSize),
+            side: CGFloat(MusicChipLayout.playGlyphSide),
+            scale: scale
+        )
+    }
+
+    /// An SF Symbol in bold white on clear, centred in a `side` pt square drawn at `scale` pixels a point.
+    @MainActor
+    private static func whiteSymbolImage(named name: String, pointSize: CGFloat, side: CGFloat, scale: CGFloat) -> CGImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .bold)
+        guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
             .withSymbolConfiguration(configuration) else { return nil }
         let pixels = Int((side * scale).rounded(.up))
         guard pixels > 0,

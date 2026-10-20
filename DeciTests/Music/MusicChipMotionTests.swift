@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicChipMotionTests.swift
 // How the Now playing chip moves: the width easing, the marquee's distance, duration, keyframes and rests, the edge fade,
 // and which change of the chip is a cross-fade of the content, which one only brings in the cover, and which one only
-// dims or lights it. Pure numbers: nothing is animated here.
+// pauses or resumes it. Pure numbers: nothing is animated here.
 
 import Foundation
 import Testing
@@ -48,6 +48,12 @@ struct MusicChipMotionTests {
     func widthDuration() {
         #expect(MusicChipMotion.widthChangeDuration(reduceMotion: false) == 0.35)
         #expect(MusicChipMotion.widthChangeDuration(reduceMotion: true) == 0)
+    }
+
+    @Test("Reduce Motion swaps the content and the play glyph at once, otherwise they fade over 0.25 s")
+    func playbackFade() {
+        #expect(MusicChipMotion.playbackFadeDuration(reduceMotion: false) == 0.25)
+        #expect(MusicChipMotion.playbackFadeDuration(reduceMotion: true) == 0)
     }
 
     // MARK: - Which change

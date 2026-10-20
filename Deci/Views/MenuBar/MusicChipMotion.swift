@@ -1,6 +1,6 @@
 // Deci/Views/MenuBar/MusicChipMotion.swift
 // How the Now playing chip moves: the width easing, the marquee's path, timing and rests, the fade at the title's edges,
-// and which change of the chip is a cross-fade, which one only brings in the cover and which one only dims or lights it.
+// and which change of the chip is a cross-fade, which one only brings in the cover and which one only pauses or resumes it.
 // Pure numbers, so the rules are unit tested; MusicChipView, MusicChipContent and MusicChipLengthAnimator run them.
 
 import Foundation
@@ -19,7 +19,8 @@ nonisolated struct MusicChipMarqueeKeyframes: Equatable, Sendable {
 nonisolated enum MusicChipMotion {
     /// The pill growing or shrinking to the new title's width.
     static let widthDuration: Double = 0.35
-    /// The old title and cover fading out as the new ones fade in, and the play and pause look.
+    /// The old title and cover fading out as the new ones fade in, and the content and the play glyph trading places on a
+    /// pause or a play.
     static let fadeDuration: Double = 0.25
 
     /// How long a title waits at its start before it scrolls, at the start of every loop.
@@ -49,7 +50,8 @@ nonisolated enum MusicChipMotion {
     enum Change: Equatable, Sendable {
         /// Nothing differs.
         case none
-        /// Only whether it plays: the content dims or lights, and the marquee runs or rests.
+        /// Only whether it plays: the pill narrows to the play glyph or widens back to the title, the content and the glyph
+        /// cross-fade, and the marquee runs or rests.
         case playback
         /// The same song, whose cover or colour arrived late (and maybe whether it plays too): the cover fades in and the
         /// pill's colour follows, while the title stays as it is.
@@ -73,6 +75,13 @@ nonisolated enum MusicChipMotion {
         sameSong.tint = new.tint
         sameSong.hasThumbnail = new.hasThumbnail
         return sameSong == new ? .cover : .content
+    }
+
+    // MARK: - Fade
+
+    /// How long the content and the play glyph take to trade places: no time with Reduce Motion, so they swap at once.
+    static func playbackFadeDuration(reduceMotion: Bool) -> Double {
+        reduceMotion ? 0 : fadeDuration
     }
 
     // MARK: - Width
