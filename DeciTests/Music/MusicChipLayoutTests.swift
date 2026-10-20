@@ -149,10 +149,39 @@ struct MusicChipLayoutTests {
         #expect(MusicChipLayout.defaultItemPadding <= MusicChipLayout.maxItemPadding)
     }
 
-    @Test("a paused song draws at 0.6, a playing one at full strength")
+    @Test("a paused song's cover and title are gone, a playing one's are at full strength")
     func contentAlpha() {
         #expect(MusicChipLayout.contentAlpha(isPlaying: true) == 1)
-        #expect(MusicChipLayout.contentAlpha(isPlaying: false) == 0.6)
+        #expect(MusicChipLayout.contentAlpha(isPlaying: false) == 0)
+    }
+
+    @Test("the play glyph shows only on a paused pill")
+    func playGlyphAlpha() {
+        #expect(MusicChipLayout.playGlyphAlpha(isPlaying: true) == 0)
+        #expect(MusicChipLayout.playGlyphAlpha(isPlaying: false) == 1)
+    }
+
+    @Test("the paused pill is a small pill: wider than it is high, in whole points, narrower than any title's pill")
+    func pausedPillWidth() {
+        #expect(MusicChipLayout.pausedPillWidth == 34)
+        #expect(MusicChipLayout.pausedPillWidth == MusicChipLayout.pausedPillWidth.rounded())
+        #expect(MusicChipLayout.pausedPillWidth > MusicChipLayout.height)
+        #expect(MusicChipLayout.pausedPillWidth < MusicChipLayout.height * 2.5)
+    }
+
+    @Test("the play glyph fits the paused pill, and is nudged right by less than a few points")
+    func playGlyphFits() {
+        #expect(MusicChipLayout.playGlyphSide <= MusicChipLayout.height)
+        #expect(MusicChipLayout.playGlyphSide <= MusicChipLayout.pausedPillWidth)
+        #expect(MusicChipLayout.playGlyphNudge > 0)
+        #expect(MusicChipLayout.playGlyphNudge <= 2)
+    }
+
+    @Test("the pill is as wide as the title while it plays and the paused width while it does not")
+    func shownPillWidth() {
+        let geometry = MusicChipLayout.geometry(title: "Night Drive", measure: { Double($0.count) * 6 })
+        #expect(MusicChipLayout.shownPillWidth(for: geometry, isPlaying: true) == geometry.pillWidth)
+        #expect(MusicChipLayout.shownPillWidth(for: geometry, isPlaying: false) == MusicChipLayout.pausedPillWidth)
     }
 
     @Test("the chip shows the title, or the artist, or a plain phrase, on one line")

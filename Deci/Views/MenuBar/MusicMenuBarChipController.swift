@@ -2,9 +2,10 @@
 // Puts the Now playing chip on the Music status item's button, and takes it off again. Like MenuBarIconCoordinator it
 // owns the button's image: FluidMenuBarExtra sets it once and never touches it again. The chip is shown only when the
 // style is Now playing chip, the item is shown and a song is loaded; in every other case the button holds the icon it
-// started with, exactly as before. While the chip shows, the item has an explicit length that follows the title: a new
-// song makes it grow or shrink on the pill's own curve (MusicChipLengthAnimator), the pill and its content animate by
-// Core Animation (MusicChipView), and a title longer than the max scrolls.
+// started with, exactly as before. While the chip shows, the item has an explicit length that follows the pill: a new
+// song, a pause or a play makes it grow or shrink on the pill's own curve (MusicChipLengthAnimator), the pill and its
+// content animate by Core Animation (MusicChipView), a title longer than the max scrolls, and a paused song is only the
+// cover's colour with a play glyph.
 
 import AppKit
 import Observation
@@ -24,6 +25,11 @@ final class MusicMenuBarChipController {
     /// What the chip was last given, so a refresh that changes nothing touches nothing.
     private var applied: MusicChipSpec?
     private var appliedGeometry: MusicChipGeometry?
+    /// The pill's width on screen: the title's while the song plays, the small paused one while it does not.
+    private var appliedPillWidth: Double? {
+        guard let applied, let appliedGeometry else { return nil }
+        return MusicChipLayout.shownPillWidth(for: appliedGeometry, isPlaying: applied.isPlaying)
+    }
     private var chipView: MusicChipView?
     private var lengthAnimator: MusicChipLengthAnimator?
     /// What the item leaves on each side of an icon, read once from the button before the chip first takes it over.
@@ -101,7 +107,8 @@ final class MusicMenuBarChipController {
     /// Brings the button in line with the settings and the player. While the full popover is open a change that alters
     /// the item's width waits: FluidMenuBarExtra frames its window only when it opens, so a different width would shift
     /// the item and leave the popover misaligned. The change is made when the popover closes (`ignoringPopup`). A change
-    /// that keeps the width (play or pause, a title as wide as the last, a marquee) is made at once.
+    /// that keeps the width (a title as wide as the last, a cover that arrives, a marquee) is made at once; a play or a
+    /// pause changes the width, so it waits like a new title does.
     private func refresh(ignoringPopup: Bool = false) {
         guard !stopped else { return }
         let style = settings.appSettings.musicMenuBarStyle
@@ -153,14 +160,15 @@ final class MusicMenuBarChipController {
             return
         }
         // Only a different title needs measuring: a play, a pause or a cover that arrives keeps the title on screen, so
-        // the width cannot change.
+        // its geometry stays. What the pill's width is follows from that and from whether the song plays.
         let geometry: MusicChipGeometry
         if change != .content, let appliedGeometry {
             geometry = appliedGeometry
         } else {
             geometry = MusicChipLayout.geometry(title: spec.title, measure: MusicChipRenderer.titleWidth)
         }
-        let widthChanges = chipView == nil || appliedGeometry?.pillWidth != geometry.pillWidth
+        let pillWidth = MusicChipLayout.shownPillWidth(for: geometry, isPlaying: spec.isPlaying)
+        let widthChanges = chipView == nil || appliedPillWidth != pillWidth
         guard ignoringPopup || !MusicPopupKeyWatcher.isPopupOpen || !widthChanges else {
             holdUntilPopupCloses()
             return
@@ -169,7 +177,7 @@ final class MusicMenuBarChipController {
 
         let isInstall = chipView == nil
         if isInstall {
-            install(on: button, item: item, pillWidth: geometry.pillWidth)
+            install(on: button, item: item, pillWidth: pillWidth)
         }
         applied = spec
         appliedGeometry = geometry
@@ -177,7 +185,7 @@ final class MusicMenuBarChipController {
         let duration = isInstall ? 0 : MusicChipMotion.widthChangeDuration(reduceMotion: spec.reduceMotion)
         chipView?.show(spec: spec, geometry: geometry, thumbnail: thumbnail, change: change, widthDuration: duration)
         if !isInstall, widthChanges {
-            lengthAnimator?.animate(to: geometry.pillWidth, duration: duration)
+            lengthAnimator?.animate(to: pillWidth, duration: duration)
         }
         button.setAccessibilityLabel(MusicChipLayout.accessibilityLabel(title: spec.title, isPlaying: spec.isPlaying))
     }

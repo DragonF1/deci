@@ -20,7 +20,7 @@ nonisolated struct MusicChipGeometry: Equatable, Sendable {
 /// An 18 pt pill: a 3 pt inset, the 12 pt round cover, a 5 pt gap, the title (12 pt semibold) and an 8 pt trailing
 /// inset. The pill is as wide as the title it shows. A title of up to `maxCharacters` characters shows in full; a longer
 /// one gets a window as wide as its first `maxCharacters` characters and scrolls inside it, so the pill never grows past
-/// that.
+/// that. While the song is paused the pill is a small one holding only a play glyph, `pausedPillWidth` wide.
 nonisolated enum MusicChipLayout {
     static let height: Double = 18
     static let cornerRadius: Double = 9
@@ -33,8 +33,16 @@ nonisolated enum MusicChipLayout {
     /// The most characters of a title that show in full. A longer title scrolls.
     static let maxCharacters = 20
 
-    /// What a paused song's cover and title are drawn at.
-    static let pausedAlpha: Double = 0.6
+    /// The pill's width while the song is paused: just the play glyph in the middle, a little wider than the pill is high.
+    static let pausedPillWidth: Double = 34
+
+    /// The play glyph that shows on a paused pill: the square it is drawn into and the size of the symbol in it.
+    static let playGlyphSide: Double = 12
+    static let playGlyphPointSize: Double = 9
+
+    /// How far the play glyph sits right of the pill's middle: a triangle's weight is at its base, so it looks left heavy
+    /// when its box is centred.
+    static let playGlyphNudge: Double = 1
 
     /// The title's left edge: after the inset, the cover and the gap.
     static let titleOriginX: Double = leadingInset + thumbnailSize + gap
@@ -89,9 +97,19 @@ nonisolated enum MusicChipLayout {
         return padding
     }
 
-    /// The strength the cover and the title are drawn at: full while the song plays, dimmed while it is paused.
+    /// The pill's width for a song: the title's while it plays, the small `pausedPillWidth` while it is paused.
+    static func shownPillWidth(for geometry: MusicChipGeometry, isPlaying: Bool) -> Double {
+        isPlaying ? geometry.pillWidth : pausedPillWidth
+    }
+
+    /// The strength the cover and the title are drawn at: full while the song plays, gone while it is paused.
     static func contentAlpha(isPlaying: Bool) -> Double {
-        isPlaying ? 1 : pausedAlpha
+        isPlaying ? 1 : 0
+    }
+
+    /// The strength the play glyph is drawn at: only on a paused pill.
+    static func playGlyphAlpha(isPlaying: Bool) -> Double {
+        isPlaying ? 0 : 1
     }
 
     /// What the chip says: the song's title, else its artist, else a plain phrase. One line: a line break in a title
