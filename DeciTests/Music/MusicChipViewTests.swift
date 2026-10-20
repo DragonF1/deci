@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicChipViewTests.swift
 // The Now playing chip's view and the layers of one song on it: it takes no clicks, the pill follows the title's width,
-// and the marquee runs only for a title longer than the max while the song plays. Nothing is shown on screen: the
-// layers are built and read without a window.
+// a cover that arrives late is brought in without rebuilding the title, and the marquee runs only for a title longer
+// than the max while the song plays. Nothing is shown on screen: the layers are built and read without a window.
 
 import AppKit
 import Testing
@@ -35,6 +35,19 @@ struct MusicChipViewTests {
             thumbnail: nil,
             scale: 2
         )
+    }
+
+    private func makeImage() -> CGImage? {
+        guard let context = CGContext(
+            data: nil,
+            width: 8,
+            height: 8,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        return context.makeImage()
     }
 
     private func makeView() -> MusicChipView {
@@ -71,6 +84,22 @@ struct MusicChipViewTests {
         #expect(view.pillWidth == width)
     }
 
+    @Test("a cover that arrives later keeps the pill and the title on screen")
+    func coverKeepsTheWidth() {
+        let view = makeView()
+        view.show(spec: spec(longTitle), geometry: geometry(longTitle), thumbnail: nil, change: .content, widthDuration: 0)
+        let width = view.pillWidth
+        view.show(spec: spec(longTitle), geometry: geometry(longTitle), thumbnail: makeImage(), change: .cover, widthDuration: 0.35)
+        #expect(view.pillWidth == width)
+    }
+
+    @Test("a cover change before any content is shown does nothing")
+    func coverBeforeContent() {
+        let view = makeView()
+        view.show(spec: spec(shortTitle), geometry: geometry(shortTitle), thumbnail: makeImage(), change: .cover, widthDuration: 0)
+        #expect(view.pillWidth == 0)
+    }
+
     @Test("no change shows nothing and keeps the pill")
     func noChange() {
         let view = makeView()
@@ -83,6 +112,36 @@ struct MusicChipViewTests {
         let view = makeView()
         view.show(spec: spec(""), geometry: geometry(""), thumbnail: nil, change: .content, widthDuration: 0)
         #expect(view.pillWidth == 28)
+    }
+
+    // MARK: - The cover
+
+    @Test("a cover that was missing is taken in once it arrives")
+    func coverArrivesLate() throws {
+        let chip = content(shortTitle)
+        #expect(chip.thumbnail == nil)
+        chip.setCover(makeImage())
+        #expect(chip.thumbnail != nil)
+    }
+
+    @Test("a cover that is already shown is not swapped, and a missing one takes nothing away")
+    func coverIsOnlyBroughtIn() throws {
+        let chip = content(shortTitle)
+        chip.setCover(nil)
+        #expect(chip.thumbnail == nil)
+        let first = try #require(makeImage())
+        chip.setCover(first)
+        chip.setCover(makeImage())
+        chip.setCover(nil)
+        #expect(chip.thumbnail === first)
+    }
+
+    @Test("a late cover does not touch a scrolling title")
+    func coverLeavesTheMarquee() {
+        let chip = content(longTitle)
+        chip.begin()
+        chip.setCover(makeImage())
+        #expect(chip.isScrolling)
     }
 
     // MARK: - The marquee

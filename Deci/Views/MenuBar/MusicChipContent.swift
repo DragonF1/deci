@@ -1,7 +1,8 @@
 // Deci/Views/MenuBar/MusicChipContent.swift
 // The layers of one song on the Now playing chip: the round cover, the title in its window and, for a title longer than
 // the window, the marquee that scrolls it. Everything moves by Core Animation animations, so the render server draws
-// the frames and the main thread does nothing while a title scrolls. MusicChipView swaps one content for the next.
+// the frames and the main thread does nothing while a title scrolls; the marquee runs a few loops and then rests, so the
+// menu bar is not redrawn every frame for a whole song. MusicChipView swaps one content for the next.
 
 import AppKit
 import QuartzCore
@@ -17,7 +18,8 @@ final class MusicChipContent {
 
     private(set) var isPlaying: Bool
     private var scale: CGFloat
-    private let thumbnail: CGImage?
+    /// The cover on screen; nil while it is still loading, and the faint disc with the note shows instead.
+    private(set) var thumbnail: CGImage?
 
     private let cover = CALayer()
     private let note = CALayer()
@@ -28,13 +30,18 @@ final class MusicChipContent {
     /// still has no faded edge.
     private let edgeMask = CAGradientLayer()
     private var textLayers: [CATextLayer] = []
-    /// Whether the marquee is running.
+    /// Whether the marquee is on: running its loops, or resting between runs. Off while paused.
     private(set) var isScrolling = false
+    /// Starts the marquee again after its rest. One at a time, and cancelled when the marquee stops or the content goes.
+    private var rearmTask: Task<Void, Never>?
+    /// When the ease back to the start, after a pause, ends (media time), so a play that comes before it waits for it.
+    private var returnEndsAt: CFTimeInterval = 0
 
     private static let marqueeKey = "chipMarquee"
     private static let edgeFadeKey = "chipEdgeFade"
     private static let returnKey = "chipMarqueeReturn"
     private static let opacityKey = "chipContentOpacity"
+    private static let coverKey = "chipCoverFade"
 
     init(spec: MusicChipSpec, geometry: MusicChipGeometry, thumbnail: CGImage?, scale: CGFloat) {
         self.spec = spec
@@ -173,18 +180,48 @@ final class MusicChipContent {
         animateOpacity(from: 0, to: alpha)
     }
 
-    /// Fades out, then takes the layer off the pill. The marquee, if one runs, keeps running until the layer is gone.
+    /// Fades out, then takes the layer off the pill. The marquee's loops in flight run out with the fade; it is not
+    /// started again.
     func fadeOutAndRemove() {
+        cancelRearm()
         let from = layer.presentation()?.opacity ?? layer.opacity
+        // The completion block runs when the fade ends, on the main thread that committed it.
+        nonisolated(unsafe) let faded = layer
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { faded.removeFromSuperlayer() }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.opacity = 0
         CATransaction.commit()
         addOpacityAnimation(from: from, to: 0)
-        Task { @MainActor [self] in
-            try? await Task.sleep(for: .seconds(MusicChipMotion.fadeDuration + 0.05))
-            layer.removeFromSuperlayer()
-        }
+        CATransaction.commit()
+    }
+
+    /// Stops the marquee from starting again, for a content that is going away.
+    func cancelRearm() {
+        rearmTask?.cancel()
+        rearmTask = nil
+    }
+
+    // MARK: - Cover
+
+    /// Brings in a cover that was still loading: the disc and note fade into the picture. Only a missing cover is
+    /// replaced; the title and the marquee are not touched.
+    func setCover(_ image: CGImage?) {
+        guard thumbnail == nil, let image else { return }
+        thumbnail = image
+        let fade = CATransition()
+        fade.type = .fade
+        fade.duration = MusicChipMotion.fadeDuration
+        fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cover.add(fade, forKey: Self.coverKey)
+        cover.contents = image
+        cover.backgroundColor = nil
+        note.contents = nil
+        note.removeFromSuperlayer()
+        CATransaction.commit()
     }
 
     // MARK: - Playing
@@ -227,22 +264,24 @@ final class MusicChipContent {
 
     // MARK: - Marquee
 
-    /// Holds at the start, scrolls left until the title and its gap have passed, and loops. The edge fade follows the same
-    /// clock: clear during the hold, in as the scroll starts, out before the loop ends. Both animations begin in one
-    /// transaction, so they share a start.
+    /// Holds at the start, scrolls left until the title and its gap have passed, and loops a few times; then it rests at
+    /// the start and a stored task starts it again. The edge fade follows the same clock: clear during the hold, in as
+    /// the scroll starts, out before the loop ends. Both animations begin in one transaction, so they share a start. A
+    /// play that comes while the text is still easing back from a pause waits for that to end, so the text never jumps.
     private func startMarquee() {
         guard !isScrolling else { return }
         isScrolling = true
-        scroller.removeAnimation(forKey: Self.returnKey)
-        edgeMask.removeAnimation(forKey: Self.returnKey)
 
+        let now = CACurrentMediaTime()
+        let wait = max(0, returnEndsAt - now)
         let keyframes = MusicChipMotion.marqueeKeyframes(textWidth: geometry.textWidth)
+
         let scroll = CAKeyframeAnimation(keyPath: "transform.translation.x")
         scroll.values = keyframes.offsets
         scroll.keyTimes = keyframes.keyTimes.map { NSNumber(value: $0) }
         scroll.duration = keyframes.duration
         scroll.calculationMode = .linear
-        scroll.repeatCount = .infinity
+        scroll.repeatCount = Float(MusicChipMotion.marqueeLoops)
 
         let solid = Self.edgeColors(faded: false)
         let faded = Self.edgeColors(faded: true)
@@ -251,41 +290,66 @@ final class MusicChipContent {
         fade.keyTimes = MusicChipMotion.edgeFadeKeyTimes(textWidth: geometry.textWidth).map { NSNumber(value: $0) }
         fade.duration = keyframes.duration
         fade.calculationMode = .linear
-        fade.repeatCount = .infinity
+        fade.repeatCount = Float(MusicChipMotion.marqueeLoops)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        if wait > 0 {
+            // The return animation keeps running; the loops begin when it ends, where the text already stands.
+            scroll.beginTime = scroller.convertTime(now, from: nil) + wait
+            fade.beginTime = edgeMask.convertTime(now, from: nil) + wait
+        } else {
+            scroller.removeAnimation(forKey: Self.returnKey)
+            edgeMask.removeAnimation(forKey: Self.returnKey)
+        }
         scroller.add(scroll, forKey: Self.marqueeKey)
         edgeMask.add(fade, forKey: Self.edgeFadeKey)
         CATransaction.commit()
+
+        scheduleRearm(after: wait + MusicChipMotion.marqueeRearmDelay(textWidth: geometry.textWidth))
+    }
+
+    /// Starts the marquee again once its loops and its rest are over, if it is still on.
+    private func scheduleRearm(after delay: Double) {
+        cancelRearm()
+        rearmTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, self.isScrolling else { return }
+            self.isScrolling = false
+            self.startMarquee()
+        }
     }
 
     /// Takes the loop away and eases the text from where it stands back to its start, the edges back to opaque.
     private func stopMarquee() {
         guard isScrolling else { return }
         isScrolling = false
+        cancelRearm()
         let offset = (scroller.presentation()?.value(forKeyPath: "transform.translation.x") as? NSNumber)?.doubleValue ?? 0
         let colors = edgeMask.presentation()?.colors
+        let duration = MusicChipMotion.marqueeReturnDuration(offset: offset)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         scroller.removeAnimation(forKey: Self.marqueeKey)
         edgeMask.removeAnimation(forKey: Self.edgeFadeKey)
+        returnEndsAt = 0
         if abs(offset) > 0.5 {
             let back = CABasicAnimation(keyPath: "transform.translation.x")
             back.fromValue = offset
             back.toValue = 0
-            back.duration = MusicChipMotion.marqueeReturnDuration(offset: offset)
+            back.duration = duration
             back.timingFunction = CAMediaTimingFunction(name: .easeOut)
             scroller.add(back, forKey: Self.returnKey)
-        }
-        if let colors {
-            let opaque = CABasicAnimation(keyPath: "colors")
-            opaque.fromValue = colors
-            opaque.toValue = Self.edgeColors(faded: false)
-            opaque.duration = MusicChipMotion.marqueeReturnDuration(offset: offset)
-            opaque.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            edgeMask.add(opaque, forKey: Self.returnKey)
+            if let colors {
+                let opaque = CABasicAnimation(keyPath: "colors")
+                opaque.fromValue = colors
+                opaque.toValue = Self.edgeColors(faded: false)
+                opaque.duration = duration
+                opaque.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                edgeMask.add(opaque, forKey: Self.returnKey)
+            }
+            returnEndsAt = CACurrentMediaTime() + duration
         }
         CATransaction.commit()
     }

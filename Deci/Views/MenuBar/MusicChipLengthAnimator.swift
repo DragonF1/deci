@@ -22,7 +22,7 @@ final class MusicChipLengthAnimator: NSObject {
     private var generation = 0
 
     /// The pill width the item was last given, in points.
-    private(set) var pillWidth = 0.0
+    private var currentWidth = 0.0
 
     init(item: NSStatusItem, button: NSStatusBarButton, itemPadding: Double) {
         self.item = item
@@ -31,25 +31,22 @@ final class MusicChipLengthAnimator: NSObject {
         super.init()
     }
 
-    /// Whether a change is under way.
-    var isRunning: Bool { link != nil }
-
     /// Gives the item the length of a pill `width` points wide at once, ending any change under way.
     func set(pillWidth width: Double) {
         cancel()
-        pillWidth = width
+        currentWidth = width
         item.length = MusicChipLayout.itemLength(pillWidth: width, itemPadding: itemPadding)
     }
 
     /// Moves the item's length to a pill `width` points wide over `duration` seconds, from where it stands now. No
     /// duration is the same as `set`.
     func animate(to width: Double, duration newDuration: Double) {
-        guard newDuration > 0, newDuration.isFinite, width != pillWidth else {
+        guard newDuration > 0, newDuration.isFinite, width != currentWidth else {
             set(pillWidth: width)
             return
         }
         cancel()
-        fromWidth = pillWidth
+        fromWidth = currentWidth
         toWidth = width
         duration = newDuration
         startTime = CACurrentMediaTime()
@@ -83,7 +80,7 @@ final class MusicChipLengthAnimator: NSObject {
             return
         }
         let width = MusicChipMotion.easedWidth(from: fromWidth, to: toWidth, elapsed: elapsed, duration: duration)
-        pillWidth = width
+        currentWidth = width
         item.length = MusicChipLayout.itemLength(pillWidth: width, itemPadding: itemPadding)
     }
 
@@ -91,7 +88,7 @@ final class MusicChipLengthAnimator: NSObject {
     private func finish() {
         link?.invalidate()
         link = nil
-        pillWidth = toWidth
+        currentWidth = toWidth
         item.length = MusicChipLayout.itemLength(pillWidth: toWidth, itemPadding: itemPadding)
     }
 }

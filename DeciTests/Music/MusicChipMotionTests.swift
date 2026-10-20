@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicChipMotionTests.swift
-// How the Now playing chip moves: the width easing, the marquee's distance, duration and keyframes, the edge fade, and
-// which change of the chip is a cross-fade of the content and which one only dims or lights it. Pure numbers: nothing
-// is animated here.
+// How the Now playing chip moves: the width easing, the marquee's distance, duration, keyframes and rests, the edge fade,
+// and which change of the chip is a cross-fade of the content, which one only brings in the cover, and which one only
+// dims or lights it. Pure numbers: nothing is animated here.
 
 import Foundation
 import Testing
@@ -38,6 +38,12 @@ struct MusicChipMotionTests {
         #expect(MusicChipMotion.marqueeGap == 24)
     }
 
+    @Test("the marquee runs three loops, then rests 25 s at the start before it runs again")
+    func marqueeRestConstants() {
+        #expect(MusicChipMotion.marqueeLoops == 3)
+        #expect(MusicChipMotion.marqueeRest == 25)
+    }
+
     @Test("Reduce Motion makes the width change at once, otherwise it takes 0.35 s")
     func widthDuration() {
         #expect(MusicChipMotion.widthChangeDuration(reduceMotion: false) == 0.35)
@@ -62,15 +68,41 @@ struct MusicChipMotionTests {
         #expect(MusicChipMotion.change(from: spec(isPlaying: false), to: spec(isPlaying: true)) == .playback)
     }
 
-    @Test("a new title, colour, cover, cover picture or motion setting cross-fades the content")
+    @Test("a new title, cover or motion setting cross-fades the content")
     func contentChanges() {
         let base = spec()
         #expect(MusicChipMotion.change(from: base, to: spec(title: "Other Song")) == .content)
-        #expect(MusicChipMotion.change(from: base, to: spec(hue: 0.9)) == .content)
-        #expect(MusicChipMotion.change(from: base, to: spec(hasThumbnail: false)) == .content)
         #expect(MusicChipMotion.change(from: base, to: spec(cover: "https://example.invalid/cover-b.jpg")) == .content)
         #expect(MusicChipMotion.change(from: base, to: spec(cover: nil)) == .content)
         #expect(MusicChipMotion.change(from: base, to: spec(reduceMotion: true)) == .content)
+    }
+
+    @Test("the cover arriving for the same song only brings in the cover and the colour, not a new title")
+    func coverArrives() {
+        let waiting = spec(hue: 0.1, hasThumbnail: false)
+        let arrived = spec(hue: 0.9, hasThumbnail: true)
+        #expect(MusicChipMotion.change(from: waiting, to: arrived) == .cover)
+        #expect(MusicChipMotion.change(from: spec(), to: spec(hue: 0.9)) == .cover)
+        #expect(MusicChipMotion.change(from: spec(hasThumbnail: false), to: spec(hasThumbnail: true)) == .cover)
+    }
+
+    @Test("the cover arriving while the song also starts or pauses is still only a cover change")
+    func coverWithPlayback() {
+        let waiting = spec(isPlaying: false, hue: 0.1, hasThumbnail: false)
+        let arrived = spec(isPlaying: true, hue: 0.9, hasThumbnail: true)
+        #expect(MusicChipMotion.change(from: waiting, to: arrived) == .cover)
+        #expect(MusicChipMotion.change(from: arrived, to: waiting) != .cover)
+    }
+
+    @Test("a cover that goes away is a content change, since the picture on screen has to go")
+    func coverGoesAway() {
+        #expect(MusicChipMotion.change(from: spec(hasThumbnail: true), to: spec(hasThumbnail: false)) == .content)
+    }
+
+    @Test("a new title with a new colour is a content change, never a cover change")
+    func titleBeatsCover() {
+        let next = spec(title: "Other Song", hue: 0.9, hasThumbnail: false)
+        #expect(MusicChipMotion.change(from: spec(), to: next) == .content)
     }
 
     @Test("a new song that also starts paused is a content change, which carries the paused look with it")
@@ -124,31 +156,26 @@ struct MusicChipMotionTests {
         #expect(frames.keyTimes[2] == 1)
     }
 
-    @Test("the text sits still for the hold, then moves left at 25 pt/s")
-    func offsetOverTime() {
-        #expect(MusicChipMotion.marqueeOffset(at: 0, textWidth: 200) == 0)
-        #expect(MusicChipMotion.marqueeOffset(at: 1.5, textWidth: 200) == 0)
-        #expect(abs(MusicChipMotion.marqueeOffset(at: 5.98, textWidth: 200) + 112) < 1e-9)
-        let one = MusicChipMotion.marqueeOffset(at: 2.5, textWidth: 200)
-        let two = MusicChipMotion.marqueeOffset(at: 3.5, textWidth: 200)
-        #expect(abs((two - one) + 25) < 1e-9)
-    }
-
-    @Test("a loop ends with the second copy where the first began, and the next loop holds again")
+    @Test("a loop ends exactly one distance to the left, where the second copy stands at the start")
     func seamlessLoop() {
-        let cycle = MusicChipMotion.marqueeKeyframes(textWidth: 200).duration
-        let nearEnd = MusicChipMotion.marqueeOffset(at: cycle - 1e-6, textWidth: 200)
-        // The second copy is `distance` to the right of the first; scrolled by `distance`, it stands at the start.
-        #expect(abs(nearEnd + MusicChipMotion.marqueeDistance(textWidth: 200)) < 0.01)
-        #expect(MusicChipMotion.marqueeOffset(at: cycle, textWidth: 200) == 0)
-        #expect(MusicChipMotion.marqueeOffset(at: cycle + 1.0, textWidth: 200) == 0)
-        #expect(abs(MusicChipMotion.marqueeOffset(at: cycle + 1.5 + 4.48, textWidth: 200) + 112) < 1e-9)
+        let frames = MusicChipMotion.marqueeKeyframes(textWidth: 200)
+        #expect(frames.offsets.last == -MusicChipMotion.marqueeDistance(textWidth: 200))
+        // The scroll leg moves at the marquee's speed: distance over the time after the hold.
+        let scrollTime = frames.duration * (frames.keyTimes[2] - frames.keyTimes[1])
+        #expect(abs(224 / scrollTime - MusicChipMotion.marqueeSpeed) < 1e-9)
     }
 
-    @Test("a time before the start, or not a number, is the start")
-    func offsetOutOfRange() {
-        #expect(MusicChipMotion.marqueeOffset(at: -3, textWidth: 200) == 0)
-        #expect(MusicChipMotion.marqueeOffset(at: .nan, textWidth: 200) == 0)
+    @Test("the marquee runs three loops of hold and scroll, then rests 25 s")
+    func runAndRearm() {
+        let cycle = MusicChipMotion.marqueeKeyframes(textWidth: 200).duration
+        #expect(abs(MusicChipMotion.marqueeRunDuration(textWidth: 200) - 3 * cycle) < 1e-9)
+        #expect(abs(MusicChipMotion.marqueeRearmDelay(textWidth: 200) - (3 * cycle + 25)) < 1e-9)
+        #expect(MusicChipMotion.marqueeRearmDelay(textWidth: 200) > MusicChipMotion.marqueeRunDuration(textWidth: 200))
+    }
+
+    @Test("a longer title runs longer before it rests", arguments: [0.0, 40.0, 400.0])
+    func runGrowsWithTheTitle(textWidth: Double) {
+        #expect(MusicChipMotion.marqueeRunDuration(textWidth: textWidth + 100) > MusicChipMotion.marqueeRunDuration(textWidth: textWidth))
     }
 
     // MARK: - The edge fade

@@ -18,7 +18,8 @@ final class MusicChipView: NSView {
     private static let fillKey = "chipPillFill"
     private static let appearKey = "chipAppear"
 
-    /// The pill's width the layer is heading for (its model value), in points. Zero before the first song shows.
+    /// The pill's width the layer is heading for (its model value), in points. Zero before the first song shows. Read by
+    /// the tests.
     var pillWidth: Double { Double(pill.bounds.width) }
 
     init(frame: NSRect, scale: CGFloat) {
@@ -87,9 +88,10 @@ final class MusicChipView: NSView {
         layer?.add(fade, forKey: Self.appearKey)
     }
 
-    /// Shows `spec`: a playback change only fades the content to the new strength; a content change fades the old title
-    /// and cover out as the new ones fade in, and the pill follows the title's width over `widthDuration` seconds (no
-    /// time: at once). The first content on a view shows without any fade.
+    /// Shows `spec`: a playback change only fades the content to the new strength; a cover change also brings in the
+    /// cover and the colour that arrived late, with the title left alone; a content change fades the old title and cover
+    /// out as the new ones fade in, and the pill follows the title's width over `widthDuration` seconds (no time: at
+    /// once). The first content on a view shows without any fade.
     func show(
         spec: MusicChipSpec,
         geometry: MusicChipGeometry,
@@ -102,6 +104,11 @@ final class MusicChipView: NSView {
             return
         case .playback:
             content?.setPlaying(spec.isPlaying)
+        case .cover:
+            // The same song: its title, its width and its marquee stay as they are.
+            content?.setPlaying(spec.isPlaying)
+            content?.setCover(thumbnail)
+            setFill(MusicChipRenderer.fillColor(for: spec.tint), animated: true)
         case .content:
             let next = MusicChipContent(spec: spec, geometry: geometry, thumbnail: thumbnail, scale: scale)
             let previous = content
@@ -118,6 +125,11 @@ final class MusicChipView: NSView {
             setFill(MusicChipRenderer.fillColor(for: spec.tint), animated: previous != nil)
             setPillWidth(geometry.pillWidth, duration: previous == nil ? 0 : widthDuration)
         }
+    }
+
+    /// Stops the marquee from starting again, before the view comes off the button.
+    func teardown() {
+        content?.cancelRearm()
     }
 
     /// The pill's colour follows the cover's, cross-fading when a song replaces another.

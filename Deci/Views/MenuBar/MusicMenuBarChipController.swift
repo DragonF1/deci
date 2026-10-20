@@ -56,6 +56,7 @@ final class MusicMenuBarChipController {
         popupWatcher.stop()
         cancelCoverLoad()
         lengthAnimator?.cancel()
+        chipView?.teardown()
         stopObservingReduceMotion()
         hoverCard.stop()
     }
@@ -135,10 +136,13 @@ final class MusicMenuBarChipController {
         loadCoverIfNeeded(for: track.thumbnailURL)
         let store = MusicCoverTintStore.shared
         let thumbnail = store.cachedThumbnail(for: track.thumbnailURL)
+        // While the cover loads, the pill keeps the colour it has, so it goes from the old colour to the new one and does
+        // not pass through the accent colour.
+        let pendingTint = coverTask != nil ? applied?.tint : nil
         let spec = MusicChipSpec(
             title: MusicChipLayout.displayTitle(title: track.title, artist: track.artist),
             isPlaying: player.isPlaying,
-            tint: store.cachedTint(for: track.thumbnailURL) ?? MusicChipRenderer.accentFallbackTint(),
+            tint: store.cachedTint(for: track.thumbnailURL) ?? pendingTint ?? MusicChipRenderer.accentFallbackTint(),
             hasThumbnail: thumbnail != nil,
             coverURL: track.thumbnailURL,
             reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -148,9 +152,10 @@ final class MusicMenuBarChipController {
             releaseHold()
             return
         }
-        // Only a different title or look needs measuring; a play or pause keeps the title on screen.
+        // Only a different title needs measuring: a play, a pause or a cover that arrives keeps the title on screen, so
+        // the width cannot change.
         let geometry: MusicChipGeometry
-        if change == .playback, let appliedGeometry {
+        if change != .content, let appliedGeometry {
             geometry = appliedGeometry
         } else {
             geometry = MusicChipLayout.geometry(title: spec.title, measure: MusicChipRenderer.titleWidth)
@@ -207,6 +212,7 @@ final class MusicMenuBarChipController {
         lengthAnimator = nil
         stopObservingReduceMotion()
         fade(button)
+        chipView?.teardown()
         chipView?.removeFromSuperview()
         chipView = nil
         item.length = NSStatusItem.variableLength

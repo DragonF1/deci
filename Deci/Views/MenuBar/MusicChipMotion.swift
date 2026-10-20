@@ -1,7 +1,7 @@
 // Deci/Views/MenuBar/MusicChipMotion.swift
-// How the Now playing chip moves: the width easing, the marquee's path and timing, the fade at the title's edges, and
-// which change of the chip is a cross-fade and which one only dims or lights it. Pure numbers, so the rules are unit
-// tested; MusicChipView, MusicChipContent and MusicChipLengthAnimator run them.
+// How the Now playing chip moves: the width easing, the marquee's path, timing and rests, the fade at the title's edges,
+// and which change of the chip is a cross-fade, which one only brings in the cover and which one only dims or lights it.
+// Pure numbers, so the rules are unit tested; MusicChipView, MusicChipContent and MusicChipLengthAnimator run them.
 
 import Foundation
 
@@ -28,6 +28,10 @@ nonisolated enum MusicChipMotion {
     static let marqueeSpeed: Double = 25
     /// The space between the two copies of the title.
     static let marqueeGap: Double = 24
+    /// How many loops it runs before it rests, so a long song does not keep the menu bar drawing every frame.
+    static let marqueeLoops = 3
+    /// How long the title rests at its start after those loops, before the marquee runs again.
+    static let marqueeRest: Double = 25
 
     /// How wide the fade at each edge of the window is while the title scrolls.
     static let edgeFadeWidth: Double = 10
@@ -47,18 +51,28 @@ nonisolated enum MusicChipMotion {
         case none
         /// Only whether it plays: the content dims or lights, and the marquee runs or rests.
         case playback
-        /// The title, colour or cover differs: the old content fades out as the new content fades in.
+        /// The same song, whose cover or colour arrived late (and maybe whether it plays too): the cover fades in and the
+        /// pill's colour follows, while the title stays as it is.
+        case cover
+        /// The title, cover or motion setting differs: the old content fades out as the new content fades in.
         case content
     }
 
-    /// Whether `new` needs the content swapped, only the play look changed, or nothing done. A chip that was not
-    /// showing (`old` nil) gets its content.
+    /// Whether `new` needs the content swapped, only the cover brought in, only the play look changed, or nothing done. A
+    /// chip that was not showing (`old` nil) gets its content.
     static func change(from old: MusicChipSpec?, to new: MusicChipSpec) -> Change {
         guard let old else { return .content }
         if old == new { return .none }
         var sameLook = old
         sameLook.isPlaying = new.isPlaying
-        return sameLook == new ? .playback : .content
+        if sameLook == new { return .playback }
+        // The same song that only gained its cover or its colour. A cover that goes away is not that: the picture on
+        // screen has to be swapped out.
+        guard !(old.hasThumbnail && !new.hasThumbnail) else { return .content }
+        var sameSong = sameLook
+        sameSong.tint = new.tint
+        sameSong.hasThumbnail = new.hasThumbnail
+        return sameSong == new ? .cover : .content
     }
 
     // MARK: - Width
@@ -132,14 +146,14 @@ nonisolated enum MusicChipMotion {
         )
     }
 
-    /// Where the text stands `elapsed` seconds after the marquee began, looping: still for the hold, then moving left at
-    /// the marquee's speed. A time before the start, or one that is not a number, is the start.
-    static func marqueeOffset(at elapsed: Double, textWidth: Double) -> Double {
-        guard elapsed.isFinite, elapsed > 0 else { return 0 }
-        let cycle = marqueeHold + marqueeScrollDuration(textWidth: textWidth)
-        let phase = elapsed.truncatingRemainder(dividingBy: cycle)
-        guard phase > marqueeHold else { return 0 }
-        return -marqueeDistance(textWidth: textWidth) * (phase - marqueeHold) / (cycle - marqueeHold)
+    /// How long the marquee runs before it rests: its loops, hold included.
+    static func marqueeRunDuration(textWidth: Double) -> Double {
+        Double(marqueeLoops) * (marqueeHold + marqueeScrollDuration(textWidth: textWidth))
+    }
+
+    /// How long after it starts the marquee is started again: the run and then the rest.
+    static func marqueeRearmDelay(textWidth: Double) -> Double {
+        marqueeRunDuration(textWidth: textWidth) + marqueeRest
     }
 
     /// How long a pause takes to ease the text from where it stands back to the start: longer the further it has
