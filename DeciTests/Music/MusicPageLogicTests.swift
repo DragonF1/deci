@@ -108,38 +108,49 @@ struct MusicPagePillsTests {
         }
     }
 
-    @Test("an album, a playlist or Liked music offers the Listen again pin where YouTube has the toggle")
-    func listenAgainItems() {
-        for kind in [MusicPageKind.album, .playlist, .liked] {
+    @Test("an album or a playlist offers the Listen again pin where YouTube has the toggle, then Pin to Home")
+    func albumAndPlaylistItems() {
+        for kind in [MusicPageKind.album, .playlist] {
             #expect(
-                MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: false, homeIsPinned: false, homeCanToggle: true)
-                    == [.pinListenAgain(isPinned: false)]
+                MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: false, home: .canPin)
+                    == [.pinListenAgain(isPinned: false), .pinHome(.canPin)]
             )
             #expect(
-                MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: true, homeIsPinned: false, homeCanToggle: true)
-                    == [.pinListenAgain(isPinned: true)]
+                MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: true, home: .pinned)
+                    == [.pinListenAgain(isPinned: true), .pinHome(.pinned)]
             )
-            // No toggle from YouTube, no entry: the menu is left out altogether.
-            #expect(
-                MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: nil, homeIsPinned: true, homeCanToggle: true).isEmpty
-            )
+            // No toggle from YouTube leaves only the Home pin: the page can still be pinned to Home.
+            #expect(MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: nil, home: .canPin) == [.pinHome(.canPin)])
+            #expect(MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: nil, home: .full) == [.pinHome(.full)])
+            // With neither, the menu is left out altogether.
+            #expect(MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: nil, home: nil).isEmpty)
+            #expect(MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: false, home: nil) == [.pinListenAgain(isPinned: false)])
         }
     }
 
-    @Test("an artist offers Pin to Home, and says whether Home has room")
+    @Test("Liked music offers the Listen again pin only: it belongs to the account and cannot be pinned to Home")
+    func likedItems() {
+        #expect(MusicPagePills.menuItems(kind: .liked, listenAgainIsPinned: false, home: nil) == [.pinListenAgain(isPinned: false)])
+        #expect(MusicPagePills.menuItems(kind: .liked, listenAgainIsPinned: true, home: nil) == [.pinListenAgain(isPinned: true)])
+        #expect(MusicPagePills.menuItems(kind: .liked, listenAgainIsPinned: nil, home: nil).isEmpty)
+        // Even a Home state handed in by mistake never puts the entry on Liked music.
+        #expect(MusicPagePills.menuItems(kind: .liked, listenAgainIsPinned: nil, home: .canPin).isEmpty)
+    }
+
+    @Test("an artist offers Pin to Home, and says whether Home has room; it has no Listen again toggle")
     func homeItem() {
-        #expect(
-            MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: true, homeIsPinned: false, homeCanToggle: true)
-                == [.pinHome(isPinned: false, isEnabled: true)]
-        )
-        #expect(
-            MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: nil, homeIsPinned: false, homeCanToggle: false)
-                == [.pinHome(isPinned: false, isEnabled: false)]
-        )
-        #expect(
-            MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: nil, homeIsPinned: true, homeCanToggle: true)
-                == [.pinHome(isPinned: true, isEnabled: true)]
-        )
+        #expect(MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: true, home: .canPin) == [.pinHome(.canPin)])
+        #expect(MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: nil, home: .full) == [.pinHome(.full)])
+        #expect(MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: nil, home: .pinned) == [.pinHome(.pinned)])
+        #expect(MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: nil, home: nil).isEmpty)
+    }
+
+    @Test("a page with a Home entry shows the round menu button")
+    func homeEntryShowsMenuButton() {
+        for kind in [MusicPageKind.album, .playlist, .artist] {
+            let items = MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: nil, home: .canPin)
+            #expect(MusicPagePills.pills(kind: kind, hasTracks: false, hasMenuItems: !items.isEmpty) == [.more])
+        }
     }
 }
 
@@ -157,16 +168,16 @@ struct MusicPageMenuItemTests {
 
     @Test("the Home entry pins and unpins, and says when Home is full")
     func home() {
-        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: true).title == "Pin to Home")
-        #expect(MusicPageMenuItem.pinHome(isPinned: true, isEnabled: true).title == "Unpin from Home")
-        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: false).title == "Pin to Home (Home is full)")
+        #expect(MusicPageMenuItem.pinHome(.canPin).title == "Pin to Home")
+        #expect(MusicPageMenuItem.pinHome(.pinned).title == "Unpin from Home")
+        #expect(MusicPageMenuItem.pinHome(.full).title == "Pin to Home (Home is full)")
     }
 
     @Test("a full Home turns the entry off, and an unpin is always on")
     func enabled() {
-        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: false).isEnabled == false)
-        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: true).isEnabled)
-        #expect(MusicPageMenuItem.pinHome(isPinned: true, isEnabled: true).isEnabled)
+        #expect(MusicPageMenuItem.pinHome(.full).isEnabled == false)
+        #expect(MusicPageMenuItem.pinHome(.canPin).isEnabled)
+        #expect(MusicPageMenuItem.pinHome(.pinned).isEnabled)
     }
 }
 

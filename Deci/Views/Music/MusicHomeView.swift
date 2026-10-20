@@ -1,7 +1,7 @@
 // Deci/Views/Music/MusicHomeView.swift
 import SwiftUI
 
-/// The Home root: the pinned artists at the top, then YouTube Music's shelves top to bottom (Listen again tiles, the
+/// The Home root: the pinned items at the top, then YouTube Music's shelves top to bottom (Listen again tiles, the
 /// Quick picks list, other tile shelves), more as the list reaches its end. Rows and tiles sit in the right column's
 /// Signal look, under a 13 pt section title.
 struct MusicHomeView: View {
@@ -58,25 +58,34 @@ struct MusicHomeView: View {
         }
     }
 
-    // MARK: - Pinned artists
+    // MARK: - Pinned
 
-    /// Round artist tiles in pin order. Local data, so it is there while YouTube's shelves are still loading or
-    /// have failed; nothing at all while no artist is pinned.
+    /// The artists, playlists, albums and songs the listener pinned, in pin order. Local data, so it is there while
+    /// YouTube's shelves are still loading or have failed; nothing at all while nothing is pinned. A song plays, on
+    /// its own so it gets its radio; anything else opens its page.
     @ViewBuilder
     private var pinnedRow: some View {
-        if let shelf = service.pinnedArtists.shelf {
+        let pins = service.pinnedItems
+        if !pins.isEmpty {
             VStack(alignment: .leading, spacing: MusicBrowseLayout.tileTitleGap) {
-                MusicSectionHeader(title: "Pinned artists")
+                MusicSectionHeader(title: MusicPinnedItems.shelfTitle)
 
                 MusicHorizontalShelf {
-                    ForEach(shelf.items) { item in
-                        if case .collection(let artist) = item {
-                            MusicPinnedArtistTile(collection: artist) { browse.open(artist) }
-                                .musicCollectionMenu(artist) { service.pinnedArtists.unpin($0.browseId) }
-                        }
+                    ForEach(pins.items, id: \.key) { pin in
+                        MusicPinnedTile(item: pin) { open(pin) }
+                            .contextMenu {
+                                Button(MusicHomePinState.pinned.title) { pins.unpin(pin) }
+                            }
                     }
                 }
             }
+        }
+    }
+
+    private func open(_ pin: MusicPinnedItem) {
+        switch pin.shelfItem {
+        case .track(let track): service.play(track)
+        case .collection(let collection): browse.open(collection)
         }
     }
 

@@ -47,9 +47,9 @@ final class MusicService {
     let lyrics: MusicLyricsStore
     /// The song actions (save to playlist, remove from playlist, pin to Listen again) and their notice line.
     let trackActions: MusicTrackActionsStore
-    /// The artists pinned to the top of Home. Remembered across launches, and kept through sign-out and account
-    /// switches: an artist is a public channel, not part of an account.
-    let pinnedArtists: MusicPinnedArtists
+    /// The artists, playlists, albums and songs pinned to the top of Home. Remembered across launches, and kept
+    /// through sign-out and account switches: they belong to the app, not to an account.
+    let pinnedItems: MusicPinnedItems
     /// Next is on while a track follows. At the last track it stays on when something can still follow: Loop playlist
     /// wraps to the first track, a page waits for its next page or the radio that is loading, and Autoplay (with Loop
     /// playlist off) plays the staged radio or asks for a new one.
@@ -195,8 +195,8 @@ final class MusicService {
         listenerLevel: @escaping @MainActor () -> (volume: Int, muted: Bool) = { (WatchtimeTracker.fullVolume, false) },
         preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(),
         savePreferences: @escaping @MainActor (MusicPlaybackPreferences) -> Void = { _ in },
-        pinnedArtists: [MusicPinnedArtist] = [],
-        savePinnedArtists: @escaping @MainActor ([MusicPinnedArtist]) -> Void = { _ in },
+        pinnedItems: [MusicPinnedItem] = [],
+        savePinnedItems: @escaping @MainActor ([MusicPinnedItem]) -> Void = { _ in },
         // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
         shuffleSeed: UInt64? = nil,
         artistGrace: Duration = .milliseconds(1500),
@@ -208,7 +208,7 @@ final class MusicService {
         self.browse = browse
         self.trackActions = MusicTrackActionsStore(backend: backend, browse: browse)
         self.lyrics = lyrics
-        self.pinnedArtists = MusicPinnedArtists(artists: pinnedArtists, save: savePinnedArtists)
+        self.pinnedItems = MusicPinnedItems(items: pinnedItems, save: savePinnedItems)
         self.player = player
         self.presentSignIn = presentSignIn
         self.presentChannelPicker = presentChannelPicker
@@ -710,7 +710,7 @@ final class MusicService {
         setShuffle(defaults.shuffle)
         setLoopMode(defaults.loop)
         setAutoplay(defaults.autoplay)
-        pinnedArtists.settingsDidReset()
+        pinnedItems.settingsDidReset()
     }
 
     /// Play/pause for the transport and media keys. A track whose stream never resolved has nothing
@@ -1399,10 +1399,10 @@ final class MusicService {
         handle(MusicError.signedOut)
     }
 
-    /// An artist page landed: a pinned artist's tile takes the name and photo it shows now.
+    /// A page landed: the tile of a pinned artist, playlist or album takes the name and photo it shows now.
     private func pageLoaded(_ page: MusicBrowsePage, opener: MusicCollection?) {
-        guard opener?.kind == .artist else { return }
-        pinnedArtists.refresh(MusicPinnedArtist(page: page, opener: opener))
+        guard let opener, let latest = MusicPinnedItem(page: page, opener: opener) else { return }
+        pinnedItems.refresh(latest)
     }
 
     private static func isCancellation(_ error: any Error) -> Bool {

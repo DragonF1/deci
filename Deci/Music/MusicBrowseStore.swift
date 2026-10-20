@@ -73,7 +73,7 @@ final class MusicBrowseStore {
     /// Told when a call says the session is gone, so the service can sign out.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
     /// Told when a page lands, with the page and the collection on the path that opened it, so the service can keep a
-    /// pinned artist's name and photo current. Not told for a page that was closed, reloaded or reset before it landed.
+    /// pinned item's name and photo current. Not told for a page that was closed, reloaded or reset before it landed.
     @ObservationIgnored var onPageLoaded: (@MainActor (MusicBrowsePage, MusicCollection?) -> Void)?
 
     init(backend: any MusicBackend) {

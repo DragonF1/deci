@@ -6,7 +6,7 @@ import SwiftUI
 struct MusicTrackMenuHandler: Sendable {
     let actions: @MainActor (MusicTrack, MusicTrackContext) -> [MusicTrackAction]
     let perform: @MainActor (MusicTrackAction, MusicTrack, MusicTrackContext) -> Void
-    /// Whether the song is pinned to Listen again, for the badge on its cover.
+    /// Whether the song is pinned to Listen again or to Home, for the badge on its cover.
     let isPinned: @MainActor (MusicTrack) -> Bool
 }
 
@@ -14,19 +14,22 @@ private struct MusicTrackMenuKey: EnvironmentKey {
     static let defaultValue: MusicTrackMenuHandler? = nil
 }
 
-/// Pin / Unpin to Listen again for playlist and album tiles and rows: which way a collection's toggle faces (nil when
-/// YouTube offers none), and what a pick does. The Music tab sets it; outside it a tile has no such item.
+/// Pin / Unpin to Listen again and to Home for playlist, album and artist tiles and rows: which way a collection's
+/// Listen again toggle faces (nil when YouTube offers none), where it stands with Home (nil when it cannot be pinned
+/// there), and what a pick does. The Music tab sets it; outside it a tile has no such items.
 struct MusicCollectionPinHandler: Sendable {
     let pin: @MainActor (MusicCollection) -> MusicFeedbackToggle?
     let toggle: @MainActor (MusicCollection) -> Void
+    let homePin: @MainActor (MusicCollection) -> MusicHomePinState?
+    let toggleHome: @MainActor (MusicCollection) -> Void
     /// Whether the tile or row wears the pin badge: see `wearsPinBadge`.
     let isPinned: @MainActor (MusicCollection) -> Bool
 
-    /// A playlist or album pinned to Listen again, or an artist pinned to Home. It does not need an Unpin to be
-    /// on offer, so a pinned collection YouTube gives no unpin token for still shows the badge.
+    /// A collection pinned to Listen again or to Home. It does not need an Unpin to be on offer, so a pinned
+    /// collection YouTube gives no unpin token for still shows the badge.
     @MainActor
-    static func wearsPinBadge(_ collection: MusicCollection, actions: MusicTrackActionsStore, artists: MusicPinnedArtists) -> Bool {
-        actions.isPinnedToListenAgain(collection) || (collection.kind == .artist && artists.isPinned(collection.browseId))
+    static func wearsPinBadge(_ collection: MusicCollection, actions: MusicTrackActionsStore, home: MusicPinnedItems) -> Bool {
+        actions.isPinnedToListenAgain(collection) || home.isPinned(collection)
     }
 }
 
@@ -79,6 +82,7 @@ struct MusicTrackMenuItems: View {
             if index > 0 { Divider() }
             ForEach(group, id: \.self) { action in
                 Button(action.title) { perform(action) }
+                    .disabled(!action.isEnabled)
             }
         }
     }

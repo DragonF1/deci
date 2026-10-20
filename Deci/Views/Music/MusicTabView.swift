@@ -149,8 +149,8 @@ private struct MusicSignedInView: View {
 extension View {
     /// What every song row, artist name and collection tile in the popup runs through, the player column's cover and
     /// title included: an artist name opens its page, a song's menu lists and performs its actions on the real account,
-    /// and a playlist or album can be pinned to Listen again. Applied at the popup, over both columns. Without a service
-    /// there is nothing to run, and the environment stays as it was.
+    /// and a song, playlist, album or artist can be pinned to Listen again or to Home. Applied at the popup, over both
+    /// columns. Without a service there is nothing to run, and the environment stays as it was.
     func musicActions(service: MusicService?, navigation: MusicSearchNavigation?) -> some View {
         modifier(MusicActionsModifier(service: service, navigation: navigation))
     }
@@ -170,18 +170,24 @@ private struct MusicActionsModifier: ViewModifier {
         return MusicTrackMenuHandler(
             actions: { navigation.actions(for: $0, in: $1) },
             perform: { navigation.perform($0, for: $1, in: $2) },
-            isPinned: { service.trackActions.isPinnedToListenAgain($0) }
+            isPinned: { service.trackActions.isPinnedToListenAgain($0) || service.pinnedItems.isPinned($0) }
         )
     }
 
-    /// Also which tiles and rows wear the pin badge: those pinned to Listen again, and artists pinned to Home.
+    /// Also which tiles and rows wear the pin badge: those pinned to Listen again or to Home.
     private var collectionPin: MusicCollectionPinHandler? {
         guard let service else { return nil }
         return MusicCollectionPinHandler(
             pin: { service.trackActions.listenAgainPin(for: $0) },
             toggle: { service.trackActions.togglePin($0) },
+            homePin: { collection in
+                MusicPinnedItem(collection: collection).map { service.pinnedItems.state(for: $0) }
+            },
+            toggleHome: { collection in
+                if let item = MusicPinnedItem(collection: collection) { service.pinnedItems.toggle(item) }
+            },
             isPinned: {
-                MusicCollectionPinHandler.wearsPinBadge($0, actions: service.trackActions, artists: service.pinnedArtists)
+                MusicCollectionPinHandler.wearsPinBadge($0, actions: service.trackActions, home: service.pinnedItems)
             }
         )
     }

@@ -69,7 +69,7 @@ nonisolated struct AppSettings: Codable, Equatable {
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
 
     // Music Home
-    var musicPinnedArtists: [MusicPinnedArtist] = []  // Artists pinned to the top of Home, oldest first
+    var musicPinnedItems: [MusicPinnedItem] = []   // Artists, playlists, albums and songs pinned to the top of Home, oldest first
 
     init() {}
 
@@ -104,9 +104,21 @@ nonisolated struct AppSettings: Codable, Equatable {
         musicLoopMode = (try? c.decodeIfPresent(MusicLoopMode.self, forKey: .musicLoopMode)) ?? .off
         musicAutoplay = try c.decodeIfPresent(Bool.self, forKey: .musicAutoplay) ?? true
         // Pins this build cannot read must not cost the listener the rest of their settings either, and one
-        // unreadable pin costs only itself.
-        musicPinnedArtists = (try? c.decodeIfPresent([MusicPinnedArtistEntry].self, forKey: .musicPinnedArtists))?
-            .compactMap(\.artist) ?? []
+        // unreadable pin costs only itself. A file from before Home held more than artists has only the old key,
+        // and its artists carry over; the old key is not written again.
+        if c.contains(.musicPinnedItems) {
+            musicPinnedItems = (try? c.decode([MusicPinnedItemEntry].self, forKey: .musicPinnedItems))?
+                .compactMap(\.item) ?? []
+        } else {
+            let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+            musicPinnedItems = (try? legacy.decodeIfPresent([MusicLegacyPinnedArtistEntry].self, forKey: .musicPinnedArtists))?
+                .compactMap(\.item) ?? []
+        }
+    }
+
+    /// Keys an earlier build wrote that this one only reads.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case musicPinnedArtists
     }
 }
 
