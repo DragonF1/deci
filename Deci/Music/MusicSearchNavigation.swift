@@ -337,6 +337,14 @@ final class MusicSearchNavigation {
         service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
     }
 
+    /// The hover card's Lyrics button: the lyrics take the right column whatever was there, and stay if they already
+    /// had it (the popover opens on them, so a toggle would close them).
+    func openLyrics() {
+        queueForced = false
+        service.trackActions.closePicker()
+        service.lyrics.setPanelOpen(true)
+    }
+
     /// Lyrics or Up next goes back to browse, the screen under it.
     func closePanel() {
         queueForced = false

@@ -294,6 +294,22 @@ struct MusicSearchNavigationTests {
         #expect(h.service.lyrics.isPanelOpen)
     }
 
+    @Test("the hover card's Lyrics opens the lyrics over Up next and keeps them open when they already are")
+    func openLyricsFromCard() {
+        let h = NavHarness()
+        h.playSomething()
+        h.loadLyricsTrack()
+        h.nav.toggleQueue()
+        #expect(h.nav.rightColumn == .queue)
+
+        h.nav.openLyrics()
+        #expect(h.nav.queueForced == false)
+        #expect(h.nav.rightColumn == .lyrics)
+
+        h.nav.openLyrics()
+        #expect(h.nav.showsLyrics)
+    }
+
     // MARK: - Opening an artist from the results
 
     @Test("an artist from the results over Home opens at the root, hides the results and keeps the query")

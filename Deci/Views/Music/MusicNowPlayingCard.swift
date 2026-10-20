@@ -7,8 +7,9 @@ import SwiftUI
 /// closes. Its numbers move with the player's own half second position ticks; the only clock of its own is the wave's
 /// ripple, which runs while the song plays and stops when it pauses (or with Reduce Motion on).
 ///
-/// `onOpenPlayer` hides the card and opens the full Music popover, for the save button: the playlist picker lives in
-/// the popover's right column. A click on the chip opens the popover too, so the card has no button of its own for it.
+/// `onOpenPlayer` hides the card and opens the full Music popover, for the lyrics and save buttons: the lyrics and the
+/// playlist picker live in the popover's right column. A click on the chip opens the popover too, so the card has no
+/// button of its own for it.
 struct MusicNowPlayingCard: View {
     let musicHost: MusicServiceHost
     let onOpenPlayer: () -> Void
@@ -145,17 +146,21 @@ private struct MusicNowPlayingCardContent: View {
     private func controls(service: MusicService, track: MusicTrack) -> some View {
         let player = service.player
         let size = Metrics.controlCircleSize
-        let isShuffleOn = service.isShuffleOn
         let canSave = musicHost.navigation?.actions(for: track, in: .none).contains(.saveToPlaylist) ?? false
         return HStack(spacing: 0) {
             MusicCardButton(
-                systemImage: "shuffle",
-                title: "Shuffle",
+                systemImage: "quote.bubble",
+                title: "Lyrics",
                 size: size,
                 glyphSize: 13,
                 fill: 0,
-                glyphColor: isShuffleOn ? accent.solid : Color.white.opacity(0.7)
-            ) { service.setShuffle(!isShuffleOn) }
+                glyphColor: Color.white.opacity(0.7),
+                isDisabled: service.lyrics.track == nil
+            ) {
+                musicHost.navigation?.openLyrics()
+                onOpenPlayer()
+            }
+            .help("Lyrics")
             Spacer(minLength: 0)
             MusicCardButton(
                 systemImage: "backward.fill",
