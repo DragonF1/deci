@@ -79,14 +79,6 @@ nonisolated enum MusicSpectrum {
         Double(index) * pitch(height: height)
     }
 
-    /// How many bars are played: the floor of progress x 28. The tiny nudge keeps a position that sits exactly on a bar
-    /// edge, such as 12/28, from rounding down to the bar before.
-    static func playedCount(progress: Double) -> Int {
-        guard progress.isFinite else { return 0 }
-        let count = (min(max(progress, 0), 1) * Double(barCount) + 1e-9).rounded(.down)
-        return min(max(Int(count), 0), barCount)
-    }
-
     // MARK: - The fill
 
     /// How much of bar `index` is played, 0...1. The bars fill one after another, each from its left end across its

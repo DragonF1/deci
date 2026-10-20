@@ -133,19 +133,6 @@ struct MusicSpectrumGeometryTests {
         #expect(MusicSpectrum.width(forLevel: .infinity) == 8)
     }
 
-    @Test("the played count is the floor of progress x 28, held inside 0...28")
-    func playedCount() {
-        #expect(MusicSpectrum.playedCount(progress: 0) == 0)
-        // 1:42 of 3:58, the design's own example.
-        #expect(MusicSpectrum.playedCount(progress: MusicTimeFormat.progress(current: 102, duration: 238)) == 12)
-        #expect(MusicSpectrum.playedCount(progress: 12.0 / 28.0) == 12)
-        #expect(MusicSpectrum.playedCount(progress: 12.0 / 28.0 - 0.001) == 11)
-        #expect(MusicSpectrum.playedCount(progress: 1) == 28)
-        #expect(MusicSpectrum.playedCount(progress: 7) == 28)
-        #expect(MusicSpectrum.playedCount(progress: -1) == 0)
-        #expect(MusicSpectrum.playedCount(progress: .nan) == 0)
-    }
-
     @Test("the bars above the position are full, the one it is on part way, the rest empty")
     func fill() {
         let progress = 12.5 / 28
@@ -206,7 +193,8 @@ struct MusicSpectrumSeekTests {
     func clickingABar(index: Int) {
         let y = MusicSpectrum.barY(index) + MusicSpectrum.barThickness / 2
         let progress = MusicSpectrum.progress(atY: y)
-        #expect(MusicSpectrum.playedCount(progress: progress) == index)
+        let fill = MusicSpectrum.fill(forBar: index, progress: progress)
+        #expect(fill > 0 && fill < 1)
     }
 
     @Test("the position a seek asks for is the fraction of the song, never past its end")
@@ -542,7 +530,7 @@ struct MusicSpectrumDriverTests {
         #expect(driver.progress == 0.6)
     }
 
-    @Test("a new song and Reduce Motion land on the position at once")
+    @Test("a new song, Reduce Motion and the first poll after a rest land on the position at once")
     func snaps() {
         let feed = Feed()
         let driver = driver(feed)
@@ -557,6 +545,12 @@ struct MusicSpectrumDriverTests {
         feed.position = 100
         driver.tick()
         #expect(driver.progress == 0.5)
+
+        feed.reduceMotion = false
+        driver.rest()
+        feed.position = 20
+        driver.tick()
+        #expect(driver.progress == 0.1)
     }
 
     @Test("resting clears the pulse, so a paused song shows its bars at rest")

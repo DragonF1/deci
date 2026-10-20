@@ -3,13 +3,12 @@ import SwiftUI
 
 /// The bars of the spectrum, drawn: 28 horizontal bars from the start of the song at the top to the end at the bottom.
 /// The accent runs down them as the song plays, each bar filling from its left end with a soft edge into the white.
-/// The accent and the position are the animated parts, so a new song's colour glides in with the rest of the column
-/// and a seek while paused slides the fill.
+/// The accent is the animated part, so a new song's colour glides in with the rest of the column.
 struct MusicSpectrumCanvas: View, Animatable {
     /// The level of each bar.
     let levels: [Double]
     /// How far along the song is, 0...1.
-    var progress: Double
+    let progress: Double
     /// The white of an unplayed bar.
     let unplayedOpacity: Double
     /// The opacity of every bar: a paused song's dim.
@@ -43,13 +42,12 @@ struct MusicSpectrumCanvas: View, Animatable {
         brightness = accent.brightness
     }
 
-    var animatableData: AnimatablePair<Double, AnimatablePair<Double, AnimatablePair<Double, Double>>> {
-        get { AnimatablePair(progress, AnimatablePair(hue, AnimatablePair(saturation, brightness))) }
+    var animatableData: AnimatablePair<Double, AnimatablePair<Double, Double>> {
+        get { AnimatablePair(hue, AnimatablePair(saturation, brightness)) }
         set {
-            progress = newValue.first
-            hue = newValue.second.first
-            saturation = newValue.second.second.first
-            brightness = newValue.second.second.second
+            hue = newValue.first
+            saturation = newValue.second.first
+            brightness = newValue.second.second
         }
     }
 
@@ -88,6 +86,20 @@ struct MusicSpectrumCanvas: View, Animatable {
         .frame(width: MusicSpectrum.boxWidth, height: height)
         .accessibilityHidden(true)
     }
+}
+
+/// The canvas's position, animated apart from the accent inside it: a seek while paused slides the fill, and the polls
+/// that move it 30 times a second while a song plays never cut short a colour glide on the canvas.
+private struct MusicSpectrumProgressLayer<Content: View>: View, Animatable {
+    var progress: Double
+    @ViewBuilder let content: (Double) -> Content
+
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View { content(progress) }
 }
 
 /// The player column's spectrum, which is also its progress bar: click or drag to seek (the seek lands on release),
@@ -134,16 +146,22 @@ struct MusicSpectrumView: View {
     private static let pausedSeekGlide: TimeInterval = 0.35
 
     var body: some View {
-        MusicSpectrumCanvas(
-            levels: levels,
-            progress: progress,
-            unplayedOpacity: unplayedOpacity,
-            barsOpacity: state.barsOpacity,
-            fixedWidth: state.isEmptyLayout ? MusicPlayerColumnState.emptyBarWidth : nil,
-            height: height,
-            accent: accent
-        )
-        .animation(state == .paused && !reduceMotion ? .easeOut(duration: Self.pausedSeekGlide) : nil, value: progress)
+        MusicSpectrumProgressLayer(progress: progress) { shown in
+            MusicSpectrumCanvas(
+                levels: levels,
+                progress: shown,
+                unplayedOpacity: unplayedOpacity,
+                barsOpacity: state.barsOpacity,
+                fixedWidth: state.isEmptyLayout ? MusicPlayerColumnState.emptyBarWidth : nil,
+                height: height,
+                accent: accent
+            )
+        }
+        // Only adds an animation where none was asked for, so it never overrides another one.
+        .transaction(value: progress) { transaction in
+            guard state == .paused, !reduceMotion, transaction.animation == nil else { return }
+            transaction.animation = .easeOut(duration: Self.pausedSeekGlide)
+        }
         .frame(maxHeight: .infinity, alignment: .top)
         .onGeometryChange(for: Double.self) { max($0.size.height, MusicSpectrum.boxHeight) } action: { height = $0 }
         .overlay { preview }
