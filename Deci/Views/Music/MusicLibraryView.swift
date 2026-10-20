@@ -149,7 +149,7 @@ struct MusicLibraryView: View {
             if filter.isEmpty {
                 let copy = MusicSearchCopy.noResults(
                     noun: section.noun,
-                    query: navigation.fieldQuery,
+                    query: navigation.filterQuery,
                     place: "your library",
                     beyond: "your library"
                 )

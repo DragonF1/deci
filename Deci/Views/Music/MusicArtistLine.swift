@@ -23,7 +23,7 @@ struct MusicArtistLine: View {
     let links: [MusicArtistLink]
     /// Set by a row whose own accessibility label already reads the whole line, so VoiceOver does not say it twice.
     var hidesPlainTextFromVoiceOver = false
-    /// The line's look. The defaults are the song rows'; the shell's mini player and player screens set their own.
+    /// The line's look. The defaults are the song rows'; the player column sets its own.
     var font: Font = DesignTokens.Typography.rowDescription
     var color: Color = DesignTokens.Colors.textSecondary
 

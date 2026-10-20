@@ -247,9 +247,12 @@ final class MusicSpectrumDriver {
         if active {
             // The level kept while the popup was closed is old news: drop it, so the first poll hears now.
             _ = sources.level()
-            timer = Timer.scheduledTimer(withTimeInterval: Self.interval, repeats: true) { [weak self] _ in
+            // Common modes, so the bars keep moving while a menu is open.
+            let timer = Timer(timeInterval: Self.interval, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
             }
+            RunLoop.main.add(timer, forMode: .common)
+            self.timer = timer
         } else {
             rest()
         }

@@ -2,7 +2,7 @@
 import Foundation
 
 /// The page a song row sits on, which decides whether Remove from playlist and Go to album make sense for it.
-/// Search results, Up next and the mini player sit on no page (`.none`).
+/// Search results, Up next and the player column sit on no page (`.none`).
 struct MusicTrackContext: Equatable, Sendable {
     /// The open page's browse id, as the page store knows it ("VL..." for a playlist).
     var pageBrowseId: String?
@@ -52,7 +52,7 @@ enum MusicTrackAction: Hashable, Sendable {
     }
 }
 
-/// Which song actions a row offers. Pure rules, so the row, its context menu and the mini player agree and the
+/// Which song actions a row offers. Pure rules, so the row, its context menu and the player column agree and the
 /// rules are tested without a view. An action shows only when it can work.
 enum MusicTrackActions {
     /// In menu order: save, pin or unpin, then go to album and go to artist, then remove from playlist last.

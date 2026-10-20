@@ -82,7 +82,7 @@ struct MusicQueueView: View {
     private var noMatches: some View {
         let copy = MusicSearchCopy.noResults(
             noun: .song,
-            query: navigation.fieldQuery,
+            query: navigation.queueQuery,
             place: "the queue",
             beyond: "the queue"
         )

@@ -259,7 +259,7 @@ struct MusicPageView: View {
             if matches.isEmpty {
                 let copy = MusicSearchCopy.noResults(
                     noun: .song,
-                    query: navigation.fieldQuery,
+                    query: navigation.filterQuery,
                     place: kind == .album ? "this album" : "this playlist",
                     beyond: page.title
                 )

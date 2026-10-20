@@ -118,6 +118,15 @@ struct MusicLocalSearchHighlightTests {
         #expect(pieces("Cafe del Mar", ["caf\u{00E9}"]) == ["Cafe"])
     }
 
+    @Test("a decomposed accent is marked with its whole letter")
+    func decomposedAccent() {
+        let text = "Cafe\u{0301} del Mar"
+        let ranges = MusicLocalSearch.highlights(in: text, terms: ["cafe"])
+        #expect(ranges.map { String(text[$0]) } == ["Cafe\u{0301}"])
+        let attributed = AttributedString(text)
+        #expect(ranges.allSatisfy { Range($0, in: attributed) != nil })
+    }
+
     @Test("every place a word occurs is marked, in order")
     func repeats() {
         let text = "Banana band"
