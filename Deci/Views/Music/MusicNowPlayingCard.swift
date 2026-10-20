@@ -3,8 +3,9 @@ import SwiftUI
 
 /// The hover card of the Now playing chip: a compact One UI style media card on the song's cover, shown in its own
 /// floating panel under the Music menu bar item while the mouse rests on the chip. It reads the player the Music popup
-/// reads (nothing is copied), is dark whatever the Mixer wears, and has no timer of its own: it is built when the card
-/// opens and gone when it closes, and its numbers move with the player's own half second position ticks.
+/// reads (nothing is copied), is dark whatever the Mixer wears, and is built when the card opens and gone when it
+/// closes. Its numbers move with the player's own half second position ticks; the only clock of its own is the wave's
+/// ripple, which runs while the song plays and stops when it pauses (or with Reduce Motion on).
 ///
 /// `onOpenPlayer` hides the card and opens the full Music popover, for the save button: the playlist picker lives in
 /// the popover's right column. A click on the chip opens the popover too, so the card has no button of its own for it.
@@ -59,6 +60,7 @@ private struct MusicNowPlayingCardContent: View {
                 position: player.currentTime,
                 duration: duration,
                 canSeek: player.duration > 0 && !player.isLoading,
+                isPlaying: player.isPlaying,
                 tint: accent
             ) { service.seek(to: $0) }
             Spacer().frame(height: Metrics.afterTimesRow)
@@ -213,9 +215,12 @@ private struct MusicCardProgress: View {
     let position: TimeInterval
     let duration: TimeInterval
     let canSeek: Bool
+    /// The ripple runs while this is true and freezes where it is when it is not.
+    let isPlaying: Bool
     let tint: MusicTint
     let onSeek: (TimeInterval) -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The box's width as laid out.
     @State private var width: Double = MusicHoverCardMetrics.contentWidth
     /// The finger's x while it is down, which lets go by itself when the drag is cancelled.
@@ -248,37 +253,40 @@ private struct MusicCardProgress: View {
         let shown = progress
         let playheadX = MusicWave.playheadX(progress: shown, width: width)
         let gradient = Gradient(colors: MusicWave.gradientTints(for: tint).map(\.solid))
-        return Canvas { context, size in
-            let base = MusicWave.baselineY
-            let head = MusicWave.playheadX(progress: shown, width: size.width)
+        return TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !isPlaying || reduceMotion)) { timeline in
+            let phase = reduceMotion ? 0 : MusicWave.ripplePhase(at: timeline.date.timeIntervalSinceReferenceDate)
+            Canvas { context, size in
+                let base = MusicWave.baselineY
+                let head = MusicWave.playheadX(progress: shown, width: size.width)
 
-            // The unplayed part: a thin line from the knob to the end.
-            var rest = Path()
-            rest.move(to: CGPoint(x: head, y: base))
-            rest.addLine(to: CGPoint(x: max(size.width - MusicWave.inset, head), y: base))
-            context.stroke(rest, with: .color(Color.white.opacity(0.25)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                // The unplayed part: a thin line from the knob to the end.
+                var rest = Path()
+                rest.move(to: CGPoint(x: head, y: base))
+                rest.addLine(to: CGPoint(x: max(size.width - MusicWave.inset, head), y: base))
+                context.stroke(rest, with: .color(Color.white.opacity(0.25)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
 
-            // The played part: the curve filled down to the baseline, in the gradient.
-            let samples = MusicWave.profile(levels: levels, progress: shown, width: size.width)
-            guard let first = samples.first, let last = samples.last else { return }
-            let shading = GraphicsContext.Shading.linearGradient(
-                gradient,
-                startPoint: CGPoint(x: MusicWave.inset, y: 0),
-                endPoint: CGPoint(x: max(head, MusicWave.inset + 1), y: 0)
-            )
-            var curve = Path()
-            curve.move(to: CGPoint(x: first.x, y: base))
-            for sample in samples {
-                curve.addLine(to: CGPoint(x: sample.x, y: base - sample.height))
+                // The played part: the curve filled down to the baseline, in the gradient.
+                let samples = MusicWave.profile(levels: levels, progress: shown, width: size.width, phase: phase)
+                guard let first = samples.first, let last = samples.last else { return }
+                let shading = GraphicsContext.Shading.linearGradient(
+                    gradient,
+                    startPoint: CGPoint(x: MusicWave.inset, y: 0),
+                    endPoint: CGPoint(x: max(head, MusicWave.inset + 1), y: 0)
+                )
+                var curve = Path()
+                curve.move(to: CGPoint(x: first.x, y: base))
+                for sample in samples {
+                    curve.addLine(to: CGPoint(x: sample.x, y: base - sample.height))
+                }
+                curve.addLine(to: CGPoint(x: last.x, y: base))
+                curve.closeSubpath()
+                context.fill(curve, with: shading)
+
+                var line = Path()
+                line.move(to: CGPoint(x: first.x, y: base))
+                line.addLine(to: CGPoint(x: last.x, y: base))
+                context.stroke(line, with: shading, style: StrokeStyle(lineWidth: 2, lineCap: .round))
             }
-            curve.addLine(to: CGPoint(x: last.x, y: base))
-            curve.closeSubpath()
-            context.fill(curve, with: shading)
-
-            var line = Path()
-            line.move(to: CGPoint(x: first.x, y: base))
-            line.addLine(to: CGPoint(x: last.x, y: base))
-            context.stroke(line, with: shading, style: StrokeStyle(lineWidth: 2, lineCap: .round))
         }
         .overlay(alignment: .topLeading) {
             Circle()

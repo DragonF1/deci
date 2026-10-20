@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicWaveTests.swift
 // The hover card's wave progress: where the playhead sits for a position, which time a click means, and the smooth
-// played curve built from the per-slice levels. Pure geometry, nothing is drawn.
+// played curve built from the per-slice levels, with the ripple that runs along it while the song plays. Pure geometry,
+// nothing is drawn.
 
 import CoreGraphics
 import Foundation
@@ -207,6 +208,61 @@ struct MusicWaveTests {
     func profileBounded() {
         let samples = MusicWave.profile(levels: levels, progress: 1, width: 5000)
         #expect(samples.count <= 2500)
+    }
+
+    // MARK: - Ripple
+
+    @Test("the ripple keeps the full height on a crest and takes the depth off in a trough")
+    func rippleRange() {
+        let crest = MusicWave.ripple(atX: 0, phase: 0)
+        let trough = MusicWave.ripple(atX: MusicWave.rippleWavelength / 2, phase: 0)
+        #expect(abs(crest - 1) < 1e-9)
+        #expect(abs(trough - (1 - MusicWave.rippleDepth)) < 1e-9)
+        for x in stride(from: 0.0, through: 60, by: 0.7) {
+            let value = MusicWave.ripple(atX: x, phase: 1.3)
+            #expect(value >= 1 - MusicWave.rippleDepth - 1e-9 && value <= 1 + 1e-9)
+        }
+    }
+
+    @Test("as the phase grows the crests travel right, toward the playhead")
+    func rippleMovesRight() {
+        let shift = MusicWave.rippleWavelength / 4
+        let quarterTurn = Double.pi / 2
+        for x in [0.0, 5, 13.5, 40] {
+            #expect(abs(MusicWave.ripple(atX: x, phase: 0) - MusicWave.ripple(atX: x + shift, phase: quarterTurn)) < 1e-9)
+        }
+    }
+
+    @Test("the phase moves with time and stays inside one turn")
+    func ripplePhase() {
+        #expect(MusicWave.ripplePhase(at: 0) == 0)
+        #expect(MusicWave.ripplePhase(at: 0.1) != MusicWave.ripplePhase(at: 0.2))
+        for time in [0.5, 12.25, 813_000_000.75] {
+            let phase = MusicWave.ripplePhase(at: time)
+            #expect(phase.isFinite && abs(phase) < 2 * .pi)
+        }
+        #expect(MusicWave.ripplePhase(at: .nan) == 0)
+        #expect(MusicWave.ripplePhase(at: .infinity) == 0)
+    }
+
+    @Test("a non-number x or phase leaves the curve at full height")
+    func rippleDirty() {
+        #expect(MusicWave.ripple(atX: .nan, phase: 0) == 1)
+        #expect(MusicWave.ripple(atX: 3, phase: .infinity) == 1)
+    }
+
+    @Test("the rippled curve changes with the phase, stays in the box and still ends in a point")
+    func rippledProfile() {
+        let still = MusicWave.profile(levels: levels, progress: 0.7, width: width)
+        let a = MusicWave.profile(levels: levels, progress: 0.7, width: width, phase: 0)
+        let b = MusicWave.profile(levels: levels, progress: 0.7, width: width, phase: 1.5)
+        #expect(a.count == still.count && b.count == still.count)
+        #expect(a.map(\.height) != b.map(\.height))
+        #expect(a.map(\.x) == still.map(\.x))
+        for (sample, flat) in zip(b, still) {
+            #expect(sample.height >= 0 && sample.height <= flat.height + 1e-9)
+        }
+        #expect(b.last?.height == 0)
     }
 
     // MARK: - Gradient

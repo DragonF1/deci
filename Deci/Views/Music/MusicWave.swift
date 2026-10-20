@@ -27,6 +27,12 @@ nonisolated enum MusicWave {
     /// shape as the playhead moves past it.
     static let sampleStep: Double = 2
 
+    /// The ripple that runs along the played curve while the song plays: crests this far apart, each taking this share
+    /// off the height at its lowest, travelling toward the playhead at `rippleSpeed` radians a second.
+    static let rippleWavelength: Double = 22
+    static let rippleDepth: Double = 0.4
+    static let rippleSpeed: Double = 2 * .pi * 0.9
+
     /// A point of the played curve: its x and how high it rises above the baseline.
     struct Sample: Equatable, Sendable {
         let x: Double
@@ -66,10 +72,27 @@ nonisolated enum MusicWave {
         return t * t * (3 - 2 * t)
     }
 
+    // MARK: - Ripple
+
+    /// The ripple's phase at a moment: it grows with time, wrapped to one turn so it stays small.
+    static func ripplePhase(at time: TimeInterval) -> Double {
+        guard time.isFinite else { return 0 }
+        return (time * rippleSpeed).truncatingRemainder(dividingBy: 2 * .pi)
+    }
+
+    /// The share of its height the curve keeps at `x` for a phase: 1 on a crest, 1 less `rippleDepth` in a trough. A
+    /// larger phase moves the crests right, toward the playhead.
+    static func ripple(atX x: Double, phase: Double) -> Double {
+        guard x.isFinite, phase.isFinite else { return 1 }
+        let angle = 2 * .pi * x / rippleWavelength - phase
+        return 1 - rippleDepth * (0.5 - 0.5 * cos(angle))
+    }
+
     /// The played part of the wave: samples from the left inset to the playhead, which is where the curve ends in a
-    /// point. The levels are spread over the whole song, so the shape under any x does not change as the song plays.
-    /// Nothing is played at progress 0, so there is nothing to draw.
-    static func profile(levels: [Double], progress: Double, width: Double) -> [Sample] {
+    /// point. The levels are spread over the whole song, so the shape under any x does not change as the song plays;
+    /// a `phase` lays the moving ripple over it, and nil leaves it still. Nothing is played at progress 0, so there is
+    /// nothing to draw.
+    static func profile(levels: [Double], progress: Double, width: Double, phase: Double? = nil) -> [Sample] {
         guard progress.isFinite, progress > 0, trackSpan(width: width) > 0 else { return [] }
         let end = playheadX(progress: progress, width: width)
         guard end > inset else { return [] }
@@ -80,7 +103,8 @@ nonisolated enum MusicWave {
         func sample(at x: Double) -> Sample {
             let t = min(max((x - inset) / span, 0), 1)
             let level = curve(clean, at: t * lastIndex)
-            return Sample(x: x, height: maxAmplitude * level * taper(distanceToPlayhead: end - x))
+            let swell = phase.map { ripple(atX: x, phase: $0) } ?? 1
+            return Sample(x: x, height: maxAmplitude * level * swell * taper(distanceToPlayhead: end - x))
         }
 
         var samples = [sample(at: inset)]
