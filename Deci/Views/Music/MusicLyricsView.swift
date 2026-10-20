@@ -116,21 +116,25 @@ private struct MusicLyricsWaitView: View {
     }
 }
 
+/// How far the synced list dissolves at its top and its bottom. The list is padded by the same amounts, so at either
+/// end the first and the last line sit clear of the fade and the scroll stops there.
+private enum MusicLyricsEdge {
+    static let topFade: CGFloat = 24
+    static let bottomFade: CGFloat = 32
+}
+
 private extension View {
     /// Fades the top and the bottom of a scrolling list, so a line cut by the edge does not look clipped: clear at the
-    /// edges, opaque from 16 to 82 percent of the height.
+    /// edges, opaque past `MusicLyricsEdge`'s fades.
     func lyricsEdgeFade() -> some View {
         mask(
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0),
-                    .init(color: .black, location: 0.16),
-                    .init(color: .black, location: 0.82),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: MusicLyricsEdge.topFade)
+                Rectangle().fill(.black)
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: MusicLyricsEdge.bottomFade)
+            }
         )
     }
 }
@@ -292,11 +296,9 @@ private struct MusicSyncedLyricsList: View {
     var body: some View {
         ScrollView {
             // A plain stack: lyrics are a few dozen lines, and a lazy one re-measures rows as they scroll in. The
-            // spacers at both ends are the part of the visible height above and below the anchor, so the first
-            // and the last line can reach it too instead of stopping where the scroll runs out.
+            // padding at both ends is only the edge fade, so the scroll stops at the first and the last line: early
+            // lines sit above the anchor until the list can move, and the last ones settle at the foot.
             VStack(spacing: 0) {
-                Color.clear
-                    .containerRelativeFrame(.vertical) { height, _ in height * MusicLyricScroll.anchorFraction }
                 ForEach(lines.indices, id: \.self) { index in
                     MusicLyricRow(
                         text: lines[index].text,
@@ -313,9 +315,9 @@ private struct MusicSyncedLyricsList: View {
                     .id(index)
                     .lyricsRowFrame(index, to: driver)
                 }
-                Color.clear
-                    .containerRelativeFrame(.vertical) { height, _ in height * (1 - MusicLyricScroll.anchorFraction) }
             }
+            .padding(.top, MusicLyricsEdge.topFade)
+            .padding(.bottom, MusicLyricsEdge.bottomFade)
             .scrollTargetLayout()
             .lyricsScrollDriven(by: driver)
         }
