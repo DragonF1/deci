@@ -340,16 +340,13 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var accountMenuBody = (try? MusicFixtures.data("account-menu.json")) ?? Data()
         var accountMenuStatus = 200
         var accountMenuHeaders: [String: String] = [:]
-        /// The song actions: the add-to-playlist picker's list, the playlist edit and the feedback call.
+        /// The song actions: the add-to-playlist picker's list and the playlist edit.
         var addToPlaylistBody = (try? MusicFixtures.data("add-to-playlist-options.json")) ?? Data()
         var addToPlaylistStatus = 200
         var addToPlaylistHeaders: [String: String] = [:]
         var editPlaylistBody = Data(#"{"status":"STATUS_SUCCEEDED","playlistEditResults":[]}"#.utf8)
         var editPlaylistStatus = 200
         var editPlaylistHeaders: [String: String] = [:]
-        var feedbackBody = Data(#"{"feedbackResponses":[{"isProcessed":true}]}"#.utf8)
-        var feedbackStatus = 200
-        var feedbackHeaders: [String: String] = [:]
         var playerBody = (try? MusicFixtures.data("player-ok.json")) ?? Data()
         var playerStatus = 200
         var playerHeaders: [String: String] = [:]
@@ -418,8 +415,6 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
             return HTTPResponse(statusCode: config.addToPlaylistStatus, headers: config.addToPlaylistHeaders, data: config.addToPlaylistBody)
         case ("music.youtube.com", "/youtubei/v1/browse/edit_playlist"):
             return HTTPResponse(statusCode: config.editPlaylistStatus, headers: config.editPlaylistHeaders, data: config.editPlaylistBody)
-        case ("music.youtube.com", "/youtubei/v1/feedback"):
-            return HTTPResponse(statusCode: config.feedbackStatus, headers: config.feedbackHeaders, data: config.feedbackBody)
         case ("music.youtube.com", "/youtubei/v1/player"):
             return HTTPResponse(statusCode: config.playerStatus, headers: config.playerHeaders, data: config.playerBody)
         case ("music.youtube.com", _) where url.path.hasSuffix("/base.js"):

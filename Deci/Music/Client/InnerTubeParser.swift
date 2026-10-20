@@ -191,8 +191,7 @@ enum InnerTubeParser {
             thumbnailURL: thumbnailURL(in: renderer),
             artistLinks: subtitle.artistLinks,
             albumBrowseId: subtitle.albumBrowseId ?? laterColumnAlbum.flatMap(albumBrowseId(in:)) ?? options.albumBrowseId,
-            playlistSetVideoId: options.setVideoId ?? string(path(renderer, "playlistItemData", "playlistSetVideoId")),
-            listenAgainPin: options.pin
+            playlistSetVideoId: options.setVideoId ?? string(path(renderer, "playlistItemData", "playlistSetVideoId"))
         )
     }
 
@@ -351,8 +350,7 @@ enum InnerTubeParser {
             durationSeconds: duration(of: runs(renderer["lengthText"])),
             thumbnailURL: largestThumbnailURL(in: renderer),
             artistLinks: artistLinks(in: segments.first ?? []),
-            albumBrowseId: albumSegment.flatMap(albumBrowseId(in:)) ?? options.albumBrowseId,
-            listenAgainPin: options.pin
+            albumBrowseId: albumSegment.flatMap(albumBrowseId(in:)) ?? options.albumBrowseId
         )
     }
 

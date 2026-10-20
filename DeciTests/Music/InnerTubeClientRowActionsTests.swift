@@ -1,6 +1,6 @@
 // DeciTests/Music/InnerTubeClientRowActionsTests.swift
 // The song-action calls of the InnerTube client against the recording fake transport: the add-to-playlist picker,
-// the playlist add and remove edits, and the pin feedback. Request bodies, auth headers, and how each failure maps.
+// and the playlist add and remove edits. Request bodies, auth headers, and how each failure maps.
 
 import Foundation
 import Testing
@@ -11,7 +11,6 @@ import Testing
 struct InnerTubeClientRowActionsTests {
     private static let optionsPath = "/youtubei/v1/playlist/get_add_to_playlist"
     private static let editPath = "/youtubei/v1/browse/edit_playlist"
-    private static let feedbackPath = "/youtubei/v1/feedback"
 
     private func makeClient(
         _ youtube: FakeYouTube,
@@ -161,43 +160,6 @@ struct InnerTubeClientRowActionsTests {
         }
     }
 
-    // MARK: - Feedback
-
-    @Test("A pin posts the token in feedbackTokens, with the auth headers")
-    func feedbackRequestShape() async throws {
-        let fake = FakeYouTube()
-        try await makeClient(fake).sendFeedback(token: "token-1")
-
-        let request = try onlyRequest(fake, Self.feedbackPath)
-        #expect(request.method == "POST")
-        #expect(request.url.absoluteString == "https://music.youtube.com/youtubei/v1/feedback?prettyPrint=false")
-        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH 1800000000_") == true)
-        #expect(request.headers["Cookie"]?.contains("SAPISID=sapisid-secret") == true)
-        let body = FakeYouTube.jsonBody(request)
-        #expect(body["feedbackTokens"] as? [String] == ["token-1"])
-    }
-
-    @Test("A blank token is refused before any request")
-    func feedbackBlankToken() async {
-        let fake = FakeYouTube()
-        await #expect(throws: MusicError.self) { try await makeClient(fake).sendFeedback(token: "") }
-        #expect(fake.requests(path: Self.feedbackPath).isEmpty)
-    }
-
-    @Test("A feedback answer that is not processed, is empty, or has a string true is rejected")
-    func feedbackRejected() async {
-        let bodies = [
-            #"{"feedbackResponses":[{"isProcessed":false}]}"#,
-            "{}",
-            #"{"feedbackResponses":[]}"#,
-            #"{"feedbackResponses":[{"isProcessed":"true"}]}"#,
-        ]
-        for body in bodies {
-            let fake = FakeYouTube { $0.feedbackBody = Data(body.utf8) }
-            await #expect(throws: MusicError.rejected, "body \(body)") { try await makeClient(fake).sendFeedback(token: "token-1") }
-        }
-    }
-
     // MARK: - Signed out and HTTP errors
 
     @Test("Signed out: every song action fails with signedOut and touches no network")
@@ -209,7 +171,6 @@ struct InnerTubeClientRowActionsTests {
         await #expect(throws: MusicError.signedOut) {
             try await client.removeVideo("vid-1", setVideoId: "set-1", fromPlaylist: "PLfixtureMine")
         }
-        await #expect(throws: MusicError.signedOut) { try await client.sendFeedback(token: "token-1") }
         #expect(fake.requests.isEmpty)
     }
 
@@ -218,25 +179,21 @@ struct InnerTubeClientRowActionsTests {
         let expired = makeClient(FakeYouTube {
             $0.addToPlaylistStatus = 401
             $0.editPlaylistStatus = 401
-            $0.feedbackStatus = 401
         })
         await #expect(throws: MusicError.signedOut) { try await expired.addToPlaylistOptions(videoId: "vid-1") }
         await #expect(throws: MusicError.signedOut) { try await expired.addVideo("vid-1", toPlaylist: "PLfixtureMine") }
         await #expect(throws: MusicError.signedOut) {
             try await expired.removeVideo("vid-1", setVideoId: "set-1", fromPlaylist: "PLfixtureMine")
         }
-        await #expect(throws: MusicError.signedOut) { try await expired.sendFeedback(token: "token-1") }
 
         let broken = makeClient(FakeYouTube {
             $0.addToPlaylistStatus = 500
             $0.editPlaylistStatus = 503
-            $0.feedbackStatus = 429
         })
         await #expect(throws: MusicError.http(500)) { try await broken.addToPlaylistOptions(videoId: "vid-1") }
         await #expect(throws: MusicError.http(503)) { try await broken.addVideo("vid-1", toPlaylist: "PLfixtureMine") }
         await #expect(throws: MusicError.http(503)) {
             try await broken.removeVideo("vid-1", setVideoId: "set-1", fromPlaylist: "PLfixtureMine")
         }
-        await #expect(throws: MusicError.http(429)) { try await broken.sendFeedback(token: "token-1") }
     }
 }

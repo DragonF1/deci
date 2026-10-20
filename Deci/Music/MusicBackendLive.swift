@@ -107,10 +107,6 @@ actor MusicBackendLive: MusicBackend {
         try await client.removeVideo(videoId, setVideoId: setVideoId, fromPlaylist: playlistId)
     }
 
-    func sendFeedback(token: String) async throws {
-        try await client.sendFeedback(token: token)
-    }
-
     func reportHistory(_ ping: HistoryPing) async throws -> Int {
         try await client.reportHistory(ping)
     }

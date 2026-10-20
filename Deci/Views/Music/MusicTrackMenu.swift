@@ -6,7 +6,7 @@ import SwiftUI
 struct MusicTrackMenuHandler: Sendable {
     let actions: @MainActor (MusicTrack, MusicTrackContext) -> [MusicTrackAction]
     let perform: @MainActor (MusicTrackAction, MusicTrack, MusicTrackContext) -> Void
-    /// Whether the song is pinned to Listen again or to Home, for the badge on its cover.
+    /// Whether the song is pinned to Home, for the badge on its cover.
     let isPinned: @MainActor (MusicTrack) -> Bool
 }
 
@@ -14,23 +14,13 @@ private struct MusicTrackMenuKey: EnvironmentKey {
     static let defaultValue: MusicTrackMenuHandler? = nil
 }
 
-/// Pin / Unpin to Listen again and to Home for playlist, album and artist tiles and rows: which way a collection's
-/// Listen again toggle faces (nil when YouTube offers none), where it stands with Home (nil when it cannot be pinned
-/// there), and what a pick does. The Music tab sets it; outside it a tile has no such items.
+/// Pin / Unpin to Home for playlist, album and artist tiles and rows: where a collection stands with Home (nil when
+/// it cannot be pinned there), and what a pick does. The Music tab sets it; outside it a tile has no such items.
 struct MusicCollectionPinHandler: Sendable {
-    let pin: @MainActor (MusicCollection) -> MusicFeedbackToggle?
-    let toggle: @MainActor (MusicCollection) -> Void
     let homePin: @MainActor (MusicCollection) -> MusicHomePinState?
     let toggleHome: @MainActor (MusicCollection) -> Void
-    /// Whether the tile or row wears the pin badge: see `wearsPinBadge`.
+    /// Whether the tile or row is pinned to Home, so its cover wears the pin badge.
     let isPinned: @MainActor (MusicCollection) -> Bool
-
-    /// A collection pinned to Listen again or to Home. It does not need an Unpin to be on offer, so a pinned
-    /// collection YouTube gives no unpin token for still shows the badge.
-    @MainActor
-    static func wearsPinBadge(_ collection: MusicCollection, actions: MusicTrackActionsStore, home: MusicPinnedItems) -> Bool {
-        actions.isPinnedToListenAgain(collection) || home.isPinned(collection)
-    }
 }
 
 private struct MusicCollectionPinKey: EnvironmentKey {
@@ -56,17 +46,6 @@ extension EnvironmentValues {
     var musicCollectionPin: MusicCollectionPinHandler? {
         get { self[MusicCollectionPinKey.self] }
         set { self[MusicCollectionPinKey.self] = newValue }
-    }
-}
-
-/// The Listen again item of a playlist or album's right click menu, worded like the song menu's.
-struct MusicListenAgainPinItem: View {
-    let toggle: MusicFeedbackToggle
-    let action: () -> Void
-
-    var body: some View {
-        let item: MusicTrackAction = toggle.isPinned ? .unpinFromListenAgain : .pinToListenAgain
-        Button(item.title, action: action)
     }
 }
 

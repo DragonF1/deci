@@ -134,7 +134,7 @@ struct MusicSongRow: View {
 
     private var offeredActions: [MusicTrackAction] { menu?.actions(track, context) ?? [] }
 
-    /// Pinned to Listen again, as last left this session: the cover wears the pin badge.
+    /// Pinned to Home: the cover wears the pin badge.
     private var isPinned: Bool { menu?.isPinned(track) == true }
 
     private func perform(_ action: MusicTrackAction) {

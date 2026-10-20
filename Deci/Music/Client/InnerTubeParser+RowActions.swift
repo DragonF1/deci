@@ -1,8 +1,7 @@
 // Deci/Music/Client/InnerTubeParser+RowActions.swift
-// What a row's own menu offers for the song actions (go to album, remove from playlist, pin to Listen again, also
-// read off playlist and album tiles, rows and page headers),
+// What a row's own menu offers for the song actions (go to album, remove from playlist),
 // the page-level "can the user edit this playlist" check, the add-to-playlist picker's list, and how the
-// playlist edit and feedback responses say they worked.
+// playlist edit response says it worked.
 import Foundation
 
 extension InnerTubeParser {
@@ -13,14 +12,8 @@ extension InnerTubeParser {
         var albumBrowseId: String?
         /// The row's place in its playlist, from the menu's "Remove from playlist" item.
         var setVideoId: String?
-        /// The "Pin to Listen again" toggle.
-        var pin: MusicFeedbackToggle?
     }
 
-    /// The pin toggle's icons: "KEEP" is the pin item (shown while the song is not pinned), "KEEP_OFF" the unpin item.
-    /// Words change with the account's language and the icons do not, so the icon is what tells it from the other toggles.
-    private static let pinIcon = "KEEP"
-    private static let unpinIcon = "KEEP_OFF"
     private static let removeVideoAction = "ACTION_REMOVE_VIDEO"
 
     // MARK: - Row menu
@@ -29,17 +22,8 @@ extension InnerTubeParser {
         let items = menuItems(of: renderer)
         return RowOptions(
             albumBrowseId: items.lazy.compactMap(menuAlbumId(in:)).first,
-            setVideoId: items.lazy.compactMap(removeSetVideoId(in:)).first,
-            pin: items.lazy.compactMap(pinToggle(in:)).first
+            setVideoId: items.lazy.compactMap(removeSetVideoId(in:)).first
         )
-    }
-
-    /// A page header's pin toggle. The header nests its menu deeper than a row (inside its buttons), so every toggle
-    /// under it is tried; only the pin icons count.
-    static func headerPin(in header: [String: Any]) -> MusicFeedbackToggle? {
-        var toggles: [[String: Any]] = []
-        collect("toggleMenuServiceItemRenderer", in: header, into: &toggles)
-        return toggles.lazy.compactMap { pinToggle(in: ["toggleMenuServiceItemRenderer": $0]) }.first
     }
 
     private static func menuItems(of renderer: [String: Any]) -> [[String: Any]] {
@@ -73,25 +57,6 @@ extension InnerTubeParser {
             if let setVideoId = string(action["setVideoId"]) { return setVideoId }
         }
         return nil
-    }
-
-    /// The pin toggle. Which of its two endpoints pins depends on which item YouTube sent: the pin item's default
-    /// endpoint pins, the unpin item's toggled endpoint pins. A toggle with no feedback token at all is not offered.
-    private static func pinToggle(in item: [String: Any]) -> MusicFeedbackToggle? {
-        guard let toggle = item["toggleMenuServiceItemRenderer"] as? [String: Any] else { return nil }
-        let icon = string(path(toggle, "defaultIcon", "iconType")) ?? string(path(toggle, "icon", "iconType"))
-        let defaultToken = string(path(toggle, "defaultServiceEndpoint", "feedbackEndpoint", "feedbackToken"))
-        let toggledToken = string(path(toggle, "toggledServiceEndpoint", "feedbackEndpoint", "feedbackToken"))
-        let result: MusicFeedbackToggle
-        switch icon {
-        case pinIcon:
-            result = MusicFeedbackToggle(isPinned: bool(toggle["isToggled"]) ?? false, pinToken: defaultToken, unpinToken: toggledToken)
-        case unpinIcon:
-            result = MusicFeedbackToggle(isPinned: true, pinToken: toggledToken, unpinToken: defaultToken)
-        default:
-            return nil
-        }
-        return result.pinToken == nil && result.unpinToken == nil ? nil : result
     }
 
     // MARK: - Editable playlists
@@ -142,18 +107,5 @@ extension InnerTubeParser {
     static func playlistEditSucceeded(in data: Data) throws -> Bool {
         let root = try jsonObject(data, what: "playlist edit response")
         return string(root["status"]) == "STATUS_SUCCEEDED"
-    }
-
-    /// `feedback` answers one entry per token; the call worked when the first one is processed.
-    static func feedbackProcessed(in data: Data) throws -> Bool {
-        let root = try jsonObject(data, what: "feedback response")
-        let first = (root["feedbackResponses"] as? [Any])?.first as? [String: Any]
-        return bool(first?["isProcessed"]) == true
-    }
-
-    /// A real JSON boolean. The string "true" and the numbers 1 and 0 are not one.
-    private static func bool(_ value: Any?) -> Bool? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
-        return number.boolValue
     }
 }

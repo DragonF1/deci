@@ -23,7 +23,7 @@ nonisolated enum MusicHomeSectionStyle: Equatable {
         }
     }
 
-    /// The shelf the design calls Listen again keeps its tiles, so the pins made on it stay where the owner put them.
+    /// The shelf the design calls Listen again keeps its tiles, even when it holds songs only.
     static func isListenAgain(_ shelf: MusicShelf) -> Bool {
         shelf.title.localizedCaseInsensitiveContains("listen again")
     }
@@ -293,26 +293,18 @@ extension View {
 
 // MARK: - Tile menus
 
-/// The right click menu of a playlist, album or artist tile or row: "Pin to Listen again" where YouTube offers the
-/// toggle, and "Pin to Home" or "Unpin from Home" for anything Home can hold. With nothing to offer the tile gets no
-/// menu at all, as before.
+/// The right click menu of a playlist, album or artist tile or row: "Pin to Home" or "Unpin from Home" for anything
+/// Home can hold. With nothing to offer the tile gets no menu at all, as before.
 private struct MusicCollectionMenuModifier: ViewModifier {
     let collection: MusicCollection
     @Environment(\.musicCollectionPin) private var collectionPin
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        let listenAgain = collectionPin?.pin(collection)
-        let home = collectionPin?.homePin(collection)
-        if let collectionPin, listenAgain != nil || home != nil {
+        if let collectionPin, let home = collectionPin.homePin(collection) {
             content.contextMenu {
-                if let listenAgain {
-                    MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
-                }
-                if let home {
-                    Button(home.title) { collectionPin.toggleHome(collection) }
-                        .disabled(!home.isEnabled)
-                }
+                Button(home.title) { collectionPin.toggleHome(collection) }
+                    .disabled(!home.isEnabled)
             }
         } else {
             content

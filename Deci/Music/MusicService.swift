@@ -45,7 +45,7 @@ final class MusicService {
     let browse: MusicBrowseStore
     /// Synced lyrics of the playing track, for the lyrics panel.
     let lyrics: MusicLyricsStore
-    /// The song actions (save to playlist, remove from playlist, pin to Listen again) and their notice line.
+    /// The song actions (save to playlist, remove from playlist) and their notice line.
     let trackActions: MusicTrackActionsStore
     /// The artists, playlists, albums and songs pinned to the top of Home. Remembered across launches, and kept
     /// through sign-out and account switches: they belong to the app, not to an account.

@@ -23,26 +23,8 @@ struct MusicTrack: Sendable, Hashable, Identifiable {
     /// playlist items. Public playlists carry it too, so whether the user may edit the playlist is the page's
     /// `isEditable`, not this.
     var playlistSetVideoId: String?
-    /// The row menu's "Pin to Listen again" toggle, when YouTube offers one for this row.
-    var listenAgainPin: MusicFeedbackToggle?
 
     var id: String { videoId }
-}
-
-/// A two-state YouTube menu toggle that is sent as a feedback token: "Pin to Listen again" and its undo.
-/// YouTube hands out one token for each direction, so the toggle keeps both and which way it is facing.
-struct MusicFeedbackToggle: Sendable, Hashable {
-    var isPinned: Bool
-    let pinToken: String?
-    let unpinToken: String?
-
-    /// The token that moves the toggle to its other state, nil when YouTube sent none for that direction.
-    var nextToken: String? { isPinned ? unpinToken : pinToken }
-
-    /// The same toggle after the move succeeded.
-    func flipped() -> MusicFeedbackToggle {
-        MusicFeedbackToggle(isPinned: !isPinned, pinToken: pinToken, unpinToken: unpinToken)
-    }
 }
 
 /// One playlist the user can add a song to, from the "Save to playlist" picker.
@@ -189,8 +171,6 @@ struct MusicCollection: Sendable, Hashable, Identifiable {
     /// YouTube's own second line, e.g. "Album • Daft Punk • 2013" or "Playlist • 50 songs".
     let subtitle: String
     let thumbnailURL: URL?
-    /// The tile or row menu's "Pin to Listen again" toggle, when YouTube offers one (playlists and albums).
-    var listenAgainPin: MusicFeedbackToggle?
 
     var id: String { browseId }
 }
@@ -257,8 +237,6 @@ struct MusicBrowsePage: Sendable, Equatable {
     let shelves: [MusicShelf]
     /// Whether the user can change this playlist's songs (their own playlist, not Liked Music or an album).
     var isEditable = false
-    /// The header menu's "Pin to Listen again" toggle, when YouTube offers one for the page.
-    var listenAgainPin: MusicFeedbackToggle?
 }
 
 /// Who the session is signed in as, from YouTube's account menu. Shown on the Music tab's account card.
@@ -328,8 +306,6 @@ protocol MusicBackend: Sendable {
     func addToPlaylist(videoId: String, playlistId: String) async throws
     /// Removes one row of the playlist, named by its `setVideoId`. Throws `.rejected` when YouTube does not say it worked.
     func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws
-    /// Sends one feedback token (pin to or unpin from Listen again). Throws `.rejected` when it was not processed.
-    func sendFeedback(token: String) async throws
     /// Sends one history ping and returns the HTTP status YouTube answered with (200 or 204 when
     /// it took the ping). Throws on any other status, when signed out, or when the URL is not YouTube's.
     func reportHistory(_ ping: HistoryPing) async throws -> Int

@@ -107,8 +107,6 @@ actor FakeMusicBackend: MusicBackend {
     private var addToPlaylistGate: MusicTestGate?
     private var removeFromPlaylistError: (any Error)?
     private var removeFromPlaylistGate: MusicTestGate?
-    private var feedbackError: (any Error)?
-    private var feedbackGate: MusicTestGate?
 
     private(set) var radioSeeds: [String] = []
     private(set) var moreRadioCalls: [MoreRadioCall] = []
@@ -121,7 +119,6 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var playlistOptionsCalls: [String] = []
     private(set) var addToPlaylistCalls: [AddToPlaylistCall] = []
     private(set) var removeFromPlaylistCalls: [RemoveFromPlaylistCall] = []
-    private(set) var feedbackTokens: [String] = []
     private(set) var searchedQueries: [String] = []
     private(set) var searchedArtistQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
@@ -245,8 +242,6 @@ actor FakeMusicBackend: MusicBackend {
     func setAddToPlaylistGate(_ gate: MusicTestGate?) { addToPlaylistGate = gate }
     func setRemoveFromPlaylistError(_ error: (any Error)?) { removeFromPlaylistError = error }
     func setRemoveFromPlaylistGate(_ gate: MusicTestGate?) { removeFromPlaylistGate = gate }
-    func setFeedbackError(_ error: (any Error)?) { feedbackError = error }
-    func setFeedbackGate(_ gate: MusicTestGate?) { feedbackGate = gate }
 
     // MARK: MusicBackend
 
@@ -357,13 +352,6 @@ actor FakeMusicBackend: MusicBackend {
     func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws {
         removeFromPlaylistCalls.append(RemoveFromPlaylistCall(videoId: videoId, setVideoId: setVideoId, playlistId: playlistId))
         let gate = removeFromPlaylistGate, error = removeFromPlaylistError
-        if let gate { await gate.wait() }
-        if let error { throw error }
-    }
-
-    func sendFeedback(token: String) async throws {
-        feedbackTokens.append(token)
-        let gate = feedbackGate, error = feedbackError
         if let gate { await gate.wait() }
         if let error { throw error }
     }
@@ -520,19 +508,12 @@ nonisolated enum MusicSamples {
         artist: String = "Artist",
         seconds: Int? = 200,
         albumBrowseId: String? = nil,
-        setVideoId: String? = nil,
-        pin: MusicFeedbackToggle? = nil
+        setVideoId: String? = nil
     ) -> Deci.MusicTrack {
         var track = Deci.MusicTrack(videoId: id, title: title, artist: artist, album: nil, durationSeconds: seconds, thumbnailURL: nil)
         track.albumBrowseId = albumBrowseId
         track.playlistSetVideoId = setVideoId
-        track.listenAgainPin = pin
         return track
-    }
-
-    /// A pin toggle with both tokens, facing the given way.
-    static func pinToggle(isPinned: Bool = false, pin: String? = "pin-token", unpin: String? = "unpin-token") -> MusicFeedbackToggle {
-        MusicFeedbackToggle(isPinned: isPinned, pinToken: pin, unpinToken: unpin)
     }
 
     static func playlistOption(_ id: String, title: String? = nil, contains: Bool = false) -> MusicPlaylistOption {

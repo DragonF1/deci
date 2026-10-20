@@ -318,17 +318,6 @@ actor InnerTubeClient {
         try await editPlaylist(playlistId, action: action, what: "remove")
     }
 
-    /// Sends one feedback token (pin to or unpin from Listen again). The token is never logged.
-    func sendFeedback(token: String) async throws {
-        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
-        guard !token.isEmpty else { throw MusicError.parse("feedback has no token") }
-        let session = try await sessionOrFallback()
-        let data = try await post("feedback", session: session, body: ["feedbackTokens": [token]])
-        let processed = try InnerTubeParser.feedbackProcessed(in: data)
-        Self.log.info("feedback processed \(processed, privacy: .public)")
-        guard processed else { throw MusicError.rejected }
-    }
-
     /// One `browse/edit_playlist` call. The playlist id goes without the "VL" a browse id carries. Only whether it
     /// worked is logged, never an id.
     private func editPlaylist(_ playlistId: String, action: [String: Any], what: String) async throws {

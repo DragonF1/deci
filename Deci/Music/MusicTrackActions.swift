@@ -18,9 +18,7 @@ struct MusicTrackContext: Equatable, Sendable {
 enum MusicTrackAction: Hashable, Sendable {
     case saveToPlaylist
     case removeFromPlaylist
-    case pinToListenAgain
-    case unpinFromListenAgain
-    /// Pin to Home, Unpin from Home, or the refusal while Home is full. The pin is Deci's own, so it needs no token.
+    /// Pin to Home, Unpin from Home, or the refusal while Home is full. The pin is Deci's own.
     case pinHome(MusicHomePinState)
     case goToAlbum
     case goToArtist
@@ -29,8 +27,6 @@ enum MusicTrackAction: Hashable, Sendable {
         switch self {
         case .saveToPlaylist: "Save to playlist"
         case .removeFromPlaylist: "Remove from playlist"
-        case .pinToListenAgain: "Pin to Listen again"
-        case .unpinFromListenAgain: "Unpin from Listen again"
         case .pinHome(let state): state.title
         case .goToAlbum: "Go to album"
         case .goToArtist: "Go to artist"
@@ -56,7 +52,7 @@ enum MusicTrackAction: Hashable, Sendable {
 
     var group: Group {
         switch self {
-        case .saveToPlaylist, .pinToListenAgain, .unpinFromListenAgain, .pinHome: .library
+        case .saveToPlaylist, .pinHome: .library
         case .goToAlbum, .goToArtist: .navigate
         case .removeFromPlaylist: .remove
         }
@@ -66,13 +62,10 @@ enum MusicTrackAction: Hashable, Sendable {
 /// Which song actions a row offers. Pure rules, so the row, its context menu and the player column agree and the
 /// rules are tested without a view. An action shows only when it can work.
 enum MusicTrackActions {
-    /// In menu order: save, pin or unpin to Listen again, pin or unpin to Home, then go to album and go to artist, then
-    /// remove from playlist last. `home` is where the song stands with the Pinned row on Home; nil leaves the entry out.
+    /// In menu order: save, pin or unpin to Home, then go to album and go to artist, then remove from playlist last.
+    /// `home` is where the song stands with the Pinned row on Home; nil leaves the entry out.
     static func available(for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil) -> [MusicTrackAction] {
         var actions: [MusicTrackAction] = [.saveToPlaylist]
-        if let toggle = track.listenAgainPin, toggle.nextToken?.isEmpty == false {
-            actions.append(toggle.isPinned ? .unpinFromListenAgain : .pinToListenAgain)
-        }
         if let home { actions.append(.pinHome(home)) }
         if let album = track.albumBrowseId, !album.isEmpty, album != context.pageBrowseId {
             actions.append(.goToAlbum)

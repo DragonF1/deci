@@ -197,7 +197,7 @@ struct MusicLibraryView: View {
 struct MusicCollectionRow: View {
     let collection: MusicCollection
     var isLiked = false
-    /// Pinned to Listen again (a playlist or album) or to Home (an artist): the cover wears the pin badge.
+    /// Pinned to Home: the cover wears the pin badge.
     var isPinned = false
     let action: () -> Void
 

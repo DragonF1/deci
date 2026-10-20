@@ -53,15 +53,15 @@ struct MusicPageView: View {
                 .frame(maxHeight: .infinity, alignment: .top)
         case .loaded(let loaded):
             // A sorted playlist shows, and queues, its sorted songs once all of them are loaded.
-            loadedContent(page: browse.displayedPage(collection.browseId) ?? loaded, loaded: loaded)
+            loadedContent(page: browse.displayedPage(collection.browseId) ?? loaded)
         }
     }
 
-    private func loadedContent(page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
+    private func loadedContent(page: MusicBrowsePage) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 header(page: page)
-                actions(page: page, loaded: loaded)
+                actions(page: page)
 
                 if kind == .artist {
                     artistBody(page: page)
@@ -102,13 +102,13 @@ struct MusicPageView: View {
     // MARK: - Actions
 
     @ViewBuilder
-    private func actions(page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
-        let items = menuItems(page: page, loaded: loaded)
+    private func actions(page: MusicBrowsePage) -> some View {
+        let items = menuItems(page: page)
         let pills = MusicPagePills.pills(kind: kind, hasTracks: !page.tracks.isEmpty, hasMenuItems: !items.isEmpty)
         if !pills.isEmpty {
             HStack(spacing: MusicBrowseLayout.actionsGap) {
                 ForEach(pills, id: \.self) { pill in
-                    pillView(pill, page: page, loaded: loaded, items: items)
+                    pillView(pill, page: page, items: items)
                 }
             }
             .padding(.horizontal, MusicStyle.Spacing.page)
@@ -117,7 +117,7 @@ struct MusicPageView: View {
     }
 
     @ViewBuilder
-    private func pillView(_ pill: MusicPagePill, page: MusicBrowsePage, loaded: MusicBrowsePage, items: [MusicPageMenuItem]) -> some View {
+    private func pillView(_ pill: MusicPagePill, page: MusicBrowsePage, items: [MusicPageMenuItem]) -> some View {
         switch pill {
         case .play:
             MusicPlayPill(title: page.title) {
@@ -126,28 +126,23 @@ struct MusicPageView: View {
         case .shuffle:
             MusicShufflePill(title: page.title) { service.playShuffled(page) }
         case .more:
-            MusicPageMoreMenu(title: page.title, items: items) { perform($0, page: page, loaded: loaded) }
+            MusicPageMoreMenu(title: page.title, items: items) { perform($0, page: page) }
         }
     }
 
     // MARK: - Menu
 
-    /// What the "..." menu holds: the Listen again pin of the page, then Pin to Home. The Listen again pin is the
-    /// page's own toggle on YouTube Music, not Deci's Home; YouTube offers none for Liked Music and most mixes.
-    private func menuItems(page: MusicBrowsePage, loaded: MusicBrowsePage) -> [MusicPageMenuItem] {
-        let trackActions = service.trackActions
+    /// What the "..." menu holds: Pin to Home.
+    private func menuItems(page: MusicBrowsePage) -> [MusicPageMenuItem] {
         let pins = service.pinnedItems
         return MusicPagePills.menuItems(
             kind: kind,
-            listenAgainIsPinned: trackActions.listenAgainPin(for: loaded) == nil ? nil : trackActions.isPinnedToListenAgain(loaded),
             home: MusicPinnedItem(page: page, opener: collection).map { pins.state(for: $0) }
         )
     }
 
-    private func perform(_ item: MusicPageMenuItem, page: MusicBrowsePage, loaded: MusicBrowsePage) {
+    private func perform(_ item: MusicPageMenuItem, page: MusicBrowsePage) {
         switch item {
-        case .pinListenAgain:
-            service.trackActions.togglePin(loaded)
         case .pinHome:
             // The tile keeps the photo of the collection that opened this page: the square or round avatar.
             if let item = MusicPinnedItem(page: page, opener: collection) {

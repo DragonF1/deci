@@ -292,7 +292,7 @@ struct MusicSearchNavigationActionsTests {
         #expect(h.nav.showsPicker == false)
     }
 
-    // MARK: - Remove and pin
+    // MARK: - Remove and Pin to Home
 
     @Test("Remove from playlist reaches the store and takes the row off the page")
     func performRemove() async {
@@ -325,27 +325,16 @@ struct MusicSearchNavigationActionsTests {
         #expect(h.service.queue.tracks.map(\.videoId) == queued)
     }
 
-    @Test("Pin and Unpin reach the store")
-    func performPin() async {
-        let h = ActionNavHarness()
-        let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
-        h.nav.perform(.pinToListenAgain, for: track, in: .none)
-        #expect(await h.until { await h.backend.feedbackTokens == ["pin-token"] })
-        #expect(await h.until { h.nav.actions(for: track, in: .none).contains(.unpinFromListenAgain) })
-        h.nav.perform(.unpinFromListenAgain, for: track, in: .none)
-        #expect(await h.until { await h.backend.feedbackTokens == ["pin-token", "unpin-token"] })
-    }
-
-    @Test("The navigation's action list is the store's, so rows and the mini player agree")
+    @Test("The navigation's action list is the rules' list with the Home pin, so rows and the mini player agree")
     func actionsList() {
         let h = ActionNavHarness()
-        var track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture", pin: MusicSamples.pinToggle())
+        var track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture")
         track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
-        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinToListenAgain, .pinHome(.canPin), .goToAlbum, .goToArtist])
+        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist])
     }
 
-    @Test("Pin to Home works on a song YouTube gave no toggle for, and the menu then offers Unpin from Home")
-    func pinHomeWithoutToken() {
+    @Test("Pin to Home adds the song to Home, and the menu then offers Unpin from Home")
+    func pinHomeAndUnpin() {
         let h = ActionNavHarness()
         let track = MusicSamples.track("v1")
         #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
@@ -365,9 +354,10 @@ struct MusicSearchNavigationActionsTests {
     @Test("Pin to Home never reaches the account: nothing is sent to YouTube")
     func pinHomeSendsNothing() async {
         let h = ActionNavHarness()
-        h.nav.perform(.pinHome(.canPin), for: MusicSamples.track("v1", pin: MusicSamples.pinToggle()), in: .none)
+        h.nav.perform(.pinHome(.canPin), for: MusicSamples.track("v1"), in: .none)
         try? await Task.sleep(for: .milliseconds(40))
-        #expect(await h.backend.feedbackTokens.isEmpty)
+        #expect(await h.backend.addToPlaylistCalls.isEmpty)
+        #expect(await h.backend.removeFromPlaylistCalls.isEmpty)
         #expect(h.service.trackActions.notice == nil)
     }
 
@@ -393,41 +383,31 @@ struct MusicSearchNavigationActionsTests {
         #expect(h.nav.actions(for: fresh, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
     }
 
-    @Test("A Home pin and a Listen again pin of the same song are independent")
-    func pinHomeAndListenAgainIndependent() async {
-        let h = ActionNavHarness()
-        let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
-        h.nav.perform(.pinHome(.canPin), for: track, in: .none)
-        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinToListenAgain, .pinHome(.pinned)])
-
-        h.nav.perform(.pinToListenAgain, for: track, in: .none)
-        #expect(await h.until { h.nav.actions(for: track, in: .none).contains(.unpinFromListenAgain) })
-        #expect(h.service.pinnedItems.isPinned(track))
-    }
-
     // MARK: - Session
 
-    @Test("Signing out closes the save menu and clears the pin state")
+    @Test("Signing out closes the save menu and clears its line")
     func signOutResets() async {
         let h = ActionNavHarness()
-        let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
-        h.nav.perform(.pinToListenAgain, for: track, in: .none)
-        #expect(await h.until { h.nav.actions(for: track, in: .none).contains(.unpinFromListenAgain) })
+        let track = MusicSamples.track("v1")
+        await h.backend.setPlaylistOptions(videoId: "v1", [MusicSamples.playlistOption("PLone", title: "Road Trip")])
         h.nav.perform(.saveToPlaylist, for: track, in: .none)
+        #expect(await h.until { if case .loaded? = h.service.trackActions.picker?.load { true } else { false } })
+        h.service.trackActions.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        #expect(await h.until { h.service.trackActions.notice?.text == "Saved to Road Trip" })
         #expect(h.nav.showsPicker)
 
         h.service.signOut()
 
         #expect(h.nav.showsPicker == false)
         #expect(h.service.trackActions.notice == nil)
-        #expect(h.nav.actions(for: track, in: .none).contains(.pinToListenAgain))
     }
 
     @Test("A write that finds the session gone signs the service out")
     func expiredSignsOut() async {
         let h = ActionNavHarness()
-        await h.backend.setFeedbackError(MusicError.signedOut)
-        h.nav.perform(.pinToListenAgain, for: MusicSamples.track("v1", pin: MusicSamples.pinToggle()), in: .none)
+        await h.backend.setRemoveFromPlaylistError(MusicError.signedOut)
+        let row = MusicSamples.track("v1", setVideoId: "s1")
+        h.nav.perform(.removeFromPlaylist, for: row, in: MusicTrackContext(pageBrowseId: "VLPLfixtureMine", pageTitle: "Mine", pageIsEditable: true))
         #expect(await h.until { h.service.authState == .signedOut })
         #expect(h.service.trackActions.picker == nil)
     }
