@@ -1,20 +1,18 @@
 // Deci/Views/Music/MusicSpectrumView.swift
 import SwiftUI
 
-/// The bars of the spectrum and the playhead, drawn: 28 horizontal bars from the start of the song at the top to the
-/// end at the bottom. The accent is the animated part, so a new song's colour glides in with the rest of the column.
+/// The bars of the spectrum, drawn: 28 horizontal bars from the start of the song at the top to the end at the bottom.
+/// The accent runs down them as the song plays, each bar filling from its left end with a soft edge into the white.
+/// The accent and the position are the animated parts, so a new song's colour glides in with the rest of the column
+/// and a seek while paused slides the fill.
 struct MusicSpectrumCanvas: View, Animatable {
     /// The level of each bar.
     let levels: [Double]
-    /// How many bars are played, from the top.
-    let played: Int
-    /// The bar under the playhead, which takes the accent while the song plays.
-    var pulseIndex: Int?
-    /// The playhead line across the box.
-    let showsPlayhead: Bool
+    /// How far along the song is, 0...1.
+    var progress: Double
     /// The white of an unplayed bar.
     let unplayedOpacity: Double
-    /// The opacity of every bar: a paused song's dim, its playhead does not.
+    /// The opacity of every bar: a paused song's dim.
     var barsOpacity: Double = 1
     /// Every bar this wide, whatever its level (the empty state's flat bars).
     var fixedWidth: Double?
@@ -27,9 +25,7 @@ struct MusicSpectrumCanvas: View, Animatable {
 
     init(
         levels: [Double],
-        played: Int,
-        pulseIndex: Int? = nil,
-        showsPlayhead: Bool,
+        progress: Double,
         unplayedOpacity: Double,
         barsOpacity: Double = 1,
         fixedWidth: Double? = nil,
@@ -37,9 +33,7 @@ struct MusicSpectrumCanvas: View, Animatable {
         accent: MusicTint
     ) {
         self.levels = levels
-        self.played = played
-        self.pulseIndex = pulseIndex
-        self.showsPlayhead = showsPlayhead
+        self.progress = progress
         self.unplayedOpacity = unplayedOpacity
         self.barsOpacity = barsOpacity
         self.fixedWidth = fixedWidth
@@ -49,19 +43,22 @@ struct MusicSpectrumCanvas: View, Animatable {
         brightness = accent.brightness
     }
 
-    var animatableData: AnimatablePair<Double, AnimatablePair<Double, Double>> {
-        get { AnimatablePair(hue, AnimatablePair(saturation, brightness)) }
+    var animatableData: AnimatablePair<Double, AnimatablePair<Double, AnimatablePair<Double, Double>>> {
+        get { AnimatablePair(progress, AnimatablePair(hue, AnimatablePair(saturation, brightness))) }
         set {
-            hue = newValue.first
-            saturation = newValue.second.first
-            brightness = newValue.second.second
+            progress = newValue.first
+            hue = newValue.second.first
+            saturation = newValue.second.second.first
+            brightness = newValue.second.second.second
         }
     }
 
     var body: some View {
         let accent = Color(hue: hue, saturation: saturation, brightness: brightness)
         let thickness = MusicSpectrum.barThickness(height: height)
-        Canvas { [height] context, size in
+        let played = accent.opacity(barsOpacity)
+        let unplayed = Color.white.opacity(unplayedOpacity * barsOpacity)
+        Canvas { [height, progress] context, size in
             for (index, level) in levels.enumerated() {
                 let width = fixedWidth ?? MusicSpectrum.width(forLevel: level)
                 let rect = CGRect(
@@ -70,13 +67,22 @@ struct MusicSpectrumCanvas: View, Animatable {
                     width: width,
                     height: thickness
                 )
-                let isPlayed = index < played || index == pulseIndex
-                let color = isPlayed ? accent.opacity(barsOpacity) : Color.white.opacity(unplayedOpacity * barsOpacity)
-                context.fill(Path(roundedRect: rect, cornerRadius: thickness / 2), with: .color(color))
-            }
-            if showsPlayhead {
-                let line = CGRect(x: 0, y: MusicSpectrum.playheadY(playedCount: played, height: height), width: size.width, height: 1)
-                context.fill(Path(line), with: .color(Color.white.opacity(0.90)))
+                let path = Path(roundedRect: rect, cornerRadius: thickness / 2)
+                let fill = MusicSpectrum.fill(forBar: index, progress: progress)
+                if fill <= 0 {
+                    context.fill(path, with: .color(unplayed))
+                } else if fill >= 1 {
+                    context.fill(path, with: .color(played))
+                } else {
+                    // The bar being played: the accent up to the soft edge, the white past it.
+                    let edge = MusicSpectrum.fillEdgeX(minX: rect.minX, width: rect.width, fill: fill)
+                    let half = MusicSpectrum.fillEdge / 2
+                    context.fill(path, with: .linearGradient(
+                        Gradient(colors: [played, unplayed]),
+                        startPoint: CGPoint(x: edge - half, y: rect.midY),
+                        endPoint: CGPoint(x: edge + half, y: rect.midY)
+                    ))
+                }
             }
         }
         .frame(width: MusicSpectrum.boxWidth, height: height)
@@ -94,6 +100,7 @@ struct MusicSpectrumView: View {
     let spectrum: MusicSpectrumDriver
 
     @Environment(\.musicAccent) private var accent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The pointer's height in the box while it is over it.
     @State private var hoverY: Double?
     /// The finger's height while it is down, which lets go by itself when the drag is cancelled.
@@ -123,20 +130,20 @@ struct MusicSpectrumView: View {
         return spectrum.bars(for: track?.videoId ?? "")
     }
 
+    /// How long a seek while paused slides the fill. Playing, the driver's polls glide it instead.
+    private static let pausedSeekGlide: TimeInterval = 0.35
+
     var body: some View {
-        let played = state.showsProgress ? MusicSpectrum.playedCount(progress: progress) : 0
-        let pulses = state == .playing && spectrum.pulse != nil
         MusicSpectrumCanvas(
             levels: levels,
-            played: played,
-            pulseIndex: pulses ? spectrum.pulseIndex : nil,
-            showsPlayhead: state.showsPlayhead,
+            progress: progress,
             unplayedOpacity: unplayedOpacity,
             barsOpacity: state.barsOpacity,
             fixedWidth: state.isEmptyLayout ? MusicPlayerColumnState.emptyBarWidth : nil,
             height: height,
             accent: accent
         )
+        .animation(state == .paused && !reduceMotion ? .easeOut(duration: Self.pausedSeekGlide) : nil, value: progress)
         .frame(maxHeight: .infinity, alignment: .top)
         .onGeometryChange(for: Double.self) { max($0.size.height, MusicSpectrum.boxHeight) } action: { height = $0 }
         .overlay { preview }

@@ -50,14 +50,12 @@ nonisolated enum MusicPlayerColumnState: Equatable {
     /// The incoming song's cover is dimmed while it loads.
     var coverOpacity: Double { self == .loading ? 0.45 : 1 }
 
-    /// A paused song's bars dim; the playhead does not.
+    /// A paused song's bars dim.
     var barsOpacity: Double { self == .paused ? 0.55 : 1 }
 
     /// Whether the bars say anything about the song: played in the accent, the rest white. Loading and empty show them
     /// flat and unplayed.
     var showsProgress: Bool { self == .playing || self == .paused }
-
-    var showsPlayhead: Bool { showsProgress }
 
     /// How strongly the accent washes the top of the column.
     var washOpacity: Double { isEmptyLayout ? 0.05 : 0.16 }

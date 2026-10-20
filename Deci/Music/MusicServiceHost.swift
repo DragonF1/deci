@@ -1,4 +1,5 @@
 // Deci/Music/MusicServiceHost.swift
+import AppKit
 import Observation
 
 /// Created at app launch; builds the real `MusicService` (AVPlayer, backend, JavaScriptCore) only
@@ -103,7 +104,8 @@ final class MusicServiceHost {
             level: { [weak mixer = self.mixer] in mixer?.sampleSpectrumLevel() ?? 0 },
             position: { [weak service] in service?.player.livePosition() ?? 0 },
             duration: { [weak service] in service?.player.duration ?? 0 },
-            videoId: { [weak service] in service?.player.nowPlaying?.videoId }
+            videoId: { [weak service] in service?.player.nowPlaying?.videoId },
+            reduceMotion: { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
         )
     }
 

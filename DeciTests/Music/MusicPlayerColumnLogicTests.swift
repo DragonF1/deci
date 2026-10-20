@@ -75,24 +75,21 @@ struct MusicPlayerColumnStateTests {
         }
     }
 
-    @Test("loading dims the cover, and paused dims the bars but not the playhead")
+    @Test("loading dims the cover, and paused dims the bars")
     func dimming() {
         #expect(MusicPlayerColumnState.loading.coverOpacity == 0.45)
         #expect(MusicPlayerColumnState.playing.coverOpacity == 1)
         #expect(MusicPlayerColumnState.paused.barsOpacity == 0.55)
         #expect(MusicPlayerColumnState.playing.barsOpacity == 1)
-        #expect(MusicPlayerColumnState.paused.showsPlayhead)
     }
 
-    @Test("only a playing or paused song shows progress and a playhead")
+    @Test("only a playing or paused song shows progress")
     func progressStates() {
         for shown in [MusicPlayerColumnState.playing, .paused] {
             #expect(shown.showsProgress)
-            #expect(shown.showsPlayhead)
         }
         for hidden in [MusicPlayerColumnState.loading, .empty, .signedOut] {
             #expect(hidden.showsProgress == false)
-            #expect(hidden.showsPlayhead == false)
         }
     }
 

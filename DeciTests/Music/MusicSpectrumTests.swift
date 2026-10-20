@@ -109,7 +109,6 @@ struct MusicSpectrumGeometryTests {
         #expect(MusicSpectrum.barThickness(height: 400) == 4)
         #expect(MusicSpectrum.barY(27, height: 80) == MusicSpectrum.barY(27))
         #expect(MusicSpectrum.progress(atY: 95, height: height) == 0.5)
-        #expect(MusicSpectrum.playheadY(playedCount: 28, height: height) == height - 1)
         #expect(MusicSpectrum.previewLineY(atY: 500, height: height) == height - 1)
     }
 
@@ -147,19 +146,42 @@ struct MusicSpectrumGeometryTests {
         #expect(MusicSpectrum.playedCount(progress: .nan) == 0)
     }
 
-    @Test("the playhead sits at round(played x 3.78) - 1.5: 43.5 for the design's 12 of 28")
-    func playhead() {
-        #expect(MusicSpectrum.playheadY(playedCount: 12) == 43.5)
-        #expect(MusicSpectrum.playheadY(playedCount: 1) == 2.5)
-        #expect(MusicSpectrum.playheadY(playedCount: 14) == 51.5)
+    @Test("the bars above the position are full, the one it is on part way, the rest empty")
+    func fill() {
+        let progress = 12.5 / 28
+        #expect(MusicSpectrum.fill(forBar: 11, progress: progress) == 1)
+        #expect(abs(MusicSpectrum.fill(forBar: 12, progress: progress) - 0.5) < 1e-9)
+        #expect(MusicSpectrum.fill(forBar: 13, progress: progress) == 0)
+        #expect(MusicSpectrum.fill(forBar: 0, progress: 0) == 0)
+        #expect(MusicSpectrum.fill(forBar: 27, progress: 1) == 1)
+        #expect(MusicSpectrum.fill(forBar: 3, progress: 9) == 1)
+        #expect(MusicSpectrum.fill(forBar: 3, progress: .nan) == 0)
     }
 
-    @Test("the playhead stays inside the box at the start and the end")
-    func playheadStaysInside() {
-        #expect(MusicSpectrum.playheadY(playedCount: 0) == 0)
-        #expect(MusicSpectrum.playheadY(playedCount: 28) == 103)
-        #expect(MusicSpectrum.playheadY(playedCount: -3) == 0)
-        #expect(MusicSpectrum.playheadY(playedCount: 99) == 103)
+    @Test("the fill grows smoothly: a hundredth of a bar of song is a hundredth of a bar of colour, never a whole bar")
+    func fillIsContinuous() {
+        let totals = (0...2800).map { step in
+            (0..<28).reduce(0.0) { $0 + MusicSpectrum.fill(forBar: $1, progress: Double(step) / 2800) }
+        }
+        let steps = zip(totals.dropFirst(), totals).map { $0 - $1 }
+        #expect(steps.allSatisfy { abs($0 - 0.01) < 1e-6 })
+    }
+
+    @Test("the soft edge starts just before a bar and ends just past it, so an empty bar shows no colour, a full one no white")
+    func fillEdge() {
+        let half = MusicSpectrum.fillEdge / 2
+        #expect(MusicSpectrum.fillEdgeX(minX: 20, width: 100, fill: 0) + half == 20)
+        #expect(MusicSpectrum.fillEdgeX(minX: 20, width: 100, fill: 1) - half == 120)
+        #expect(MusicSpectrum.fillEdgeX(minX: 20, width: 100, fill: 0.5) == 70)
+        #expect(MusicSpectrum.fillEdgeX(minX: 20, width: 100, fill: .nan) + half == 20)
+    }
+
+    @Test("a glide covers a quarter of the way per poll and lands once it is close")
+    func glide() {
+        #expect(abs(MusicSpectrum.glided(shown: 0.2, target: 0.6) - 0.3) < 1e-12)
+        #expect(abs(MusicSpectrum.glided(shown: 0.6, target: 0.2) - 0.5) < 1e-12)
+        #expect(MusicSpectrum.glided(shown: 0.5, target: 0.50005) == 0.50005)
+        #expect(MusicSpectrum.glided(shown: .nan, target: 0.4) == 0.4)
     }
 }
 
@@ -409,6 +431,7 @@ struct MusicSpectrumDriverTests {
         var position: TimeInterval = 0
         var duration: TimeInterval = 200
         var videoId: String? = "song"
+        var reduceMotion = false
         var polls = 0
     }
 
@@ -417,7 +440,8 @@ struct MusicSpectrumDriverTests {
             level: { feed.polls += 1; return feed.level },
             position: { feed.position },
             duration: { feed.duration },
-            videoId: { feed.videoId }
+            videoId: { feed.videoId },
+            reduceMotion: { feed.reduceMotion }
         ))
     }
 
@@ -501,6 +525,38 @@ struct MusicSpectrumDriverTests {
         feed.videoId = nil
         driver.tick()
         #expect(driver.progress == nil)
+    }
+
+    @Test("a seek glides the fill to the new position over a few polls instead of jumping")
+    func seekGlides() {
+        let feed = Feed()
+        let driver = driver(feed)
+        feed.position = 20
+        driver.tick()
+        #expect(driver.progress == 0.1)
+        feed.position = 120
+        driver.tick()
+        let first = driver.progress ?? 0
+        #expect(first > 0.1 && first < 0.6)
+        for _ in 0..<40 { driver.tick() }
+        #expect(driver.progress == 0.6)
+    }
+
+    @Test("a new song and Reduce Motion land on the position at once")
+    func snaps() {
+        let feed = Feed()
+        let driver = driver(feed)
+        feed.position = 180
+        driver.tick()
+        feed.videoId = "next"
+        feed.position = 0
+        driver.tick()
+        #expect(driver.progress == 0)
+
+        feed.reduceMotion = true
+        feed.position = 100
+        driver.tick()
+        #expect(driver.progress == 0.5)
     }
 
     @Test("resting clears the pulse, so a paused song shows its bars at rest")

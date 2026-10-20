@@ -34,9 +34,6 @@ nonisolated enum MusicSpectrum {
     /// The shortest a bar gets, as a level. Levels run from here to 1.
     static let minLevel: Double = 0.08
 
-    /// The playhead's step per bar in the design, which differs a hair from `pitch`.
-    private static let playheadStep: Double = 3.78
-
     // MARK: - The seeded curve
 
     static let lcgModulus = 233_280
@@ -90,11 +87,41 @@ nonisolated enum MusicSpectrum {
         return min(max(Int(count), 0), barCount)
     }
 
-    /// The playhead line's top: round(played x 3.78) - 1.5, kept inside the box.
-    static func playheadY(playedCount: Int, height: Double = boxHeight) -> Double {
-        let height = max(height, boxHeight)
-        let y = (Double(playedCount) * playheadStep * height / boxHeight).rounded() - 1.5
-        return min(max(y, 0), height - 1)
+    // MARK: - The fill
+
+    /// How much of bar `index` is played, 0...1. The bars fill one after another, each from its left end across its
+    /// width, so the colour runs down the box as the song plays instead of stepping a bar at a time.
+    static func fill(forBar index: Int, progress: Double) -> Double {
+        guard progress.isFinite else { return 0 }
+        let played = min(max(progress, 0), 1) * Double(barCount)
+        return min(max(played - Double(index), 0), 1)
+    }
+
+    /// The soft edge between a bar's played colour and its unplayed white, in points.
+    static let fillEdge: Double = 10
+
+    /// The middle of the soft edge along a bar that starts at `minX`, is `width` wide and is `fill` played. It travels
+    /// from just before the bar's left end to just past its right, so an unplayed bar shows no colour and a played one
+    /// no white.
+    static func fillEdgeX(minX: Double, width: Double, fill: Double) -> Double {
+        let fill = fill.isFinite ? min(max(fill, 0), 1) : 0
+        return minX - fillEdge / 2 + fill * (width + fillEdge)
+    }
+
+    // MARK: - The glide
+
+    /// The share of the way left that one poll covers: a seek settles in about a third of a second at 30 polls a
+    /// second, and while the song plays the fill trails it by a few polls, too little to see.
+    static let glideRate = 0.25
+    /// Closer than this, as a fraction of the song, the shown position lands on the real one.
+    static let glideSnap = 1e-4
+
+    /// One poll of the shown position toward the song's real one, so a seek slides the fill there instead of jumping.
+    static func glided(shown: Double, target: Double) -> Double {
+        guard shown.isFinite, target.isFinite else { return target }
+        let gap = target - shown
+        guard abs(gap) > glideSnap else { return target }
+        return shown + gap * glideRate
     }
 
     // MARK: - Seeking
@@ -228,6 +255,8 @@ final class MusicSpectrumDriver {
         var position: @MainActor () -> TimeInterval
         var duration: @MainActor () -> TimeInterval
         var videoId: @MainActor () -> String?
+        /// Whether Reduce Motion is on: a seek then jumps.
+        var reduceMotion: @MainActor () -> Bool = { false }
 
         static let none = Sources(level: { 0 }, position: { 0 }, duration: { 0 }, videoId: { nil })
     }
@@ -240,7 +269,8 @@ final class MusicSpectrumDriver {
     /// The level of the bar under the playhead, smoothed; nil while the bars rest.
     private(set) var pulse: Double?
     private(set) var pulseIndex = 0
-    /// How far along the song is as of the last poll; nil while the bars rest.
+    /// How far along the song the fill shows, as of the last poll: the live position, reached by a glide after a seek.
+    /// nil while the bars rest.
     private(set) var progress: Double?
     private(set) var isActive = false
 
@@ -289,7 +319,12 @@ final class MusicSpectrumDriver {
         }
         let position = sources.position()
         let fraction = MusicTimeFormat.progress(current: position, duration: duration)
-        progress = fraction
+        // The first poll, a new song and Reduce Motion land on the position; otherwise the fill glides to it.
+        if let shown = progress, pulseVideoId == videoId, !sources.reduceMotion() {
+            progress = MusicSpectrum.glided(shown: shown, target: fraction)
+        } else {
+            progress = fraction
+        }
         let index = MusicSpectrumTrack.slice(atProgress: fraction)
         let mapped = MusicSpectrum.level(forRMS: heard)
 
