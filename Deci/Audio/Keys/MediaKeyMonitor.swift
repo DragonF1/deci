@@ -18,6 +18,23 @@ protocol MediaKeyIconFlashing: AnyObject {
     func flashDevice()
 }
 
+/// What the modifier keys held with a volume key mean: which step chord they pick, and the Shift and
+/// Option state the feedback pop sees. Under Command, Shift belongs to the chord, so it must not also
+/// invert the pop.
+struct VolumeKeyModifiers: Equatable {
+    let chord: VolumeStepChord
+    let feedbackShiftHeld: Bool
+    let optionHeld: Bool
+
+    init(flags: CGEventFlags) {
+        let command = flags.contains(.maskCommand)
+        let shift = flags.contains(.maskShift)
+        chord = .from(command: command, shift: shift)
+        feedbackShiftHeld = shift && !command
+        optionHeld = flags.contains(.maskAlternate)
+    }
+}
+
 /// Intercepts F10/F11/F12 via a `CGEventTap`, swallows them so the native HUD
 /// does not double-fire, and drives the default output device.
 @MainActor
@@ -222,7 +239,12 @@ final class MediaKeyMonitor {
     // MARK: - Event handling
 
     /// Applies a decoded `MediaKeyEvent` to the default output device.
-    func handle(_ event: MediaKeyEvent, shiftHeld: Bool = false, optionHeld: Bool = false) {
+    func handle(
+        _ event: MediaKeyEvent,
+        shiftHeld: Bool = false,
+        optionHeld: Bool = false,
+        chord: VolumeStepChord = .plain
+    ) {
         let volumeMonitor = audioEngine.deviceVolumeMonitor
         let deviceID = volumeMonitor.defaultDeviceID
         guard deviceID.isValid else {
@@ -246,13 +268,14 @@ final class MediaKeyMonitor {
                     shiftHeld: shiftHeld,
                     optionHeld: optionHeld
                 )
-            }
+            },
+            chord: chord
         )
     }
 
     /// `.ddc` tier coalesces repeats to an 80 ms floor; hardware/software pass them through.
-    /// Mute repeats are dropped upstream. Stepping operates on slider-position; HUD receives
-    /// the slider fraction so it always matches the popup device row.
+    /// Mute repeats are dropped upstream. Stepping operates on slider-position, by the percent set
+    /// for `chord`; HUD receives the slider fraction so it always matches the popup device row.
     func handleCore(
         event: MediaKeyEvent,
         deviceID: AudioDeviceID,
@@ -262,10 +285,11 @@ final class MediaKeyMonitor {
         currentMute: Bool,
         setVolume: (AudioDeviceID, Float) -> Void,
         setMute: (AudioDeviceID, Bool) -> Void,
-        playFeedback: (Float) -> Void = { _ in }
+        playFeedback: (Float) -> Void = { _ in },
+        chord: VolumeStepChord = .plain
     ) {
         let shouldShowHUD = !popupVisibility.isVisible
-        let sliderDelta = settingsManager.appSettings.volumeHotkeyStep.sliderDelta
+        let sliderDelta = settingsManager.appSettings.sliderDelta(for: chord)
         let currentSlider = VolumeMapping.sliderFraction(forSystemGain: currentVolume, tier: tier)
 
         switch event {
@@ -274,7 +298,7 @@ final class MediaKeyMonitor {
                 logger.debug("DDC repeat coalesced")
                 return
             }
-            let nextSlider = min(1.0, currentSlider + sliderDelta)
+            let nextSlider = VolumeMapping.snappedSliderStep(currentSlider + sliderDelta)
             let newVolume = VolumeMapping.systemGain(forSliderFraction: nextSlider, tier: tier)
             // Volume-up from muted unmutes (system HUD parity).
             if currentMute {
@@ -292,7 +316,7 @@ final class MediaKeyMonitor {
                 logger.debug("DDC repeat coalesced")
                 return
             }
-            let nextSlider = max(0, currentSlider - sliderDelta)
+            let nextSlider = VolumeMapping.snappedSliderStep(currentSlider - sliderDelta)
             let newVolume = VolumeMapping.systemGain(forSliderFraction: nextSlider, tier: tier)
             let willBeSilent = nextSlider <= 0.001
             // muted+audible → unmute; unmuted+silent → auto-mute (system HUD parity).
@@ -384,10 +408,12 @@ final class MediaKeyMonitor {
         guard let mediaEvent = decoder.decode(data1: data1) else { return false }
 
         hudController.swallowObserved()
+        let modifiers = VolumeKeyModifiers(flags: cgEvent.flags)
         handle(
             mediaEvent,
-            shiftHeld: cgEvent.flags.contains(.maskShift),
-            optionHeld: cgEvent.flags.contains(.maskAlternate)
+            shiftHeld: modifiers.feedbackShiftHeld,
+            optionHeld: modifiers.optionHeld,
+            chord: modifiers.chord
         )
         return true
     }

@@ -34,13 +34,39 @@ struct ShortcutsRegistryTests {
 
         registry.dispatch(.targetAppVolumeUp)
 
-        let nextSlider = sqrt(0.5) + 1.0 / 16.0
+        let nextSlider = sqrt(0.5) + 0.10
         let expected = Float(nextSlider * nextSlider)
         #expect(engine.setVolumeCalls.count == 1)
         #expect(engine.setVolumeCalls.first?.app.bundleID == "com.test.app")
         #expect(abs((engine.setVolumeCalls.first?.volume ?? 0) - expected) < 1e-5)
         #expect(hud.successCalls == 1)
         #expect(hud.failureCalls == 0)
+    }
+
+    @Test("App hotkeys step by the plain percent, not the Command or Command+Shift ones")
+    func dispatchUsesPlainStep() {
+        let settings = makeIsolatedSettings()
+        var app = settings.appSettings
+        app.volumeStepPercent = 20
+        app.volumeStepCommandPercent = 3
+        app.volumeStepCommandShiftPercent = 2
+        settings.appSettings = app
+        let engine = RecordingAudioEngine(apps: [makeAudioApp(id: 1, bundleID: "com.test.app")], initialVolume: 0.5)
+        let registry = makeRegistry(
+            settings: settings,
+            resolver: StubTargetResolver(target: "com.test.app"),
+            audioEngine: engine,
+            hud: RecordingHUDController()
+        )
+
+        registry.dispatch(.targetAppVolumeUp)
+        registry.dispatch(.targetAppVolumeDown)
+
+        // Up moves the slider by 0.20 from 0.5's slider position; down then undoes exactly that step.
+        let up = Float(pow(sqrt(0.5) + 0.20, 2))
+        #expect(engine.setVolumeCalls.count == 2)
+        #expect(abs((engine.setVolumeCalls.first?.volume ?? 0) - up) < 1e-5)
+        #expect(abs((engine.setVolumeCalls.last?.volume ?? 0) - 0.5) < 1e-4)
     }
 
     @Test("dispatch(.targetAppVolumeDown) clamps at 0")

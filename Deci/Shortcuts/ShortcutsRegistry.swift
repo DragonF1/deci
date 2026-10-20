@@ -100,7 +100,7 @@ final class ShortcutsRegistry {
 
     private func adjustTargetVolume(direction: Int) {
         guard let app = resolveTargetAudioApp() else { return }
-        let sliderDelta = settings.appSettings.volumeHotkeyStep.sliderDelta * Double(direction)
+        let sliderDelta = settings.appSettings.sliderDelta(for: .plain) * Double(direction)
 
         let currentGain = audioEngine.currentVolume(for: app)
         let currentSlider = VolumeMapping.gainToSlider(currentGain)

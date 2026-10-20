@@ -128,31 +128,43 @@ extension MenuBarPopupSize {
     }
 }
 
-// MARK: - Volume Hotkey Step Size
+// MARK: - Volume Step Chords
 
-enum VolumeHotkeyStep: String, Codable, CaseIterable, Identifiable, CustomStringConvertible {
-    case coarse
-    case normal
-    case fine
-    case extraFine
+/// The modifier chord held with the volume keys. Each chord has its own step size, edited in Settings.
+enum VolumeStepChord: String, CaseIterable, Identifiable, Sendable {
+    case plain
+    case command
+    case commandShift
 
     var id: String { rawValue }
 
-    var sliderDelta: Double {
+    /// Command+Shift is the finest chord; Shift alone, Option and Control keep the plain step.
+    static func from(command: Bool, shift: Bool) -> VolumeStepChord {
+        if command && shift { return .commandShift }
+        return command ? .command : .plain
+    }
+
+    /// Whole percent of the slider moved per press.
+    static let percentRange = 1...50
+
+    static func clampedPercent(_ percent: Int) -> Int {
+        min(max(percent, percentRange.lowerBound), percentRange.upperBound)
+    }
+
+    var defaultPercent: Int {
         switch self {
-        case .coarse:    return 1.0 / 8.0
-        case .normal:    return 1.0 / 16.0
-        case .fine:      return 1.0 / 32.0
-        case .extraFine: return 1.0 / 64.0
+        case .plain:        return 10
+        case .command:      return 5
+        case .commandShift: return 1
         }
     }
 
-    var description: String {
+    /// Settings row title: the keys that make up the chord.
+    var label: String {
         switch self {
-        case .coarse:    return "Coarse (12.5%)"
-        case .normal:    return "Normal (6.25%)"
-        case .fine:      return "Fine (3.13%)"
-        case .extraFine: return "Extra-Fine (1.56%)"
+        case .plain:        return "F11 / F12"
+        case .command:      return "⌘ F11 / F12"
+        case .commandShift: return "⌘⇧ F11 / F12"
         }
     }
 }

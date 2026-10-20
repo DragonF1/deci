@@ -137,6 +137,35 @@ struct VolumeMappingTierTests {
 
 // MARK: - BoostLevel
 
+@Suite("VolumeMapping: snappedSliderStep 1e-4 grid")
+struct VolumeMappingSnapTests {
+
+    @Test("Float residue on a whole percent snaps back to the exact grid value", arguments: [
+        (raw: 0.0099999, snapped: 0.01),
+        (raw: 0.0100001, snapped: 0.01),
+        (raw: 0.89999998, snapped: 0.9),
+        (raw: 0.1 + 1.49e-9, snapped: 0.1),
+    ])
+    func snapsResidue(_ c: (raw: Double, snapped: Double)) {
+        #expect(VolumeMapping.snappedSliderStep(c.raw) == c.snapped)
+    }
+
+    @Test("Result is clamped to 0...1", arguments: [
+        (raw: -0.5, snapped: 0.0),
+        (raw: -1e-9, snapped: 0.0),
+        (raw: 1.0000001, snapped: 1.0),
+        (raw: 3.0, snapped: 1.0),
+    ])
+    func clamps(_ c: (raw: Double, snapped: Double)) {
+        #expect(VolumeMapping.snappedSliderStep(c.raw) == c.snapped)
+    }
+
+    @Test("Values already on the grid are unchanged", arguments: [0.0, 0.0001, 0.01, 0.5, 0.9999, 1.0])
+    func gridValuesStay(value: Double) {
+        #expect(VolumeMapping.snappedSliderStep(value) == value)
+    }
+}
+
 @Suite("BoostLevel — Enumeration and cycling")
 struct BoostLevelTests {
 

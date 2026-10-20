@@ -452,6 +452,26 @@ struct DeviceVolumeStoredVolumeTests {
         #expect(DeviceVolumeMonitor.storedVolume(0.5, tier: .ddc) == 0.5)
     }
 
+    @Test("Hardware/DDC tolerate HAL readbacks a hair under 1% (0.0099 must not floor a 1% step to 0)",
+          arguments: [VolumeControlTier.hardware, .ddc])
+    func hardwareDdcFloorToleratesJustUnderOnePercent(tier: VolumeControlTier) {
+        #expect(DeviceVolumeMonitor.storedVolume(0.0099, tier: tier) == 0.0099)
+        #expect(DeviceVolumeMonitor.storedVolume(0.00995, tier: tier) == 0.00995)
+        #expect(DeviceVolumeMonitor.storedVolume(0.0098, tier: tier) == 0)
+        #expect(DeviceVolumeMonitor.storedVolume(0.0095, tier: tier) == 0)
+    }
+
+    @Test("flooredToSilence is the one floor behind both readback and write paths")
+    func flooredToSilenceBoundary() {
+        let floor = DeviceVolumeMonitor.silenceFloor
+        #expect(DeviceVolumeMonitor.flooredToSilence(floor) == floor)  // the floor itself is kept
+        #expect(DeviceVolumeMonitor.flooredToSilence(floor.nextDown) == 0)
+        #expect(DeviceVolumeMonitor.flooredToSilence(0) == 0)
+        #expect(DeviceVolumeMonitor.flooredToSilence(0.01) == 0.01)
+        #expect(DeviceVolumeMonitor.flooredToSilence(1) == 1)
+        #expect(floor < 0.01 && floor >= 0.0099)  // within 1e-4 of the old 1% cutoff, never above it
+    }
+
     @Test("Software tier is never floored — preserves sub-1% gain (issue #295)")
     func softwareNeverFloored() {
         #expect(DeviceVolumeMonitor.storedVolume(0.0039, tier: .software) == 0.0039)
@@ -463,10 +483,10 @@ struct DeviceVolumeStoredVolumeTests {
     /// Issue #295: pre-fix the < 0.01 floor zeroed software gain, so each step re-derived
     /// a 0 slider and froze. Mirrors `handleCore`'s slider-space step + `storedVolume`.
     @Test("Software volume steps up out of silence instead of freezing at 0",
-          arguments: [VolumeHotkeyStep.coarse, .normal, .fine, .extraFine])
-    func softwareStepRecoversFromZero(step: VolumeHotkeyStep) {
+          arguments: VolumeStepChord.allCases)
+    func softwareStepRecoversFromZero(chord: VolumeStepChord) {
         let tier = VolumeControlTier.software
-        let delta = step.sliderDelta
+        let delta = AppSettings().sliderDelta(for: chord)
         var stored: Float = 0
 
         let currentSlider = VolumeMapping.sliderFraction(forSystemGain: stored, tier: tier)
@@ -474,7 +494,7 @@ struct DeviceVolumeStoredVolumeTests {
         let newVolume = VolumeMapping.systemGain(forSliderFraction: nextSlider, tier: tier)
         stored = DeviceVolumeMonitor.storedVolume(newVolume, tier: tier)
 
-        #expect(stored > 0, "\(step) software step-up stuck at silence — issue #295 regression")
+        #expect(stored > 0, "\(chord) software step-up stuck at silence (issue #295 regression)")
     }
 }
 

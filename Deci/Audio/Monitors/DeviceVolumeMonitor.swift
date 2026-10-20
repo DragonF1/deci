@@ -342,10 +342,19 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         defaultInputDeviceUID = nil
     }
 
-    /// Sub-1% floor for hardware/DDC scalar readbacks → true silence (scalar 0.01 ≈ -99 dB,
-    /// empirically measured on built-in output). Software writes use `storedVolume` instead.
+    /// Hardware/DDC scalars below this are true silence (scalar 0.01 ≈ -99 dB, empirically measured
+    /// on built-in output). It sits 1e-4 under 0.01 so a readback a hair low (0.0099) keeps a 1% step
+    /// instead of flooring it to 0, which would leave the device at 0 while unmuted and stall the walk.
+    nonisolated static let silenceFloor: Float = 0.0099
+
+    /// Floors a hardware/DDC scalar below `silenceFloor` to exactly 0; anything else passes through.
+    nonisolated static func flooredToSilence(_ volume: Float) -> Float {
+        volume < silenceFloor ? 0 : volume
+    }
+
+    /// Floor for hardware/DDC scalar readbacks. Software writes use `storedVolume` instead.
     private func clampedVolume(_ volume: Float) -> Float {
-        volume < 0.01 ? 0 : volume
+        Self.flooredToSilence(volume)
     }
 
     /// Software gain rides the x² curve (`VolumeMapping`), so sub-1% is the bottom ~10%
@@ -356,7 +365,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         case .software:
             return volume
         case .hardware, .ddc:
-            return volume < 0.01 ? 0 : volume
+            return flooredToSilence(volume)
         }
     }
 

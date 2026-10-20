@@ -45,22 +45,3 @@ struct HUDPopupParityTests {
         #expect(hudFraction == popupSliderValue)
     }
 }
-
-@Suite("Volume hotkey step counts cover the full range")
-struct VolumeHotkeyStepCoverageTests {
-    @Test("Each step's N presses cover [0, 1] exactly", arguments: VolumeHotkeyStep.allCases)
-    func stepCoverage(step: VolumeHotkeyStep) {
-        let pressesToMax = Int(round(1.0 / step.sliderDelta))
-        var slider: Double = 0
-        for _ in 0..<pressesToMax {
-            slider = min(1.0, slider + step.sliderDelta)
-        }
-        #expect(abs(slider - 1.0) < 1e-9)
-    }
-
-    @Test("Normal step covers range in exactly 16 presses (Apple-native count preserved)")
-    func normalIs16Presses() {
-        let pressesToMax = Int(round(1.0 / VolumeHotkeyStep.normal.sliderDelta))
-        #expect(pressesToMax == 16)
-    }
-}

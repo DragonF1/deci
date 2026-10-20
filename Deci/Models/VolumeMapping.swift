@@ -62,4 +62,12 @@ enum VolumeMapping {
             return Float(max(0, min(1, fraction)))
         }
     }
+
+    /// Slider positions are stepped on a 0.0001 grid. Stored gain is a `Float`, so a slider re-derived
+    /// from it carries ~1e-8 of residue; left alone, a walk of whole-percent steps lands on 0.0099999
+    /// instead of 0.01 and the hardware silence floor then zeroes it. Snapping each step removes the
+    /// drift, and the result is clamped to 0...1.
+    static func snappedSliderStep(_ slider: Double) -> Double {
+        min(1, max(0, (slider * 1e4).rounded() / 1e4))
+    }
 }

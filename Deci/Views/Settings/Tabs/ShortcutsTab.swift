@@ -30,20 +30,38 @@ struct ShortcutsTab: View {
     // MARK: - Volume
 
     private var volumeSection: some View {
-        SettingsSection("Volume") {
-            SettingsRow(
-                "Volume Step",
-                description: "How much each keypress changes the volume. Applies to media keys, configured hotkeys, and arrow-key nav in the popup."
-            ) {
-                Picker("", selection: $settings.appSettings.volumeHotkeyStep) {
-                    ForEach(VolumeHotkeyStep.allCases) { step in
-                        Text(step.description).tag(step)
+        SettingsSection("Volume Steps") {
+            ForEach(Array(VolumeStepChord.allCases.enumerated()), id: \.element) { index, chord in
+                if index > 0 { SettingsRowDivider() }
+                SettingsRow(chord.label, description: description(for: chord)) {
+                    HStack(spacing: DesignTokens.Spacing.sm) {
+                        Text("\(settings.appSettings.stepPercent(for: chord))%")
+                            .font(DesignTokens.Typography.percentage)
+                            .monospacedDigit()
+                            .foregroundStyle(DesignTokens.Colors.textSecondary)
+                            .frame(width: DesignTokens.Dimensions.settingsPercentageWidth, alignment: .trailing)
+                        Stepper(chord.label, value: stepBinding(for: chord), in: VolumeStepChord.percentRange, step: 1)
+                            .labelsHidden()
+                            .controlSize(.small)
                     }
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .fixedSize()
             }
+        }
+    }
+
+    private func stepBinding(for chord: VolumeStepChord) -> Binding<Int> {
+        switch chord {
+        case .plain: $settings.appSettings.volumeStepPercent
+        case .command: $settings.appSettings.volumeStepCommandPercent
+        case .commandShift: $settings.appSettings.volumeStepCommandShiftPercent
+        }
+    }
+
+    private func description(for chord: VolumeStepChord) -> String {
+        switch chord {
+        case .plain: "Per press of the volume keys. Also used by app hotkeys and arrow keys in the popup."
+        case .command: "Step while holding Command."
+        case .commandShift: "Step while holding Command and Shift."
         }
     }
 

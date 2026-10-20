@@ -16,7 +16,7 @@ Control the volume of every app independently, boost quiet ones up to 4x, route 
 ### ⌨️ Keyboard & Media Keys
 - **Global Volume Hotkeys** — Bind custom keys for App Volume Up / Down / Mute
 - **Toggle Popup from Anywhere** — Global shortcut to toggle the menu bar extra
-- **Configurable Step Size** — Coarse, Normal, Fine, or Extra-Fine adjustment steps
+- **Configurable Step Size**: F11 / F12 step the volume 10% per press, 5% with ⌘ held, 1% with ⌘⇧ held; each step is editable in Settings (1% to 50%)
 - **Keyboard Navigation** — Arrow keys to navigate rows and adjust levels, M to mute, Esc to close
 
 ### 🔀 Multi-Device Audio Routing

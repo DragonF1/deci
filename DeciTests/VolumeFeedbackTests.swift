@@ -3,6 +3,7 @@
 // verified manually — it needs a real output device and a listener.
 import Testing
 import Foundation
+import CoreGraphics
 @testable import Deci
 
 @Suite("VolumeFeedback — shouldPlay modifier rule")
@@ -19,6 +20,55 @@ struct VolumeFeedbackShouldPlayTests {
     ])
     func decisionTable(_ c: (prefOn: Bool, shift: Bool, option: Bool, expected: Bool)) {
         #expect(VolumeFeedback.shouldPlay(prefOn: c.prefOn, shiftHeld: c.shift, optionHeld: c.option) == c.expected)
+    }
+}
+
+@Suite("VolumeKeyModifiers: chord and feedback modifiers from event flags")
+struct VolumeKeyModifiersTests {
+    @Test("Flags pick the step chord; Shift alone, Option and Control stay plain", arguments: [
+        (flags: CGEventFlags([]),                           chord: VolumeStepChord.plain),
+        (flags: CGEventFlags([.maskShift]),                 chord: VolumeStepChord.plain),
+        (flags: CGEventFlags([.maskAlternate]),             chord: VolumeStepChord.plain),
+        (flags: CGEventFlags([.maskControl]),               chord: VolumeStepChord.plain),
+        (flags: CGEventFlags([.maskShift, .maskAlternate]), chord: VolumeStepChord.plain),
+        (flags: CGEventFlags([.maskCommand]),               chord: VolumeStepChord.command),
+        (flags: CGEventFlags([.maskCommand, .maskAlternate]), chord: VolumeStepChord.command),
+        (flags: CGEventFlags([.maskCommand, .maskShift]),   chord: VolumeStepChord.commandShift),
+        (flags: CGEventFlags([.maskCommand, .maskShift, .maskAlternate]), chord: VolumeStepChord.commandShift),
+    ])
+    func chordFromFlags(_ c: (flags: CGEventFlags, chord: VolumeStepChord)) {
+        #expect(VolumeKeyModifiers(flags: c.flags).chord == c.chord)
+    }
+
+    @Test("Shift alone still reaches the feedback rule; under Command it does not")
+    func feedbackShift() {
+        #expect(VolumeKeyModifiers(flags: []).feedbackShiftHeld == false)
+        #expect(VolumeKeyModifiers(flags: [.maskShift]).feedbackShiftHeld == true)
+        #expect(VolumeKeyModifiers(flags: [.maskShift, .maskAlternate]).feedbackShiftHeld == true)
+        #expect(VolumeKeyModifiers(flags: [.maskCommand]).feedbackShiftHeld == false)
+        #expect(VolumeKeyModifiers(flags: [.maskCommand, .maskShift]).feedbackShiftHeld == false)
+    }
+
+    @Test("Option is passed through whether or not Command is held")
+    func feedbackOption() {
+        #expect(VolumeKeyModifiers(flags: []).optionHeld == false)
+        #expect(VolumeKeyModifiers(flags: [.maskAlternate]).optionHeld == true)
+        #expect(VolumeKeyModifiers(flags: [.maskCommand, .maskAlternate]).optionHeld == true)
+        #expect(VolumeKeyModifiers(flags: [.maskCommand, .maskShift]).optionHeld == false)
+    }
+
+    @Test("Command+Shift does not invert the pop; Shift alone still does", arguments: [true, false])
+    func popDecision(prefOn: Bool) {
+        func shouldPlay(_ flags: CGEventFlags) -> Bool {
+            let mods = VolumeKeyModifiers(flags: flags)
+            return VolumeFeedback.shouldPlay(prefOn: prefOn, shiftHeld: mods.feedbackShiftHeld, optionHeld: mods.optionHeld)
+        }
+        #expect(shouldPlay([]) == prefOn)
+        #expect(shouldPlay([.maskShift]) == !prefOn)                      // macOS convention kept
+        #expect(shouldPlay([.maskShift, .maskAlternate]) == prefOn)       // Option+Shift follows the preference
+        #expect(shouldPlay([.maskCommand]) == prefOn)
+        #expect(shouldPlay([.maskCommand, .maskShift]) == prefOn)         // Shift belongs to the chord here
+        #expect(shouldPlay([.maskCommand, .maskShift, .maskAlternate]) == prefOn)
     }
 }
 

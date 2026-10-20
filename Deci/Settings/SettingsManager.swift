@@ -43,7 +43,10 @@ nonisolated struct AppSettings: Codable, Equatable {
     // Media Keys & HUD
     var hudStyle: HUDStyle = .tahoe                // Visual style of the volume HUD
     var mediaKeyControlEnabled: Bool = true        // Intercept F10/F11/F12 to drive the default output device
-    var volumeHotkeyStep: VolumeHotkeyStep = .normal  // Slider-domain step per keypress; user-configurable
+    // Whole percent of the slider per press of the volume keys, by modifier chord; user-configurable
+    var volumeStepPercent: Int = VolumeStepChord.plain.defaultPercent
+    var volumeStepCommandPercent: Int = VolumeStepChord.command.defaultPercent
+    var volumeStepCommandShiftPercent: Int = VolumeStepChord.commandShift.defaultPercent
 
     // Global Hotkeys
     // Keyed by ShortcutAction.rawValue. Values mirror what KeyboardShortcuts persists in
@@ -89,7 +92,15 @@ nonisolated struct AppSettings: Codable, Equatable {
         loudnessEqualizationEnabled = try c.decodeIfPresent(Bool.self, forKey: .loudnessEqualizationEnabled) ?? false
         hudStyle = try c.decodeIfPresent(HUDStyle.self, forKey: .hudStyle) ?? .tahoe
         mediaKeyControlEnabled = try c.decodeIfPresent(Bool.self, forKey: .mediaKeyControlEnabled) ?? true
-        volumeHotkeyStep = try c.decodeIfPresent(VolumeHotkeyStep.self, forKey: .volumeHotkeyStep) ?? .normal
+        // An earlier build's volumeHotkeyStep key is ignored; these steps start from the new defaults.
+        // A hand-edited value of the wrong type (7.5, "loud") falls back to the default instead of failing
+        // the whole file, which would reset every setting.
+        volumeStepPercent = VolumeStepChord.clampedPercent(
+            (try? c.decodeIfPresent(Int.self, forKey: .volumeStepPercent)) ?? VolumeStepChord.plain.defaultPercent)
+        volumeStepCommandPercent = VolumeStepChord.clampedPercent(
+            (try? c.decodeIfPresent(Int.self, forKey: .volumeStepCommandPercent)) ?? VolumeStepChord.command.defaultPercent)
+        volumeStepCommandShiftPercent = VolumeStepChord.clampedPercent(
+            (try? c.decodeIfPresent(Int.self, forKey: .volumeStepCommandShiftPercent)) ?? VolumeStepChord.commandShift.defaultPercent)
         customShortcuts = try c.decodeIfPresent([String: ShortcutCodable].self, forKey: .customShortcuts) ?? [:]
         appearance = try c.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
         popupSize = try c.decodeIfPresent(MenuBarPopupSize.self, forKey: .popupSize) ?? .comfortable
@@ -119,6 +130,25 @@ nonisolated struct AppSettings: Codable, Equatable {
     /// Keys an earlier build wrote that this one only reads.
     private enum LegacyCodingKeys: String, CodingKey {
         case musicPinnedArtists
+    }
+}
+
+extension AppSettings {
+    /// Whole percent of the slider one press moves for this chord, always within `VolumeStepChord.percentRange`
+    /// (decode clamps too, but a programmatic write can still put the field out of range).
+    func stepPercent(for chord: VolumeStepChord) -> Int {
+        let raw: Int
+        switch chord {
+        case .plain:        raw = volumeStepPercent
+        case .command:      raw = volumeStepCommandPercent
+        case .commandShift: raw = volumeStepCommandShiftPercent
+        }
+        return VolumeStepChord.clampedPercent(raw)
+    }
+
+    /// The step in slider fraction (0...1) for this chord.
+    func sliderDelta(for chord: VolumeStepChord) -> Double {
+        Double(stepPercent(for: chord)) / 100.0
     }
 }
 
