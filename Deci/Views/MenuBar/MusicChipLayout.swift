@@ -1,12 +1,26 @@
 // Deci/Views/MenuBar/MusicChipLayout.swift
-// The Now playing chip in the menu bar: its measures, how a long title fades and the words around it. Pure numbers and
-// text, so the rules are unit tested; MusicChipRenderer draws them.
+// The Now playing chip in the menu bar: its measures, how wide the title's window is, when a title scrolls and the words
+// around it. Pure numbers and text, so the rules are unit tested; MusicChipContent and MusicChipView draw them.
 
 import Foundation
 
-/// An 18 pt pill: a 3 pt inset, the 12 pt round cover, a 5 pt gap, the title (12 pt semibold, at most 96 pt wide) and an
-/// 8 pt trailing inset. A title longer than 96 pt ends in a short fade to nothing, not an ellipsis, and nothing moves:
-/// the chip is drawn once for a song and the menu bar stays idle.
+/// What a title makes of the pill. Widths are whole points, so the status item does not shimmer between two sizes.
+nonisolated struct MusicChipGeometry: Equatable, Sendable {
+    /// The whole title set in the chip font.
+    var textWidth: Double
+    /// The part of the title that shows at rest: all of it up to `MusicChipLayout.maxCharacters`, else as wide as its
+    /// first characters.
+    var windowWidth: Double
+    /// The pill: its insets and cover around the window.
+    var pillWidth: Double
+    /// Whether the title is longer than its window and so scrolls (or, with Reduce Motion, ends in an ellipsis).
+    var scrolls: Bool
+}
+
+/// An 18 pt pill: a 3 pt inset, the 12 pt round cover, a 5 pt gap, the title (12 pt semibold) and an 8 pt trailing
+/// inset. The pill is as wide as the title it shows. A title of up to `maxCharacters` characters shows in full; a longer
+/// one gets a window as wide as its first `maxCharacters` characters and scrolls inside it, so the pill never grows past
+/// that.
 nonisolated enum MusicChipLayout {
     static let height: Double = 18
     static let cornerRadius: Double = 9
@@ -15,10 +29,9 @@ nonisolated enum MusicChipLayout {
     static let gap: Double = 5
     static let trailingInset: Double = 8
     static let titleFontSize: Double = 12
-    static let maxTitleWidth: Double = 96
 
-    /// How much of the title's end the fade takes.
-    static let fadeLength: Double = 14
+    /// The most characters of a title that show in full. A longer title scrolls.
+    static let maxCharacters = 20
 
     /// What a paused song's cover and title are drawn at.
     static let pausedAlpha: Double = 0.6
@@ -26,21 +39,54 @@ nonisolated enum MusicChipLayout {
     /// The title's left edge: after the inset, the cover and the gap.
     static let titleOriginX: Double = leadingInset + thumbnailSize + gap
 
-    /// The title's drawn width: as long as it is, up to the most it gets. A width that cannot be measured counts as none.
-    static func titleWidth(naturalTitleWidth: Double) -> Double {
-        guard !naturalTitleWidth.isNaN else { return 0 }
-        return min(max(naturalTitleWidth, 0), maxTitleWidth)
+    /// The room the status item leaves on each side of the pill when its width is set explicitly, for a button whose
+    /// own padding could not be read.
+    static let defaultItemPadding: Double = 6
+
+    /// The widest side padding a measurement may give; anything above it is a misreading.
+    static let maxItemPadding: Double = 14
+
+    /// What a title makes of the pill, measured by `measure` in the chip font. A width that cannot be measured counts
+    /// as none. The window is measured on the first `maxCharacters` characters only, so a long title's tail does not
+    /// widen it.
+    static func geometry(title: String, measure: (String) -> Double) -> MusicChipGeometry {
+        let fullWidth = usable(measure(title))
+        let isLong = title.count > maxCharacters
+        let prefixWidth = isLong ? min(usable(measure(String(title.prefix(maxCharacters)))), fullWidth) : fullWidth
+        let window = prefixWidth.rounded(.up)
+        return MusicChipGeometry(
+            textWidth: fullWidth.rounded(.up),
+            windowWidth: window,
+            pillWidth: pillWidth(windowWidth: window),
+            scrolls: scrolls(characterCount: title.count, textWidth: fullWidth, windowWidth: prefixWidth)
+        )
     }
 
-    /// The chip's width, in whole points so the status item does not shimmer between two sizes.
-    static func width(naturalTitleWidth: Double) -> Double {
-        (titleOriginX + titleWidth(naturalTitleWidth: naturalTitleWidth) + trailingInset).rounded(.up)
+    /// The pill's width, in whole points: the title's window and the pill's own insets.
+    static func pillWidth(windowWidth: Double) -> Double {
+        (titleOriginX + usable(windowWidth) + trailingInset).rounded(.up)
     }
 
-    /// Where, from the title's left edge, the fade begins; nil when the whole title fits and nothing fades.
-    static func fadeStart(naturalTitleWidth: Double) -> Double? {
-        guard !naturalTitleWidth.isNaN, naturalTitleWidth > maxTitleWidth else { return nil }
-        return maxTitleWidth - fadeLength
+    /// A title scrolls only when it has more characters than the max and its text is really wider than its window.
+    /// Widths that are not numbers never scroll.
+    static func scrolls(characterCount: Int, textWidth: Double, windowWidth: Double) -> Bool {
+        guard textWidth.isFinite, windowWidth.isFinite else { return false }
+        return characterCount > maxCharacters && textWidth > windowWidth
+    }
+
+    /// The status item's length for a pill: the pill and the item's padding on both sides.
+    static func itemLength(pillWidth: Double, itemPadding: Double) -> Double {
+        pillWidth + itemPadding * 2
+    }
+
+    /// The padding each side of an item has, read from an item that holds only an icon: what the icon leaves over,
+    /// halved, to the half point. Nil when the reading makes no sense (a button not laid out yet, a width that is not a
+    /// number), so the caller keeps its fallback.
+    static func measuredItemPadding(buttonWidth: Double, iconWidth: Double) -> Double? {
+        guard buttonWidth.isFinite, iconWidth.isFinite else { return nil }
+        let padding = (buttonWidth - iconWidth).rounded() / 2
+        guard padding >= 0, padding <= maxItemPadding else { return nil }
+        return padding
     }
 
     /// The strength the cover and the title are drawn at: full while the song plays, dimmed while it is paused.
@@ -57,7 +103,7 @@ nonisolated enum MusicChipLayout {
         return artistLine.isEmpty ? "Now playing" : artistLine
     }
 
-    /// What VoiceOver reads on the item: its name, the song and whether it plays.
+    /// What VoiceOver reads on the item: its name, the whole song title and whether it plays.
     static func accessibilityLabel(title: String, isPlaying: Bool) -> String {
         "\(MenuBarItemID.music.title), \(title), \(isPlaying ? "playing" : "paused")"
     }
@@ -66,6 +112,11 @@ nonisolated enum MusicChipLayout {
     /// The hover card is offered under the same rule.
     static func showsChip(style: MusicMenuBarStyle, isMusicShown: Bool, hasTrack: Bool) -> Bool {
         style == .chip && isMusicShown && hasTrack
+    }
+
+    /// A width that can be used: a finite number, never below zero. One that cannot be measured counts as none.
+    private static func usable(_ width: Double) -> Double {
+        width.isFinite ? max(width, 0) : 0
     }
 
     private static func singleLine(_ text: String) -> String {

@@ -1,20 +1,16 @@
 // Deci/Views/MenuBar/MusicMenuBarChipController.swift
 // Puts the Now playing chip on the Music status item's button, and takes it off again. Like MenuBarIconCoordinator it
-// owns the button's image: FluidMenuBarExtra sets it once and never touches it again. The chip is drawn only when the
+// owns the button's image: FluidMenuBarExtra sets it once and never touches it again. The chip is shown only when the
 // style is Now playing chip, the item is shown and a song is loaded; in every other case the button holds the icon it
-// started with, exactly as before.
+// started with, exactly as before. While the chip shows, the item has an explicit length that follows the title: a new
+// song makes it grow or shrink on the pill's own curve (MusicChipLengthAnimator), the pill and its content animate by
+// Core Animation (MusicChipView), and a title longer than the max scrolls.
 
 import AppKit
 import Observation
 
 @MainActor
 final class MusicMenuBarChipController {
-    /// What the button was last given, so a refresh that changes nothing touches nothing.
-    private struct Applied: Equatable {
-        var spec: MusicChipSpec
-        var thumbnailURL: URL?
-    }
-
     private let settings: SettingsManager
     private let musicHost: MusicServiceHost
     /// The Music item's own icon, put back whenever the chip is not on offer.
@@ -25,7 +21,14 @@ final class MusicMenuBarChipController {
 
     private var started = false
     private var stopped = false
-    private var applied: Applied?
+    /// What the chip was last given, so a refresh that changes nothing touches nothing.
+    private var applied: MusicChipSpec?
+    private var appliedGeometry: MusicChipGeometry?
+    private var chipView: MusicChipView?
+    private var lengthAnimator: MusicChipLengthAnimator?
+    /// What the item leaves on each side of an icon, read once from the button before the chip first takes it over.
+    private var measuredPadding: Double?
+    private var reduceMotionObserver: NSObjectProtocol?
     /// What the hover card was last told about the chip being on offer, so a refresh that changes nothing says nothing.
     private var eligibleSent = false
     /// Loading the cover of the current song (its colour and its small picture). Nothing runs while the style is Icon.
@@ -52,6 +55,8 @@ final class MusicMenuBarChipController {
         stopped = true
         popupWatcher.stop()
         cancelCoverLoad()
+        lengthAnimator?.cancel()
+        stopObservingReduceMotion()
         hoverCard.stop()
     }
 
@@ -92,9 +97,10 @@ final class MusicMenuBarChipController {
 
     // MARK: - Apply
 
-    /// Brings the button in line with the settings and the player. While the full popover is open a change of the
-    /// button's picture waits: FluidMenuBarExtra frames its window only when it opens, so a different width would shift
-    /// the item and leave the popover misaligned. The change is made when the popover closes (`ignoringPopup`).
+    /// Brings the button in line with the settings and the player. While the full popover is open a change that alters
+    /// the item's width waits: FluidMenuBarExtra frames its window only when it opens, so a different width would shift
+    /// the item and leave the popover misaligned. The change is made when the popover closes (`ignoringPopup`). A change
+    /// that keeps the width (play or pause, a title as wide as the last, a marquee) is made at once.
     private func refresh(ignoringPopup: Bool = false) {
         guard !stopped else { return }
         let style = settings.appSettings.musicMenuBarStyle
@@ -103,7 +109,7 @@ final class MusicMenuBarChipController {
         let hasTrack = musicHost.hasLoadedTrack && service?.authState == .signedIn
         let wantsChip = MusicChipLayout.showsChip(style: style, isMusicShown: isShown, hasTrack: hasTrack)
 
-        guard let button = MenuBarStatusItems.statusItem(for: .music)?.button else { return }
+        guard let item = MenuBarStatusItems.statusItem(for: .music), let button = item.button else { return }
 
         // The Icon style never gets past this: nothing is installed for it and nothing is told.
         if wantsChip != eligibleSent {
@@ -122,7 +128,7 @@ final class MusicMenuBarChipController {
                 return
             }
             releaseHold()
-            restoreIcon(on: button)
+            restoreIcon(on: button, item: item)
             return
         }
 
@@ -133,23 +139,123 @@ final class MusicMenuBarChipController {
             title: MusicChipLayout.displayTitle(title: track.title, artist: track.artist),
             isPlaying: player.isPlaying,
             tint: store.cachedTint(for: track.thumbnailURL) ?? MusicChipRenderer.accentFallbackTint(),
-            hasThumbnail: thumbnail != nil
+            hasThumbnail: thumbnail != nil,
+            coverURL: track.thumbnailURL,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         )
-        let next = Applied(spec: spec, thumbnailURL: track.thumbnailURL)
-        guard next != applied else {
+        let change = MusicChipMotion.change(from: applied, to: spec)
+        guard change != .none else {
             releaseHold()
             return
         }
-        guard ignoringPopup || !MusicPopupKeyWatcher.isPopupOpen else {
+        // Only a different title or look needs measuring; a play or pause keeps the title on screen.
+        let geometry: MusicChipGeometry
+        if change == .playback, let appliedGeometry {
+            geometry = appliedGeometry
+        } else {
+            geometry = MusicChipLayout.geometry(title: spec.title, measure: MusicChipRenderer.titleWidth)
+        }
+        let widthChanges = chipView == nil || appliedGeometry?.pillWidth != geometry.pillWidth
+        guard ignoringPopup || !MusicPopupKeyWatcher.isPopupOpen || !widthChanges else {
             holdUntilPopupCloses()
             return
         }
         releaseHold()
-        applied = next
+
+        let isInstall = chipView == nil
+        if isInstall {
+            install(on: button, item: item, pillWidth: geometry.pillWidth)
+        }
+        applied = spec
+        appliedGeometry = geometry
+
+        let duration = isInstall ? 0 : MusicChipMotion.widthChangeDuration(reduceMotion: spec.reduceMotion)
+        chipView?.show(spec: spec, geometry: geometry, thumbnail: thumbnail, change: change, widthDuration: duration)
+        if !isInstall, widthChanges {
+            lengthAnimator?.animate(to: geometry.pillWidth, duration: duration)
+        }
+        button.setAccessibilityLabel(MusicChipLayout.accessibilityLabel(title: spec.title, isPlaying: spec.isPlaying))
+    }
+
+    // MARK: - Install and remove
+
+    /// Takes the button's icon off and puts the chip view there, with the item at the pill's length. The icon fades into
+    /// the chip, as the swap of the button's picture did before.
+    private func install(on button: NSStatusBarButton, item: NSStatusItem, pillWidth: Double) {
+        let padding = itemPadding(for: button)
+        let animator = MusicChipLengthAnimator(item: item, button: button, itemPadding: padding)
+        lengthAnimator = animator
 
         fade(button)
-        button.image = MusicChipRenderer.image(for: spec, thumbnail: thumbnail)
-        button.setAccessibilityLabel(MusicChipLayout.accessibilityLabel(title: spec.title, isPlaying: spec.isPlaying))
+        button.image = nil
+        animator.set(pillWidth: pillWidth)
+        let view = MusicChipView(frame: button.bounds, scale: button.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2)
+        view.autoresizingMask = [.width, .height]
+        button.addSubview(view)
+        view.appear()
+        chipView = view
+        observeReduceMotion()
+    }
+
+    /// Back to the icon, only if the chip was put there: with the Icon style the button is never touched. The item goes
+    /// back to the length it sizes itself to.
+    private func restoreIcon(on button: NSStatusBarButton, item: NSStatusItem) {
+        guard applied != nil else { return }
+        applied = nil
+        appliedGeometry = nil
+        lengthAnimator?.cancel()
+        lengthAnimator = nil
+        stopObservingReduceMotion()
+        fade(button)
+        chipView?.removeFromSuperview()
+        chipView = nil
+        item.length = NSStatusItem.variableLength
+        button.image = iconImage
+        // Nil makes the button read the icon's own description again ("Deci Music").
+        button.setAccessibilityLabel(nil)
+    }
+
+    /// What the item leaves on each side of its icon. Read from the button while it still holds the icon, and kept once it
+    /// makes sense; the usual padding stands in until then.
+    private func itemPadding(for button: NSStatusBarButton) -> Double {
+        if let measuredPadding { return measuredPadding }
+        guard chipView == nil,
+              let padding = MusicChipLayout.measuredItemPadding(
+                  buttonWidth: Double(button.bounds.width),
+                  iconWidth: Double(iconImage.size.width)
+              )
+        else { return MusicChipLayout.defaultItemPadding }
+        measuredPadding = padding
+        return padding
+    }
+
+    private func fade(_ button: NSStatusBarButton) {
+        button.wantsLayer = true
+        let transition = CATransition()
+        transition.type = .fade
+        transition.duration = 0.18
+        transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        button.layer?.add(transition, forKey: "chipFade")
+    }
+
+    // MARK: - Reduce Motion
+
+    /// While the chip shows, a change of the Reduce Motion setting rebuilds the title (an ellipsis or a marquee) at once.
+    private func observeReduceMotion() {
+        guard reduceMotionObserver == nil else { return }
+        reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+    }
+
+    private func stopObservingReduceMotion() {
+        guard let reduceMotionObserver else { return }
+        NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
+        self.reduceMotionObserver = nil
     }
 
     // MARK: - While the popover is open
@@ -167,25 +273,6 @@ final class MusicMenuBarChipController {
 
     private func releaseHold() {
         popupWatcher.stop()
-    }
-
-    /// Back to the icon, only if the chip was put there: with the Icon style the button is never touched.
-    private func restoreIcon(on button: NSStatusBarButton) {
-        guard applied != nil else { return }
-        applied = nil
-        fade(button)
-        button.image = iconImage
-        // Nil makes the button read the icon's own description again ("Deci Music").
-        button.setAccessibilityLabel(nil)
-    }
-
-    private func fade(_ button: NSStatusBarButton) {
-        button.wantsLayer = true
-        let transition = CATransition()
-        transition.type = .fade
-        transition.duration = 0.18
-        transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        button.layer?.add(transition, forKey: "chipFade")
     }
 
     // MARK: - Cover
