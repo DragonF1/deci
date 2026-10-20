@@ -17,12 +17,6 @@ nonisolated enum MusicOutputLabel {
         let profile = profileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return profile.isEmpty ? device : device + " \u{00B7} " + profile
     }
-
-    /// What the hover card names as the output: the device alone, or "This Mac" when none is known.
-    static func cardName(deviceName: String?) -> String {
-        let device = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return device.isEmpty ? "This Mac" : device
-    }
 }
 
 /// What the Up next screen lists: the song in the player, the songs after it and where the queue came from. The songs

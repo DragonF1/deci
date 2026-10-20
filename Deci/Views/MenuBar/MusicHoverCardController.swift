@@ -139,7 +139,7 @@ final class MusicHoverCardController {
     // MARK: - The full popover
 
     /// The popover is key while it is open: a click opens it that way, and it resigns when it closes. That is the one
-    /// signal that also covers a click, the shortcut and "Open player". Any window changing key status is a cue to
+    /// signal that also covers a click, the shortcut and the save button. Any window changing key status is a cue to
     /// look at the Music popover's own; a change in some other window changes nothing.
     private func observePopup() {
         popupWatcher.start { [weak self] in self?.syncPopupKeyState() }
@@ -196,7 +196,7 @@ final class MusicHoverCardController {
         MenuBarStatusItems.popupWindow(for: .music)?.isVisible == true
     }
 
-    /// "Open player" and the save button: the card goes, and the full popover opens as a click on the item opens it.
+    /// The save button: the card goes, and the full popover opens as a click on the item opens it.
     private func openPlayer() {
         send(.clicked)
         guard !isPopupOnScreen else { return }

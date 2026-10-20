@@ -4,16 +4,14 @@
 import CoreGraphics
 import Foundation
 
-/// The card is 300 pt wide and its rows add up to its height (about 140 pt): nothing in it wraps or grows, so the panel
+/// The card is 300 pt wide and its rows add up to its height (about 115 pt): nothing in it wraps or grows, so the panel
 /// is sized once and never relaid out while it is up.
 nonisolated enum MusicHoverCardMetrics {
     static let width: Double = 300
     static let horizontalInset: Double = 12
     static let cornerRadius: Double = 14
 
-    static let topInset: Double = 10
-    static let topRowHeight: Double = 22
-    static let afterTopRow: Double = 4
+    static let topInset: Double = 12
     static let titleRowHeight: Double = 18
     static let afterTitleRow: Double = 4
     static let waveHeight: Double = MusicWave.boxHeight
@@ -22,14 +20,13 @@ nonisolated enum MusicHoverCardMetrics {
     static let controlsRowHeight: Double = 28
     static let bottomInset: Double = 12
 
-    /// The "Open player" button, and the round buttons of the controls row.
-    static let openButtonSize: Double = 22
+    /// The round buttons of the controls row.
     static let controlCircleSize: Double = 28
 
     /// The room the wave, the times and the controls have across the card.
     static let contentWidth: Double = width - 2 * horizontalInset
 
-    static let height: Double = topInset + topRowHeight + afterTopRow + titleRowHeight + afterTitleRow
+    static let height: Double = topInset + titleRowHeight + afterTitleRow
         + waveHeight + timesRowHeight + afterTimesRow + controlsRowHeight + bottomInset
 
     static var size: CGSize { CGSize(width: width, height: height) }

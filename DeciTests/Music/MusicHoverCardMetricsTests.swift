@@ -1,6 +1,5 @@
 // DeciTests/Music/MusicHoverCardMetricsTests.swift
-// The hover card's size, where it opens under the status item (centred, kept on screen) and the name of the output
-// device it shows. Pure numbers and words.
+// The hover card's size and where it opens under the status item (centred, kept on screen). Pure numbers.
 
 import CoreGraphics
 import Foundation
@@ -11,14 +10,14 @@ import Testing
 struct MusicHoverCardMetricsTests {
     private let screen = CGRect(x: 0, y: 0, width: 1440, height: 875)
 
-    @Test("the card is 300 pt wide and about 140 pt high, the sum of its rows")
+    @Test("the card is 300 pt wide and about 115 pt high, the sum of its rows")
     func size() {
         let m = MusicHoverCardMetrics.self
         #expect(m.width == 300)
-        let rows = m.topInset + m.topRowHeight + m.afterTopRow + m.titleRowHeight + m.afterTitleRow
+        let rows = m.topInset + m.titleRowHeight + m.afterTitleRow
             + m.waveHeight + m.timesRowHeight + m.afterTimesRow + m.controlsRowHeight + m.bottomInset
         #expect(m.height == rows)
-        #expect(m.height >= 130 && m.height <= 150)
+        #expect(m.height >= 105 && m.height <= 125)
         #expect(m.size == CGSize(width: m.width, height: m.height))
     }
 
@@ -26,7 +25,6 @@ struct MusicHoverCardMetricsTests {
     func parts() {
         let m = MusicHoverCardMetrics.self
         #expect(m.horizontalInset == 12)
-        #expect(m.openButtonSize == 22)
         #expect(m.controlCircleSize == 28)
         #expect(m.waveHeight == MusicWave.boxHeight)
         #expect(m.cornerRadius > 0)
@@ -95,18 +93,5 @@ struct MusicHoverCardMetricsTests {
         let frame = MusicHoverCardPlacement.frame(buttonFrame: button, size: MusicHoverCardMetrics.size, visibleFrame: narrow)
         #expect(frame.origin.x.isFinite && frame.origin.y.isFinite)
         #expect(frame.size == MusicHoverCardMetrics.size)
-    }
-
-    // MARK: - Output device name
-
-    @Test("the card names the output device, or says This Mac when there is none to name", arguments: [nil, "", "   ", "\n"])
-    func outputFallback(name: String?) {
-        #expect(MusicOutputLabel.cardName(deviceName: name) == "This Mac")
-    }
-
-    @Test("a device's name is shown as it is, trimmed")
-    func outputName() {
-        #expect(MusicOutputLabel.cardName(deviceName: "  AirPods Pro ") == "AirPods Pro")
-        #expect(MusicOutputLabel.cardName(deviceName: "MacBook Pro Speakers") == "MacBook Pro Speakers")
     }
 }

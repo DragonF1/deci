@@ -6,8 +6,8 @@ import SwiftUI
 /// reads (nothing is copied), is dark whatever the Mixer wears, and has no timer of its own: it is built when the card
 /// opens and gone when it closes, and its numbers move with the player's own half second position ticks.
 ///
-/// `onOpenPlayer` hides the card and opens the full Music popover; the save button does that too, since the playlist
-/// picker lives in the popover's right column.
+/// `onOpenPlayer` hides the card and opens the full Music popover, for the save button: the playlist picker lives in
+/// the popover's right column. A click on the chip opens the popover too, so the card has no button of its own for it.
 struct MusicNowPlayingCard: View {
     let musicHost: MusicServiceHost
     let onOpenPlayer: () -> Void
@@ -50,12 +50,9 @@ private struct MusicNowPlayingCardContent: View {
         let player = service.player
         let duration = player.duration > 0 ? player.duration : TimeInterval(track.durationSeconds ?? 0)
         return VStack(spacing: 0) {
-            topRow
-                .frame(height: Metrics.topRowHeight)
-                .padding(.top, Metrics.topInset)
-            Spacer().frame(height: Metrics.afterTopRow)
             titleRow(track)
                 .frame(height: Metrics.titleRowHeight)
+                .padding(.top, Metrics.topInset)
             Spacer().frame(height: Metrics.afterTitleRow)
             MusicCardProgress(
                 levels: musicHost.spectrum.bars(for: track.videoId),
@@ -125,26 +122,6 @@ private struct MusicNowPlayingCardContent: View {
     }
 
     // MARK: - Rows
-
-    private var topRow: some View {
-        HStack(spacing: 8) {
-            Text(MusicOutputLabel.cardName(deviceName: musicHost.mixer?.outputDeviceName))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.8))
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
-            MusicCardButton(
-                systemImage: "arrow.up.left.and.arrow.down.right",
-                title: "Open player",
-                size: Metrics.openButtonSize,
-                glyphSize: 11,
-                fill: 0,
-                action: onOpenPlayer
-            )
-            .help("Open player")
-        }
-    }
 
     private func titleRow(_ track: MusicTrack) -> some View {
         HStack(spacing: 6) {
