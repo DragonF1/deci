@@ -24,13 +24,22 @@ enum MenuBarStatusItems {
         popupWindow(titled: id.title)
     }
 
-    /// The status item behind the popup window with this title, read through the private
-    /// `statusItem` keys of the window and of FluidMenuBarExtra's status item wrapper.
+    /// The status item behind the popup window with this title, read through FluidMenuBarExtra's
+    /// status item wrapper.
     static func statusItem(titled title: String) -> NSStatusItem? {
-        guard let window = popupWindow(titled: title),
-              let fluidStatusItem = window.value(forKey: "statusItem") as? NSObject
+        guard let window = popupWindow(titled: title) else { return nil }
+        return statusItemValue(of: window) as? NSStatusItem
+    }
+
+    /// The private `statusItem` of FluidMenuBarExtra's wrapper, which makes itself the popup window's
+    /// delegate. The window's own `statusItem` is a Swift property of a generic class, invisible to KVC,
+    /// so reading the window always gave nil. Nil when the delegate is anything else.
+    static func statusItemValue(of window: NSWindow) -> Any? {
+        let key = "statusItem"
+        guard let wrapper = window.delegate as? NSObject,
+              wrapper.responds(to: NSSelectorFromString(key))
         else { return nil }
-        return fluidStatusItem.value(forKey: "statusItem") as? NSStatusItem
+        return wrapper.value(forKey: key)
     }
 
     static func statusItem(for id: MenuBarItemID) -> NSStatusItem? {
@@ -59,6 +68,17 @@ enum MenuBarStatusItems {
         }
     }
 
+    /// Copies the menu bar position saved under the item's current autosave name to the name it is about to get,
+    /// so the rename does not move the icon. A position already saved under the new name wins.
+    static func carryPosition(from oldName: String, to newName: String, in defaults: UserDefaults = .standard) {
+        let oldKey = "NSStatusItem Preferred Position \(oldName)"
+        let newKey = "NSStatusItem Preferred Position \(newName)"
+        guard oldName != newName, defaults.object(forKey: newKey) == nil,
+              let position = defaults.object(forKey: oldKey)
+        else { return }
+        defaults.set(position, forKey: newKey)
+    }
+
     /// One attempt at giving the Music status item its fixed autosave name. False when its scene has not
     /// built the item yet. Safe to call again: an item that already has the name is left alone. The saved
     /// visibility is made to match the setting first, and the item is set to it again after the rename.
@@ -69,6 +89,9 @@ enum MenuBarStatusItems {
         isConfiguringMusicItem = true
         defer { isConfiguringMusicItem = false }
         writeVisibilityDefaults(shown, for: .music)
+        if let oldName = item.autosaveName as String? {
+            carryPosition(from: oldName, to: name)
+        }
         item.autosaveName = name
         setVisible(shown, for: .music)
         return true
