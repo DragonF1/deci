@@ -42,6 +42,12 @@ struct MusicQueue: Equatable {
     private var autoplaySeed: String?
     /// The tracks whose radio has been asked for in this queue, answered or turned down. None is asked twice.
     private var askedSeeds: Set<String> = []
+    /// The songs the listener put here with Play next or Add to queue. They stay ahead of a shuffle's mix.
+    private var queuedIds: Set<String> = []
+    /// The songs Add to queue put at the end of a page. A page that is still loading adds its later songs before them.
+    private var endIds: Set<String> = []
+    /// The songs the listener took out. Later radio pages and a restaged radio do not bring them back.
+    private var removedIds: Set<String> = []
 
     var isEmpty: Bool { tracks.isEmpty }
     /// The queue plays a playlist or album page (not a radio).
@@ -92,6 +98,7 @@ struct MusicQueue: Equatable {
         source = .radio(seedVideoId: track.videoId)
         forgetShuffle()
         forgetAutoplay()
+        forgetEdits()
     }
 
     /// Replaces the queue with a page's tracks in page order, positioned on `track`. The tracks
@@ -107,6 +114,7 @@ struct MusicQueue: Equatable {
         source = .page(browseId: browseId)
         forgetShuffle()
         forgetAutoplay()
+        forgetEdits()
     }
 
     /// Adds the tracks that are not queued yet, in order, and keeps the page's continuation.
@@ -122,22 +130,35 @@ struct MusicQueue: Equatable {
     @discardableResult
     mutating func append<G: RandomNumberGenerator>(_ page: [MusicTrack], continuation: String?, using generator: inout G) -> Int {
         var seen = Set(tracks.map(\.videoId))
-        var fresh = page.filter { seen.insert($0.videoId).inserted }
+        var fresh = page.filter { !removedIds.contains($0.videoId) && seen.insert($0.videoId).inserted }
         self.continuation = continuation
         guard isShuffled else {
-            tracks.append(contentsOf: fresh)
+            // A song added to the end of a page that was still loading stays behind the rest of the page.
+            let from = (currentIndex ?? -1) + 1
+            let slot = isPage ? tracks[from...].firstIndex { endIds.contains($0.videoId) } : nil
+            tracks.insert(contentsOf: fresh, at: slot ?? tracks.count)
             return fresh.count
         }
         for track in fresh {
             naturalRank[track.videoId] = nextRank
             nextRank += 1
         }
+        let from = (currentIndex ?? -1) + 1
+        // A song added to the end of the page stays behind the page's later songs when shuffle is turned off.
+        for track in tracks[from...] where endIds.contains(track.videoId) {
+            naturalRank[track.videoId] = nextRank
+            nextRank += 1
+        }
         fresh.shuffle(using: &generator)
-        // Only the part after the current track moves, and never the track that plays next.
-        let start = (currentIndex ?? -1) + 1
+        // Only the part after the current track moves: never the track that plays next, the songs the listener
+        // queued ahead of the mix, or the songs added to the end of the page.
+        let lastQueued = tracks[from...].lastIndex { queuedIds.contains($0.videoId) && !endIds.contains($0.videoId) }
+        let start = lastQueued.map { $0 + 1 } ?? from
+        let protectsNext = lastQueued == nil
         for track in fresh {
-            let count = tracks.count - start
-            let slot = Int.random(in: min(1, count)...count, using: &generator)
+            let end = tracks[start...].firstIndex { endIds.contains($0.videoId) } ?? tracks.count
+            let count = end - start
+            let slot = Int.random(in: (protectsNext ? min(1, count) : 0)...count, using: &generator)
             tracks.insert(track, at: start + slot)
         }
         return fresh.count
@@ -202,7 +223,7 @@ struct MusicQueue: Equatable {
         askedSeeds.insert(seed)
         guard case .page = source else { return 0 }
         var seen = Set(tracks.map(\.videoId))
-        autoplay = page.filter { seen.insert($0.videoId).inserted }
+        autoplay = page.filter { !removedIds.contains($0.videoId) && seen.insert($0.videoId).inserted }
         autoplayContinuation = autoplay.isEmpty ? nil : continuation
         autoplaySeed = autoplay.isEmpty ? nil : seed
         return autoplay.count
@@ -239,11 +260,19 @@ struct MusicQueue: Equatable {
         nextRank = tracks.count
         if mixingEarlier {
             let current = tracks.remove(at: currentIndex)
+            // The songs the listener queued play right after the current one, in their order; the rest is mixed behind.
+            let ahead = tracks[currentIndex...].filter { queuedIds.contains($0.videoId) }
+            let aheadIds = Set(ahead.map(\.videoId))
+            tracks.removeAll { aheadIds.contains($0.videoId) }
             tracks.shuffle(using: &generator)
-            tracks.insert(current, at: 0)
+            tracks.insert(contentsOf: [current] + ahead, at: 0)
             self.currentIndex = 0
         } else {
-            tracks[(currentIndex + 1)...].shuffle(using: &generator)
+            let start = currentIndex + 1
+            let ahead = tracks[start...].filter { queuedIds.contains($0.videoId) }
+            var rest = tracks[start...].filter { !queuedIds.contains($0.videoId) }
+            rest.shuffle(using: &generator)
+            tracks.replaceSubrange(start..., with: ahead + rest)
         }
     }
 
@@ -261,6 +290,94 @@ struct MusicQueue: Equatable {
             .map(\.element)
         currentIndex = currentId.flatMap { id in tracks.firstIndex { $0.videoId == id } }
         forgetShuffle()
+    }
+
+    // MARK: - Edits
+
+    /// Play next: the song plays right after the current one. A song that is already in the queue moves there, so the
+    /// queue never lists it twice. False, and nothing changes, when the queue is empty or the song is the current one.
+    @discardableResult
+    mutating func playNext(_ track: MusicTrack) -> Bool {
+        guard let currentIndex = placeable(track) else { return false }
+        insert(track, at: detach(track.videoId, current: currentIndex) + 1)
+        return true
+    }
+
+    /// Add to queue: the song goes after the rest of the queue's own songs and before the radio that follows them. On a
+    /// page that is the end of the page; on a radio it is after the songs the listener queued, ahead of the radio's.
+    /// A song that is already in the queue moves there. False, and nothing changes, when the queue is empty or the song
+    /// is the current one.
+    @discardableResult
+    mutating func addToQueue(_ track: MusicTrack) -> Bool {
+        guard let currentIndex = placeable(track) else { return false }
+        let current = detach(track.videoId, current: currentIndex)
+        if isPage {
+            insert(track, at: tracks.count, endsNaturalOrder: true)
+            endIds.insert(track.videoId)
+        } else {
+            let lastQueued = tracks[(current + 1)...].lastIndex { queuedIds.contains($0.videoId) }
+            insert(track, at: (lastQueued ?? current) + 1)
+        }
+        return true
+    }
+
+    /// Remove from queue: takes an upcoming song, or one of the next lap, out of the play order, and a song of the staged
+    /// radio out of the radio. It does not come back on the next lap or with a later radio page. False when the song is
+    /// not queued or is the current one.
+    @discardableResult
+    mutating func remove(videoId: String) -> Bool {
+        guard let currentIndex, tracks[currentIndex].videoId != videoId else { return false }
+        let known = tracks.contains { $0.videoId == videoId } || autoplay.contains { $0.videoId == videoId }
+        guard known else { return false }
+        detach(videoId, current: currentIndex)
+        naturalRank[videoId] = nil
+        queuedIds.remove(videoId)
+        removedIds.insert(videoId)
+        return true
+    }
+
+    /// The index of the current song, when `track` may be put into the queue: not empty, and not the song that plays.
+    private func placeable(_ track: MusicTrack) -> Int? {
+        guard let currentIndex, tracks[currentIndex].videoId != track.videoId else { return nil }
+        return currentIndex
+    }
+
+    /// Takes `videoId` out of the play order and the staged radio. Returns where the current song is afterwards.
+    @discardableResult
+    private mutating func detach(_ videoId: String, current: Int) -> Int {
+        endIds.remove(videoId)
+        autoplay.removeAll { $0.videoId == videoId }
+        if autoplay.isEmpty {
+            autoplayContinuation = nil
+            autoplaySeed = nil
+        }
+        guard let index = tracks.firstIndex(where: { $0.videoId == videoId }) else { return current }
+        tracks.remove(at: index)
+        let moved = index < current ? current - 1 : current
+        currentIndex = moved
+        return moved
+    }
+
+    /// Puts a track the listener chose into the play order. While shuffled it takes the natural rank of the song it
+    /// follows (the later offset keeps it right behind it), or, with `endsNaturalOrder`, a rank past the end.
+    private mutating func insert(_ track: MusicTrack, at index: Int, endsNaturalOrder: Bool = false) {
+        if isShuffled {
+            if !endsNaturalOrder, let before = tracks[..<index].last, let rank = naturalRank[before.videoId] {
+                naturalRank[track.videoId] = rank
+            } else {
+                naturalRank[track.videoId] = nextRank
+                nextRank += 1
+            }
+        }
+        tracks.insert(track, at: index)
+        queuedIds.insert(track.videoId)
+        removedIds.remove(track.videoId)
+    }
+
+    private mutating func forgetEdits() {
+        queuedIds = []
+        endIds = []
+        removedIds = []
     }
 
     private mutating func forgetShuffle() {

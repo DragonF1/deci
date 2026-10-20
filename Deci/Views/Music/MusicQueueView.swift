@@ -74,6 +74,8 @@ struct MusicQueueView: View {
                     }
                 }
                 .environment(\.musicHighlightTerms, terms)
+                // These rows are Up next's own, so their menu also offers Remove from queue.
+                .environment(\.musicTrackContext, .upNext)
                 .padding(.bottom, Self.fadeHeight)
             }
             .scrollIndicators(.never)

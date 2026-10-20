@@ -2,7 +2,7 @@
 import Foundation
 
 /// The page a song row sits on, which decides whether Remove from playlist and Go to album make sense for it.
-/// Search results, Up next and the player column sit on no page (`.none`).
+/// Search results and the player column sit on no page (`.none`); an Up next row sits on `.upNext`.
 struct MusicTrackContext: Equatable, Sendable {
     /// The open page's browse id, as the page store knows it ("VL..." for a playlist).
     var pageBrowseId: String?
@@ -10,12 +10,18 @@ struct MusicTrackContext: Equatable, Sendable {
     var pageTitle: String?
     /// YouTube's own header said the user can change this playlist.
     var pageIsEditable: Bool
+    /// The row is one of Up next's, so it also offers Remove from queue.
+    var isUpNext = false
 
     static let none = MusicTrackContext(pageBrowseId: nil, pageTitle: nil, pageIsEditable: false)
+    static let upNext = MusicTrackContext(pageBrowseId: nil, pageTitle: nil, pageIsEditable: false, isUpNext: true)
 }
 
 /// One entry of a song's "..." menu. The menu is text only, in groups with a line between them.
 enum MusicTrackAction: Hashable, Sendable {
+    case playNext
+    case addToQueue
+    case removeFromQueue
     case saveToPlaylist
     case removeFromPlaylist
     /// Pin to Home, Unpin from Home, or the refusal while Home is full. The pin is Deci's own.
@@ -25,6 +31,9 @@ enum MusicTrackAction: Hashable, Sendable {
 
     var title: String {
         switch self {
+        case .playNext: "Play next"
+        case .addToQueue: "Add to queue"
+        case .removeFromQueue: "Remove from queue"
         case .saveToPlaylist: "Save to playlist"
         case .removeFromPlaylist: "Remove from playlist"
         case .pinHome(let state): state.title
@@ -41,8 +50,10 @@ enum MusicTrackAction: Hashable, Sendable {
         }
     }
 
-    /// The block of the menu the action sits in: what changes the user's library, where to go, and the destructive one.
+    /// The block of the menu the action sits in: what changes the play order, what changes the user's library, where to
+    /// go, and the destructive one.
     enum Group: Int, Comparable, Sendable {
+        case queue
         case library
         case navigate
         case remove
@@ -52,9 +63,10 @@ enum MusicTrackAction: Hashable, Sendable {
 
     var group: Group {
         switch self {
+        case .playNext, .addToQueue: .queue
         case .saveToPlaylist, .pinHome: .library
         case .goToAlbum, .goToArtist: .navigate
-        case .removeFromPlaylist: .remove
+        case .removeFromPlaylist, .removeFromQueue: .remove
         }
     }
 }
@@ -62,16 +74,21 @@ enum MusicTrackAction: Hashable, Sendable {
 /// Which song actions a row offers. Pure rules, so the row, its context menu and the player column agree and the
 /// rules are tested without a view. An action shows only when it can work.
 enum MusicTrackActions {
-    /// In menu order: save, pin or unpin to Home, then go to album and go to artist, then remove from playlist last.
-    /// `home` is where the song stands with the Pinned row on Home; nil leaves the entry out.
-    static func available(for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil) -> [MusicTrackAction] {
-        var actions: [MusicTrackAction] = [.saveToPlaylist]
+    /// In menu order: play next and add to queue, save, pin or unpin to Home, then go to album and go to artist, then
+    /// remove from playlist and remove from queue last. `home` is where the song stands with the Pinned row on Home; nil
+    /// leaves the entry out. The queue entries show only when the caller offers them (not for the song that is playing),
+    /// and Remove from queue only on an Up next row.
+    static func available(
+        for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil, offersQueue: Bool = false
+    ) -> [MusicTrackAction] {
+        var actions: [MusicTrackAction] = offersQueue ? [.playNext, .addToQueue, .saveToPlaylist] : [.saveToPlaylist]
         if let home { actions.append(.pinHome(home)) }
         if let album = track.albumBrowseId, !album.isEmpty, album != context.pageBrowseId {
             actions.append(.goToAlbum)
         }
         if artistCollection(for: track, in: context) != nil { actions.append(.goToArtist) }
         if canRemove(track, in: context) { actions.append(.removeFromPlaylist) }
+        if offersQueue, context.isUpNext { actions.append(.removeFromQueue) }
         return actions
     }
 

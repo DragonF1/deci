@@ -230,7 +230,7 @@ final class MusicTrackActionsStore {
     }
 
     /// Shows a line that clears itself. A newer line is never cleared by an older line's timer.
-    private func post(_ text: String, isError: Bool = false) {
+    func post(_ text: String, isError: Bool = false) {
         noticeCounter += 1
         let id = noticeCounter
         notice = Notice(id: id, text: text, isError: isError)

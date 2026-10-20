@@ -13,9 +13,9 @@ struct MusicTrackActionsModelTests {
     private let ownPlaylist = MusicTrackContext(pageBrowseId: "VLPLfixtureMine", pageTitle: "Mine", pageIsEditable: true)
 
     private func actions(
-        _ track: Deci.MusicTrack, in context: MusicTrackContext = .none, home: MusicHomePinState? = nil
+        _ track: Deci.MusicTrack, in context: MusicTrackContext = .none, home: MusicHomePinState? = nil, queue: Bool = false
     ) -> [MusicTrackAction] {
-        MusicTrackActions.available(for: track, in: context, home: home)
+        MusicTrackActions.available(for: track, in: context, home: home, offersQueue: queue)
     }
 
     // MARK: - Save to playlist
@@ -65,7 +65,7 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackAction.pinHome(.canPin).isEnabled)
         #expect(MusicTrackAction.pinHome(.pinned).isEnabled)
         #expect(!MusicTrackAction.pinHome(.full).isEnabled)
-        for action in [MusicTrackAction.saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist] {
+        for action in [MusicTrackAction.saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist, .playNext, .addToQueue, .removeFromQueue] {
             #expect(action.isEnabled)
         }
     }
@@ -96,11 +96,48 @@ struct MusicTrackActionsModelTests {
 
     @Test("Every action belongs to the block the menu draws it in")
     func groupOfEachAction() {
+        #expect(MusicTrackAction.playNext.group == .queue)
+        #expect(MusicTrackAction.addToQueue.group == .queue)
+        #expect(MusicTrackAction.removeFromQueue.group == .remove)
+        #expect(MusicTrackAction.Group.queue < .library)
         #expect(MusicTrackAction.saveToPlaylist.group == .library)
         #expect(MusicTrackAction.goToAlbum.group == .navigate)
         #expect(MusicTrackAction.goToArtist.group == .navigate)
         #expect(MusicTrackAction.removeFromPlaylist.group == .remove)
         #expect(MusicTrackAction.Group.library < .navigate && MusicTrackAction.Group.navigate < .remove)
+    }
+
+    // MARK: - Play next, Add to queue, Remove from queue
+
+    @Test("Play next and Add to queue are left out unless the caller offers the queue, which is how every list stood before")
+    func queueEntriesAreOptIn() {
+        #expect(actions(fullTrack(), in: ownPlaylist).allSatisfy { $0 != .playNext && $0 != .addToQueue })
+        #expect(actions(fullTrack(), in: .upNext).allSatisfy { $0 != .removeFromQueue })
+    }
+
+    @Test("Play next and Add to queue come first, in a block of their own, ahead of save")
+    func queueEntriesFirst() {
+        #expect(actions(MusicSamples.track("v1"), queue: true) == [.playNext, .addToQueue, .saveToPlaylist])
+        #expect(
+            actions(fullTrack(), in: ownPlaylist, home: .canPin, queue: true)
+                == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .removeFromPlaylist]
+        )
+        #expect(MusicTrackActions.groups(of: actions(fullTrack(), in: ownPlaylist, home: .canPin, queue: true))
+            == [[.playNext, .addToQueue], [.saveToPlaylist, .pinHome(.canPin)], [.goToAlbum, .goToArtist], [.removeFromPlaylist]])
+    }
+
+    @Test("Remove from queue shows on an Up next row only, as the last and destructive block")
+    func removeFromQueueOnlyInUpNext() {
+        let track = MusicSamples.track("v1")
+        #expect(!actions(track, in: .none, queue: true).contains(.removeFromQueue))
+        #expect(actions(track, in: .upNext, queue: true) == [.playNext, .addToQueue, .saveToPlaylist, .removeFromQueue])
+        #expect(MusicTrackActions.groups(of: actions(track, in: .upNext, queue: true))
+            == [[.playNext, .addToQueue], [.saveToPlaylist], [.removeFromQueue]])
+    }
+
+    @Test("A row that is the song in the player gets no queue entries, even in Up next")
+    func noQueueEntriesWithoutOffer() {
+        #expect(actions(MusicSamples.track("v1"), in: .upNext, queue: false) == [.saveToPlaylist])
     }
 
     // MARK: - Go to artist
@@ -210,6 +247,9 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackAction.removeFromPlaylist.title == "Remove from playlist")
         #expect(MusicTrackAction.goToAlbum.title == "Go to album")
         #expect(MusicTrackAction.goToArtist.title == "Go to artist")
+        #expect(MusicTrackAction.playNext.title == "Play next")
+        #expect(MusicTrackAction.addToQueue.title == "Add to queue")
+        #expect(MusicTrackAction.removeFromQueue.title == "Remove from queue")
         #expect(MusicTrackAction.pinHome(.canPin).title == "Pin to Home")
         #expect(MusicTrackAction.pinHome(.pinned).title == "Unpin from Home")
         #expect(MusicTrackAction.pinHome(.full).title == "Pin to Home (Home is full)")
@@ -220,6 +260,7 @@ struct MusicTrackActionsModelTests {
         let all: [MusicTrackAction] = [
             .saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist,
             .pinHome(.canPin), .pinHome(.pinned), .pinHome(.full),
+            .playNext, .addToQueue, .removeFromQueue,
         ]
         for action in all {
             #expect(!action.title.contains("\u{2014}") && !action.title.contains("\u{2013}"))

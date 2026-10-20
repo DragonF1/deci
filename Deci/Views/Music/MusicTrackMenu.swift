@@ -49,7 +49,7 @@ extension EnvironmentValues {
     }
 }
 
-/// A song's actions as menu entries, text only, with a line between the blocks (library, go to, remove). The "..."
+/// A song's actions as menu entries, text only, with a line between the blocks (queue, library, go to, remove). The "..."
 /// button and the context menu share it, so they never differ.
 struct MusicTrackMenuItems: View {
     let actions: [MusicTrackAction]

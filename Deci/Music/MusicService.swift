@@ -656,6 +656,50 @@ final class MusicService {
         play(track, in: page)
     }
 
+    // MARK: - Queue edits
+
+    /// Play next: the song plays right after the current one. With nothing queued it just starts the song, with a
+    /// radio behind it, like a tap on a lone song.
+    func playNext(_ track: MusicTrack) {
+        guard !queue.isEmpty else { return play(track) }
+        guard queue.playNext(track) else { return }
+        noteActivity()
+        queueEdited()
+        trackActions.post("Playing next")
+    }
+
+    /// Add to queue: the song goes after the queue's own songs and before the radio that follows. With nothing queued it
+    /// just starts the song.
+    func addToQueue(_ track: MusicTrack) {
+        guard !queue.isEmpty else { return play(track) }
+        guard queue.addToQueue(track) else { return }
+        noteActivity()
+        queueEdited()
+        trackActions.post("Added to queue")
+    }
+
+    /// Remove from queue: the song leaves the play order. A queue left short is topped up, so Up next with Autoplay
+    /// on is never empty.
+    func removeFromQueue(_ track: MusicTrack) {
+        guard queue.remove(videoId: track.videoId) else { return }
+        noteActivity()
+        topUpQueue()
+        trackActions.post("Removed from queue")
+    }
+
+    /// A song was put into the queue. A Next that waited for the radio takes it now, and a queue that had played out
+    /// (or stopped after failures) starts it; otherwise the queue is topped up as usual.
+    private func queueEdited() {
+        if resumePendingAdvance() { return }
+        if pendingAdvance == nil, player.hasEnded || player.nowPlaying == nil, let track = advanceQueue() {
+            direction = .forward
+            failureStreak = 0
+            begin(track)
+            return
+        }
+        topUpQueue()
+    }
+
     // MARK: - Playback modes
 
     /// Turning shuffle on mixes a playlist or album whole, with the current track first, so Up next shows the entire

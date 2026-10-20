@@ -330,25 +330,25 @@ struct MusicSearchNavigationActionsTests {
         let h = ActionNavHarness()
         var track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture")
         track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
-        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist])
+        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist])
     }
 
     @Test("Pin to Home adds the song to Home, and the menu then offers Unpin from Home")
     func pinHomeAndUnpin() {
         let h = ActionNavHarness()
         let track = MusicSamples.track("v1")
-        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
+        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin)])
 
         h.nav.perform(.pinHome(.canPin), for: track, in: .none)
 
         #expect(h.service.pinnedItems.items.map(\.id) == ["v1"])
         #expect(h.service.pinnedItems.items.first?.kind == .song)
-        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.pinned)])
+        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned)])
 
         h.nav.perform(.pinHome(.pinned), for: track, in: .none)
 
         #expect(h.service.pinnedItems.isEmpty)
-        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
+        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin)])
     }
 
     @Test("Pin to Home never reaches the account: nothing is sent to YouTube")
@@ -371,8 +371,8 @@ struct MusicSearchNavigationActionsTests {
         }
         #expect(h.service.pinnedItems.isFull)
         let fresh = MusicSamples.track("v1")
-        #expect(h.nav.actions(for: fresh, in: .none) == [.saveToPlaylist, .pinHome(.full)])
-        #expect(h.nav.actions(for: pinned, in: .none) == [.saveToPlaylist, .pinHome(.pinned)])
+        #expect(h.nav.actions(for: fresh, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.full)])
+        #expect(h.nav.actions(for: pinned, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned)])
 
         h.nav.perform(.pinHome(.full), for: fresh, in: .none)
         #expect(h.service.pinnedItems.items.count == MusicPinnedItems.limit)
@@ -380,7 +380,51 @@ struct MusicSearchNavigationActionsTests {
 
         h.nav.perform(.pinHome(.pinned), for: pinned, in: .none)
         #expect(!h.service.pinnedItems.isPinned(pinned))
-        #expect(h.nav.actions(for: fresh, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
+        #expect(h.nav.actions(for: fresh, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin)])
+    }
+
+    // MARK: - Play next, Add to queue, Remove from queue
+
+    @Test("Play next and Add to queue sit at the top of the menu of any song but the one in the player")
+    func queueEntriesExceptCurrent() {
+        let h = ActionNavHarness()
+        let other = MusicSamples.track("other")
+        #expect(Array(h.nav.actions(for: other, in: .none).prefix(2)) == [.playNext, .addToQueue])
+
+        h.playSomething()
+        #expect(Array(h.nav.actions(for: other, in: .none).prefix(2)) == [.playNext, .addToQueue])
+        let current = h.nav.actions(for: MusicSamples.track("playing"), in: .none)
+        #expect(current.first == .saveToPlaylist)
+        #expect(!current.contains(.playNext) && !current.contains(.addToQueue))
+    }
+
+    @Test("Remove from queue shows only on a row of Up next, last, and never for the song in the player")
+    func removeEntryOnlyInUpNext() {
+        let h = ActionNavHarness()
+        h.playSomething()
+        let other = MusicSamples.track("other")
+        #expect(!h.nav.actions(for: other, in: .none).contains(.removeFromQueue))
+        #expect(h.nav.actions(for: other, in: .upNext).last == .removeFromQueue)
+        #expect(!h.nav.actions(for: MusicSamples.track("playing"), in: .upNext).contains(.removeFromQueue))
+    }
+
+    @Test("The picks reach the queue: Play next, Add to queue and Remove from queue, each with its line")
+    func queuePicks() {
+        let h = ActionNavHarness()
+        h.service.play(MusicSamples.track("a"), in: MusicSamples.page("VLPL1", tracks: MusicSamples.tracks("a", "b", "c", "d", "e")))
+        let queued = { h.service.queue.tracks.map(\.videoId) }
+
+        h.nav.perform(.addToQueue, for: MusicSamples.track("x"), in: .none)
+        #expect(queued() == ["a", "b", "c", "d", "e", "x"])
+        #expect(h.service.trackActions.notice?.text == "Added to queue")
+
+        h.nav.perform(.playNext, for: MusicSamples.track("y"), in: .none)
+        #expect(queued() == ["a", "y", "b", "c", "d", "e", "x"])
+        #expect(h.service.trackActions.notice?.text == "Playing next")
+
+        h.nav.perform(.removeFromQueue, for: MusicSamples.track("b"), in: .upNext)
+        #expect(queued() == ["a", "y", "c", "d", "e", "x"])
+        #expect(h.service.trackActions.notice?.text == "Removed from queue")
     }
 
     // MARK: - Session

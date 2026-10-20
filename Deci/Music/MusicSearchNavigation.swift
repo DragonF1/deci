@@ -430,12 +430,16 @@ final class MusicSearchNavigation {
     /// The "..." menu of a song: what it offers here, in menu order.
     func actions(for track: MusicTrack, in context: MusicTrackContext) -> [MusicTrackAction] {
         let home = MusicPinnedItem(track: track).map { service.pinnedItems.state(for: $0) }
-        return MusicTrackActions.available(for: track, in: context, home: home)
+        // The song in the player is already playing: it is not queued behind itself.
+        let playing = service.queue.current ?? service.player.nowPlaying
+        let offersQueue = track.videoId != playing?.videoId
+        return MusicTrackActions.available(for: track, in: context, home: home, offersQueue: offersQueue)
     }
 
     /// Runs a menu item. Save to playlist opens the save menu over whatever shows, which stays as it was; Go to album
     /// and Go to artist open the page; Remove goes to the actions store, which shows what happened as a short line;
-    /// Pin to Home is Deci's own list, changed on the spot.
+    /// Pin to Home is Deci's own list, changed on the spot; Play next, Add to queue and Remove from queue edit the play
+    /// order and say so the same way.
     func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
@@ -446,6 +450,12 @@ final class MusicSearchNavigation {
             service.trackActions.openPicker(for: track)
         case .removeFromPlaylist:
             service.trackActions.remove(track, in: context)
+        case .playNext:
+            service.playNext(track)
+        case .addToQueue:
+            service.addToQueue(track)
+        case .removeFromQueue:
+            service.removeFromQueue(track)
         case .pinHome:
             if let item = MusicPinnedItem(track: track) { service.pinnedItems.toggle(item) }
         }
