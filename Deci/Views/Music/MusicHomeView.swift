@@ -20,13 +20,16 @@ struct MusicHomeView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: MusicBrowseLayout.homeSectionGap) {
+                // The marker sits outside the stack so it takes none of its section gap.
+                VStack(spacing: 0) {
                     Color.clear.frame(height: 0).id(Self.topId)
-                    pinnedRow
-                    shelves
-                    MusicBottomInsetSpacer()
+                    LazyVStack(alignment: .leading, spacing: MusicBrowseLayout.homeSectionGap) {
+                        pinnedRow
+                        shelves
+                        MusicBottomInsetSpacer()
+                    }
+                    .padding(.top, MusicBrowseLayout.homeTop)
                 }
-                .padding(.top, MusicBrowseLayout.homeTop)
             }
             .scrollIndicators(.never)
             .onAppear { browse.loadHomeIfNeeded() }
@@ -35,8 +38,7 @@ struct MusicHomeView: View {
                 if isIdle { browse.loadHomeIfNeeded() }
             }
             // Refreshed shelves start from the top, every Quick picks list closed again.
-            .onChange(of: browse.isRefreshingHome) { wasRefreshing, isRefreshing in
-                guard wasRefreshing, !isRefreshing else { return }
+            .onChange(of: browse.homeRefreshes) {
                 expandedQuickPicks = []
                 proxy.scrollTo(Self.topId, anchor: .top)
             }
@@ -53,7 +55,13 @@ struct MusicHomeView: View {
         case .failed(let message):
             MusicFailedCard(message: message) { browse.reloadHome() }
         case .loaded(let shelves) where shelves.isEmpty:
-            MusicStateCard(message: "Nothing on Home yet.")
+            if browse.isLoadingMoreHome {
+                MusicLoadingCard()
+            } else if browse.canLoadMoreHome {
+                MusicFailedCard(message: "Home did not load.") { loadMore() }
+            } else {
+                MusicStateCard(message: "Nothing on Home yet.")
+            }
         case .loaded(let shelves):
             let styles = MusicHomeSectionStyle.styles(for: shelves)
             ForEach(Array(shelves.enumerated()), id: \.offset) { index, shelf in

@@ -22,7 +22,7 @@ final class MusicChipLengthAnimator: NSObject {
     private var generation = 0
 
     /// The pill width the item was last given, in points.
-    private var currentWidth = 0.0
+    private(set) var currentWidth = 0.0
 
     init(item: NSStatusItem, button: NSStatusBarButton, itemPadding: Double) {
         self.item = item

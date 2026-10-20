@@ -37,6 +37,8 @@ struct MusicSaveMenuLayer: View {
 
     /// The pointer when the menu opened, in the layer; nil opens it centred.
     @State private var anchor: CGPoint?
+    /// The pointer has been read, so the first frame never shows the menu centred and then jumping to it.
+    @State private var placed = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -52,9 +54,13 @@ struct MusicSaveMenuLayer: View {
                 menu
                     .alignmentGuide(.leading) { -Self.origin(opened, $0, bounds).x }
                     .alignmentGuide(.top) { -Self.origin(opened, $0, bounds).y }
+                    .opacity(placed ? 1 : 0)
             }
             .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)
-            .onAppear { anchor = Self.pointer(in: geometry.frame(in: .global)) }
+            .onAppear {
+                anchor = Self.pointer(in: geometry.frame(in: .global))
+                placed = true
+            }
             // Opened again for another song while open (the chip's card): it moves to the new pointer.
             .onChange(of: picker.track.videoId) { anchor = Self.pointer(in: geometry.frame(in: .global)) }
         }

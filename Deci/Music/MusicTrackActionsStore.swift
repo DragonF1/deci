@@ -53,6 +53,8 @@ final class MusicTrackActionsStore {
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     /// Writes in flight, so a second tap on the same thing sends nothing more.
     @ObservationIgnored private var busy: Set<String> = []
+    /// The playlists a save is out for, by song, so a menu opened again for that song shows them saving.
+    @ObservationIgnored private var savesOut: [String: Set<String>] = [:]
     /// Told when a call says the session is gone, so the service can sign out.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
 
@@ -129,7 +131,7 @@ final class MusicTrackActionsStore {
     func openPicker(for track: MusicTrack) {
         pickerRun += 1
         let run = pickerRun
-        picker = Picker(track: track, load: .loading)
+        picker = Picker(track: track, load: .loading, saving: savesOut[track.videoId] ?? [])
         pickerTask?.cancel()
         let videoId = track.videoId
         pickerTask = Task { [weak self, backend] in
@@ -161,17 +163,17 @@ final class MusicTrackActionsStore {
             return
         }
         let videoId = current.track.videoId
-        // Also guards a reopened picker: `saving` goes with the picker, this does not.
         let key = busyKey("save:\(option.playlistId):\(videoId)")
         guard busy.insert(key).inserted else { return }
+        savesOut[videoId, default: []].insert(option.playlistId)
         picker?.saving.insert(option.playlistId)
-        let run = pickerRun, session = sessionRun
+        let session = sessionRun
         Task { [weak self, backend] in
             do {
                 try await backend.addToPlaylist(videoId: videoId, playlistId: option.playlistId)
-                self?.landSave(option, key: key, run: run, session: session)
+                self?.landSave(option, videoId: videoId, key: key, session: session)
             } catch {
-                self?.failSave(error, option: option, key: key, run: run, session: session)
+                self?.failSave(error, option: option, videoId: videoId, key: key, session: session)
             }
         }
     }
@@ -189,10 +191,12 @@ final class MusicTrackActionsStore {
         expireIfSignedOut(error)
     }
 
-    private func landSave(_ option: MusicPlaylistOption, key: String, run: Int, session: Int) {
+    /// Ticks the row in whichever menu is open for the song, the one the tap came from or one opened again since.
+    private func landSave(_ option: MusicPlaylistOption, videoId: String, key: String, session: Int) {
         busy.remove(key)
         guard sessionRun == session else { return }
-        if pickerRun == run, var current = picker {
+        endSave(option.playlistId, videoId: videoId)
+        if var current = picker, current.track.videoId == videoId {
             current.saving.remove(option.playlistId)
             if case .loaded(var options) = current.load,
                let index = options.firstIndex(where: { $0.playlistId == option.playlistId }) {
@@ -208,17 +212,25 @@ final class MusicTrackActionsStore {
 
     /// YouTube refuses an add the playlist already holds (no dedupe option is sent), so a refusal most likely means
     /// the list was out of date and it is already there.
-    private func failSave(_ error: any Error, option: MusicPlaylistOption, key: String, run: Int, session: Int) {
+    private func failSave(
+        _ error: any Error, option: MusicPlaylistOption, videoId: String, key: String, session: Int
+    ) {
         busy.remove(key)
         guard sessionRun == session else { return }
         logger.error("save failed: \(MusicService.logDescription(of: error), privacy: .public)")
-        if pickerRun == run { picker?.saving.remove(option.playlistId) }
+        endSave(option.playlistId, videoId: videoId)
+        if picker?.track.videoId == videoId { picker?.saving.remove(option.playlistId) }
         guard !expireIfSignedOut(error) else { return }
         if (error as? MusicError) == .rejected {
             post("Not added. \(option.title) may already have it.", isError: true)
         } else {
             post(MusicService.message(for: error), isError: true)
         }
+    }
+
+    private func endSave(_ playlistId: String, videoId: String) {
+        savesOut[videoId]?.remove(playlistId)
+        if savesOut[videoId]?.isEmpty == true { savesOut[videoId] = nil }
     }
 
     // MARK: - Remove from playlist
@@ -355,5 +367,6 @@ final class MusicTrackActionsStore {
         notice = nil
         pins.removeAll()
         busy.removeAll()
+        savesOut.removeAll()
     }
 }

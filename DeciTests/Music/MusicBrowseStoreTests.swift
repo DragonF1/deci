@@ -199,6 +199,18 @@ struct MusicBrowseStoreTests {
         #expect(loadedShelves(h.store).map(\.title) == ["Quick picks", "Listen again"])
     }
 
+    @Test("A page of only hidden shelves goes on to the next page by itself, so Home never sits empty")
+    func homeSkipsHiddenOnlyPages() async {
+        let h = StoreHarness()
+        await h.backend.setHome(shelves: [MusicSamples.shelf("Mixed for you", "m")], continuation: "t1")
+        await h.backend.setMoreHome(continuation: "t1", shelves: [MusicSamples.shelf("Long listens", "l")], next: "t2")
+        await h.backend.setMoreHome(continuation: "t2", shelves: [MusicSamples.shelf("Listen again", "a")])
+        h.store.loadHomeIfNeeded()
+        #expect(await h.until { loadedShelves(h.store).map(\.title) == ["Listen again"] })
+        #expect(await h.backend.moreHomeCalls == ["t1", "t2"])
+        #expect(h.store.canLoadMoreHome == false)
+    }
+
     @Test("refreshHome keeps the shelves up while it loads, then swaps in the new ones")
     func homeRefreshInPlace() async {
         let h = StoreHarness()
@@ -214,10 +226,12 @@ struct MusicBrowseStoreTests {
         #expect(loadedShelves(h.store).map(\.title) == ["A"])
         #expect(h.store.canLoadMoreHome == false)
         h.store.refreshHome()
+        #expect(h.store.homeRefreshes == 0)
         await gate.open()
         #expect(await h.until { h.store.isRefreshingHome == false })
         #expect(loadedShelves(h.store).map(\.title) == ["B"])
         #expect(h.store.canLoadMoreHome)
+        #expect(h.store.homeRefreshes == 1)
         #expect(await h.backend.homeCallCount == 2)
     }
 
@@ -234,6 +248,7 @@ struct MusicBrowseStoreTests {
         #expect(await h.until { h.store.isRefreshingHome == false })
         #expect(loadedShelves(h.store).map(\.title) == ["A"])
         #expect(h.store.canLoadMoreHome)
+        #expect(h.store.homeRefreshes == 0)
         h.store.loadMoreHome()
         #expect(await h.until { loadedShelves(h.store).count == 2 })
     }

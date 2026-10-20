@@ -225,22 +225,39 @@ struct MusicTrackActionsStoreTests {
         #expect(await h.backend.addToPlaylistCalls.count == 1)
     }
 
-    @Test("A save still out is not sent again from a picker closed and opened again")
+    @Test("A save still out shows saving in a picker closed and opened again, is not sent again, and ticks the row there")
     func reopenedPickerDoesNotResend() async {
         let h = ActionsHarness()
-        await h.openPicker()
+        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
+        await h.openPicker(options: [road])
         let gate = MusicTestGate()
         await h.backend.setAddToPlaylistGate(gate)
-        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
         h.store.choose(road)
         h.store.closePicker()
-        await h.openPicker()
+        await h.openPicker(options: [road])
+        #expect(h.store.picker?.saving == ["PLone"])
         h.store.choose(road)
+        await gate.open()
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        #expect(await h.until { h.options?.first?.containsVideo == true })
+        #expect(h.store.picker?.saving.isEmpty == true)
+        await h.letLateWorkLand()
+        #expect(await h.backend.addToPlaylistCalls.count == 1)
+    }
+
+    @Test("A save out for one song never shows saving in the picker of another song")
+    func savingStaysWithItsSong() async {
+        let h = ActionsHarness()
+        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
+        await h.openPicker(options: [road])
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        h.store.choose(road)
+        await h.openPicker(for: MusicSamples.track("vid-2", title: "Other"), options: [road])
         #expect(h.store.picker?.saving.isEmpty == true)
         await gate.open()
         #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
-        await h.letLateWorkLand()
-        #expect(await h.backend.addToPlaylistCalls.count == 1)
+        #expect(h.options?.first?.containsVideo == false)
     }
 
     @Test("A playlist that already holds the song sends nothing, says so, and leaves the menu open")

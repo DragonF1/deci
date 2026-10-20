@@ -38,6 +38,8 @@ final class MusicBrowseStore {
     private(set) var canLoadMoreHome = false
     /// `refreshHome` is asking for new shelves while the old ones stay on screen.
     private(set) var isRefreshingHome = false
+    /// Counts refreshes that brought new shelves, so Home can go back to its top after one (not after a failure).
+    private(set) var homeRefreshes = 0
 
     /// Home shelves the owner never wants, matched on the title in any case.
     static let hiddenHomeShelfTitles: Set<String> = [
@@ -165,11 +167,15 @@ final class MusicBrowseStore {
 
     private func landHome(_ page: MusicHomePage, run: Int) {
         guard homeRun == run else { return }
+        if isRefreshingHome { homeRefreshes += 1 }
         isRefreshingHome = false
         tokenBeforeRefresh = nil
-        home = .loaded(Self.uniqueShelves(page.shelves, after: []))
+        let shelves = Self.uniqueShelves(page.shelves, after: [])
+        home = .loaded(shelves)
         homeToken = page.continuation
         canLoadMoreHome = page.continuation != nil
+        // A page of only hidden shelves leaves nothing to scroll to the end of, so ask for the next one here.
+        if shelves.isEmpty { loadMoreHome() }
     }
 
     private func failHome(_ error: any Error, run: Int) {
@@ -189,10 +195,13 @@ final class MusicBrowseStore {
     private func landMoreHome(_ page: MusicHomePage, run: Int, token: String) {
         guard homeRun == run, case .loaded(let shelves) = home else { return }
         isLoadingMoreHome = false
-        home = .loaded(shelves + Self.uniqueShelves(page.shelves, after: shelves))
+        let added = Self.uniqueShelves(page.shelves, after: shelves)
+        home = .loaded(shelves + added)
         // The same token again would ask for the same page forever.
         homeToken = page.continuation == token ? nil : page.continuation
         canLoadMoreHome = homeToken != nil
+        // Nothing new to show (all hidden or seen): the end of the list was already reached, so go on from here.
+        if added.isEmpty { loadMoreHome() }
     }
 
     /// A failed extra page leaves the shelves as they are; scrolling to the end tries again.
