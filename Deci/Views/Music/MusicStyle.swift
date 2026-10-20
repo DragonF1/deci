@@ -153,6 +153,13 @@ enum MusicStyle {
         static let pageTitle = TextStyle(17, .bold)
         static let pageSub = TextStyle(12, .medium)
         static let chip = TextStyle(11, .medium)
+        /// What a loading, empty or failed list says.
+        static let stateMessage = TextStyle(12)
+        /// The line that says what a song action did.
+        static let notice = TextStyle(12, .medium)
+        /// The title of a state that has a screen to itself (signed out), and its button.
+        static let stateTitle = TextStyle(15, .semibold)
+        static let stateButton = TextStyle(12, .semibold)
     }
 
     // MARK: - Radii

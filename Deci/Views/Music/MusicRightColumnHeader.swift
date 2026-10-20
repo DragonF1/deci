@@ -6,7 +6,7 @@ import SwiftUI
 /// account card, which holds Settings; there is no gear.
 ///
 /// Signed out, the tabs dim and answer nothing, there is no magnifier, and the avatar is a placeholder that opens the
-/// card with Sign in and Settings.
+/// card with Sign in and Settings. Lyrics and Up next wear their own headers (`MusicPanelHeaders`).
 struct MusicRightColumnHeader: View {
     let service: MusicService?
     let navigation: MusicSearchNavigation?
@@ -30,8 +30,7 @@ struct MusicRightColumnHeader: View {
             .opacity(isSignedIn ? 1 : 0.35)
             Spacer(minLength: 8)
             HStack(spacing: 10) {
-                // Lyrics has no search to open: the magnifier is not there.
-                if isSignedIn, let navigation, navigation.rightColumn != .lyrics {
+                if isSignedIn, let navigation {
                     MusicSearchButton(isOpen: navigation.isSearchOpen) { navigation.toggleSearch() }
                 }
                 if isSignedIn, let service {
@@ -82,7 +81,7 @@ private struct MusicHeaderTabButton: View {
 }
 
 /// The magnifier: a 22 pt box that opens search, and closes it again while it is open.
-private struct MusicSearchButton: View {
+struct MusicSearchButton: View {
     let isOpen: Bool
     let action: () -> Void
 

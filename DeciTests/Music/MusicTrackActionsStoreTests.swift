@@ -789,6 +789,11 @@ struct MusicTrackActionsStoreTests {
         #expect(await h.until { h.store.notice == nil })
     }
 
+    @Test("The notice stays about 2 seconds unless told otherwise")
+    func noticeDefaultTime() {
+        #expect(MusicTrackActionsStore.defaultNoticeDuration == .seconds(2))
+    }
+
     @Test("An older notice's timer never clears a newer notice early")
     func newerNoticeSurvives() async {
         let h = ActionsHarness(noticeDuration: .milliseconds(150))

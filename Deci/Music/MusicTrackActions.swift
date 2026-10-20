@@ -14,31 +14,40 @@ struct MusicTrackContext: Equatable, Sendable {
     static let none = MusicTrackContext(pageBrowseId: nil, pageTitle: nil, pageIsEditable: false)
 }
 
-/// One entry of a song's "..." menu.
+/// One entry of a song's "..." menu. The menu is text only, in groups with a line between them.
 enum MusicTrackAction: Hashable, Sendable {
     case saveToPlaylist
     case removeFromPlaylist
     case pinToListenAgain
     case unpinFromListenAgain
     case goToAlbum
+    case goToArtist
 
     var title: String {
         switch self {
-        case .saveToPlaylist: "Save to playlist..."
+        case .saveToPlaylist: "Save to playlist"
         case .removeFromPlaylist: "Remove from playlist"
         case .pinToListenAgain: "Pin to Listen again"
         case .unpinFromListenAgain: "Unpin from Listen again"
         case .goToAlbum: "Go to album"
+        case .goToArtist: "Go to artist"
         }
     }
 
-    var systemImage: String {
+    /// The block of the menu the action sits in: what changes the user's library, where to go, and the destructive one.
+    enum Group: Int, Comparable, Sendable {
+        case library
+        case navigate
+        case remove
+
+        static func < (lhs: Group, rhs: Group) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    var group: Group {
         switch self {
-        case .saveToPlaylist: "text.badge.plus"
-        case .removeFromPlaylist: "text.badge.minus"
-        case .pinToListenAgain: "pin"
-        case .unpinFromListenAgain: "pin.slash"
-        case .goToAlbum: "square.stack"
+        case .saveToPlaylist, .pinToListenAgain, .unpinFromListenAgain: .library
+        case .goToAlbum, .goToArtist: .navigate
+        case .removeFromPlaylist: .remove
         }
     }
 }
@@ -46,17 +55,40 @@ enum MusicTrackAction: Hashable, Sendable {
 /// Which song actions a row offers. Pure rules, so the row, its context menu and the mini player agree and the
 /// rules are tested without a view. An action shows only when it can work.
 enum MusicTrackActions {
-    /// In menu order: save, remove, pin or unpin, go to album.
+    /// In menu order: save, pin or unpin, then go to album and go to artist, then remove from playlist last.
     static func available(for track: MusicTrack, in context: MusicTrackContext) -> [MusicTrackAction] {
         var actions: [MusicTrackAction] = [.saveToPlaylist]
-        if canRemove(track, in: context) { actions.append(.removeFromPlaylist) }
         if let toggle = track.listenAgainPin, toggle.nextToken?.isEmpty == false {
             actions.append(toggle.isPinned ? .unpinFromListenAgain : .pinToListenAgain)
         }
         if let album = track.albumBrowseId, !album.isEmpty, album != context.pageBrowseId {
             actions.append(.goToAlbum)
         }
+        if artistCollection(for: track, in: context) != nil { actions.append(.goToArtist) }
+        if canRemove(track, in: context) { actions.append(.removeFromPlaylist) }
         return actions
+    }
+
+    /// The actions cut into the blocks of the menu, in order, with no empty block: a line goes between two blocks.
+    static func groups(of actions: [MusicTrackAction]) -> [[MusicTrackAction]] {
+        var groups: [[MusicTrackAction]] = []
+        var last: MusicTrackAction.Group?
+        for action in actions {
+            if action.group == last {
+                groups[groups.count - 1].append(action)
+            } else {
+                groups.append([action])
+                last = action.group
+            }
+        }
+        return groups
+    }
+
+    /// The artist page a song opens: its first credited artist, unless that page is the one the row is on.
+    static func artistCollection(for track: MusicTrack, in context: MusicTrackContext) -> MusicCollection? {
+        guard let artist = track.artistLinks.first, !artist.browseId.isEmpty,
+              artist.browseId != context.pageBrowseId else { return nil }
+        return artist.opener
     }
 
     /// The album page a song opens: its id, and the album's name when the row had one, so the page header has a

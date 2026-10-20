@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicTrackActionsModelTests.swift
 // Which song actions a row offers, and in what order: the pure rules behind the row's "..." button and its
-// context menu, without any view. Save to playlist, Remove from playlist, Pin to / Unpin from Listen again, Go to album.
+// context menu, without any view. Save to playlist, Pin to / Unpin from Listen again, Go to album, Go to artist and
+// Remove from playlist, and the blocks the menu cuts them into.
 
 import Foundation
 import Testing
@@ -24,16 +25,80 @@ struct MusicTrackActionsModelTests {
 
     // MARK: - Order
 
-    @Test("Every action shows in the fixed order: save, remove, pin, go to album")
+    @Test("Every action shows in the fixed order: save, pin, go to album, go to artist, remove last")
     func fullSetInOrder() {
-        let track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture", setVideoId: "set1", pin: MusicSamples.pinToggle())
-        #expect(actions(track, in: ownPlaylist) == [.saveToPlaylist, .removeFromPlaylist, .pinToListenAgain, .goToAlbum])
+        let track = fullTrack()
+        #expect(actions(track, in: ownPlaylist) == [.saveToPlaylist, .pinToListenAgain, .goToAlbum, .goToArtist, .removeFromPlaylist])
     }
 
     @Test("A pinned song offers Unpin instead of Pin, in the same place")
     func pinnedOffersUnpin() {
-        let track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture", setVideoId: "set1", pin: MusicSamples.pinToggle(isPinned: true))
-        #expect(actions(track, in: ownPlaylist) == [.saveToPlaylist, .removeFromPlaylist, .unpinFromListenAgain, .goToAlbum])
+        var track = fullTrack()
+        track.listenAgainPin = MusicSamples.pinToggle(isPinned: true)
+        #expect(actions(track, in: ownPlaylist) == [.saveToPlaylist, .unpinFromListenAgain, .goToAlbum, .goToArtist, .removeFromPlaylist])
+    }
+
+    /// A song with every extra: an album page, an artist page, a pin toggle and its own place in a playlist.
+    private func fullTrack() -> Deci.MusicTrack {
+        var track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture", setVideoId: "set1", pin: MusicSamples.pinToggle())
+        track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
+        return track
+    }
+
+    // MARK: - Blocks
+
+    @Test("The menu has three blocks: library, go to, and remove, with no empty block between them")
+    func blocks() {
+        #expect(MusicTrackActions.groups(of: actions(fullTrack(), in: ownPlaylist))
+            == [[.saveToPlaylist, .pinToListenAgain], [.goToAlbum, .goToArtist], [.removeFromPlaylist]])
+        #expect(MusicTrackActions.groups(of: [.saveToPlaylist]) == [[.saveToPlaylist]])
+        #expect(MusicTrackActions.groups(of: [.saveToPlaylist, .goToAlbum]) == [[.saveToPlaylist], [.goToAlbum]])
+        #expect(MusicTrackActions.groups(of: [.saveToPlaylist, .removeFromPlaylist]) == [[.saveToPlaylist], [.removeFromPlaylist]])
+    }
+
+    @Test("A bare song has one block, so the menu draws no line")
+    func bareSongOneBlock() {
+        #expect(MusicTrackActions.groups(of: actions(MusicSamples.track())) == [[.saveToPlaylist]])
+        #expect(MusicTrackActions.groups(of: []).isEmpty)
+    }
+
+    @Test("Every action belongs to the block the menu draws it in")
+    func groupOfEachAction() {
+        #expect(MusicTrackAction.saveToPlaylist.group == .library)
+        #expect(MusicTrackAction.pinToListenAgain.group == .library)
+        #expect(MusicTrackAction.unpinFromListenAgain.group == .library)
+        #expect(MusicTrackAction.goToAlbum.group == .navigate)
+        #expect(MusicTrackAction.goToArtist.group == .navigate)
+        #expect(MusicTrackAction.removeFromPlaylist.group == .remove)
+        #expect(MusicTrackAction.Group.library < .navigate && MusicTrackAction.Group.navigate < .remove)
+    }
+
+    // MARK: - Go to artist
+
+    @Test("Go to artist needs a credited artist with a page")
+    func artistNeedsLink() {
+        #expect(!actions(MusicSamples.track("v1")).contains(.goToArtist))
+        var track = MusicSamples.track("v1")
+        track.artistLinks = [MusicArtistLink(name: "Nobody", browseId: "")]
+        #expect(!actions(track).contains(.goToArtist))
+        track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
+        #expect(actions(track).contains(.goToArtist))
+    }
+
+    @Test("Go to artist opens the first credited artist, and hides on that artist's own page")
+    func artistFirstLinkAndOwnPage() {
+        var track = MusicSamples.track("v1")
+        track.artistLinks = [
+            MusicArtistLink(name: "First", browseId: "UCfirst"),
+            MusicArtistLink(name: "Second", browseId: "UCsecond"),
+        ]
+        #expect(MusicTrackActions.artistCollection(for: track, in: .none)
+            == MusicCollection(browseId: "UCfirst", kind: .artist, title: "First", subtitle: "", thumbnailURL: nil))
+        let own = MusicTrackContext(pageBrowseId: "UCfirst", pageTitle: "First", pageIsEditable: false)
+        let other = MusicTrackContext(pageBrowseId: "UCsecond", pageTitle: "Second", pageIsEditable: false)
+        #expect(!actions(track, in: own).contains(.goToArtist))
+        #expect(actions(track, in: other).contains(.goToArtist))
+        #expect(MusicTrackActions.artistCollection(for: MusicSamples.track("v1"), in: .none) == nil)
     }
 
     // MARK: - Remove from playlist
@@ -127,19 +192,22 @@ struct MusicTrackActionsModelTests {
 
     @Test("The menu words are the ones the owner asked for")
     func titles() {
-        #expect(MusicTrackAction.saveToPlaylist.title == "Save to playlist...")
+        #expect(MusicTrackAction.saveToPlaylist.title == "Save to playlist")
         #expect(MusicTrackAction.removeFromPlaylist.title == "Remove from playlist")
         #expect(MusicTrackAction.pinToListenAgain.title == "Pin to Listen again")
         #expect(MusicTrackAction.unpinFromListenAgain.title == "Unpin from Listen again")
         #expect(MusicTrackAction.goToAlbum.title == "Go to album")
+        #expect(MusicTrackAction.goToArtist.title == "Go to artist")
     }
 
-    @Test("No menu word has a dash and every action has an icon")
-    func noDashesAndIcons() {
-        let all: [MusicTrackAction] = [.saveToPlaylist, .removeFromPlaylist, .pinToListenAgain, .unpinFromListenAgain, .goToAlbum]
+    @Test("No menu word has a dash or an ellipsis, since the menu is text only")
+    func noDashesOrEllipses() {
+        let all: [MusicTrackAction] = [
+            .saveToPlaylist, .removeFromPlaylist, .pinToListenAgain, .unpinFromListenAgain, .goToAlbum, .goToArtist,
+        ]
         for action in all {
             #expect(!action.title.contains("\u{2014}") && !action.title.contains("\u{2013}"))
-            #expect(!action.systemImage.isEmpty)
+            #expect(!action.title.contains("...") && !action.title.contains("\u{2026}"))
         }
     }
 

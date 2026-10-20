@@ -90,15 +90,6 @@ enum MusicPageMenuItem: Hashable, Sendable {
         }
     }
 
-    var systemImage: String {
-        switch self {
-        case .pinListenAgain(let isPinned):
-            (isPinned ? MusicTrackAction.unpinFromListenAgain : MusicTrackAction.pinToListenAgain).systemImage
-        case .pinHome(let isPinned, _):
-            isPinned ? "pin.slash" : "pin"
-        }
-    }
-
     /// Off while Home is full and this artist is not pinned yet.
     var isEnabled: Bool {
         switch self {

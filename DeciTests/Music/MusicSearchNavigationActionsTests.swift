@@ -1,6 +1,6 @@
 // DeciTests/Music/MusicSearchNavigationActionsTests.swift
-// The song actions through the Music tab's navigation: Go to album opens an album page the way an artist opens
-// (with Back returning to the results), the picker is a panel like Up next and Lyrics, and the other actions
+// The song actions through the Music tab's navigation: Go to album and Go to artist open a page the way an artist
+// opens (with Back returning to the results), the picker is a panel like Up next and Lyrics, and the other actions
 // reach the actions store.
 
 import Foundation
@@ -52,6 +52,13 @@ private struct ActionNavHarness {
     var album: Deci.MusicTrack {
         var track = Deci.MusicTrack(videoId: "s1", title: "Song", artist: "Artist", album: "Fixture Album", durationSeconds: 200, thumbnailURL: nil)
         track.albumBrowseId = "MPREbFixture"
+        return track
+    }
+
+    /// A song that credits one artist with a page.
+    var credited: Deci.MusicTrack {
+        var track = album
+        track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
         return track
     }
 }
@@ -127,6 +134,44 @@ struct MusicSearchNavigationActionsTests {
     func albumWithoutId() {
         let h = ActionNavHarness()
         h.nav.perform(.goToAlbum, for: MusicSamples.track("s1"), in: .none)
+        #expect(h.path.isEmpty)
+    }
+
+    // MARK: - Go to artist
+
+    @Test("Go to artist from search results opens the artist over them, and Back returns to the results")
+    func artistFromResultsAndBack() async {
+        let h = ActionNavHarness()
+        await h.search("q", songs: [h.credited])
+        h.nav.perform(.goToArtist, for: h.credited, in: .none)
+
+        #expect(h.path == ["UCfixtureArtist"])
+        #expect(h.service.browse.path.last?.kind == .artist)
+        #expect(h.service.browse.path.last?.title == "Fixture Artist")
+        #expect(h.nav.showsResults == false)
+
+        h.service.browse.back()
+        #expect(h.nav.showsResults)
+        #expect(h.path.isEmpty)
+    }
+
+    @Test("Go to artist from Up next closes the queue so the page is not hidden behind it")
+    func artistFromQueue() {
+        let h = ActionNavHarness()
+        h.playSomething()
+        h.nav.toggleQueue()
+        h.nav.perform(.goToArtist, for: h.credited, in: .none)
+        #expect(h.nav.showsQueue == false)
+        #expect(h.path == ["UCfixtureArtist"])
+    }
+
+    @Test("Go to artist for a song with no artist link, or on that artist's own page, does nothing")
+    func artistWithoutLinkOrOnOwnPage() {
+        let h = ActionNavHarness()
+        h.nav.perform(.goToArtist, for: h.album, in: .none)
+        #expect(h.path.isEmpty)
+        let own = MusicTrackContext(pageBrowseId: "UCfixtureArtist", pageTitle: "Fixture Artist", pageIsEditable: false)
+        h.nav.perform(.goToArtist, for: h.credited, in: own)
         #expect(h.path.isEmpty)
     }
 
@@ -291,8 +336,9 @@ struct MusicSearchNavigationActionsTests {
     @Test("The navigation's action list is the store's, so rows and the mini player agree")
     func actionsList() {
         let h = ActionNavHarness()
-        let track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture", pin: MusicSamples.pinToggle())
-        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinToListenAgain, .goToAlbum])
+        var track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture", pin: MusicSamples.pinToggle())
+        track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
+        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinToListenAgain, .goToAlbum, .goToArtist])
     }
 
     // MARK: - Session

@@ -278,31 +278,3 @@ struct MusicPageView: View {
         )
     }
 }
-
-/// Back chevron and the page title.
-struct MusicPageTopBar: View {
-    let title: String
-    let onBack: () -> Void
-
-    var body: some View {
-        HStack(spacing: DesignTokens.Spacing.xs) {
-            Button(action: onBack) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(DesignTokens.Colors.textSecondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Back")
-            .help("Back")
-
-            Text(title)
-                .font(DesignTokens.Typography.rowNameBold)
-                .foregroundStyle(DesignTokens.Colors.textPrimary)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
-        }
-    }
-}

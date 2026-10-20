@@ -49,7 +49,7 @@ private struct MusicSignedInView: View {
     let navigation: MusicSearchNavigation
 
     /// How far the notice floats above the bottom edge of the column.
-    private static let noticeBottom: CGFloat = 12
+    private static let noticeBottom: CGFloat = 15
 
     private var nowPlaying: MusicTrack? { service.player.nowPlaying }
 

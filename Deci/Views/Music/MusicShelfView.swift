@@ -107,51 +107,6 @@ struct MusicPlayingOverlay: View {
     }
 }
 
-/// Centered spinner while a list loads.
-struct MusicLoadingView: View {
-    var body: some View {
-        ProgressView()
-            .controlSize(.small)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityLabel("Loading")
-    }
-}
-
-/// A list that failed to load: the message and a Retry button.
-struct MusicFailedView: View {
-    let message: String
-    let retry: () -> Void
-
-    var body: some View {
-        VStack(spacing: DesignTokens.Spacing.sm) {
-            Text(message)
-                .font(DesignTokens.Typography.rowDescription)
-                .foregroundStyle(DesignTokens.Colors.textSecondary)
-                .multilineTextAlignment(.center)
-            Button("Retry", action: retry)
-                .buttonStyle(.plain)
-                .font(DesignTokens.Typography.pickerText)
-                .foregroundStyle(DesignTokens.Colors.textPrimary)
-                .glassButtonStyle()
-                .contentShape(Rectangle())
-        }
-        .padding(.horizontal, DesignTokens.Spacing.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-/// A list that loaded empty.
-struct MusicEmptyView: View {
-    let text: String
-
-    var body: some View {
-        Text(text)
-            .font(DesignTokens.Typography.rowDescription)
-            .foregroundStyle(DesignTokens.Colors.textTertiary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 /// The end of a list that has more. It asks for the next page when it scrolls into view and
 /// shows a spinner while that loads. If a load fails it offers Load more instead of retrying
 /// on its own.

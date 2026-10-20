@@ -10,23 +10,88 @@ struct MusicLyricRowStyleTests {
 
     private let positions: [MusicLyricPosition] = [.past, .current, .upcoming]
 
-    private func style(_ position: MusicLyricPosition, hovered: Bool = false) -> MusicLyricRowStyle {
-        MusicLyricRowStyle(position: position, isHovered: hovered)
+    private func style(_ position: MusicLyricPosition, hovered: Bool = false, ahead: Int = 1) -> MusicLyricRowStyle {
+        MusicLyricRowStyle(position: position, isHovered: hovered, ahead: ahead)
     }
 
     // MARK: - Opacity
 
-    @Test("Upcoming lines are dim, sung lines are lit, the current line is full")
+    @Test("Sung lines are dim, the next line is lit, the current line is nearly full")
     func opacityByPosition() {
-        #expect(style(.upcoming).opacity == 0.35)
-        #expect(style(.past).opacity == 0.65)
-        #expect(style(.current).opacity == 1)
+        #expect(style(.past).opacity == 0.28)
+        #expect(style(.upcoming, ahead: 1).opacity == 0.56)
+        #expect(style(.current).opacity == 0.98)
     }
 
-    @Test("Sung lines stay brighter than upcoming ones, and the current line is the brightest")
+    @Test("The unsung part of the current line and its sung part use the spec's two levels")
+    func currentLineLevels() {
+        #expect(MusicLyricRowStyle.upcomingOpacity == 0.50)
+        #expect(MusicLyricRowStyle.currentOpacity == 0.98)
+    }
+
+    @Test("The current line is the brightest, and a sung line is dimmer than the next one")
     func opacityOrder() {
-        #expect(style(.upcoming).opacity < style(.past).opacity)
-        #expect(style(.past).opacity < style(.current).opacity)
+        #expect(style(.past).opacity < style(.upcoming, ahead: 1).opacity)
+        #expect(style(.upcoming, ahead: 1).opacity < style(.current).opacity)
+    }
+
+    @Test("The lines after the current one fade by 0.09 each: 0.56, 0.47, 0.38, 0.29, 0.20")
+    func aheadRamp() {
+        let expected = [0.56, 0.47, 0.38, 0.29, 0.20]
+        for (offset, value) in expected.enumerated() {
+            #expect(abs(MusicLyricRowStyle.aheadOpacity(offset + 1) - value) < 0.0001)
+        }
+    }
+
+    @Test("The fade stops at a floor of 0.16, however far ahead a line is")
+    func aheadFloor() {
+        #expect(abs(MusicLyricRowStyle.aheadOpacity(6) - 0.16) < 0.0001)
+        #expect(MusicLyricRowStyle.aheadOpacity(40) == 0.16)
+        #expect(MusicLyricRowStyle.aheadOpacity(Int.max) == 0.16)
+    }
+
+    @Test("A distance below one counts as the next line, and the fade only ever gets dimmer")
+    func aheadClampsAndDescends() {
+        #expect(MusicLyricRowStyle.aheadOpacity(0) == MusicLyricRowStyle.aheadOpacity(1))
+        #expect(MusicLyricRowStyle.aheadOpacity(-3) == MusicLyricRowStyle.aheadOpacity(1))
+        var last = MusicLyricRowStyle.aheadOpacity(1)
+        for distance in 2...12 {
+            let value = MusicLyricRowStyle.aheadOpacity(distance)
+            #expect(value <= last)
+            last = value
+        }
+    }
+
+    @Test("A row's place in the fade follows how far ahead of the current line it is")
+    func rowUsesItsDistance() {
+        #expect(style(.upcoming, ahead: 3).opacity == MusicLyricRowStyle.aheadOpacity(3))
+        #expect(style(.upcoming, ahead: 9).opacity == MusicLyricRowStyle.aheadFloorOpacity)
+        // The distance means nothing to a sung or a current row.
+        #expect(style(.past, ahead: 4).opacity == style(.past, ahead: 0).opacity)
+        #expect(style(.current, ahead: 4).opacity == style(.current, ahead: 0).opacity)
+    }
+
+    @Test("The distance ahead is 0 for sung and current lines and counts up from 1 after the current one")
+    func aheadOfIndex() {
+        #expect(MusicLyricRowStyle.ahead(of: 0, current: 2) == 0)
+        #expect(MusicLyricRowStyle.ahead(of: 2, current: 2) == 0)
+        #expect(MusicLyricRowStyle.ahead(of: 3, current: 2) == 1)
+        #expect(MusicLyricRowStyle.ahead(of: 7, current: 2) == 5)
+    }
+
+    @Test("Before the first line starts the first line is the next one")
+    func aheadWithNoCurrentLine() {
+        #expect(MusicLyricRowStyle.ahead(of: 0, current: nil) == 1)
+        #expect(MusicLyricRowStyle.ahead(of: 4, current: nil) == 5)
+    }
+
+    @Test("A line far ahead counts as the floor distance, where the fade has already stopped")
+    func aheadIsCapped() {
+        let cap = MusicLyricRowStyle.aheadFloorDistance
+        #expect(MusicLyricRowStyle.ahead(of: 40, current: 2) == cap)
+        #expect(MusicLyricRowStyle.ahead(of: 90, current: nil) == cap)
+        #expect(MusicLyricRowStyle.aheadOpacity(cap) == MusicLyricRowStyle.aheadFloorOpacity)
+        #expect(MusicLyricRowStyle.aheadOpacity(cap - 1) > MusicLyricRowStyle.aheadFloorOpacity)
     }
 
     @Test("The colour is the primary text colour at that opacity, so a light appearance still works")
@@ -47,9 +112,9 @@ struct MusicLyricRowStyleTests {
         }
     }
 
-    @Test("A hovered upcoming line stays dimmer than a hovered sung one")
+    @Test("A hovered far line stays dimmer than a hovered near one")
     func hoverKeepsOrder() {
-        #expect(style(.upcoming, hovered: true).opacity < style(.past, hovered: true).opacity)
+        #expect(style(.upcoming, hovered: true, ahead: 8).opacity < style(.upcoming, hovered: true, ahead: 1).opacity)
     }
 
     @Test("Hovering the current line changes nothing: it is already full")
@@ -87,19 +152,18 @@ struct MusicLyricRowStyleTests {
         #expect(fonts.count == 1)
     }
 
-    @Test("The font is bold and 15 points, inside the 14 to 16 that fits the popover")
-    func fontIsBoldSeventeen() {
+    @Test("The font is semibold and 17 points, the spec's size for the lines around the current one")
+    func fontIsSemiboldSeventeen() {
         let value = style(.current)
-        #expect(value.fontSize == 15)
-        #expect((14...16).contains(value.fontSize))
-        #expect(value.fontWeight == .bold)
-        #expect(value.font == Font.system(size: 15, weight: .bold))
+        #expect(value.fontSize == 17)
+        #expect(value.fontWeight == .semibold)
+        #expect(value.font == Font.system(size: 17, weight: .semibold))
     }
 
     @Test("Rows have 7 points above and below, so two rows are 14 points apart, with a little room between wrapped lines")
     func spacing() {
         #expect(MusicLyricRowStyle.verticalPadding * 2 == 14)
-        #expect(MusicLyricRowStyle.lineSpacing > 0)
+        #expect(MusicLyricRowStyle.lineSpacing == 3)
     }
 
     // MARK: - Text

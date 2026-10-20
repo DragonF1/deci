@@ -2,8 +2,8 @@
 import SwiftUI
 
 // The rules of the player column and the panels beside it (Lyrics, Up next) kept apart from the views, so they are
-// tested without drawing anything: what the output control says, what Up next lists, what the lyrics caption reads and
-// where a slider's knob sits.
+// tested without drawing anything: what the output control says, what Up next lists and what its header says, what the
+// lyrics header and footer read and where a slider's knob sits.
 
 /// The small label under the output control: where the music comes out, and the EQ profile in use on it.
 nonisolated enum MusicOutputLabel {
@@ -33,6 +33,18 @@ struct MusicQueueListing {
         sourceLine = Self.sourceLine(for: queue.source)
     }
 
+    /// The small label over the song in the player: "NOW PLAYING · FROM PLAYLIST", or just "NOW PLAYING" while the
+    /// queue's source is not known.
+    static func nowPlayingKicker(sourceLine: String?) -> String {
+        guard let sourceLine, !sourceLine.isEmpty else { return "NOW PLAYING" }
+        return "NOW PLAYING \u{00B7} " + sourceLine.uppercased()
+    }
+
+    /// The small label over the songs that follow: "NEXT IN QUEUE · 12".
+    static func nextKicker(count: Int) -> String {
+        "NEXT IN QUEUE \u{00B7} \(max(count, 0))"
+    }
+
     /// The line under "Playing Next". The queue knows its source's id, not its name, so the line says what kind of
     /// source it was where the id tells.
     static func sourceLine(for source: MusicQueue.Source?) -> String? {
@@ -50,12 +62,94 @@ struct MusicQueueListing {
     }
 }
 
-/// The caption above the lyrics: unsynced lyrics are marked as such, everything else is just "Lyrics".
+/// The three toggles of the Up next header, in the order they sit.
+nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
+    case shuffle
+    case loop
+    case autoplay
+
+    /// What the toggle is called for VoiceOver and the tooltip; the loop's own wording says its mode.
+    func title(loop: MusicLoopMode) -> String {
+        switch self {
+        case .shuffle: "Shuffle"
+        case .loop: loop.label
+        case .autoplay: "Autoplay"
+        }
+    }
+
+    func symbol(loop: MusicLoopMode) -> String {
+        switch self {
+        case .shuffle: "shuffle"
+        case .loop: loop.systemImage
+        case .autoplay: "infinity"
+        }
+    }
+
+    func isOn(shuffle: Bool, loop: MusicLoopMode, autoplay: Bool) -> Bool {
+        switch self {
+        case .shuffle: shuffle
+        case .loop: loop != .off
+        case .autoplay: autoplay
+        }
+    }
+}
+
+/// The line under the Up next header that says what the three toggles are set to.
+nonisolated enum MusicPlaybackStatus {
+    /// "Shuffle off · Loop all · Autoplay on".
+    static func text(shuffle: Bool, loop: MusicLoopMode, autoplay: Bool) -> String {
+        let separator = " \u{00B7} "
+        return "Shuffle \(word(shuffle))" + separator + "Loop \(loopWord(loop))" + separator + "Autoplay \(word(autoplay))"
+    }
+
+    /// Off, all (the queue starts over) or one (the song repeats).
+    static func loopWord(_ loop: MusicLoopMode) -> String {
+        switch loop {
+        case .off: "off"
+        case .playlist: "all"
+        case .song: "one"
+        }
+    }
+
+    private static func word(_ isOn: Bool) -> String { isOn ? "on" : "off" }
+}
+
+/// What the Lyrics panel says around the lines: the tag by the title, the kicker at the foot and the paragraphs of
+/// lyrics that are not timed.
 @MainActor
 enum MusicLyricsCaption {
-    static func text(for state: MusicLyricsStore.State) -> String {
+    static let title = "Lyrics"
+
+    /// The tag beside the title: unsynced lyrics are marked as such, everything else has none.
+    static func tag(for state: MusicLyricsStore.State) -> String? {
         if case .loaded(.plain) = state { return "Not synced" }
-        return "Lyrics"
+        return nil
+    }
+
+    /// The kicker at the foot, only under lyrics that are on screen.
+    static func footer(for state: MusicLyricsStore.State) -> String? {
+        switch state {
+        case .loaded(.synced): "SYNCED LYRICS"
+        case .loaded(.plain): "PLAIN LYRICS"
+        default: nil
+        }
+    }
+
+    /// The paragraphs of plain lyrics: split on empty lines, each paragraph's lines trimmed and kept in order.
+    static func stanzas(of text: String) -> [String] {
+        var stanzas: [String] = []
+        var current: [String] = []
+        for line in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if !current.isEmpty { stanzas.append(current.joined(separator: "\n")) }
+                current = []
+            } else {
+                current.append(trimmed)
+            }
+        }
+        if !current.isEmpty { stanzas.append(current.joined(separator: "\n")) }
+        return stanzas
     }
 }
 

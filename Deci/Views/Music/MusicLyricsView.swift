@@ -1,33 +1,30 @@
 // Deci/Views/Music/MusicLyricsView.swift
 import SwiftUI
 
-/// The lyrics panel of the Music tab: a caption, the lines (or the card that says why there are none) and, under them,
-/// where the lyrics came from. Synced lyrics scroll with the song and a tap on a line jumps there; plain lyrics are just
-/// text. The Lyrics screen puts it between its header and the transport.
+/// The lyrics panel of the right column, under its own header (`MusicLyricsHeader`): the lines (or the card that says why
+/// there are none) and, at the foot, a kicker that says what they are and where they came from. Synced lyrics scroll with
+/// the song and a tap on a line jumps there; plain lyrics are paragraphs of text.
 struct MusicLyricsView: View {
     let store: MusicLyricsStore
     /// Jumps the song to a time in seconds.
     let seek: (TimeInterval) -> Void
 
-    /// The margin of the caption, the lines and the state cards; the lines' own 8 pt row padding makes up the rest.
-    static let margin: CGFloat = 24
+    @Environment(\.musicBottomInset) private var bottomInset
+
+    /// The margin of the lines, the foot and the state cards; the lines' own 8 pt row padding makes up the rest.
+    static let margin: CGFloat = MusicPopupMetrics.lyricsPaddingSide
     private static let linesInset: CGFloat = margin - 8
 
     var body: some View {
         VStack(spacing: 0) {
-            Text(MusicLyricsCaption.text(for: store.state))
-                .musicText(MusicStyle.Typeface.secondaryMedium)
-                .foregroundStyle(MusicStyle.Palette.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Self.margin)
-
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .padding(.top, 4)
+                .padding(.top, MusicPopupMetrics.lyricsPaddingTop)
 
-            MusicLyricsCredit(text: creditText)
+            MusicLyricsFooter(kicker: MusicLyricsCaption.footer(for: store.state), credit: creditText)
                 .padding(.horizontal, Self.margin)
                 .padding(.top, 8)
+                .padding(.bottom, bottomInset)
         }
     }
 
@@ -72,7 +69,7 @@ struct MusicLyricsView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "music.note")
                         .font(.system(size: 13))
-                        .foregroundStyle(MusicStyle.Palette.textSecondary)
+                        .foregroundStyle(MusicStyle.Palette.textSub)
                         .accessibilityHidden(true)
                     MusicStateCardMessage(text: "Instrumental")
                 }
@@ -138,40 +135,69 @@ private extension View {
     }
 }
 
-/// The line under the lyrics that says where they came from, as the lyrics source worded it ("Lyrics from LRCLIB").
-/// It keeps its height when there is none, so the lines above do not move.
-private struct MusicLyricsCredit: View {
-    let text: String?
+/// The foot of the panel: a small kicker that says what the lyrics are ("SYNCED LYRICS") and, at the other end, where
+/// they came from as the lyrics source worded it ("Lyrics from LRCLIB"). It keeps its height when there is neither, so
+/// the lines above do not move.
+private struct MusicLyricsFooter: View {
+    let kicker: String?
+    let credit: String?
 
     var body: some View {
-        Text(text ?? "")
-            .musicText(MusicStyle.Typeface.caption)
-            .foregroundStyle(MusicStyle.Palette.textTertiary)
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, minHeight: 14, alignment: .leading)
+        HStack(spacing: 8) {
+            Text(kicker ?? "")
+                .musicText(MusicStyle.Typeface.kicker)
+                .foregroundStyle(Color.white.opacity(0.35))
+                .lineLimit(1)
+                .fixedSize()
+            Spacer(minLength: 0)
+            Text(credit ?? "")
+                .musicText(MusicStyle.Typeface.caption)
+                .foregroundStyle(MusicStyle.Palette.textTertiary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .frame(maxWidth: .infinity, minHeight: 12)
     }
 }
 
-/// Lyrics with no timing: text to read, in the colour of sung lines and no brighter, semibold. The Lyrics caption above
-/// says they are not synced.
+/// Lyrics with no timing: paragraphs to read, 14 pt regular and quiet, with no current line. The header's "Not synced"
+/// tag and the foot's "PLAIN LYRICS" say they are not synced. The top and the bottom dissolve a short way, so a paragraph
+/// cut by an edge does not look clipped, and the first lines are clear at rest.
 private struct MusicPlainLyricsView: View {
-    let text: String
+    private let stanzas: [String]
 
-    private let style = MusicLyricRowStyle(position: .past)
+    init(text: String) {
+        stanzas = MusicLyricsCaption.stanzas(of: text)
+    }
+
+    private static let topFade: CGFloat = 12
+    private static let bottomFade: CGFloat = 24
 
     var body: some View {
         ScrollView {
-            Text(text)
-                .font(.system(size: MusicLyricRowStyle.fontSize, weight: .semibold))
-                .lineSpacing(MusicLyricRowStyle.lineSpacing)
-                .foregroundStyle(style.color)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, DesignTokens.Spacing.sm)
-                .padding(.top, 12)
-                .padding(.bottom, 12)
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(Array(stanzas.enumerated()), id: \.offset) { _, stanza in
+                    Text(stanza)
+                        .font(.system(size: 14))
+                        .lineSpacing(5)
+                        .foregroundStyle(Color.white.opacity(0.82))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.horizontal, DesignTokens.Spacing.sm)
+            .padding(.top, 14)
+            .padding(.bottom, Self.bottomFade)
         }
         .scrollIndicators(.never)
-        .lyricsEdgeFade()
+        .mask(
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: Self.topFade)
+                Rectangle().fill(.black)
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: Self.bottomFade)
+            }
+        )
     }
 }
 
@@ -187,6 +213,8 @@ private struct MusicLyricRow: View, Equatable {
     let text: String
     let time: TimeInterval
     let position: MusicLyricPosition
+    /// How many lines ahead of the current one this row is (0 for a sung or the current row): where it sits in the fade.
+    let ahead: Int
     let reduceMotion: Bool
     /// How the line fills while it is sung. Nil for every row but the current one, and for a current line that has no
     /// time to sing in (it is simply lit).
@@ -197,7 +225,7 @@ private struct MusicLyricRow: View, Equatable {
     @State private var isHovered = false
 
     static func == (lhs: MusicLyricRow, rhs: MusicLyricRow) -> Bool {
-        lhs.text == rhs.text && lhs.time == rhs.time && lhs.position == rhs.position
+        lhs.text == rhs.text && lhs.time == rhs.time && lhs.position == rhs.position && lhs.ahead == rhs.ahead
             && lhs.reduceMotion == rhs.reduceMotion && lhs.fill == rhs.fill
     }
 
@@ -208,7 +236,7 @@ private struct MusicLyricRow: View, Equatable {
     }
 
     var body: some View {
-        let style = MusicLyricRowStyle(position: position, isHovered: isHovered)
+        let style = MusicLyricRowStyle(position: position, isHovered: isHovered, ahead: ahead)
         Button(action: select) {
             TimelineView(.animation(paused: !isFilling)) { context in
                 Text(shown(at: context.date))
@@ -274,6 +302,7 @@ private struct MusicSyncedLyricsList: View {
                         text: lines[index].text,
                         time: lines[index].time,
                         position: MusicLyricRowStyle.position(of: index, current: currentIndex),
+                        ahead: MusicLyricRowStyle.ahead(of: index, current: currentIndex),
                         reduceMotion: reduceMotion,
                         fill: index == currentIndex ? fillTiming(of: index) : nil,
                         store: store

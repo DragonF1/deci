@@ -31,6 +31,30 @@ struct MusicRightColumnTests {
         #expect(column(lyrics: true, picker: true) == .picker)
         #expect(column(queue: true, picker: true) == .picker)
     }
+
+    @Test("Lyrics and Up next wear their own headers, browse and the picker keep the browse one")
+    func headers() {
+        #expect(MusicRightColumn.lyrics.header == .lyrics)
+        #expect(MusicRightColumn.queue.header == .queue)
+        #expect(MusicRightColumn.browse.header == .browse)
+        #expect(MusicRightColumn.picker.header == .browse)
+    }
+
+    @Test("only Lyrics and Up next sit on the accent wash")
+    func wash() {
+        #expect(MusicRightColumn.lyrics.hasWash)
+        #expect(MusicRightColumn.queue.hasWash)
+        #expect(!MusicRightColumn.browse.hasWash)
+        #expect(!MusicRightColumn.picker.hasWash)
+    }
+
+    @Test("the wash is 0.10 at the top and gone by 90% of the column, and Lyrics pads 20 at the sides and 8 at the top")
+    func panelMetrics() {
+        #expect(MusicPopupMetrics.panelWashOpacity == 0.10)
+        #expect(MusicPopupMetrics.panelWashEnd == 0.9)
+        #expect(MusicPopupMetrics.lyricsPaddingSide == 20)
+        #expect(MusicPopupMetrics.lyricsPaddingTop == 8)
+    }
 }
 
 @Suite("MusicHeaderTab")

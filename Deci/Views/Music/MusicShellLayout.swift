@@ -15,6 +15,30 @@ nonisolated enum MusicRightColumn: Equatable {
         if showsQueue { return .queue }
         return .browse
     }
+
+    /// Which header the column wears. Lyrics and Up next have their own, with a Browse pill that goes back; the browse
+    /// header (Home, Library, the magnifier, the avatar) stays over the picker.
+    enum Header: Equatable {
+        case browse
+        case lyrics
+        case queue
+    }
+
+    var header: Header {
+        switch self {
+        case .lyrics: .lyrics
+        case .queue: .queue
+        case .browse, .picker: .browse
+        }
+    }
+
+    /// Lyrics and Up next sit on an accent wash; browse and the picker are plain.
+    var hasWash: Bool {
+        switch self {
+        case .lyrics, .queue: true
+        case .browse, .picker: false
+        }
+    }
 }
 
 /// The two tabs of the right column's header. Search is not one: the magnifier opens it, and the tab it was opened from
@@ -69,6 +93,14 @@ nonisolated enum MusicPopupMetrics {
     static let rightPaddingTop: CGFloat = 8
     static let rightPaddingSide: CGFloat = 16
     static let rightPaddingBottom: CGFloat = 14
+
+    /// The accent wash behind Lyrics and Up next: this opacity at the top of the column, nothing at 90% of its height.
+    static let panelWashOpacity = 0.10
+    static let panelWashEnd: CGFloat = 0.9
+
+    /// Lyrics fills the column with 20 pt at the sides (the rows' own 8 pt padding is part of it) and 8 under the header.
+    static let lyricsPaddingSide: CGFloat = 20
+    static let lyricsPaddingTop: CGFloat = 8
 
     /// The avatar in the header.
     static let avatarSize: CGFloat = 22

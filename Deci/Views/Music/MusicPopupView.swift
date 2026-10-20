@@ -2,8 +2,8 @@
 import SwiftUI
 
 /// The popup of the Music menu bar item: a split pane on a near black card. The player column on the left is always
-/// there; the right column has its own header (Home and Library, the magnifier, the avatar) and under it browse, Lyrics
-/// or Up next. It is dark whatever the Mixer wears.
+/// there; the right column has its own header (Home and Library, the magnifier, the avatar, or the Lyrics and Up next
+/// headers) and under it browse, Lyrics or Up next. It is dark whatever the Mixer wears.
 ///
 /// The view stays mounted while the popup is hidden, so it learns about opening and closing from the
 /// key window notifications of its own window, found by title (the Mixer popup is a window of the same
@@ -112,14 +112,12 @@ struct MusicPopupView: View {
     // MARK: - Right column
 
     /// The column's own header, and under it the content: browse, Lyrics, Up next or the picker. The pages bring their
-    /// own side margins, so the column adds none below the header.
+    /// own side margins, so the column adds none below the header. Lyrics and Up next have a header of their own and sit
+    /// on a wash of the song's accent.
     private var rightColumn: some View {
-        VStack(spacing: 0) {
-            MusicRightColumnHeader(
-                service: musicHost.service,
-                navigation: musicHost.navigation,
-                isAccountCardOpen: $musicHost.isAccountCardOpen
-            )
+        let column = musicHost.navigation?.rightColumn ?? .browse
+        return VStack(spacing: 0) {
+            header(for: column)
             if appSettings.showMusicInMenuBar {
                 MusicTabView(host: musicHost)
                     .environment(\.musicBottomInset, MusicPopupMetrics.rightPaddingBottom)
@@ -129,6 +127,22 @@ struct MusicPopupView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { MusicPanelWash(isOn: column.hasWash) }
+    }
+
+    @ViewBuilder
+    private func header(for column: MusicRightColumn) -> some View {
+        if let service = signedInService, let navigation = musicHost.navigation, column.header == .lyrics {
+            MusicLyricsHeader(store: service.lyrics) { navigation.closePanel() }
+        } else if let service = signedInService, let navigation = musicHost.navigation, column.header == .queue {
+            MusicQueueHeader(service: service, navigation: navigation)
+        } else {
+            MusicRightColumnHeader(
+                service: musicHost.service,
+                navigation: musicHost.navigation,
+                isAccountCardOpen: $musicHost.isAccountCardOpen
+            )
+        }
     }
 
     /// The account card under the avatar, over both columns. Signed out it is the card with Sign in and Settings.

@@ -98,7 +98,7 @@ struct MusicPlayerColumn: View {
                 )
                 .overlay(
                     Image(systemName: "music.note")
-                        .font(.system(size: 26))
+                        .font(.system(size: 30))
                         .foregroundStyle(Color.white.opacity(0.22))
                 )
                 .frame(width: size, height: size)

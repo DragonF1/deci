@@ -128,14 +128,37 @@ extension MusicStateCard where Content == MusicStateCardMessage {
     }
 }
 
+/// What a state card says: 12 pt at half white.
 struct MusicStateCardMessage: View {
     let text: String
 
     var body: some View {
         Text(text)
-            .musicText(MusicStyle.Typeface.row)
-            .foregroundStyle(MusicStyle.Palette.textSecondary)
+            .musicText(MusicStyle.Typeface.stateMessage)
+            .foregroundStyle(MusicStyle.Palette.textSub)
             .multilineTextAlignment(.center)
+    }
+}
+
+/// The round badge of a state that has a screen to itself (signed out, empty): a faint filled circle with a hairline
+/// ring and a symbol in it at 70% white. With no symbol it is the bare circle, for a spinner laid over it.
+struct MusicStateIconCircle: View {
+    let symbol: String?
+    var size: CGFloat = 52
+    var symbolSize: CGFloat = 22
+
+    var body: some View {
+        Group {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: symbolSize))
+                    .foregroundStyle(Color.white.opacity(MusicStyle.Opacity.pageSub))
+            }
+        }
+        .frame(width: size, height: size)
+            .background(Circle().fill(Color.white.opacity(MusicStyle.Opacity.segmentTrack)))
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+            .accessibilityHidden(true)
     }
 }
 
@@ -192,7 +215,7 @@ struct MusicFailedCard: View {
         MusicStateCard {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 14))
-                .foregroundStyle(MusicStyle.Palette.textSecondary)
+                .foregroundStyle(MusicStyle.Palette.textSub)
                 .accessibilityHidden(true)
             MusicStateCardMessage(text: message)
             MusicRetryPill(action: retry)
@@ -200,6 +223,7 @@ struct MusicFailedCard: View {
     }
 }
 
+/// The small outlined Retry pill of a failed list: a hairline capsule, no fill.
 struct MusicRetryPill: View {
     let action: () -> Void
 
@@ -211,14 +235,11 @@ struct MusicRetryPill: View {
                 Text("Retry")
                     .musicText(MusicStyle.Typeface.button)
             }
-            .foregroundStyle(MusicStyle.Palette.textPrimary)
-            .padding(.horizontal, DesignTokens.Spacing.sm)
+            .foregroundStyle(Color.white.opacity(0.85))
+            .padding(.horizontal, DesignTokens.Spacing.md)
             .frame(height: 24)
-            .background(
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
-                    .fill(DesignTokens.Colors.pickerBackground)
-            )
-            .contentShape(Rectangle())
+            .overlay(Capsule(style: .continuous).strokeBorder(MusicStyle.Palette.strokeButton, lineWidth: 1))
+            .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -293,11 +314,7 @@ private struct MusicCollectionMenuModifier: ViewModifier {
                     MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
                 }
                 if let onUnpin {
-                    Button {
-                        onUnpin(collection)
-                    } label: {
-                        Label("Unpin from Home", systemImage: "pin.slash")
-                    }
+                    Button("Unpin from Home") { onUnpin(collection) }
                 }
             }
         } else {

@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicPlayerLogicTests.swift
 // The rules of the player column and the panels beside it kept apart from the views: what the output control says, what
-// the Up next list shows and where it comes from, what the lyrics caption reads, and where the slider's knob sits.
+// the Up next list shows and where it comes from, what the Up next header and the lyrics header and foot read, and
+// where the slider's knob sits.
 
 import SwiftUI
 import Testing
@@ -87,20 +88,144 @@ struct MusicQueueListingTests {
         #expect(line("PLsample") == "From playlist")
         #expect(line("UCsample") == "From playlist or album")
     }
+
+    @Test("the kicker over the song in the player names the source in capitals")
+    func nowPlayingKicker() {
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: "From playlist") == "NOW PLAYING \u{00B7} FROM PLAYLIST")
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: "From Liked music") == "NOW PLAYING \u{00B7} FROM LIKED MUSIC")
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: "From radio") == "NOW PLAYING \u{00B7} FROM RADIO")
+    }
+
+    @Test("a queue with no known source has a kicker without a source")
+    func nowPlayingKickerWithoutSource() {
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: nil) == "NOW PLAYING")
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: "") == "NOW PLAYING")
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: MusicQueueListing(queue: MusicQueue()).sourceLine) == "NOW PLAYING")
+    }
+
+    @Test("the kicker over the later songs counts them")
+    func nextKicker() {
+        #expect(MusicQueueListing.nextKicker(count: 12) == "NEXT IN QUEUE \u{00B7} 12")
+        #expect(MusicQueueListing.nextKicker(count: 0) == "NEXT IN QUEUE \u{00B7} 0")
+        #expect(MusicQueueListing.nextKicker(count: 2000) == "NEXT IN QUEUE \u{00B7} 2000")
+        #expect(MusicQueueListing.nextKicker(count: -3) == "NEXT IN QUEUE \u{00B7} 0")
+    }
+}
+
+@MainActor
+@Suite("MusicPlaybackToggle")
+struct MusicPlaybackToggleTests {
+    @Test("the header carries Shuffle, Loop and Autoplay, in that order")
+    func order() {
+        #expect(MusicPlaybackToggle.allCases == [.shuffle, .loop, .autoplay])
+    }
+
+    @Test("each toggle has its own glyph, and the loop's follows its mode")
+    func symbols() {
+        #expect(MusicPlaybackToggle.shuffle.symbol(loop: .off) == "shuffle")
+        #expect(MusicPlaybackToggle.autoplay.symbol(loop: .off) == "infinity")
+        #expect(MusicPlaybackToggle.loop.symbol(loop: .off) == "repeat")
+        #expect(MusicPlaybackToggle.loop.symbol(loop: .playlist) == "repeat")
+        #expect(MusicPlaybackToggle.loop.symbol(loop: .song) == "repeat.1")
+    }
+
+    @Test("each toggle is on by its own setting, and any loop mode but off lights the loop")
+    func isOn() {
+        #expect(MusicPlaybackToggle.shuffle.isOn(shuffle: true, loop: .off, autoplay: false))
+        #expect(!MusicPlaybackToggle.shuffle.isOn(shuffle: false, loop: .song, autoplay: true))
+        #expect(MusicPlaybackToggle.autoplay.isOn(shuffle: false, loop: .off, autoplay: true))
+        #expect(!MusicPlaybackToggle.autoplay.isOn(shuffle: true, loop: .song, autoplay: false))
+        #expect(!MusicPlaybackToggle.loop.isOn(shuffle: true, loop: .off, autoplay: true))
+        #expect(MusicPlaybackToggle.loop.isOn(shuffle: false, loop: .playlist, autoplay: false))
+        #expect(MusicPlaybackToggle.loop.isOn(shuffle: false, loop: .song, autoplay: false))
+    }
+
+    @Test("the names are what VoiceOver says, and the loop's says its mode")
+    func titles() {
+        #expect(MusicPlaybackToggle.shuffle.title(loop: .song) == "Shuffle")
+        #expect(MusicPlaybackToggle.autoplay.title(loop: .song) == "Autoplay")
+        #expect(MusicPlaybackToggle.loop.title(loop: .off) == "Loop off")
+        #expect(MusicPlaybackToggle.loop.title(loop: .playlist) == "Loop playlist")
+        #expect(MusicPlaybackToggle.loop.title(loop: .song) == "Loop song")
+    }
+}
+
+@MainActor
+@Suite("MusicPlaybackStatus")
+struct MusicPlaybackStatusTests {
+    @Test("the line reads each setting in turn, joined by dots")
+    func line() {
+        #expect(MusicPlaybackStatus.text(shuffle: false, loop: .playlist, autoplay: true)
+            == "Shuffle off \u{00B7} Loop all \u{00B7} Autoplay on")
+        #expect(MusicPlaybackStatus.text(shuffle: true, loop: .off, autoplay: false)
+            == "Shuffle on \u{00B7} Loop off \u{00B7} Autoplay off")
+        #expect(MusicPlaybackStatus.text(shuffle: true, loop: .song, autoplay: true)
+            == "Shuffle on \u{00B7} Loop one \u{00B7} Autoplay on")
+    }
+
+    @Test("the loop words are off, all and one")
+    func loopWords() {
+        #expect(MusicLoopMode.allCases.map(MusicPlaybackStatus.loopWord) == ["off", "all", "one"])
+    }
 }
 
 @MainActor
 @Suite("MusicLyricsCaption")
 struct MusicLyricsCaptionTests {
-    @Test("plain lyrics are captioned 'Not synced' and every other state 'Lyrics'")
-    func caption() {
-        #expect(MusicLyricsCaption.text(for: .loaded(.plain("words"))) == "Not synced")
-        #expect(MusicLyricsCaption.text(for: .loaded(.synced([]))) == "Lyrics")
-        #expect(MusicLyricsCaption.text(for: .loaded(.instrumental)) == "Lyrics")
-        #expect(MusicLyricsCaption.text(for: .loaded(.notFound)) == "Lyrics")
-        #expect(MusicLyricsCaption.text(for: .idle) == "Lyrics")
-        #expect(MusicLyricsCaption.text(for: .loading) == "Lyrics")
-        #expect(MusicLyricsCaption.text(for: .failed("x", retryAfter: nil)) == "Lyrics")
+    @Test("the header's title is always Lyrics")
+    func title() {
+        #expect(MusicLyricsCaption.title == "Lyrics")
+    }
+
+    @Test("only plain lyrics carry the 'Not synced' tag")
+    func tag() {
+        #expect(MusicLyricsCaption.tag(for: .loaded(.plain("words"))) == "Not synced")
+        #expect(MusicLyricsCaption.tag(for: .loaded(.synced([]))) == nil)
+        #expect(MusicLyricsCaption.tag(for: .loaded(.instrumental)) == nil)
+        #expect(MusicLyricsCaption.tag(for: .loaded(.notFound)) == nil)
+        #expect(MusicLyricsCaption.tag(for: .idle) == nil)
+        #expect(MusicLyricsCaption.tag(for: .loading) == nil)
+        #expect(MusicLyricsCaption.tag(for: .failed("x", retryAfter: nil)) == nil)
+    }
+
+    @Test("the foot names synced and plain lyrics, and nothing else")
+    func footer() {
+        #expect(MusicLyricsCaption.footer(for: .loaded(.synced([]))) == "SYNCED LYRICS")
+        #expect(MusicLyricsCaption.footer(for: .loaded(.plain("words"))) == "PLAIN LYRICS")
+        #expect(MusicLyricsCaption.footer(for: .loaded(.instrumental)) == nil)
+        #expect(MusicLyricsCaption.footer(for: .loaded(.notFound)) == nil)
+        #expect(MusicLyricsCaption.footer(for: .idle) == nil)
+        #expect(MusicLyricsCaption.footer(for: .loading) == nil)
+        #expect(MusicLyricsCaption.footer(for: .failed("x", retryAfter: nil)) == nil)
+    }
+
+    @Test("plain lyrics split into paragraphs on empty lines, each keeping its own lines in order")
+    func stanzas() {
+        let text = "Synthetic line one\nSynthetic line two\n\nSynthetic line three\n\n\n\nSynthetic line four"
+        #expect(MusicLyricsCaption.stanzas(of: text) == [
+            "Synthetic line one\nSynthetic line two", "Synthetic line three", "Synthetic line four",
+        ])
+    }
+
+    @Test("a line of only spaces is an empty line, and lines are trimmed")
+    func stanzasTrim() {
+        #expect(MusicLyricsCaption.stanzas(of: "  one  \n   \n\ttwo\t") == ["one", "two"])
+    }
+
+    @Test("Windows line endings split the same way")
+    func stanzasCarriageReturns() {
+        #expect(MusicLyricsCaption.stanzas(of: "one\r\ntwo\r\n\r\nthree") == ["one\ntwo", "three"])
+    }
+
+    @Test("no text, or only blank lines, has no paragraphs")
+    func stanzasEmpty() {
+        #expect(MusicLyricsCaption.stanzas(of: "").isEmpty)
+        #expect(MusicLyricsCaption.stanzas(of: "\n \n\t\n").isEmpty)
+    }
+
+    @Test("text with emoji and accents is kept as it is")
+    func stanzasUnicode() {
+        #expect(MusicLyricsCaption.stanzas(of: "caf\u{00E9} \u{1F3B5}\n\nna\u{00EF}ve") == ["caf\u{00E9} \u{1F3B5}", "na\u{00EF}ve"])
     }
 }
 

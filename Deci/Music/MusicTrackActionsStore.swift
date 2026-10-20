@@ -55,7 +55,10 @@ final class MusicTrackActionsStore {
     /// Told when a call says the session is gone, so the service can sign out.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
 
-    init(backend: any MusicBackend, browse: MusicBrowseStore, noticeDuration: Duration = .seconds(3)) {
+    /// How long a line says what an action did: about 2 s, as the design has it.
+    static let defaultNoticeDuration: Duration = .seconds(2)
+
+    init(backend: any MusicBackend, browse: MusicBrowseStore, noticeDuration: Duration = defaultNoticeDuration) {
         self.backend = backend
         self.browse = browse
         self.noticeDuration = noticeDuration

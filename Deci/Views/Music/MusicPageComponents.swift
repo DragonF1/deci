@@ -11,6 +11,8 @@ import SwiftUI
 struct MusicBackRow: View {
     let label: String
     let action: () -> Void
+    /// The tooltip, when "Back to <label>" does not read right (the playlist picker has no screen of its own to name).
+    var help: String?
 
     @State private var isHovered = false
 
@@ -32,7 +34,7 @@ struct MusicBackRow: View {
         .animation(DesignTokens.Animation.hover, value: isHovered)
         .accessibilityLabel("Back")
         .accessibilityHint(label)
-        .help("Back to \(label)")
+        .help(help ?? "Back to \(label)")
     }
 }
 
@@ -116,7 +118,8 @@ struct MusicShufflePill: View {
     }
 }
 
-/// The round "..." button with the page's own actions. A plain SwiftUI menu, restyled with the others in Phase 3.
+/// The round "..." button with the page's own actions. A plain SwiftUI menu, which draws as the native dark menu in the
+/// popup's forced dark window: text only, like the song menu.
 struct MusicPageMoreMenu: View {
     let title: String
     let items: [MusicPageMenuItem]
@@ -125,12 +128,8 @@ struct MusicPageMoreMenu: View {
     var body: some View {
         Menu {
             ForEach(items, id: \.self) { item in
-                Button {
-                    perform(item)
-                } label: {
-                    Label(item.title, systemImage: item.systemImage)
-                }
-                .disabled(!item.isEnabled)
+                Button(item.title) { perform(item) }
+                    .disabled(!item.isEnabled)
             }
         } label: {
             Image(systemName: "ellipsis")

@@ -63,23 +63,22 @@ struct MusicListenAgainPinItem: View {
 
     var body: some View {
         let item: MusicTrackAction = toggle.isPinned ? .unpinFromListenAgain : .pinToListenAgain
-        Button(action: action) {
-            Label(item.title, systemImage: item.systemImage)
-        }
+        Button(item.title, action: action)
     }
 }
 
-/// A song's actions as menu entries. The "..." button and the context menu share it, so they never differ.
+/// A song's actions as menu entries, text only, with a line between the blocks (library, go to, remove). The "..."
+/// button and the context menu share it, so they never differ.
 struct MusicTrackMenuItems: View {
     let actions: [MusicTrackAction]
     let perform: (MusicTrackAction) -> Void
 
     var body: some View {
-        ForEach(actions, id: \.self) { action in
-            Button {
-                perform(action)
-            } label: {
-                Label(action.title, systemImage: action.systemImage)
+        let groups = MusicTrackActions.groups(of: actions)
+        ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+            if index > 0 { Divider() }
+            ForEach(group, id: \.self) { action in
+                Button(action.title) { perform(action) }
             }
         }
     }
@@ -133,8 +132,8 @@ struct MusicTrackMoreButton: View {
     static let roundSize: CGFloat = 22
 }
 
-/// The add-to-playlist panel: it replaces the content area like Up next and Lyrics. It lists the playlists the song
-/// can go to, with a check on those that already hold it; a tap saves the song there.
+/// The add-to-playlist panel: it replaces the content area like Up next and Lyrics, under the browse header. It lists
+/// the playlists the song can go to, with a check on those that already hold it; a tap saves the song there.
 struct MusicPlaylistPickerView: View {
     let picker: MusicTrackActionsStore.Picker
     let onBack: () -> Void
@@ -142,20 +141,27 @@ struct MusicPlaylistPickerView: View {
     let onRetry: () -> Void
 
     var body: some View {
-        VStack(spacing: DesignTokens.Spacing.xs) {
-            MusicPageTopBar(title: "Save to playlist", onBack: onBack)
+        VStack(alignment: .leading, spacing: 0) {
+            MusicBackRow(label: "Back", action: onBack, help: "Close")
+                .padding(.top, MusicBrowseLayout.pageTop)
                 .padding(.horizontal, MusicStyle.Spacing.page)
-                .padding(.top, 8)
 
-            Text(picker.track.title)
-                .font(DesignTokens.Typography.caption)
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .lineLimit(1)
-                .padding(.horizontal, MusicStyle.Spacing.page)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Save to playlist")
+                    .musicText(MusicStyle.Typeface.heading)
+                    .foregroundStyle(MusicStyle.Palette.textHeading)
+                    .accessibilityAddTraits(.isHeader)
+                Text(picker.track.title)
+                    .musicText(MusicStyle.Typeface.secondary)
+                    .foregroundStyle(MusicStyle.Palette.textMeta)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, MusicStyle.Spacing.page)
+            .padding(.top, 8)
+            .padding(.bottom, 8)
 
             content
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
     }
 
@@ -163,11 +169,14 @@ struct MusicPlaylistPickerView: View {
     private var content: some View {
         switch picker.load {
         case .idle, .loading:
-            MusicLoadingView()
+            MusicLoadingCard()
+                .padding(.top, 40)
         case .failed(let message):
-            MusicFailedView(message: message, retry: onRetry)
+            MusicFailedCard(message: message, retry: onRetry)
+                .padding(.top, 40)
         case .loaded(let options) where options.isEmpty:
-            MusicEmptyView(text: "No playlists you can add to.")
+            MusicStateCard(message: "No playlists you can add to.")
+                .padding(.top, 40)
         case .loaded(let options):
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -176,7 +185,7 @@ struct MusicPlaylistPickerView: View {
                     }
                     MusicBottomInsetSpacer()
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, MusicStyle.Spacing.page - MusicPlaylistOptionRow.inset)
             }
             .scrollIndicators(.never)
             // A save is out: the list waits for its answer, so a second tap sends nothing more.
@@ -186,60 +195,85 @@ struct MusicPlaylistPickerView: View {
     }
 }
 
-/// One playlist in the picker: its cover, its name, and a check when it already holds the song.
+/// One playlist in the picker: a 40 pt row with its 30 pt cover and name, the hover surface of the other rows, and a
+/// check in the song's accent when it already holds the song.
 private struct MusicPlaylistOptionRow: View {
     let option: MusicPlaylistOption
     let action: () -> Void
 
+    /// The hover surface reaches this far past the content, like a song row's.
+    static let inset: CGFloat = 6
+
+    @State private var isHovered = false
+    @Environment(\.musicAccent) private var accent
+
     var body: some View {
         Button(action: action) {
-            HStack(spacing: DesignTokens.Spacing.sm) {
-                MusicThumbnail(url: option.thumbnailURL, size: 32, placeholder: "music.note.list")
+            HStack(spacing: 10) {
+                MusicThumbnail(url: option.thumbnailURL, size: 30, placeholder: "music.note.list", cornerRadius: MusicStyle.Radius.small)
                     .accessibilityHidden(true)
 
                 Text(option.title)
-                    .font(DesignTokens.Typography.rowName)
-                    .foregroundStyle(DesignTokens.Colors.textPrimary)
+                    .musicText(MusicStyle.Typeface.rowMedium)
+                    .foregroundStyle(MusicStyle.Palette.textRow)
                     .lineLimit(1)
 
-                Spacer(minLength: DesignTokens.Spacing.sm)
+                Spacer(minLength: 8)
 
                 if option.containsVideo {
                     Image(systemName: "checkmark")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(DesignTokens.Colors.accentPrimary)
+                        .foregroundStyle(accent.solid)
                         .accessibilityHidden(true)
                 }
             }
-            .hoverableRow()
+            .padding(.horizontal, Self.inset)
+            .frame(height: 40)
+            .background(
+                RoundedRectangle(cornerRadius: MusicBrowseLayout.rowHoverRadius, style: .continuous)
+                    .fill(isHovered ? MusicStyle.Palette.rowHover : .clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(DesignTokens.Animation.hover, value: isHovered)
         .accessibilityLabel(option.containsVideo ? "\(option.title), already has this song" : option.title)
     }
 }
 
-/// The short line that says what a song action did, over the bottom of the content area so nothing moves. It clears
-/// itself; a click on it clears it sooner. A failure is in the warning colour.
+/// The short line that says what a song action did, over the bottom of the content area so nothing moves: a small dark
+/// pill with a check in the song's accent, 15 pt above the bottom. It clears itself after about 2 s; a click on it clears
+/// it sooner. A failure has the warning sign and colour.
 struct MusicNoticeLine: View {
     let notice: MusicTrackActionsStore.Notice
     let onDismiss: () -> Void
 
+    @Environment(\.musicAccent) private var accent
+
     var body: some View {
-        Text(notice.text)
-            .font(DesignTokens.Typography.rowDescription)
-            .foregroundStyle(notice.isError ? DesignTokens.Colors.mutedIndicator : DesignTokens.Colors.textPrimary)
-            .lineLimit(2)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, DesignTokens.Spacing.md)
-            .padding(.vertical, DesignTokens.Spacing.xs)
-            .musicBlurBackground(in: Capsule())
-            .overlay(Capsule().strokeBorder(DesignTokens.Colors.glassBorder, lineWidth: 0.5))
-            .padding(.horizontal, DesignTokens.Spacing.sm)
-            .padding(.bottom, DesignTokens.Spacing.xs)
-            .contentShape(Capsule())
-            .onTapGesture(perform: onDismiss)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isStaticText)
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        HStack(spacing: 6) {
+            Image(systemName: notice.isError ? "exclamationmark.triangle" : "checkmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(notice.isError ? DesignTokens.Colors.mutedIndicator : accent.solid)
+                .accessibilityHidden(true)
+            Text(notice.text)
+                .musicText(MusicStyle.Typeface.notice)
+                .foregroundStyle(notice.isError ? DesignTokens.Colors.mutedIndicator : Color.white.opacity(0.92))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 12)
+        .padding(.vertical, 6)
+        .background(shape.fill(MusicStyle.Palette.menuFill))
+        .overlay(shape.strokeBorder(MusicStyle.Palette.menuBorder, lineWidth: 1))
+        .shadow(color: .black.opacity(0.35), radius: 6, y: 4)
+        .padding(.horizontal, MusicStyle.Spacing.page)
+        .contentShape(shape)
+        .onTapGesture(perform: onDismiss)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isStaticText)
     }
 }

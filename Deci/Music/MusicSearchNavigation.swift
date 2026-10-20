@@ -273,12 +273,14 @@ final class MusicSearchNavigation {
         service.trackActions.actions(for: track, in: context)
     }
 
-    /// Runs a menu item. Save to playlist opens the picker over whatever shows; Go to album opens the album page;
-    /// Remove and Pin go to the actions store, which shows what happened as a short line.
+    /// Runs a menu item. Save to playlist opens the picker over whatever shows; Go to album and Go to artist open the
+    /// page; Remove and Pin go to the actions store, which shows what happened as a short line.
     func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
             if let album = MusicTrackActions.albumCollection(for: track) { openCollection(album) }
+        case .goToArtist:
+            if let artist = MusicTrackActions.artistCollection(for: track, in: context) { openArtist(artist) }
         case .saveToPlaylist:
             queueForced = false
             service.lyrics.setPanelOpen(false)

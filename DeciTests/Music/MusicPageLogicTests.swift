@@ -164,8 +164,6 @@ struct MusicPageMenuItemTests {
         let unpin = MusicPageMenuItem.pinListenAgain(isPinned: true)
         #expect(pin.title == MusicTrackAction.pinToListenAgain.title)
         #expect(unpin.title == MusicTrackAction.unpinFromListenAgain.title)
-        #expect(pin.systemImage == MusicTrackAction.pinToListenAgain.systemImage)
-        #expect(unpin.systemImage == MusicTrackAction.unpinFromListenAgain.systemImage)
         #expect(pin.isEnabled && unpin.isEnabled)
     }
 
@@ -174,8 +172,6 @@ struct MusicPageMenuItemTests {
         #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: true).title == "Pin to Home")
         #expect(MusicPageMenuItem.pinHome(isPinned: true, isEnabled: true).title == "Unpin from Home")
         #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: false).title == "Pin to Home (Home is full)")
-        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: true).systemImage == "pin")
-        #expect(MusicPageMenuItem.pinHome(isPinned: true, isEnabled: true).systemImage == "pin.slash")
     }
 
     @Test("a full Home turns the entry off, and an unpin is always on")

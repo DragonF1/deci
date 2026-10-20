@@ -1,70 +1,36 @@
 // Deci/Views/Music/MusicQueueView.swift
 import SwiftUI
 
-/// The middle of the Up next screen: its title and the Autoplay chip, the song in the player on an accent row, and under
-/// "Playing Next" the songs that follow, in a list that scrolls. A tap on a song plays it.
+/// The body of the Up next panel, under its header (`MusicQueueHeader`): a line that says what Shuffle, Loop and Autoplay
+/// are set to, the song in the player, and under "NEXT IN QUEUE" the songs that follow, in a list that scrolls. A tap on
+/// a song plays it.
 struct MusicQueueView: View {
     let service: MusicService
 
     var body: some View {
         let listing = MusicQueueListing(queue: service.queue)
-        VStack(spacing: 0) {
-            titleRow
-                .padding(.top, 8)
+        VStack(alignment: .leading, spacing: 10) {
+            Text(MusicPlaybackStatus.text(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn))
+                .musicText(MusicStyle.Typeface.secondary)
+                .foregroundStyle(MusicStyle.Palette.textMeta)
+                .lineLimit(1)
+                .padding(.horizontal, MusicStyle.Spacing.page)
 
             if let current = listing.current {
-                MusicQueueCurrentRow(track: current, isPlaying: service.player.isPlaying) {
-                    service.jump(to: current)
+                VStack(alignment: .leading, spacing: 6) {
+                    MusicQueueKicker(text: MusicQueueListing.nowPlayingKicker(sourceLine: listing.sourceLine))
+                    MusicQueueCurrentRow(track: current, isPlaying: service.player.isPlaying) {
+                        service.jump(to: current)
+                    }
                 }
-                .padding(.top, 8)
             }
 
-            header(sourceLine: listing.sourceLine)
-                .padding(.top, MusicStyle.Spacing.sectionGap)
-
-            upcoming(listing.upcoming)
-                .padding(.top, 4)
-        }
-    }
-
-    // MARK: - Title
-
-    private var titleRow: some View {
-        HStack(spacing: 0) {
-            Text("Up next")
-                .musicText(MusicStyle.Typeface.heading)
-                .foregroundStyle(MusicStyle.Palette.textPrimary)
-                .accessibilityAddTraits(.isHeader)
-            Spacer(minLength: 8)
-            // The play order and the loop, beside Autoplay: the same buttons, states and loop cycle as Now Playing.
-            HStack(spacing: 2) {
-                MusicShuffleButton(service: service)
-                MusicLoopButton(service: service)
-            }
-            .padding(.trailing, 6)
-            MusicAutoplayChip(isOn: service.isAutoplayOn) {
-                service.setAutoplay(!service.isAutoplayOn)
+            VStack(alignment: .leading, spacing: 4) {
+                MusicQueueKicker(text: MusicQueueListing.nextKicker(count: listing.upcoming.count))
+                upcoming(listing.upcoming)
             }
         }
-        .frame(height: MusicAutoplayChip.height)
-        .padding(.horizontal, MusicStyle.Spacing.page)
-    }
-
-    private func header(sourceLine: String?) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text("Playing Next")
-                .sectionHeaderStyle()
-            if let sourceLine {
-                Text(sourceLine)
-                    .musicText(MusicStyle.Typeface.secondary)
-                    .foregroundStyle(MusicStyle.Palette.textSecondary)
-                    .lineLimit(1)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, MusicStyle.Spacing.page)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
+        .padding(.top, 10)
     }
 
     // MARK: - The list
@@ -77,10 +43,11 @@ struct MusicQueueView: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(tracks) { track in
+                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                         MusicSongRow(track: track, isCurrent: false, isPlaying: false, layout: .playlist) {
                             service.jump(to: track)
                         }
+                        .musicRowHairline(index > 0)
                     }
                 }
                 .padding(.bottom, Self.fadeHeight)
@@ -90,7 +57,7 @@ struct MusicQueueView: View {
         }
     }
 
-    /// The last rows dissolve into the controls under the list.
+    /// The last rows dissolve into the bottom of the column.
     private static let fadeHeight: CGFloat = 24
 
     private var bottomFade: some View {
@@ -102,38 +69,22 @@ struct MusicQueueView: View {
     }
 }
 
-/// The Autoplay button: when a playlist or an album ends, recommended songs carry on. Lit in the accent colour while on.
-struct MusicAutoplayChip: View {
-    let isOn: Bool
-    let action: () -> Void
-
-    static let height: CGFloat = 24
+/// A small uppercase label over a group of rows.
+private struct MusicQueueKicker: View {
+    let text: String
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: "infinity")
-                    .font(.system(size: 11, weight: .medium))
-                Text("Autoplay")
-                    .musicText(MusicStyle.Typeface.button)
-            }
-            .foregroundStyle(isOn ? MusicStyle.Palette.accent : MusicStyle.Palette.textPrimary)
-            .padding(.horizontal, 8)
-            .frame(height: Self.height)
-            .background(
-                RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
-                    .fill(isOn ? MusicStyle.Palette.accentFill : MusicStyle.Palette.fillControl)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isOn ? .isSelected : [])
-        .help("Keep playing recommended songs after a playlist or an album ends")
+        Text(text)
+            .musicText(MusicStyle.Typeface.kicker)
+            .foregroundStyle(MusicStyle.Palette.textMeta)
+            .lineLimit(1)
+            .padding(.horizontal, MusicStyle.Spacing.page)
+            .accessibilityAddTraits(.isHeader)
     }
 }
 
-/// The song in the player, at the top of Up next: the accent row, with the waveform that moves while it plays. A tap
-/// starts it over; the right click menu is the song's own.
+/// The song in the player, at the top of Up next: a 48 pt row on a soft white fill, with the small spectrum that moves
+/// while it plays. A tap starts it over; the right click menu is the song's own.
 private struct MusicQueueCurrentRow: View {
     let track: MusicTrack
     let isPlaying: Bool
@@ -144,34 +95,38 @@ private struct MusicQueueCurrentRow: View {
     @Environment(\.musicTrackMenu) private var menu
     @Environment(\.musicTrackContext) private var context
 
-    private var accent: Color { MusicStyle.Palette.accent }
-
     var body: some View {
         let actions = menu?.actions(track, context) ?? []
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            MusicThumbnail(url: track.thumbnailURL, size: 32, cornerRadius: MusicStyle.Radius.small)
+        HStack(spacing: 10) {
+            MusicThumbnail(url: track.thumbnailURL, size: 34, cornerRadius: MusicStyle.Radius.small)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(track.title)
-                    .musicText(MusicStyle.Typeface.row)
-                    .foregroundStyle(accent)
+                    .musicText(MusicStyle.Typeface.rowMedium)
+                    .foregroundStyle(MusicStyle.Palette.textPlaying)
                     .lineLimit(1)
                     .accessibilityHidden(true)
                 subtitle
             }
             Spacer(minLength: 8)
-            Image(systemName: "waveform")
-                .font(.system(size: 13))
-                .foregroundStyle(accent)
-                .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isPlaying)
-                .accessibilityHidden(true)
+            HStack(spacing: 8) {
+                MusicMiniSpectrumView(isPlaying: isPlaying)
+                if let duration = MusicSongRowLayout.durationText(seconds: track.durationSeconds) {
+                    Text(duration)
+                        .musicText(MusicStyle.Typeface.mono)
+                        .foregroundStyle(MusicStyle.Palette.textMeta)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .accessibilityHidden(true)
+                }
+            }
         }
-        .padding(.leading, DesignTokens.Spacing.sm)
-        .padding(.trailing, DesignTokens.Spacing.sm)
-        .frame(height: MusicSongRow.height)
+        .padding(.leading, 8)
+        .padding(.trailing, 10)
+        .frame(height: 48)
         .background(
-            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.rowRadius, style: .continuous)
-                .fill(MusicStyle.Palette.accentRow)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.white.opacity(0.05))
         )
         .padding(.horizontal, MusicStyle.Spacing.page)
         .contentShape(Rectangle())
@@ -198,7 +153,7 @@ private struct MusicQueueCurrentRow: View {
         }
     }
 
-    /// "artist · album" in the accent colour at three quarters; the artist names stay links.
+    /// "artist · album" at half white; the artist names stay links.
     private var subtitle: some View {
         HStack(spacing: 0) {
             MusicArtistLine(
@@ -206,13 +161,13 @@ private struct MusicQueueCurrentRow: View {
                 links: track.artistLinks,
                 hidesPlainTextFromVoiceOver: true,
                 font: MusicStyle.Typeface.secondary.font,
-                color: accent.opacity(0.75)
+                color: MusicStyle.Palette.textSub
             )
             .layoutPriority(1)
             if let album = track.album, !album.isEmpty {
                 Text(" \u{00B7} " + album)
                     .musicText(MusicStyle.Typeface.secondary)
-                    .foregroundStyle(accent.opacity(0.75))
+                    .foregroundStyle(MusicStyle.Palette.textSub)
                     .lineLimit(1)
                     .accessibilityHidden(true)
             }
