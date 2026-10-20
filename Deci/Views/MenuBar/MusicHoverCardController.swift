@@ -306,14 +306,16 @@ final class MusicHoverCardController {
 
 // MARK: - AppKit pieces
 
-/// Receives the tracking area's events for the status item's button.
+/// Receives the tracking area's events for the status item's button. An NSResponder, so the overrides answer to
+/// `mouseEntered:` and `mouseExited:`: on a plain NSObject `@objc func mouseEntered(with:)` is `mouseEnteredWith:`,
+/// which the tracking area never calls.
 @MainActor
-private final class ButtonHoverTarget: NSObject {
+private final class ButtonHoverTarget: NSResponder {
     var onEnter: (() -> Void)?
     var onExit: (() -> Void)?
 
-    @objc func mouseEntered(with event: NSEvent) { onEnter?() }
-    @objc func mouseExited(with event: NSEvent) { onExit?() }
+    override func mouseEntered(with event: NSEvent) { onEnter?() }
+    override func mouseExited(with event: NSEvent) { onExit?() }
 }
 
 /// A panel that never becomes key or main: the card is used with the mouse and takes no focus from what the owner is

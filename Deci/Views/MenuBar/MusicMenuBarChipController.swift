@@ -57,28 +57,25 @@ final class MusicMenuBarChipController {
 
     // MARK: - Observation
 
-    /// Everything the chip is drawn from, and nothing that ticks: no playback position.
     private func scheduleTracking() {
-        withObservationTracking {
-            _ = settings.appSettings.musicMenuBarStyle
-            _ = settings.appSettings.showMusicInMenuBar
-            _ = musicHost.service
-            _ = musicHost.service?.authState
-            _ = musicHost.hasLoadedTrack
-            let player = musicHost.service?.player
-            _ = player?.nowPlaying
-            _ = player?.isPlaying
-            _ = player?.isLoading
+        CommittedObservation.track { [weak self] in
+            self?.readTracked()
         } onChange: { [weak self] in
-            // onChange fires in willSet: re-register now so the next change is not missed, and read the committed
-            // values in a task (the same way MenuBarIconCoordinator does).
-            MainActor.assumeIsolated { [weak self] in
-                self?.scheduleTracking()
-            }
-            Task { @MainActor [weak self] in
-                self?.refresh()
-            }
+            self?.refresh()
         }
+    }
+
+    /// Everything the chip is drawn from, and nothing that ticks: no playback position.
+    private func readTracked() {
+        _ = settings.appSettings.musicMenuBarStyle
+        _ = settings.appSettings.showMusicInMenuBar
+        _ = musicHost.service
+        _ = musicHost.service?.authState
+        _ = musicHost.hasLoadedTrack
+        let player = musicHost.service?.player
+        _ = player?.nowPlaying
+        _ = player?.isPlaying
+        _ = player?.isLoading
     }
 
     /// The Music scene builds its item after the app's init returns: wait for its button, for up to a second.
@@ -216,5 +213,23 @@ final class MusicMenuBarChipController {
         coverTask?.cancel()
         coverTask = nil
         coverURL = nil
+    }
+}
+
+/// Calls `onChange` after every change to what `read` reads. withObservationTracking's onChange runs in willSet, while
+/// the property still holds its old value, so tracking again from there follows the old value's children: the Music
+/// service is made lazily, and a tracker that looked again while it was still nil never followed its player. Here the
+/// tracking starts again on the next main actor turn, once the change has landed, and `onChange` runs after it.
+@MainActor
+enum CommittedObservation {
+    static func track(_ read: @escaping @MainActor () -> Void, onChange: @escaping @MainActor () -> Void) {
+        withObservationTracking {
+            read()
+        } onChange: {
+            Task { @MainActor in
+                track(read, onChange: onChange)
+                onChange()
+            }
+        }
     }
 }
