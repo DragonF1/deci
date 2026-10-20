@@ -34,10 +34,11 @@ struct MusicPlayerColumn: View {
             kicker(state)
             cover(state)
             meta(state)
+            // The spectrum takes whatever height is left, so the column is full top to bottom.
             spectrumBlock(state)
+                .frame(maxHeight: .infinity, alignment: .top)
             transport(state)
             viewButtons(state)
-            Spacer(minLength: 0)
         }
         .padding(MusicPopupMetrics.playerColumnPadding)
         .frame(width: MusicPopupMetrics.playerColumnWidth, alignment: .topLeading)

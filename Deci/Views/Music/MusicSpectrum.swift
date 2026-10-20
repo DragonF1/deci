@@ -18,6 +18,19 @@ nonisolated enum MusicSpectrum {
     /// The distance between two bars' tops: the box less one bar, over the 27 gaps.
     static let pitch: Double = (boxHeight - barThickness) / Double(barCount - 1)
 
+    /// The box stretches to fill the column; `boxHeight` is the design's height and the least it gets. A taller box
+    /// spreads the same 28 bars and thickens them a little, up to 4 pt, in half points.
+    static func barThickness(height: Double) -> Double {
+        guard height.isFinite, height > boxHeight else { return barThickness }
+        return min(4, (2 * barThickness * height / boxHeight).rounded() / 2)
+    }
+
+    /// `pitch` for a box `height` tall.
+    static func pitch(height: Double) -> Double {
+        guard height.isFinite, height > boxHeight else { return pitch }
+        return (height - barThickness(height: height)) / Double(barCount - 1)
+    }
+
     /// The shortest a bar gets, as a level. Levels run from here to 1.
     static let minLevel: Double = 0.08
 
@@ -65,8 +78,8 @@ nonisolated enum MusicSpectrum {
     }
 
     /// The top of bar `index` in the box.
-    static func barY(_ index: Int) -> Double {
-        Double(index) * pitch
+    static func barY(_ index: Int, height: Double = boxHeight) -> Double {
+        Double(index) * pitch(height: height)
     }
 
     /// How many bars are played: the floor of progress x 28. The tiny nudge keeps a position that sits exactly on a bar
@@ -78,29 +91,30 @@ nonisolated enum MusicSpectrum {
     }
 
     /// The playhead line's top: round(played x 3.78) - 1.5, kept inside the box.
-    static func playheadY(playedCount: Int) -> Double {
-        let y = (Double(playedCount) * playheadStep).rounded() - 1.5
-        return min(max(y, 0), boxHeight - 1)
+    static func playheadY(playedCount: Int, height: Double = boxHeight) -> Double {
+        let height = max(height, boxHeight)
+        let y = (Double(playedCount) * playheadStep * height / boxHeight).rounded() - 1.5
+        return min(max(y, 0), height - 1)
     }
 
     // MARK: - Seeking
 
     /// Where a click at `y` points along the song, 0...1: the top of the box is the start, the bottom the end.
-    static func progress(atY y: Double) -> Double {
+    static func progress(atY y: Double, height: Double = boxHeight) -> Double {
         guard y.isFinite else { return 0 }
-        return min(max(y / boxHeight, 0), 1)
+        return min(max(y / max(height, boxHeight), 0), 1)
     }
 
     /// The position in seconds a click at `y` seeks to.
-    static func seekTime(atY y: Double, duration: TimeInterval) -> TimeInterval {
+    static func seekTime(atY y: Double, duration: TimeInterval, height: Double = boxHeight) -> TimeInterval {
         guard duration.isFinite, duration > 0 else { return 0 }
-        return progress(atY: y) * duration
+        return progress(atY: y, height: height) * duration
     }
 
     /// Where the preview line is drawn for a pointer at `y`: under the pointer, inside the box.
-    static func previewLineY(atY y: Double) -> Double {
+    static func previewLineY(atY y: Double, height: Double = boxHeight) -> Double {
         guard y.isFinite else { return 0 }
-        return min(max(y, 0), boxHeight - 1)
+        return min(max(y, 0), max(height, boxHeight) - 1)
     }
 
     // MARK: - Real levels

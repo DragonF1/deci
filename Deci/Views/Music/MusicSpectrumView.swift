@@ -18,6 +18,8 @@ struct MusicSpectrumCanvas: View, Animatable {
     var barsOpacity: Double = 1
     /// Every bar this wide, whatever its level (the empty state's flat bars).
     var fixedWidth: Double?
+    /// The box's height: it stretches to fill the column, never under the design's.
+    var height: Double = MusicSpectrum.boxHeight
 
     var hue: Double
     var saturation: Double
@@ -31,6 +33,7 @@ struct MusicSpectrumCanvas: View, Animatable {
         unplayedOpacity: Double,
         barsOpacity: Double = 1,
         fixedWidth: Double? = nil,
+        height: Double = MusicSpectrum.boxHeight,
         accent: MusicTint
     ) {
         self.levels = levels
@@ -40,6 +43,7 @@ struct MusicSpectrumCanvas: View, Animatable {
         self.unplayedOpacity = unplayedOpacity
         self.barsOpacity = barsOpacity
         self.fixedWidth = fixedWidth
+        self.height = height
         hue = accent.hue
         saturation = accent.saturation
         brightness = accent.brightness
@@ -56,25 +60,26 @@ struct MusicSpectrumCanvas: View, Animatable {
 
     var body: some View {
         let accent = Color(hue: hue, saturation: saturation, brightness: brightness)
-        Canvas { context, size in
+        let thickness = MusicSpectrum.barThickness(height: height)
+        Canvas { [height] context, size in
             for (index, level) in levels.enumerated() {
                 let width = fixedWidth ?? MusicSpectrum.width(forLevel: level)
                 let rect = CGRect(
                     x: (size.width - width) / 2,
-                    y: MusicSpectrum.barY(index),
+                    y: MusicSpectrum.barY(index, height: height),
                     width: width,
-                    height: MusicSpectrum.barThickness
+                    height: thickness
                 )
                 let isPlayed = index < played || index == pulseIndex
                 let color = isPlayed ? accent.opacity(barsOpacity) : Color.white.opacity(unplayedOpacity * barsOpacity)
-                context.fill(Path(roundedRect: rect, cornerRadius: MusicSpectrum.barThickness / 2), with: .color(color))
+                context.fill(Path(roundedRect: rect, cornerRadius: thickness / 2), with: .color(color))
             }
             if showsPlayhead {
-                let line = CGRect(x: 0, y: MusicSpectrum.playheadY(playedCount: played), width: size.width, height: 1)
+                let line = CGRect(x: 0, y: MusicSpectrum.playheadY(playedCount: played, height: height), width: size.width, height: 1)
                 context.fill(Path(line), with: .color(Color.white.opacity(0.90)))
             }
         }
-        .frame(width: MusicSpectrum.boxWidth, height: MusicSpectrum.boxHeight)
+        .frame(width: MusicSpectrum.boxWidth, height: height)
         .accessibilityHidden(true)
     }
 }
@@ -93,6 +98,8 @@ struct MusicSpectrumView: View {
     @State private var hoverY: Double?
     /// The finger's height while it is down, which lets go by itself when the drag is cancelled.
     @GestureState private var dragY: Double?
+    /// The box's height as laid out: whatever the column leaves it, never under the design's.
+    @State private var height: Double = MusicSpectrum.boxHeight
 
     /// How far VoiceOver's increment moves the song.
     private static let adjustStep: TimeInterval = 10
@@ -127,8 +134,11 @@ struct MusicSpectrumView: View {
             unplayedOpacity: unplayedOpacity,
             barsOpacity: state.barsOpacity,
             fixedWidth: state.isEmptyLayout ? MusicPlayerColumnState.emptyBarWidth : nil,
+            height: height,
             accent: accent
         )
+        .frame(maxHeight: .infinity, alignment: .top)
+        .onGeometryChange(for: Double.self) { max($0.size.height, MusicSpectrum.boxHeight) } action: { height = $0 }
         .overlay { preview }
         .contentShape(Rectangle())
         .onContinuousHover { phase in
@@ -165,7 +175,7 @@ struct MusicSpectrumView: View {
             .updating($dragY) { value, state, _ in state = value.location.y }
             .onEnded { value in
                 guard canSeek else { return }
-                service?.seek(to: MusicSpectrum.seekTime(atY: value.location.y, duration: duration))
+                service?.seek(to: MusicSpectrum.seekTime(atY: value.location.y, duration: duration, height: height))
             }
     }
 
@@ -173,8 +183,8 @@ struct MusicSpectrumView: View {
     @ViewBuilder
     private var preview: some View {
         if let y = dragY ?? hoverY, canSeek {
-            let lineY = MusicSpectrum.previewLineY(atY: y)
-            let time = MusicSpectrum.seekTime(atY: y, duration: duration)
+            let lineY = MusicSpectrum.previewLineY(atY: y, height: height)
+            let time = MusicSpectrum.seekTime(atY: y, duration: duration, height: height)
             ZStack(alignment: .topLeading) {
                 Rectangle()
                     .fill(Color.white.opacity(0.55))
@@ -190,9 +200,9 @@ struct MusicSpectrumView: View {
                             .fill(Color.black.opacity(0.70))
                     )
                     .fixedSize()
-                    .position(x: MusicSpectrum.boxWidth / 2, y: min(max(lineY - 9, 8), MusicSpectrum.boxHeight - 8))
+                    .position(x: MusicSpectrum.boxWidth / 2, y: min(max(lineY - 9, 8), height - 8))
             }
-            .frame(width: MusicSpectrum.boxWidth, height: MusicSpectrum.boxHeight, alignment: .topLeading)
+            .frame(width: MusicSpectrum.boxWidth, height: height, alignment: .topLeading)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }

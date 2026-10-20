@@ -99,6 +99,20 @@ struct MusicSpectrumGeometryTests {
         #expect(abs(MusicSpectrum.barY(27) + MusicSpectrum.barThickness - 104) < 1e-9)
     }
 
+    @Test("a taller box spreads the 28 bars to its bottom edge and thickens them, never under the design's")
+    func stretched() {
+        let height = 190.0
+        let thickness = MusicSpectrum.barThickness(height: height)
+        #expect(thickness == 3.5)
+        #expect(abs(MusicSpectrum.barY(27, height: height) + thickness - height) < 1e-9)
+        #expect(MusicSpectrum.barThickness(height: 80) == 2)
+        #expect(MusicSpectrum.barThickness(height: 400) == 4)
+        #expect(MusicSpectrum.barY(27, height: 80) == MusicSpectrum.barY(27))
+        #expect(MusicSpectrum.progress(atY: 95, height: height) == 0.5)
+        #expect(MusicSpectrum.playheadY(playedCount: 28, height: height) == height - 1)
+        #expect(MusicSpectrum.previewLineY(atY: 500, height: height) == height - 1)
+    }
+
     @Test("a bar is 8 + 120 x level wide, rounded to a half point")
     func widths() {
         #expect(MusicSpectrum.width(forLevel: 0.08) == 17.5)
