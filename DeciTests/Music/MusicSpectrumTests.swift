@@ -133,34 +133,24 @@ struct MusicSpectrumGeometryTests {
         #expect(MusicSpectrum.width(forLevel: .infinity) == 8)
     }
 
-    @Test("the bars above the position are full, the one it is on part way, the rest empty")
-    func fill() {
-        let progress = 12.5 / 28
-        #expect(MusicSpectrum.fill(forBar: 11, progress: progress) == 1)
-        #expect(abs(MusicSpectrum.fill(forBar: 12, progress: progress) - 0.5) < 1e-9)
-        #expect(MusicSpectrum.fill(forBar: 13, progress: progress) == 0)
-        #expect(MusicSpectrum.fill(forBar: 0, progress: 0) == 0)
-        #expect(MusicSpectrum.fill(forBar: 27, progress: 1) == 1)
-        #expect(MusicSpectrum.fill(forBar: 3, progress: 9) == 1)
-        #expect(MusicSpectrum.fill(forBar: 3, progress: .nan) == 0)
-    }
-
-    @Test("the fill grows smoothly: a hundredth of a bar of song is a hundredth of a bar of colour, never a whole bar")
-    func fillIsContinuous() {
-        let totals = (0...2800).map { step in
-            (0..<28).reduce(0.0) { $0 + MusicSpectrum.fill(forBar: $1, progress: Double(step) / 2800) }
-        }
-        let steps = zip(totals.dropFirst(), totals).map { $0 - $1 }
-        #expect(steps.allSatisfy { abs($0 - 0.01) < 1e-6 })
-    }
-
-    @Test("the soft edge starts just before a bar and ends just past it, so an empty bar shows no colour, a full one no white")
+    @Test("the fill's soft edge is two bars deep and slides from just above the box to just below it")
     func fillEdge() {
-        let half = MusicSpectrum.fillEdge / 2
-        #expect(MusicSpectrum.fillEdgeX(minX: 20, width: 100, fill: 0) + half == 20)
-        #expect(MusicSpectrum.fillEdgeX(minX: 20, width: 100, fill: 1) - half == 120)
-        #expect(MusicSpectrum.fillEdgeX(minX: 20, width: 100, fill: 0.5) == 70)
-        #expect(MusicSpectrum.fillEdgeX(minX: 20, width: 100, fill: .nan) + half == 20)
+        let edge = MusicSpectrum.fillEdge()
+        #expect(abs(edge - 2 * MusicSpectrum.pitch) < 1e-9)
+        #expect(abs(MusicSpectrum.fillEdgeY(progress: 0) + edge / 2) < 1e-9)
+        #expect(abs(MusicSpectrum.fillEdgeY(progress: 1) - edge / 2 - MusicSpectrum.boxHeight) < 1e-9)
+        #expect(abs(MusicSpectrum.fillEdgeY(progress: 0.5) - MusicSpectrum.boxHeight / 2) < 1e-9)
+        #expect(MusicSpectrum.fillEdgeY(progress: .nan) == MusicSpectrum.fillEdgeY(progress: 0))
+        #expect(MusicSpectrum.fillEdgeY(progress: 9) == MusicSpectrum.fillEdgeY(progress: 1))
+        let tall = 190.0
+        #expect(abs(MusicSpectrum.fillEdgeY(progress: 1, height: tall) - MusicSpectrum.fillEdge(height: tall) / 2 - tall) < 1e-9)
+    }
+
+    @Test("the fill slides down smoothly: equal steps of the song move it equal steps, never a whole bar at once")
+    func fillIsContinuous() {
+        let ys = (0...2800).map { MusicSpectrum.fillEdgeY(progress: Double($0) / 2800, height: 190) }
+        let steps = zip(ys.dropFirst(), ys).map { $0 - $1 }
+        #expect(steps.allSatisfy { $0 > 0 && $0 < MusicSpectrum.pitch(height: 190) / 10 })
     }
 
     @Test("a glide covers a quarter of the way per poll and lands once it is close")
@@ -193,8 +183,8 @@ struct MusicSpectrumSeekTests {
     func clickingABar(index: Int) {
         let y = MusicSpectrum.barY(index) + MusicSpectrum.barThickness / 2
         let progress = MusicSpectrum.progress(atY: y)
-        let fill = MusicSpectrum.fill(forBar: index, progress: progress)
-        #expect(fill > 0 && fill < 1)
+        // The bar sits inside the fill's soft edge: part coloured, not past it.
+        #expect(abs(MusicSpectrum.fillEdgeY(progress: progress) - y) <= MusicSpectrum.fillEdge() / 2)
     }
 
     @Test("the position a seek asks for is the fraction of the song, never past its end")

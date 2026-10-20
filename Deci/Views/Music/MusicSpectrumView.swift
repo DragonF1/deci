@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// The bars of the spectrum, drawn: 28 horizontal bars from the start of the song at the top to the end at the bottom.
-/// The accent runs down them as the song plays, each bar filling from its left end with a soft edge into the white.
+/// The accent runs down them from the top as the song plays, with a soft edge into the white below.
 /// The accent is the animated part, so a new song's colour glides in with the rest of the column.
 struct MusicSpectrumCanvas: View, Animatable {
     /// The level of each bar.
@@ -57,6 +57,8 @@ struct MusicSpectrumCanvas: View, Animatable {
         let played = accent.opacity(barsOpacity)
         let unplayed = Color.white.opacity(unplayedOpacity * barsOpacity)
         Canvas { [height, progress] context, size in
+            let edge = MusicSpectrum.fillEdge(height: height)
+            let edgeY = MusicSpectrum.fillEdgeY(progress: progress, height: height)
             for (index, level) in levels.enumerated() {
                 let width = fixedWidth ?? MusicSpectrum.width(forLevel: level)
                 let rect = CGRect(
@@ -66,19 +68,16 @@ struct MusicSpectrumCanvas: View, Animatable {
                     height: thickness
                 )
                 let path = Path(roundedRect: rect, cornerRadius: thickness / 2)
-                let fill = MusicSpectrum.fill(forBar: index, progress: progress)
-                if fill <= 0 {
-                    context.fill(path, with: .color(unplayed))
-                } else if fill >= 1 {
+                if rect.maxY <= edgeY - edge / 2 {
                     context.fill(path, with: .color(played))
+                } else if rect.minY >= edgeY + edge / 2 {
+                    context.fill(path, with: .color(unplayed))
                 } else {
-                    // The bar being played: the accent up to the soft edge, the white past it.
-                    let edge = MusicSpectrum.fillEdgeX(minX: rect.minX, width: rect.width, fill: fill)
-                    let half = MusicSpectrum.fillEdge / 2
+                    // A bar in the soft edge: the accent above it, the white below.
                     context.fill(path, with: .linearGradient(
                         Gradient(colors: [played, unplayed]),
-                        startPoint: CGPoint(x: edge - half, y: rect.midY),
-                        endPoint: CGPoint(x: edge + half, y: rect.midY)
+                        startPoint: CGPoint(x: rect.midX, y: edgeY - edge / 2),
+                        endPoint: CGPoint(x: rect.midX, y: edgeY + edge / 2)
                     ))
                 }
             }

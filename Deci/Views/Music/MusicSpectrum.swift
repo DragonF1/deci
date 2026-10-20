@@ -81,23 +81,19 @@ nonisolated enum MusicSpectrum {
 
     // MARK: - The fill
 
-    /// How much of bar `index` is played, 0...1. The bars fill one after another, each from its left end across its
-    /// width, so the colour runs down the box as the song plays instead of stepping a bar at a time.
-    static func fill(forBar index: Int, progress: Double) -> Double {
-        guard progress.isFinite else { return 0 }
-        let played = min(max(progress, 0), 1) * Double(barCount)
-        return min(max(played - Double(index), 0), 1)
+    /// The soft edge between the played colour above and the unplayed white below: two bars deep, so the bar the song
+    /// is on takes the colour gradually from its top down while the next one starts to.
+    static func fillEdge(height: Double = boxHeight) -> Double {
+        2 * pitch(height: height)
     }
 
-    /// The soft edge between a bar's played colour and its unplayed white, in points.
-    static let fillEdge: Double = 10
-
-    /// The middle of the soft edge along a bar that starts at `minX`, is `width` wide and is `fill` played. It travels
-    /// from just before the bar's left end to just past its right, so an unplayed bar shows no colour and a played one
-    /// no white.
-    static func fillEdgeX(minX: Double, width: Double, fill: Double) -> Double {
-        let fill = fill.isFinite ? min(max(fill, 0), 1) : 0
-        return minX - fillEdge / 2 + fill * (width + fillEdge)
+    /// The middle of the soft edge, from the top of the box. It slides from just above the box at the start to just
+    /// below it at the end, so no bar has colour before the song starts and none is left white once it ends.
+    static func fillEdgeY(progress: Double, height: Double = boxHeight) -> Double {
+        let progress = progress.isFinite ? min(max(progress, 0), 1) : 0
+        let height = max(height, boxHeight)
+        let edge = fillEdge(height: height)
+        return -edge / 2 + progress * (height + edge)
     }
 
     // MARK: - The glide
