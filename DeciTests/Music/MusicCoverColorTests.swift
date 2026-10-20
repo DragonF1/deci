@@ -118,17 +118,6 @@ struct MusicCoverColorTests {
         #expect(abs(tint.brightness - 0.6) < 0.0001)
     }
 
-    @Test("white text stays readable on every page colour the ranges can make")
-    func pageStaysDark() {
-        for saturation in [0.12, 0.45, 0.78] {
-            for brightness in [0.25, 0.6, 0.9] {
-                let tint = MusicCoverColor.tint(of: .init(red: brightness, green: brightness * (1 - saturation), blue: brightness * (1 - saturation)))
-                #expect(tint.pageBrightness <= 0.46)
-                #expect(tint.pageBottomBrightness <= 0.23)
-            }
-        }
-    }
-
     @Test("RGBA pixels give the tint of their average, and no pixels give none")
     func tintOfPixels() throws {
         let tint = try #require(MusicCoverColor.tint(rgba: [100, 100, 200, 255, 100, 100, 200, 255]))

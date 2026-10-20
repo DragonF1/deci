@@ -2,10 +2,10 @@
 import SwiftUI
 
 // The rules of the detail pages (Album, Artist, Playlist, Liked music) kept apart from the views, so they are tested
-// without drawing anything: which kind a page is, its measures, which pills it shows, what its hero says, and how
-// its colours follow the cover.
+// without drawing anything: which kind a page is, which buttons it shows, what its header says, and the ink on the
+// white Play button.
 
-/// The four faces a page takes. Liked music is a playlist, but it has its own hero and fixed colours.
+/// The four faces a page takes. Liked music is a playlist, but it has its own art and header text.
 enum MusicPageKind: Equatable, Sendable {
     case album
     case artist
@@ -22,60 +22,17 @@ enum MusicPageKind: Equatable, Sendable {
         }
     }
 
-    /// The cover's side in the compact header: art on the left, the title and actions on its right.
-    var artSize: CGFloat { 104 }
-
-    /// The header block, the first item of the scroll view: the art with its gaps above and below.
-    var heroHeight: CGFloat { artSize + 4 + 12 }
-
-    /// How far down the cover's wash reaches from the top of the content area before it is clear.
-    var washDepth: CGFloat { heroHeight + 40 }
-
     /// An artist's photo is round; every other cover is a rounded square.
     var isRound: Bool { self == .artist }
 
-    /// The gap between the header and the first list, and how tall that gap is when a sort note takes it.
-    static let listGap: CGFloat = 4
-    static let sortNoteBlock: CGFloat = 24
-
-    /// The gap between an artist's sections.
-    static let artistBodyGap: CGFloat = MusicStyle.Spacing.sectionGap
-}
-
-// MARK: - Colours
-
-/// The colours a page wears: the page colour and a light one. The header's wash is made from them. They come from the
-/// cover's tint, except on Liked music, which keeps its red.
-struct MusicPagePalette: Equatable {
-    let page: Color
-    let light: Color
-
-    init(tint: MusicTint) {
-        page = tint.page
-        light = tint.light
-    }
-
-    private init(page: Color, light: Color) {
-        self.page = page
-        self.light = light
-    }
-
-    /// Liked music always uses these.
-    static let liked = MusicPagePalette(
-        page: MusicStyle.Palette.hex(0x4F1B24),
-        light: MusicStyle.Palette.hex(0xFFB3BE)
-    )
-
-    /// The soft wash behind a page's header: the dark page colour on a dark popover, the pale light colour on a light
-    /// one, so it reads in both.
-    func wash(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? page.opacity(0.85) : light.opacity(0.55)
-    }
-
-    /// The palette of a page: the fixed red for Liked music, else the cover's tint, or `fallback` (the tint of the
-    /// page's id) until the cover's colour is known.
-    static func resolve(kind: MusicPageKind, coverTint: MusicTint?, fallback: MusicTint) -> MusicPagePalette {
-        kind == .liked ? .liked : MusicPagePalette(tint: coverTint ?? fallback)
+    /// The row an album's, a playlist's or Liked music's song `index` (from 0) is drawn as: an album numbers its
+    /// tracks, Liked music adds the heart, the rest are plain rows with a cover.
+    func rowLayout(at index: Int) -> MusicSongRowLayout {
+        switch self {
+        case .album: .album(number: index + 1)
+        case .liked: .liked
+        case .artist, .playlist: .playlist
+        }
     }
 }
 
@@ -114,76 +71,75 @@ enum MusicInk: Equatable, Sendable {
 enum MusicPagePill: Hashable, Sendable {
     case play
     case shuffle
-    case sort
-    /// The artist's "Pin to Home" pill.
-    case pinHome
-    /// The round pin of a playlist or album: it pins to Listen again.
-    case pinListenAgain
+    /// The round button with the menu of the page's own actions.
+    case more
+}
+
+/// One entry of the page's "..." menu. Only what the app can really do is here: pin to Listen again (a playlist, an
+/// album or Liked music, where YouTube offers the toggle) and pin to Home (an artist).
+enum MusicPageMenuItem: Hashable, Sendable {
+    case pinListenAgain(isPinned: Bool)
+    case pinHome(isPinned: Bool, isEnabled: Bool)
+
+    var title: String {
+        switch self {
+        case .pinListenAgain(let isPinned):
+            (isPinned ? MusicTrackAction.unpinFromListenAgain : MusicTrackAction.pinToListenAgain).title
+        case .pinHome(let isPinned, let isEnabled):
+            isPinned ? "Unpin from Home" : (isEnabled ? "Pin to Home" : "Pin to Home (Home is full)")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .pinListenAgain(let isPinned):
+            (isPinned ? MusicTrackAction.unpinFromListenAgain : MusicTrackAction.pinToListenAgain).systemImage
+        case .pinHome(let isPinned, _):
+            isPinned ? "pin.slash" : "pin"
+        }
+    }
+
+    /// Off while Home is full and this artist is not pinned yet.
+    var isEnabled: Bool {
+        switch self {
+        case .pinListenAgain: true
+        case .pinHome(_, let isEnabled): isEnabled
+        }
+    }
 }
 
 enum MusicPagePills {
-    /// The pills a page shows, in order. Play, Shuffle and Sort need songs to act on. An artist's page has no list to
-    /// shuffle through, and only playlists sort (an album keeps its order). The Home pin is always there on an artist's
-    /// page; the Listen again pin only where YouTube offers one.
-    static func pills(kind: MusicPageKind, hasTracks: Bool, canSort: Bool, hasListenAgainPin: Bool) -> [MusicPagePill] {
+    /// The pills a page shows, in order. Play and Shuffle need songs to act on, and an artist's page has no list to
+    /// shuffle through. The round menu button is there only when the page has an action to put in it.
+    static func pills(kind: MusicPageKind, hasTracks: Bool, hasMenuItems: Bool) -> [MusicPagePill] {
         var pills: [MusicPagePill] = []
         if hasTracks {
             pills.append(.play)
             if kind != .artist { pills.append(.shuffle) }
-            if canSort, kind == .playlist || kind == .liked { pills.append(.sort) }
         }
-        switch kind {
-        case .artist:
-            pills.append(.pinHome)
-        case .album, .playlist, .liked:
-            if hasListenAgainPin { pills.append(.pinListenAgain) }
-        }
+        if hasMenuItems { pills.append(.more) }
         return pills
     }
 
-    /// What the Sort pill shows: "Sort" at rest, the key's name and the direction once a sort is picked.
-    struct SortPill: Equatable {
-        let label: String
-        let symbol: String
-        let isActive: Bool
-    }
-
-    static func sortPill(_ sort: MusicPlaylistSort) -> SortPill {
-        if sort.isDefault {
-            return SortPill(label: "Sort", symbol: "arrow.up.arrow.down", isActive: false)
+    /// The page's menu: the Home pin on an artist, the Listen again pin elsewhere. `listenAgainIsPinned` is nil where
+    /// YouTube offers no toggle (Liked Music, most mixes), and the pin is then left out.
+    static func menuItems(
+        kind: MusicPageKind,
+        listenAgainIsPinned: Bool?,
+        homeIsPinned: Bool,
+        homeCanToggle: Bool
+    ) -> [MusicPageMenuItem] {
+        switch kind {
+        case .artist:
+            return [.pinHome(isPinned: homeIsPinned, isEnabled: homeCanToggle)]
+        case .album, .playlist, .liked:
+            guard let listenAgainIsPinned else { return [] }
+            return [.pinListenAgain(isPinned: listenAgainIsPinned)]
         }
-        return SortPill(
-            label: sort.field.label,
-            symbol: sort.ascending ? "arrow.up" : "arrow.down",
-            isActive: true
-        )
-    }
-
-    /// The label of the Home pin: it reads "Pinned" once the artist is on Home.
-    static func pinLabel(isPinned: Bool) -> String {
-        isPinned ? "Pinned" : "Pin to Home"
-    }
-
-    static func pinSymbol(isPinned: Bool) -> String {
-        isPinned ? "pin.fill" : "pin"
-    }
-
-    /// What the Home pin's tooltip says; when Home is full and the artist is not pinned, it says why the pill is dimmed.
-    @MainActor
-    static func pinHelp(isPinned: Bool, isEnabled: Bool) -> String {
-        if isPinned { return "Take this artist off Home." }
-        return isEnabled
-            ? "Show this artist at the top of Home."
-            : "Home can hold \(MusicPinnedArtists.limit) pinned artists. Unpin one to pin another."
-    }
-
-    /// What VoiceOver calls the Home pin: the action, which the pill's own "Pinned" is not.
-    static func pinAccessibilityLabel(isPinned: Bool, title: String) -> String {
-        isPinned ? "Unpin \(title) from Home" : "Pin \(title) to Home"
     }
 }
 
-/// The line under a sorted playlist's pills.
+/// The line under a sorted page's sort bar.
 enum MusicSortNote: Equatable {
     case none
     /// The sort waits for the rest of the songs.
@@ -202,76 +158,157 @@ enum MusicSortNote: Equatable {
     }
 }
 
-// MARK: - Hero text
+// MARK: - Header text
 
-/// The lines of a hero: the title, the accent line under it and a grey meta line.
+/// The lines of a page's header, beside its art: a small uppercase kicker, the title, a line under it and a grey meta
+/// line. Every line but the kicker and the title may be absent.
 struct MusicPageHeroText: Equatable {
+    let kicker: String
     let title: String
-    let accent: String?
+    let sub: String?
     let meta: String?
 
     static let likedTitle = "Liked music"
-    static let likedAccent = "Auto playlist"
+    static let likedSub = "Songs you like on YouTube Music"
+    static let madeByYou = "Made by you"
+
+    private static let separator = " \u{00B7} "
 
     /// YouTube's second line has a bullet between its parts; the design has a middle dot.
     static func dotted(_ text: String?) -> String? {
         guard let text else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return trimmed.replacingOccurrences(of: " \u{2022} ", with: " \u{00B7} ")
+        return trimmed.replacingOccurrences(of: " \u{2022} ", with: separator)
     }
 
-    /// The hero's lines for a page.
-    /// - Album: the album's artist (the first song's) in the accent colour, and YouTube's line (kind, year, number of
-    ///   songs) as the meta line, without the artist if YouTube repeats it there.
-    /// - Artist: the name alone. YouTube's subscriber line is not shown.
-    /// - Liked music: its fixed title, and "Auto playlist · N songs".
-    /// - Playlist: YouTube's line ("Playlist · N songs") as the accent line.
-    static func resolve(kind: MusicPageKind, title: String, subtitle: String?, firstArtist: String?) -> MusicPageHeroText {
+    /// The parts of YouTube's second line, trimmed, without empty ones.
+    static func parts(_ text: String?) -> [String] {
+        (dotted(text) ?? "").components(separatedBy: separator)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// The header's lines for a page.
+    /// - Album: its kind (ALBUM, SINGLE or EP, as YouTube says), the album's artist (the first song's), then the year,
+    ///   the number of songs and the length.
+    /// - Artist: ARTIST, the subscriber line YouTube gives, and the number of albums.
+    /// - Playlist: PLAYLIST, "Made by you" on one the user can edit, else its owner, then the count and the length.
+    /// - Liked music: AUTO PLAYLIST, its fixed title and line, then the count and the length.
+    ///
+    /// `songCount`, `totalSeconds` and `albumCount` are only given when the app knows them for certain (the whole list
+    /// is loaded, every song has a length); a count or a length YouTube's own line already has is not repeated.
+    static func resolve(
+        kind: MusicPageKind,
+        title: String,
+        subtitle: String?,
+        firstArtist: String?,
+        isEditable: Bool,
+        songCount: Int?,
+        totalSeconds: Int?,
+        albumCount: Int?
+    ) -> MusicPageHeroText {
+        var rest = parts(subtitle)
         switch kind {
         case .album:
+            var kicker = "ALBUM"
+            if let first = rest.first, isKindWord(first, ["Album", "Single", "EP"]) {
+                kicker = first.uppercased()
+                rest.removeFirst()
+            }
             let artist = firstArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let accent = artist?.isEmpty == false ? artist : nil
-            var parts = (dotted(subtitle) ?? "").components(separatedBy: " \u{00B7} ").filter { !$0.isEmpty }
-            if let accent { parts.removeAll { $0 == accent } }
+            let sub = artist?.isEmpty == false ? artist : nil
+            if let sub { rest.removeAll { $0 == sub } }
             return MusicPageHeroText(
+                kicker: kicker,
                 title: title,
-                accent: accent,
-                meta: parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
+                sub: sub,
+                meta: meta(rest, songCount: songCount, totalSeconds: totalSeconds)
             )
         case .artist:
-            return MusicPageHeroText(title: title, accent: nil, meta: nil)
-        case .liked:
-            return MusicPageHeroText(title: likedTitle, accent: dotted(subtitle) ?? likedAccent, meta: nil)
-        case .playlist:
-            return MusicPageHeroText(title: title, accent: dotted(subtitle), meta: nil)
+            if let first = rest.first, isKindWord(first, ["Artist"]) { rest.removeFirst() }
+            let audience = rest.first { part in
+                let lower = part.lowercased()
+                return lower.contains("subscriber") || lower.contains("listener") || lower.contains("audience")
+            }
+            let albums = albumCount.flatMap { $0 > 0 ? "\($0) \($0 == 1 ? "album" : "albums")" : nil }
+            return MusicPageHeroText(kicker: "ARTIST", title: title, sub: audience ?? rest.first, meta: albums)
+        case .playlist, .liked:
+            if let first = rest.first, isKindWord(first, ["Playlist", "Auto playlist"]) { rest.removeFirst() }
+            let ownerParts = rest.prefix { $0.first?.isNumber != true }
+            rest.removeFirst(ownerParts.count)
+            let owner = ownerParts.isEmpty ? nil : ownerParts.joined(separator: separator)
+            let counted = meta(rest, songCount: songCount, totalSeconds: totalSeconds)
+            if kind == .liked {
+                return MusicPageHeroText(kicker: "AUTO PLAYLIST", title: likedTitle, sub: likedSub, meta: counted)
+            }
+            return MusicPageHeroText(
+                kicker: "PLAYLIST",
+                title: title,
+                sub: isEditable ? madeByYou : owner,
+                meta: counted
+            )
         }
     }
-}
 
-// MARK: - Scrolling
+    /// The parts YouTube gave, then the count and the length where it gave none.
+    private static func meta(_ given: [String], songCount: Int?, totalSeconds: Int?) -> String? {
+        var parts = given
+        if let songCount, songCount > 0, !parts.contains(where: mentionsCount) {
+            parts.append("\(songCount) \(songCount == 1 ? "song" : "songs")")
+        }
+        if let totalSeconds, totalSeconds > 0, !parts.contains(where: mentionsLength) {
+            parts.append(MusicPageDuration.text(seconds: totalSeconds))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: separator)
+    }
 
-nonisolated enum MusicPageScroll {
-    /// The nav row's title fades in (and the header's wash out) over this many points of scrolling.
-    static let barFade: CGFloat = 24
+    private static func isKindWord(_ part: String, _ words: [String]) -> Bool {
+        words.contains { part.caseInsensitiveCompare($0) == .orderedSame }
+    }
 
-    /// The nav row with the back button: a Mixer header row.
-    static let barHeight: CGFloat = 30
+    private static func mentionsCount(_ part: String) -> Bool {
+        let lower = part.lowercased()
+        return lower.contains("song") || lower.contains("track")
+    }
 
-    /// How opaque the nav row's title is at a scroll offset: clear while the header still reaches under the nav row,
-    /// solid `barFade` points after it stops doing so.
-    static func barOpacity(offset: CGFloat, heroHeight: CGFloat) -> Double {
-        guard offset.isFinite else { return 0 }
-        let start = heroHeight - barHeight
-        return Double(min(max((offset - start) / barFade, 0), 1))
+    private static func mentionsLength(_ part: String) -> Bool {
+        let lower = part.lowercased()
+        return lower.contains("hour") || lower.contains("minute") || lower.contains(" min") || lower.contains(" hr")
+    }
+
+    /// The albums an artist's page lists: the size of its Albums shelf, nil when it has none.
+    static func albumCount(in shelves: [MusicShelf]) -> Int? {
+        let albums = shelves.first { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Albums") == .orderedSame }
+        guard let albums else { return nil }
+        let count = albums.items.filter { item in
+            if case .collection = item { return true }
+            return false
+        }.count
+        return count > 0 ? count : nil
     }
 }
 
-/// The cover the tint store is asked for. It stays the same URL for the whole life of a page, so the page's own
-/// picture arriving later does not start a second fetch: the collection's picture if the collection has one, else
-/// the page's.
-nonisolated enum MusicPageCover {
-    static func tintURL(page: URL?, collection: URL?) -> URL? {
-        collection ?? page
+/// A page's total length as the header says it.
+nonisolated enum MusicPageDuration {
+    /// "38 min", "1 hr", "2 hr 31 min": whole minutes, rounded, at least one.
+    static func text(seconds: Int) -> String {
+        let minutes = max(1, (max(seconds, 0) + 30) / 60)
+        let hours = minutes / 60
+        let rest = minutes % 60
+        if hours == 0 { return "\(rest) min" }
+        return rest == 0 ? "\(hours) hr" : "\(hours) hr \(rest) min"
+    }
+
+    /// The sum of the songs' lengths, or nil while it would be a guess: the list is not all loaded, it is empty, or a
+    /// song has no length.
+    static func total(of durations: [Int?], isComplete: Bool) -> Int? {
+        guard isComplete, !durations.isEmpty else { return nil }
+        var total = 0
+        for duration in durations {
+            guard let duration, duration > 0 else { return nil }
+            total += duration
+        }
+        return total
     }
 }

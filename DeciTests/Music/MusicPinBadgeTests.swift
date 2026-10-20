@@ -42,8 +42,8 @@ struct MusicPinBadgeTests {
     @Test("The badge stays inside the cover's square on every cover the Music tab draws")
     func badgeFitsTheSquare() {
         let covers: [CGFloat] = [
-            MusicStyle.Size.coverTile, MusicCollectionRow.coverSize,
-            MusicSongRowLayout.playlist.coverSize ?? 0,
+            MusicBrowseLayout.homeTile, MusicBrowseLayout.shelfTile, MusicCollectionRow.coverSize,
+            MusicBrowseLayout.artistArt, MusicSongRowLayout.playlist.coverSize ?? 0,
         ]
         for size in covers {
             for circular in [false, true] {

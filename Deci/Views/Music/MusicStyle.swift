@@ -10,6 +10,30 @@ enum MusicStyle {
 
     // MARK: - Colours
 
+    /// The white opacities of the right column: text from the page title down to a track number, the strokes of chips and
+    /// buttons, and the fills under the pointer and under a picked segment.
+    nonisolated enum Opacity {
+        static let title = 0.97
+        static let heading = 0.95
+        static let row = 0.90
+        static let playing = 1.0
+        static let sub = 0.50
+        static let meta = 0.45
+        static let number = 0.40
+        static let tileTitle = 0.88
+        static let strokeSoft = 0.12
+        static let strokeButton = 0.14
+        static let rowHover = 0.07
+        static let chipSelected = 0.12
+        static let segmentTrack = 0.06
+        static let segmentSelected = 0.14
+        /// An unpicked segment, and the Back row.
+        static let idleControl = 0.55
+        /// The line under a page's title.
+        static let pageSub = 0.70
+        static let chevron = 0.30
+    }
+
     enum Palette {
         static func hex(_ value: UInt32, opacity: Double = 1) -> Color {
             Color(
@@ -20,13 +44,6 @@ enum MusicStyle {
                 opacity: opacity
             )
         }
-
-        // Surfaces
-        static let toast = DesignTokens.dynamicColor(
-            name: "musicToast",
-            light: NSColor.white.withAlphaComponent(0.92),
-            dark: NSColor(srgbRed: 0x3A / 255, green: 0x3A / 255, blue: 0x3C / 255, alpha: 0.96)
-        )
 
         // Accent: the system accent, like the Mixer's sliders and selections.
         static let accent = Color.accentColor
@@ -60,15 +77,23 @@ enum MusicStyle {
         static let menuBorder = Color.white.opacity(0.12)
         static let menuHighlight = hex(0x0A63D8)
 
-        static let likedGradient = LinearGradient(
-            stops: [
-                .init(color: hex(0xFF6E87), location: 0),
-                .init(color: hex(0xFA2D48), location: 0.55),
-                .init(color: hex(0xB8123D), location: 1),
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        // The right column's Signal look: white at fixed opacities on the near black popup. The numbers are in `Opacity`.
+        static let textTitle = Color.white.opacity(Opacity.title)
+        static let textHeading = Color.white.opacity(Opacity.heading)
+        static let textRow = Color.white.opacity(Opacity.row)
+        static let textPlaying = Color.white.opacity(Opacity.playing)
+        static let textSub = Color.white.opacity(Opacity.sub)
+        static let textMeta = Color.white.opacity(Opacity.meta)
+        static let textNumber = Color.white.opacity(Opacity.number)
+        static let textTile = Color.white.opacity(Opacity.tileTitle)
+        static let strokeSoft = Color.white.opacity(Opacity.strokeSoft)
+        static let strokeButton = Color.white.opacity(Opacity.strokeButton)
+        static let rowHover = Color.white.opacity(Opacity.rowHover)
+        static let chipSelected = Color.white.opacity(Opacity.chipSelected)
+        static let segmentTrack = Color.white.opacity(Opacity.segmentTrack)
+        static let segmentSelected = Color.white.opacity(Opacity.segmentSelected)
+        static let chevron = Color.white.opacity(Opacity.chevron)
+        static let textPageSub = Color.white.opacity(Opacity.pageSub)
     }
 
     // MARK: - Type scale
@@ -79,11 +104,14 @@ enum MusicStyle {
         let size: CGFloat
         let weight: Font.Weight
         let tracking: CGFloat
+        /// Digits of one width, for durations and track numbers that line up down a list.
+        let mono: Bool
 
-        init(_ size: CGFloat, _ weight: Font.Weight = .regular, tracking: CGFloat = 0) {
+        init(_ size: CGFloat, _ weight: Font.Weight = .regular, tracking: CGFloat = 0, mono: Bool = false) {
             self.size = size
             self.weight = weight
             self.tracking = tracking
+            self.mono = mono
         }
 
         /// The tracking that is applied: negative values only at 24 pt and above.
@@ -91,13 +119,15 @@ enum MusicStyle {
             tracking < 0 && size < 24 ? 0 : tracking
         }
 
-        var font: Font { .system(size: size, weight: weight) }
+        var font: Font {
+            let font = Font.system(size: size, weight: weight)
+            return mono ? font.monospacedDigit() : font
+        }
     }
 
     /// The Mixer's scale: 13 pt row names, 11 pt second lines and pickers, 10 pt captions. Only a page's name and the
     /// player's song name go a little above it.
     enum Typeface {
-        static let title = TextStyle(16, .bold)
         static let songTitle = TextStyle(15, .semibold)
         static let heading = TextStyle(13, .semibold)
         static let row = TextStyle(13)
@@ -115,6 +145,14 @@ enum MusicStyle {
         static let tabInactive = TextStyle(13, .medium)
         /// The player column's small labels: the view buttons, the output device, the times.
         static let columnLabel = TextStyle(10, .medium)
+        /// A section's "See all", and a duration that is not set in mono.
+        static let seeAll = TextStyle(11)
+        /// The durations of Album, Liked and Up next rows, and the track numbers.
+        static let mono = TextStyle(11, mono: true)
+        /// A detail page's name, the line under it and the chips and segments of the right column.
+        static let pageTitle = TextStyle(17, .bold)
+        static let pageSub = TextStyle(12, .medium)
+        static let chip = TextStyle(11, .medium)
     }
 
     // MARK: - Radii
@@ -123,8 +161,6 @@ enum MusicStyle {
         /// The Mixer's button radius: covers, hover rows, small buttons.
         static let small: CGFloat = DesignTokens.Dimensions.buttonRadius
         static let art: CGFloat = DesignTokens.Dimensions.buttonRadius
-        /// Cards and tiles: the Mixer's row radius.
-        static let card: CGFloat = DesignTokens.Dimensions.rowRadius
     }
 
     // MARK: - Spacing and sizes
@@ -136,32 +172,13 @@ enum MusicStyle {
         static let sectionContent: CGFloat = DesignTokens.Spacing.sm
         /// The gap between two Home sections.
         static let sectionGap: CGFloat = DesignTokens.Spacing.md
-        static let shelfGap: CGFloat = DesignTokens.Spacing.sm
-        static let pinnedGap: CGFloat = DesignTokens.Spacing.sm
     }
 
     enum Size {
         /// The header's round and pill buttons: the Mixer's 26 pt.
         static let headerButton: CGFloat = 26
-        static let topPickWidth: CGFloat = 120
-        static let topPickHeight: CGFloat = 152
-        static let coverTile: CGFloat = 76
         static let pinnedPhoto: CGFloat = 40
         static let pinnedTileWidth: CGFloat = 56
-        static let quickPickRowHeight: CGFloat = 40
-        static let quickPickArt: CGFloat = 32
-    }
-
-    // MARK: - Shadows
-
-    struct Shadow {
-        let color: Color
-        let radius: CGFloat
-        let y: CGFloat
-
-        static let glass = Shadow(color: .black.opacity(0.25), radius: 8, y: 4)
-        /// Under the small cover in a page's header.
-        static let headerArt = Shadow(color: .black.opacity(0.30), radius: 5, y: 3)
     }
 }
 

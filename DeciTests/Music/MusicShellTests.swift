@@ -1,20 +1,11 @@
 // DeciTests/Music/MusicShellTests.swift
-// The pure parts of the Music shell: the browse measures, what fills the right column, the header tabs, how
-// Home draws its shelves, and the helpers behind the tints and the avatar. Nothing here draws a view.
+// The pure parts of the Music shell: what fills the right column, the header tabs, how Home draws its shelves, and the
+// helpers behind the tints and the avatar. Nothing here draws a view.
 
 import CoreGraphics
 import SwiftUI
 import Testing
 @testable import Deci
-
-@Suite("MusicShellLayout")
-struct MusicShellLayoutTests {
-    @Test("a browse page keeps the Mixer's 16 pt side margin, and Quick picks columns sit 12 pt apart")
-    func browseMeasures() {
-        #expect(MusicShellLayout.pageMargin == 16)
-        #expect(MusicShellLayout.quickPickColumnGap == 12)
-    }
-}
 
 @Suite("MusicRightColumn")
 struct MusicRightColumnTests {
@@ -79,7 +70,7 @@ struct MusicHomeSectionStyleTests {
         MusicShelf(title: title, items: ids.map { .track(MusicSamples.track($0)) })
     }
 
-    @Test("a shelf of songs is Quick picks, the first other shelf is Top Picks, the rest are cover tiles")
+    @Test("a shelf of songs is the Quick picks list, every other shelf is a row of cover tiles")
     func styles() {
         let shelves = [
             MusicSamples.shelf("Made for you", "a", "b"),
@@ -87,13 +78,13 @@ struct MusicHomeSectionStyleTests {
             MusicSamples.shelf("New releases", "c"),
             MusicSamples.shelf("Mixes", "d"),
         ]
-        #expect(MusicHomeSectionStyle.styles(for: shelves) == [.topPicks, .quickPicks, .coverTiles, .coverTiles])
+        #expect(MusicHomeSectionStyle.styles(for: shelves) == [.tiles, .quickPicks, .tiles, .tiles])
     }
 
-    @Test("Listen again keeps its tiles and does not take the Top Picks slot")
+    @Test("Listen again keeps its tiles, even when YouTube sends it as songs")
     func listenAgain() {
-        let shelves = [MusicSamples.shelf("Listen again", "a"), MusicSamples.shelf("Made for you", "b")]
-        #expect(MusicHomeSectionStyle.styles(for: shelves) == [.coverTiles, .topPicks])
+        let shelves = [MusicSamples.shelf("Listen again", "a"), songs("Listen again", "s1", "s2")]
+        #expect(MusicHomeSectionStyle.styles(for: shelves) == [.tiles, .tiles])
         #expect(MusicHomeSectionStyle.isListenAgain(MusicSamples.shelf("LISTEN AGAIN", "a")))
     }
 
@@ -105,14 +96,6 @@ struct MusicHomeSectionStyleTests {
         )
         #expect(MusicHomeSectionStyle.isSongsOnly(mixed) == false)
         #expect(MusicHomeSectionStyle.styles(for: []).isEmpty)
-    }
-
-    @Test("a Top Picks card names what it opens")
-    func kickers() {
-        #expect(MusicHomeSectionStyle.kicker(for: .track(MusicSamples.track("t"))) == "SONG")
-        #expect(MusicHomeSectionStyle.kicker(for: .collection(MusicSamples.collection("p", kind: .playlist))) == "PLAYLIST")
-        #expect(MusicHomeSectionStyle.kicker(for: .collection(MusicSamples.collection("a", kind: .album))) == "ALBUM")
-        #expect(MusicHomeSectionStyle.kicker(for: .collection(MusicSamples.collection("r", kind: .artist))) == "ARTIST")
     }
 }
 
@@ -179,24 +162,6 @@ struct MusicTintTests {
         #expect(broken.saturation == 0)
         #expect(broken.brightness == 0)
     }
-
-    @Test("the page brightness stays between 23 and 46 percent, and the bottom is half of it")
-    func pageBrightness() {
-        #expect(MusicTint(hue: 0, saturation: 0.5, brightness: 0).pageBrightness == 0.23)
-        #expect(MusicTint(hue: 0, saturation: 0.5, brightness: 1).pageBrightness == 0.46)
-        #expect(MusicTint(hue: 0, saturation: 0.5, brightness: 0.3).pageBrightness == 0.3)
-        #expect(MusicTint(hue: 0, saturation: 0.5, brightness: 1).pageBottomBrightness == 0.23)
-    }
-
-    @Test("the light colour is bright and soft, and the ink is dark and richer")
-    func lightAndInk() {
-        let tint = MusicTint(hue: 0.5, saturation: 0.9, brightness: 0.5)
-        #expect(tint.lightSaturation == 0.3)
-        #expect(abs(tint.lightBrightness - 0.92) < 0.0001)
-        #expect(abs(tint.inkBrightness - 0.175) < 0.0001)
-        #expect(abs(tint.inkSaturation - 0.95) < 0.0001)
-        #expect(MusicTint(hue: 0, saturation: 0, brightness: 0).lightSaturation == 0.2)
-    }
 }
 
 @Suite("MusicAccountInitials")
@@ -241,5 +206,51 @@ struct MusicTextStyleTests {
     func otherTracking() {
         #expect(MusicStyle.TextStyle(11, .semibold, tracking: 0.6).appliedTracking == 0.6)
         #expect(MusicStyle.TextStyle(14).appliedTracking == 0)
+    }
+
+    @Test("only the mono styles ask for digits of one width")
+    func mono() {
+        #expect(MusicStyle.Typeface.mono.mono)
+        #expect(MusicStyle.Typeface.mono.size == 11)
+        #expect(MusicStyle.Typeface.row.mono == false)
+        #expect(MusicStyle.TextStyle(11).mono == false)
+    }
+
+    @Test("the right column's type: 17 pt page title, 12 pt line under it, 11 pt chips and See all, 10 pt kicker")
+    func rightColumnScale() {
+        #expect(MusicStyle.Typeface.pageTitle == MusicStyle.TextStyle(17, .bold))
+        #expect(MusicStyle.Typeface.pageSub == MusicStyle.TextStyle(12, .medium))
+        #expect(MusicStyle.Typeface.chip == MusicStyle.TextStyle(11, .medium))
+        #expect(MusicStyle.Typeface.seeAll == MusicStyle.TextStyle(11))
+        #expect(MusicStyle.Typeface.kicker == MusicStyle.TextStyle(10, .semibold, tracking: 0.5))
+    }
+}
+
+@Suite("MusicStyle.Opacity")
+struct MusicStyleOpacityTests {
+    @Test("the white opacities of the right column step down from the title to the track number")
+    func textSteps() {
+        typealias O = MusicStyle.Opacity
+        #expect(O.playing == 1.0)
+        #expect(O.title == 0.97)
+        #expect(O.heading == 0.95)
+        #expect(O.row == 0.90)
+        #expect(O.sub == 0.50)
+        #expect(O.meta == 0.45)
+        #expect(O.number == 0.40)
+        #expect(O.playing > O.title && O.title > O.heading && O.heading > O.row)
+        #expect(O.row > O.sub && O.sub > O.meta && O.meta > O.number)
+    }
+
+    @Test("the strokes and the fills under the pointer and under a picked segment")
+    func surfaces() {
+        typealias O = MusicStyle.Opacity
+        #expect(O.strokeSoft == 0.12)
+        #expect(O.strokeButton == 0.14)
+        #expect(O.rowHover == 0.07)
+        #expect(O.segmentTrack == 0.06)
+        #expect(O.segmentSelected == 0.14)
+        #expect(O.idleControl == 0.55)
+        #expect(O.chevron == 0.30)
     }
 }

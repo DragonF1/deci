@@ -2,7 +2,8 @@
 import SwiftUI
 
 /// The Library root: the Playlists / Albums / Artists switch, then the saved list, with Liked music first on
-/// Playlists. One scroll view, so the switch scrolls away with the content.
+/// Playlists. Playlists and Artists are rows, Albums a grid of covers. One scroll view, so the switch scrolls away with
+/// the content.
 struct MusicLibraryView: View {
     let service: MusicService
     @Environment(\.musicCollectionPin) private var collectionPin
@@ -30,7 +31,8 @@ struct MusicLibraryView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, MusicStyle.Spacing.page)
-                .padding(.bottom, DesignTokens.Spacing.sm)
+                .padding(.top, MusicBrowseLayout.libraryTop)
+                .padding(.bottom, MusicBrowseLayout.segmentListGap)
                 .id(Self.topID)
 
                 // Always first on Playlists, whatever state the list under it is in.
@@ -62,19 +64,23 @@ struct MusicLibraryView: View {
             MusicStateCard(message: section.emptyText)
         case .loaded(let items):
             let loadingMore = browse.loadingMoreLibrary.contains(section)
-            ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
-                let row = MusicCollectionRow(
-                    collection: collection,
-                    isPinned: collectionPin?.isPinned(collection) == true
-                ) {
-                    browse.open(collection)
-                }
-                if let collectionPin, let listenAgain = collectionPin.pin(collection) {
-                    row.contextMenu {
-                        MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
+            if section == .albums {
+                albumGrid(items)
+            } else {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
+                    let row = MusicCollectionRow(
+                        collection: collection,
+                        isPinned: collectionPin?.isPinned(collection) == true
+                    ) {
+                        browse.open(collection)
                     }
-                } else {
-                    row
+                    if let collectionPin, let listenAgain = collectionPin.pin(collection) {
+                        row.contextMenu {
+                            MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
+                        }
+                    } else {
+                        row
+                    }
                 }
             }
 
@@ -87,34 +93,64 @@ struct MusicLibraryView: View {
         }
     }
 
+    /// The saved albums as 70 pt covers, as many to a row as the column holds: four at the default size, three at the
+    /// compact one.
+    private func albumGrid(_ albums: [MusicCollection]) -> some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: MusicBrowseLayout.shelfTile, maximum: MusicBrowseLayout.shelfTile), spacing: MusicBrowseLayout.tileGap)],
+            alignment: .leading,
+            spacing: MusicBrowseLayout.gridRowGap
+        ) {
+            ForEach(Array(albums.enumerated()), id: \.offset) { _, album in
+                MusicCoverTile(
+                    title: album.title,
+                    subtitle: MusicHomeText.subtitle(album.subtitle),
+                    thumbnailURL: album.thumbnailURL,
+                    size: MusicBrowseLayout.shelfTile,
+                    placeholder: album.kind.placeholderSymbol,
+                    isPinned: collectionPin?.isPinned(album) == true
+                ) {
+                    browse.open(album)
+                }
+                .musicCollectionMenu(album)
+            }
+        }
+        .padding(.horizontal, MusicStyle.Spacing.page)
+    }
+
     /// Liked music is the first row of Playlists, whatever the list below it holds.
     @ViewBuilder
     private var likedMusic: some View {
         if section == .playlists {
-            MusicCollectionRow(collection: MusicBrowseStore.likedMusic, symbol: "heart.fill") {
+            MusicCollectionRow(collection: MusicBrowseStore.likedMusic, isLiked: true) {
                 browse.open(MusicBrowseStore.likedMusic)
             }
         }
     }
 }
 
-/// A playlist, album or artist row that opens its page. `symbol` swaps the cover for an icon
-/// tile (Liked music).
+/// A playlist or artist row that opens its page: a 40 pt cover and two lines on a playlist, a 36 pt round photo and a
+/// chevron on an artist. `isLiked` draws the Liked music art in place of a cover.
 struct MusicCollectionRow: View {
     let collection: MusicCollection
-    var symbol: String?
+    var isLiked = false
     /// Pinned to Listen again (a playlist or album) or to Home (an artist): the cover wears the pin badge.
     var isPinned = false
     let action: () -> Void
 
-    static let coverSize: CGFloat = 32
-    static let height: CGFloat = 40
+    static let coverSize: CGFloat = MusicBrowseLayout.playlistArt
 
     @State private var isHovered = false
 
+    private var isArtist: Bool { collection.kind == .artist }
+
+    private var artSize: CGFloat { isArtist ? MusicBrowseLayout.artistArt : MusicBrowseLayout.playlistArt }
+
+    private var rowHeight: CGFloat { isArtist ? MusicBrowseLayout.artistRowHeight : MusicBrowseLayout.playlistRowHeight }
+
     /// Liked music keeps its own line ("Auto playlist"); every other row leads with its kind.
     private var subtitleText: String {
-        if symbol != nil { return MusicHomeText.subtitle(collection.subtitle) }
+        if isLiked { return MusicHomeText.subtitle(collection.subtitle) }
         return MusicHomeText.librarySubtitle(kind: collection.kind, youtubeSubtitle: collection.subtitle)
     }
 
@@ -122,35 +158,39 @@ struct MusicCollectionRow: View {
         // Worked out once per draw: the text, the "is there a line" check and the VoiceOver label all use it.
         let subtitle = subtitleText
         Button(action: action) {
-            HStack(spacing: DesignTokens.Spacing.sm) {
+            HStack(spacing: MusicBrowseLayout.libraryRowGap) {
                 cover
 
-                HStack(spacing: DesignTokens.Spacing.sm) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(collection.title)
-                            .musicText(MusicStyle.Typeface.row)
-                            .foregroundStyle(MusicStyle.Palette.textPrimary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(collection.title)
+                        .musicText(MusicStyle.Typeface.row)
+                        .foregroundStyle(MusicStyle.Palette.textRow)
+                        .lineLimit(1)
+                    if !subtitle.isEmpty {
+                        Text(subtitle)
+                            .musicText(MusicStyle.Typeface.secondary)
+                            .foregroundStyle(MusicStyle.Palette.textSub)
                             .lineLimit(1)
-                        if !subtitle.isEmpty {
-                            Text(subtitle)
-                                .musicText(MusicStyle.Typeface.secondary)
-                                .foregroundStyle(MusicStyle.Palette.textSecondary)
-                                .lineLimit(1)
-                        }
                     }
+                }
 
-                    Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
+                if isArtist {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(MusicStyle.Palette.textQuaternary)
+                        .font(.system(size: MusicBrowseLayout.libraryChevron, weight: .semibold))
+                        .foregroundStyle(MusicStyle.Palette.chevron)
                         .accessibilityHidden(true)
                 }
-                .frame(maxHeight: .infinity)
             }
-            .frame(height: Self.height)
-            .musicRowHover(isHovered)
-            .padding(.horizontal, MusicStyle.Spacing.page)
+            .frame(height: rowHeight)
+            .padding(.horizontal, MusicBrowseLayout.rowHoverInset)
+            .background(
+                RoundedRectangle(cornerRadius: MusicBrowseLayout.rowHoverRadius, style: .continuous)
+                    .fill(isHovered ? MusicStyle.Palette.rowHover : .clear)
+            )
+            .animation(DesignTokens.Animation.hover, value: isHovered)
+            .padding(.horizontal, MusicStyle.Spacing.page - MusicBrowseLayout.rowHoverInset)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -167,34 +207,25 @@ struct MusicCollectionRow: View {
 
     @ViewBuilder
     private var cover: some View {
-        if let symbol {
-            RoundedRectangle(cornerRadius: MusicStyle.Radius.art, style: .continuous)
-                .fill(MusicStyle.Palette.likedGradient)
-                .frame(width: Self.coverSize, height: Self.coverSize)
-                .overlay {
-                    Image(systemName: symbol)
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.white)
-                }
-                .accessibilityHidden(true)
+        if isLiked {
+            MusicLikedArt(size: artSize, cornerRadius: MusicBrowseLayout.libraryArtRadius)
         } else {
-            let circular = collection.kind == .artist
             MusicThumbnail(
                 url: collection.thumbnailURL,
-                size: Self.coverSize,
-                circular: circular,
+                size: artSize,
+                circular: isArtist,
                 placeholder: collection.kind.placeholderSymbol,
-                cornerRadius: MusicStyle.Radius.art
+                cornerRadius: MusicBrowseLayout.libraryArtRadius
             )
             .overlay {
-                if circular {
+                if isArtist {
                     Circle().strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
                 } else {
-                    RoundedRectangle(cornerRadius: MusicStyle.Radius.art, style: .continuous)
+                    RoundedRectangle(cornerRadius: MusicBrowseLayout.libraryArtRadius, style: .continuous)
                         .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
                 }
             }
-            .musicPinBadge(isPinned, coverSize: Self.coverSize, circular: circular, diameter: 14, inset: 2)
+            .musicPinBadge(isPinned, coverSize: artSize, circular: isArtist, diameter: 14, inset: 2)
         }
     }
 }

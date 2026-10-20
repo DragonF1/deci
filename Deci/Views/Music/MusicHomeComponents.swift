@@ -3,24 +3,16 @@ import SwiftUI
 
 // MARK: - Logic
 
-/// How a Home shelf is drawn. A shelf of songs only is the two column Quick picks; the first other shelf is the
-/// row of Top Picks cards; every shelf after it is a row of cover tiles. Kept apart from the view so it is tested.
+/// How a Home shelf is drawn. A shelf of songs only is the Quick picks list; every other shelf, Listen again first among
+/// them, is a row of cover tiles. Kept apart from the view so it is tested.
 nonisolated enum MusicHomeSectionStyle: Equatable {
     case quickPicks
-    case topPicks
-    case coverTiles
-
-    /// Songs the Quick picks list shows.
-    static let maxQuickPicks = 8
+    case tiles
 
     static func styles(for shelves: [MusicShelf]) -> [MusicHomeSectionStyle] {
-        var hasTopPicks = false
-        return shelves.map { shelf in
-            if isSongsOnly(shelf) { return .quickPicks }
-            if isListenAgain(shelf) { return .coverTiles }
-            if hasTopPicks { return .coverTiles }
-            hasTopPicks = true
-            return .topPicks
+        shelves.map { shelf in
+            if isListenAgain(shelf) { return .tiles }
+            return isSongsOnly(shelf) ? .quickPicks : .tiles
         }
     }
 
@@ -34,19 +26,6 @@ nonisolated enum MusicHomeSectionStyle: Equatable {
     /// The shelf the design calls Listen again keeps its tiles, so the pins made on it stay where the owner put them.
     static func isListenAgain(_ shelf: MusicShelf) -> Bool {
         shelf.title.localizedCaseInsensitiveContains("listen again")
-    }
-
-    /// The small uppercase line on a Top Picks card. YouTube gives no reason line, so it names what the card opens.
-    static func kicker(for item: MusicShelfItem) -> String {
-        switch item {
-        case .track: "SONG"
-        case .collection(let collection):
-            switch collection.kind {
-            case .playlist: "PLAYLIST"
-            case .album: "ALBUM"
-            case .artist: "ARTIST"
-            }
-        }
     }
 }
 
@@ -83,17 +62,35 @@ nonisolated enum MusicHomeText {
 
 // MARK: - Headers
 
-/// A section title in the Mixer's small uppercase header style ("APPS", "OUTPUT DEVICES").
+/// A section title: 13 pt semibold, and at the trailing end an optional "See all" link in the quiet second line colour.
 struct MusicSectionHeader: View {
     let title: String
+    /// The link at the trailing end and what it does; both or neither.
+    var linkTitle: String?
+    var linkAction: (() -> Void)?
 
     var body: some View {
-        Text(title)
-            .sectionHeaderStyle()
-            .lineLimit(1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, MusicStyle.Spacing.page)
-            .accessibilityAddTraits(.isHeader)
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Spacing.sm) {
+            Text(title)
+                .musicText(MusicStyle.Typeface.heading)
+                .foregroundStyle(MusicStyle.Palette.textHeading)
+                .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 0)
+            if let linkTitle, let linkAction {
+                Button(action: linkAction) {
+                    Text(linkTitle)
+                        .musicText(MusicStyle.Typeface.seeAll)
+                        .foregroundStyle(MusicStyle.Palette.textMeta)
+                        .lineLimit(1)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(linkTitle), \(title)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, MusicStyle.Spacing.page)
     }
 }
 
@@ -229,7 +226,7 @@ struct MusicRetryPill: View {
 
 // MARK: - Hover
 
-/// The hover of a tile or card: the Mixer's hover surface behind it, a little wider than the tile. The surface draws
+/// The hover of a tile: the row hover surface behind it, a little wider than the tile. The surface draws
 /// `overflow` outside the tile's layout, so a scroll view around tiles has to leave that much room (`MusicHorizontalShelf`).
 private struct MusicTileHover: ViewModifier {
     static let overflow = DesignTokens.Spacing.xs
@@ -240,8 +237,8 @@ private struct MusicTileHover: ViewModifier {
         content
             .padding(Self.overflow)
             .background(
-                RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous)
-                    .fill(isHovered ? DesignTokens.Colors.hoverSurface : .clear)
+                RoundedRectangle(cornerRadius: MusicBrowseLayout.rowHoverRadius, style: .continuous)
+                    .fill(isHovered ? MusicStyle.Palette.rowHover : .clear)
             )
             .padding(-Self.overflow)
             .animation(DesignTokens.Animation.hover, value: isHovered)
@@ -254,7 +251,7 @@ private struct MusicTileHover: ViewModifier {
 /// hover surface reaches outside them, which a scroll view can cut off: the scroll gets the same room inside, and its
 /// layout is trimmed back by it, so the hover is never cropped and the shelf still takes only the tiles' height.
 struct MusicHorizontalShelf<Content: View>: View {
-    var spacing: CGFloat = MusicStyle.Spacing.shelfGap
+    var spacing: CGFloat = MusicBrowseLayout.tileGap
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -271,29 +268,8 @@ struct MusicHorizontalShelf<Content: View>: View {
     }
 }
 
-/// The hover of a list row as the Mixer draws it: its content inset 8 inside a rounded surface that appears under the
-/// pointer (or with the keyboard on the row). The surface is the row's own width, so the row sits 8 further out.
-private struct MusicRowHover: ViewModifier {
-    let isHovered: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .padding(.horizontal, DesignTokens.Spacing.sm)
-            .background(
-                RoundedRectangle(cornerRadius: MusicStyle.Radius.small, style: .continuous)
-                    .fill(isHovered ? DesignTokens.Colors.hoverSurface : .clear)
-            )
-            .animation(DesignTokens.Animation.hover, value: isHovered)
-    }
-}
-
 extension View {
-    /// The row under the pointer (or with the keyboard on it) gets the Mixer's hover surface.
-    func musicRowHover(_ isHovered: Bool) -> some View {
-        modifier(MusicRowHover(isHovered: isHovered))
-    }
-
-    /// A cover or card gets the hover surface behind it under the pointer.
+    /// A cover gets the hover surface behind it under the pointer.
     func musicTileHover() -> some View {
         modifier(MusicTileHover())
     }
@@ -336,90 +312,15 @@ extension View {
     }
 }
 
-// MARK: - Tiles and cards
+// MARK: - Tiles
 
-/// A Top Picks card: the cover over a wash of its colour, with the kind, the title and a second line.
-struct MusicTopPickCard: View {
-    let kicker: String
-    let title: String
-    let subtitle: String
-    let thumbnailURL: URL?
-    /// Picks the colour of the card, the same one every run.
-    let tintKey: String
-    var isPinned = false
-    var isCurrent = false
-    var isPlaying = false
-    let action: () -> Void
-
-    var body: some View {
-        let tint = MusicTint.forKey(tintKey)
-        let width = MusicStyle.Size.topPickWidth
-        let height = MusicStyle.Size.topPickHeight
-        Button(action: action) {
-            ZStack(alignment: .bottomLeading) {
-                tint.page
-                MusicThumbnail(url: thumbnailURL, size: width, cornerRadius: 0)
-                    .overlay {
-                        if isCurrent { MusicPlayingOverlay(isPlaying: isPlaying, symbolSize: 20) }
-                    }
-                    .frame(maxHeight: .infinity, alignment: .top)
-                LinearGradient(
-                    stops: [
-                        .init(color: tint.page.opacity(0), location: 0),
-                        .init(color: tint.page.opacity(0.92), location: 0.5),
-                        .init(color: tint.page, location: 1),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(width: width, height: height * 0.55)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(kicker)
-                        .musicText(MusicStyle.Typeface.kicker)
-                        .foregroundStyle(Color.white.opacity(0.72))
-                        .lineLimit(1)
-                    Text(title)
-                        .musicText(MusicStyle.Typeface.heading)
-                        .foregroundStyle(Color.white)
-                        .lineLimit(1)
-                    Text(subtitle.isEmpty ? " " : subtitle)
-                        .musicText(MusicStyle.Typeface.secondary)
-                        .foregroundStyle(Color.white.opacity(0.72))
-                        .lineLimit(1)
-                }
-                .frame(width: width - 16, alignment: .leading)
-                .padding(.leading, 8)
-                .padding(.bottom, 8)
-            }
-            .frame(width: width, height: height)
-            .clipShape(RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: MusicStyle.Radius.card, style: .continuous)
-                    .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
-            )
-            .musicPinBadge(isPinned, coverSize: width, diameter: 16, inset: 5)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .musicTileHover()
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityText)
-        .accessibilityAddTraits(isCurrent ? [.isButton, .isSelected] : .isButton)
-    }
-
-    private var accessibilityText: String {
-        var text = subtitle.isEmpty ? title : "\(title), \(subtitle)"
-        if isPinned { text += ", pinned" }
-        if isPlaying { text += ", playing" }
-        return text
-    }
-}
-
-/// A square cover with a title and a second line, for Listen again and the other tile shelves.
+/// A square cover with a title and a second line, for Listen again and the other tile shelves, and the Albums grid.
+/// The cover is 68 pt on Home and 70 pt in the grid and on an artist's shelves.
 struct MusicCoverTile: View {
     let title: String
     let subtitle: String
     let thumbnailURL: URL?
+    var size: CGFloat = MusicBrowseLayout.homeTile
     var circular = false
     var placeholder = "music.note"
     var isPinned = false
@@ -427,10 +328,11 @@ struct MusicCoverTile: View {
     var isPlaying = false
     let action: () -> Void
 
+    @Environment(\.musicAccent) private var accent
+
     var body: some View {
-        let size = MusicStyle.Size.coverTile
         Button(action: action) {
-            VStack(alignment: circular ? .center : .leading, spacing: 4) {
+            VStack(alignment: circular ? .center : .leading, spacing: MusicBrowseLayout.tileTextGap) {
                 MusicThumbnail(
                     url: thumbnailURL,
                     size: size,
@@ -454,11 +356,11 @@ struct MusicCoverTile: View {
                 VStack(alignment: circular ? .center : .leading, spacing: 0) {
                     Text(title)
                         .musicText(MusicStyle.Typeface.secondaryMedium)
-                        .foregroundStyle(isCurrent ? MusicStyle.Palette.accent : MusicStyle.Palette.textPrimary)
+                        .foregroundStyle(isCurrent ? accent.solid : MusicStyle.Palette.textTile)
                         .lineLimit(1)
                     Text(subtitle.isEmpty ? " " : subtitle)
                         .musicText(MusicStyle.Typeface.caption)
-                        .foregroundStyle(MusicStyle.Palette.textSecondary)
+                        .foregroundStyle(MusicStyle.Palette.textMeta)
                         .lineLimit(1)
                 }
             }
@@ -487,7 +389,7 @@ struct MusicPinnedArtistTile: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            VStack(spacing: MusicBrowseLayout.tileTextGap) {
                 MusicThumbnail(
                     url: collection.thumbnailURL,
                     size: MusicStyle.Size.pinnedPhoto,
@@ -496,7 +398,7 @@ struct MusicPinnedArtistTile: View {
                 )
                 Text(collection.title)
                     .musicText(MusicStyle.Typeface.caption)
-                    .foregroundStyle(MusicStyle.Palette.textPrimary.opacity(0.85))
+                    .foregroundStyle(MusicStyle.Palette.textTile)
                     .lineLimit(1)
                     .multilineTextAlignment(.center)
             }
@@ -508,89 +410,5 @@ struct MusicPinnedArtistTile: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(collection.title)
         .accessibilityAddTraits(.isButton)
-    }
-}
-
-/// One song of Quick picks: a small cover, the title, a second line and the song's "..." menu.
-struct MusicQuickPickRow: View {
-    let track: MusicTrack
-    let isCurrent: Bool
-    let isPlaying: Bool
-    let action: () -> Void
-
-    @Environment(\.musicTrackMenu) private var menu
-    @Environment(\.musicTrackContext) private var context
-
-    private var offeredActions: [MusicTrackAction] { menu?.actions(track, context) ?? [] }
-    private var isPinned: Bool { menu?.isPinned(track) == true }
-    @State private var isHovered = false
-
-    private func perform(_ action: MusicTrackAction) {
-        menu?.perform(action, track, context)
-    }
-
-    var body: some View {
-        let actions = offeredActions
-        let size = MusicStyle.Size.quickPickArt
-        HStack(spacing: DesignTokens.Spacing.sm) {
-            MusicThumbnail(url: track.thumbnailURL, size: size, cornerRadius: MusicStyle.Radius.small)
-                .overlay {
-                    if isCurrent { MusicPlayingOverlay(isPlaying: isPlaying, radius: MusicStyle.Radius.small) }
-                }
-                .overlay(
-                    RoundedRectangle(cornerRadius: MusicStyle.Radius.small, style: .continuous)
-                        .strokeBorder(MusicStyle.Palette.lineHairline, lineWidth: 1)
-                )
-                .musicPinBadge(isPinned, coverSize: size)
-                .accessibilityHidden(true)
-
-            HStack(spacing: DesignTokens.Spacing.sm) {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(track.title)
-                        .musicText(MusicStyle.Typeface.row)
-                        .foregroundStyle(isCurrent ? MusicStyle.Palette.accent : MusicStyle.Palette.textPrimary)
-                        .lineLimit(1)
-                    Text(MusicHomeText.songSubtitle(artist: track.artist, album: track.album))
-                        .musicText(MusicStyle.Typeface.secondary)
-                        .foregroundStyle(MusicStyle.Palette.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if !actions.isEmpty {
-                    MusicTrackMoreButton(
-                        track: track,
-                        actions: actions,
-                        perform: perform,
-                        tint: MusicStyle.Palette.textSecondary
-                    )
-                }
-            }
-            .frame(maxHeight: .infinity)
-        }
-        .frame(height: MusicStyle.Size.quickPickRowHeight)
-        .musicRowHover(isHovered)
-        .onHover { isHovered = $0 }
-        .contentShape(Rectangle())
-        .contextMenu {
-            MusicTrackMenuItems(actions: actions, perform: perform)
-        }
-        .onTapGesture(perform: action)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(accessibilityText)
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
-        .accessibilityAction(named: "Play", action)
-        .accessibilityAction(.default, action)
-        .accessibilityActions {
-            ForEach(actions, id: \.self) { action in
-                Button(action.title) { perform(action) }
-            }
-        }
-    }
-
-    private var accessibilityText: String {
-        var text = "\(track.title), \(track.artist)"
-        if isPinned { text += ", pinned" }
-        if isPlaying { text += ", playing" }
-        return text
     }
 }

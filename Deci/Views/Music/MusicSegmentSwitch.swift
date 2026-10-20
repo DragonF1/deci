@@ -1,9 +1,8 @@
 // Deci/Views/Music/MusicSegmentSwitch.swift
 import SwiftUI
 
-/// The segmented control of Library in the Mixer's pill style: text segments in a small pill, the picked one on a raised
-/// fill that slides between them. A nil selection highlights nothing. Tapping a segment always reports it, even the
-/// selected one.
+/// The segmented control of Library: text segments in a small rounded track, the picked one on a raised fill that
+/// slides between them. A nil selection highlights nothing. Tapping a segment always reports it, even the selected one.
 struct MusicSegmentSwitch<Value: Hashable>: View {
     struct Segment: Identifiable {
         let value: Value
@@ -18,8 +17,13 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
     let onSelect: (Value) -> Void
     @Namespace private var namespace
 
+    /// The track's padding and the gap between segments, and the radii of the track and of a segment.
+    static var trackPadding: CGFloat { 2 }
+    static var trackRadius: CGFloat { 7 }
+    static var segmentRadius: CGFloat { 5 }
+
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: Self.trackPadding) {
             ForEach(segments) { segment in
                 let isSelected = selection == segment.value
                 Button {
@@ -34,15 +38,15 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
                                 .symbolRenderingMode(.hierarchical)
                         }
                         Text(segment.title)
-                            .musicText(MusicStyle.Typeface.secondaryMedium)
+                            .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
                     }
-                    .foregroundStyle(isSelected ? DesignTokens.Colors.textPrimary : DesignTokens.Colors.textTertiary)
-                    .padding(.horizontal, DesignTokens.Spacing.md)
-                    .frame(height: MusicStyle.Size.headerButton)
+                    .foregroundStyle(Color.white.opacity(isSelected ? MusicStyle.Opacity.heading : MusicStyle.Opacity.idleControl))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
                     .background {
                         if isSelected {
-                            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius)
-                                .fill(DesignTokens.Colors.glassFillStrong)
+                            RoundedRectangle(cornerRadius: Self.segmentRadius, style: .continuous)
+                                .fill(MusicStyle.Palette.segmentSelected)
                                 .matchedGeometryEffect(id: "segment", in: namespace)
                         }
                     }
@@ -53,14 +57,10 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
-        .padding(3)
+        .padding(Self.trackPadding)
         .background(
-            RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius + 3)
-                .fill(DesignTokens.Colors.glassFill)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius + 3)
-                        .strokeBorder(DesignTokens.Colors.glassRowBorder, lineWidth: 0.5)
-                )
+            RoundedRectangle(cornerRadius: Self.trackRadius, style: .continuous)
+                .fill(MusicStyle.Palette.segmentTrack)
         )
     }
 }

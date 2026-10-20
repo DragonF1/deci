@@ -63,6 +63,7 @@ struct MusicPopupView: View {
         .clipShape(shape)
         .overlay(shape.strokeBorder(MusicStyle.Palette.popupBorder, lineWidth: MusicPopupMetrics.borderWidth))
         .musicAccentScope(track: musicHost.service?.player.nowPlaying)
+        .environment(\.musicPopupIsVisible, musicHost.isPopupVisible)
         .animation(DesignTokens.Animation.quick, value: musicHost.isAccountCardOpen)
         // Always dark: the window itself, so its chrome and every control read as on dark, and the SwiftUI scheme.
         .background(
@@ -121,7 +122,6 @@ struct MusicPopupView: View {
             )
             if appSettings.showMusicInMenuBar {
                 MusicTabView(host: musicHost)
-                    .environment(\.musicContentTop, 0)
                     .environment(\.musicBottomInset, MusicPopupMetrics.rightPaddingBottom)
             } else {
                 // Hidden: the player is unmounted, so its panels close, and the popup keeps its size.

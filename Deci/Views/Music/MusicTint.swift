@@ -14,9 +14,8 @@ nonisolated enum MusicHash {
     }
 }
 
-/// The colours an item takes from its cover: a page colour for a card or a hero, a darker one for the bottom of the
-/// page, a light one for the Play pill and accent text, and an ink for what sits on the light one. They follow the
-/// derivation of the design: keep the cover's hue, then fix the brightness of each role.
+/// A colour taken from a cover (or stood in by the hash palette): its hue, saturation and brightness. The player column
+/// and the accent scope derive what they draw from it.
 nonisolated struct MusicTint: Equatable, Sendable {
     /// Hue, saturation and brightness of the dominant colour, each 0...1.
     let hue: Double
@@ -31,26 +30,7 @@ nonisolated struct MusicTint: Equatable, Sendable {
         self.brightness = brightness.isFinite ? min(max(brightness, 0), 1) : 0
     }
 
-    /// Page top, hero fade and card fill: brightness 23 to 46 percent.
-    var pageBrightness: Double { min(max(brightness, 0.23), 0.46) }
-
-    /// About half the brightness of the page top.
-    var pageBottomBrightness: Double { pageBrightness / 2 }
-
-    /// Play pill fill and accent text: brightness 84 to 100 percent, saturation 20 to 30 percent.
-    var lightBrightness: Double { 0.84 + 0.16 * brightness }
-    var lightSaturation: Double { min(max(saturation, 0.2), 0.3) }
-
-    /// Play pill content: dark, and more saturated than the light colour.
-    var inkBrightness: Double { 0.12 + 0.11 * brightness }
-    var inkSaturation: Double { min(1, saturation * 0.5 + 0.5) }
-
-    var page: Color { Color(hue: hue, saturation: saturation, brightness: pageBrightness) }
-    var pageBottom: Color { Color(hue: hue, saturation: saturation, brightness: pageBottomBrightness) }
-    var light: Color { Color(hue: hue, saturation: lightSaturation, brightness: lightBrightness) }
-    var ink: Color { Color(hue: hue, saturation: inkSaturation, brightness: inkBrightness) }
-
-    /// The tints Top Picks cards take, which stand in for the colour of the cover.
+    /// The tints that stand in for the colour of a cover that is not known yet.
     static let palette: [MusicTint] = [
         MusicTint(hue: 0.43, saturation: 0.22, brightness: 0.26),
         MusicTint(hue: 0.58, saturation: 0.70, brightness: 0.31),

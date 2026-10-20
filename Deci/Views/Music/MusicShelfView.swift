@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// One titled shelf of a page: an artist's Albums, Singles and the rest. A shelf of songs only shows song rows; any
-/// other shelf scrolls sideways through 76 pt cover tiles, starting one page margin in and sliding under the popover's edge.
+/// other shelf scrolls sideways through 70 pt cover tiles, starting one page margin in and sliding under the popover's edge.
 struct MusicShelfView: View {
     let shelf: MusicShelf
     /// videoId of the track in the player, for the playing indicator.
@@ -26,12 +26,12 @@ struct MusicShelfView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionContent) {
+        VStack(alignment: .leading, spacing: songs == nil ? MusicBrowseLayout.tileTitleGap : MusicBrowseLayout.listTitleGap) {
             MusicSectionHeader(title: shelf.title)
 
             if let songs {
                 VStack(spacing: 0) {
-                    ForEach(Array(songs.prefix(Self.maxSongRows).enumerated()), id: \.offset) { _, track in
+                    ForEach(Array(songs.prefix(Self.maxSongRows).enumerated()), id: \.offset) { index, track in
                         MusicSongRow(
                             track: track,
                             isCurrent: nowPlayingId == track.videoId,
@@ -40,6 +40,7 @@ struct MusicShelfView: View {
                         ) {
                             onPlay(track)
                         }
+                        .musicRowHairline(index > 0)
                     }
                 }
             } else {
@@ -60,6 +61,7 @@ struct MusicShelfView: View {
                 title: track.title,
                 subtitle: track.artist,
                 thumbnailURL: track.thumbnailURL,
+                size: MusicBrowseLayout.shelfTile,
                 isPinned: trackMenu?.isPinned(track) == true,
                 isCurrent: nowPlayingId == track.videoId,
                 isPlaying: nowPlayingId == track.videoId && isPlaying
@@ -71,6 +73,7 @@ struct MusicShelfView: View {
                 title: collection.title,
                 subtitle: MusicHomeText.subtitle(collection.subtitle),
                 thumbnailURL: collection.thumbnailURL,
+                size: MusicBrowseLayout.shelfTile,
                 circular: collection.kind == .artist,
                 placeholder: collection.kind.placeholderSymbol,
                 isPinned: collectionPin?.isPinned(collection) == true

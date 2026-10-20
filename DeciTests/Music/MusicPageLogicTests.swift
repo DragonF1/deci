@@ -17,57 +17,23 @@ struct MusicPageKindTests {
         // An album or an artist with that id is still what its kind says.
         #expect(MusicPageKind.resolve(kind: .album, browseId: "VLLM") == .album)
     }
-}
 
-@MainActor
-@Suite("MusicPagePalette")
-struct MusicPagePaletteTests {
-    private let cover = MusicTint(hue: 0.6, saturation: 0.5, brightness: 0.5)
-    private let fallback = MusicTint.forKey("some page")
-
-    /// The sRGB components of a colour, red, green, blue and alpha.
-    private func components(_ color: Color) -> [Double] {
-        let resolved = NSColor(color).usingColorSpace(.sRGB) ?? .clear
-        return [resolved.redComponent, resolved.greenComponent, resolved.blueComponent, resolved.alphaComponent].map(Double.init)
+    @Test("only an artist's photo is round")
+    func round() {
+        #expect(MusicPageKind.artist.isRound)
+        #expect(!MusicPageKind.album.isRound)
+        #expect(!MusicPageKind.playlist.isRound)
+        #expect(!MusicPageKind.liked.isRound)
     }
 
-    private func expectSameColour(_ a: Color, _ b: Color, alpha: Double, sourceLocation: SourceLocation = #_sourceLocation) {
-        let lhs = components(a)
-        let rhs = components(b)
-        for index in 0..<3 {
-            #expect(abs(lhs[index] - rhs[index]) < 0.002, sourceLocation: sourceLocation)
-        }
-        #expect(abs(lhs[3] - alpha) < 0.002, sourceLocation: sourceLocation)
-    }
-
-    @Test("the header wash is the page colour at 85 percent on dark and the light colour at 55 percent on light")
-    func washFollowsScheme() {
-        for palette in [MusicPagePalette(tint: cover), .liked] {
-            expectSameColour(palette.wash(for: .dark), palette.page, alpha: 0.85)
-            expectSameColour(palette.wash(for: .light), palette.light, alpha: 0.55)
-        }
-    }
-
-    @Test("a page wears its cover's colours")
-    func coverColours() {
-        let palette = MusicPagePalette.resolve(kind: .album, coverTint: cover, fallback: fallback)
-        #expect(palette == MusicPagePalette(tint: cover))
-        #expect(palette.page == cover.page)
-        #expect(palette.light == cover.light)
-    }
-
-    @Test("until the cover's colour is known the page keeps the tint of its id")
-    func fallsBack() {
-        for kind in [MusicPageKind.album, .artist, .playlist] {
-            #expect(MusicPagePalette.resolve(kind: kind, coverTint: nil, fallback: fallback) == MusicPagePalette(tint: fallback))
-        }
-    }
-
-    @Test("Liked music keeps its red whatever the cover says")
-    func likedIsFixed() {
-        #expect(MusicPagePalette.resolve(kind: .liked, coverTint: cover, fallback: fallback) == .liked)
-        #expect(MusicPagePalette.resolve(kind: .liked, coverTint: nil, fallback: fallback) == .liked)
-        #expect(MusicPagePalette.liked.page != cover.page)
+    @Test("an album numbers its songs from 1, Liked music adds the heart, a playlist has plain rows")
+    func rowLayout() {
+        #expect(MusicPageKind.album.rowLayout(at: 0) == .album(number: 1))
+        #expect(MusicPageKind.album.rowLayout(at: 11) == .album(number: 12))
+        #expect(MusicPageKind.liked.rowLayout(at: 0) == .liked)
+        #expect(MusicPageKind.liked.rowLayout(at: 40) == .liked)
+        #expect(MusicPageKind.playlist.rowLayout(at: 3) == .playlist)
+        #expect(MusicPageKind.artist.rowLayout(at: 3) == .playlist)
     }
 }
 
@@ -107,6 +73,14 @@ struct MusicInkTests {
         #expect(MusicInk.white.color == .white)
         #expect(MusicInk.black.color == .black)
     }
+
+    @MainActor
+    @Test("the white Play pill carries dark ink, the popup's own background, never pure black")
+    func playPillInk() {
+        let fill = MusicPlayPill.fillOpacity
+        #expect(MusicInk.onFill(red: fill, green: fill, blue: fill) == .black)
+        #expect(MusicPlayPill.ink == MusicStyle.Palette.popupBackground)
+    }
 }
 
 @MainActor
@@ -124,60 +98,91 @@ struct MusicDarkBlurTests {
 @MainActor
 @Suite("MusicPagePills")
 struct MusicPagePillsTests {
-    @Test("an album plays, shuffles and pins to Listen again, and has no sort")
-    func album() {
-        #expect(MusicPagePills.pills(kind: .album, hasTracks: true, canSort: true, hasListenAgainPin: true) == [.play, .shuffle, .pinListenAgain])
-        #expect(MusicPagePills.pills(kind: .album, hasTracks: true, canSort: false, hasListenAgainPin: false) == [.play, .shuffle])
+    @Test("an album or a playlist plays and shuffles, and gets the menu when it has an action for it")
+    func albumAndPlaylist() {
+        for kind in [MusicPageKind.album, .playlist, .liked] {
+            #expect(MusicPagePills.pills(kind: kind, hasTracks: true, hasMenuItems: true) == [.play, .shuffle, .more])
+            #expect(MusicPagePills.pills(kind: kind, hasTracks: true, hasMenuItems: false) == [.play, .shuffle])
+        }
     }
 
-    @Test("a playlist adds Sort between Shuffle and the pin when it can sort")
-    func playlist() {
-        #expect(MusicPagePills.pills(kind: .playlist, hasTracks: true, canSort: true, hasListenAgainPin: true) == [.play, .shuffle, .sort, .pinListenAgain])
-        #expect(MusicPagePills.pills(kind: .playlist, hasTracks: true, canSort: false, hasListenAgainPin: true) == [.play, .shuffle, .pinListenAgain])
-    }
-
-    @Test("Liked music plays, shuffles and sorts, and has no pin to offer")
-    func liked() {
-        #expect(MusicPagePills.pills(kind: .liked, hasTracks: true, canSort: true, hasListenAgainPin: false) == [.play, .shuffle, .sort])
-    }
-
-    @Test("an artist plays and pins to Home, with no shuffle or sort")
+    @Test("an artist plays and has no shuffle, since it has no list to shuffle through")
     func artist() {
-        #expect(MusicPagePills.pills(kind: .artist, hasTracks: true, canSort: true, hasListenAgainPin: true) == [.play, .pinHome])
+        #expect(MusicPagePills.pills(kind: .artist, hasTracks: true, hasMenuItems: true) == [.play, .more])
+        #expect(MusicPagePills.pills(kind: .artist, hasTracks: true, hasMenuItems: false) == [.play])
     }
 
-    @Test("with no songs there is nothing to play, shuffle or sort, but the pins stay")
+    @Test("with no songs there is nothing to play or shuffle, and the menu stays only if it has an action")
     func noTracks() {
-        #expect(MusicPagePills.pills(kind: .album, hasTracks: false, canSort: true, hasListenAgainPin: true) == [.pinListenAgain])
-        #expect(MusicPagePills.pills(kind: .playlist, hasTracks: false, canSort: true, hasListenAgainPin: false).isEmpty)
-        #expect(MusicPagePills.pills(kind: .liked, hasTracks: false, canSort: true, hasListenAgainPin: false).isEmpty)
-        #expect(MusicPagePills.pills(kind: .artist, hasTracks: false, canSort: false, hasListenAgainPin: false) == [.pinHome])
+        for kind in [MusicPageKind.album, .playlist, .liked, .artist] {
+            #expect(MusicPagePills.pills(kind: kind, hasTracks: false, hasMenuItems: true) == [.more])
+            #expect(MusicPagePills.pills(kind: kind, hasTracks: false, hasMenuItems: false).isEmpty)
+        }
     }
 
-    @Test("the Sort pill is plain at rest and names the key and the direction once picked")
-    func sortPill() {
-        let rest = MusicPagePills.sortPill(.default)
-        #expect(rest == .init(label: "Sort", symbol: "arrow.up.arrow.down", isActive: false))
-        let up = MusicPagePills.sortPill(MusicPlaylistSort(field: .title, ascending: true))
-        #expect(up.label == "Title" && up.symbol == "arrow.up" && up.isActive)
-        let down = MusicPagePills.sortPill(MusicPlaylistSort(field: .duration, ascending: false))
-        #expect(down.label == "Duration" && down.symbol == "arrow.down" && down.isActive)
+    @Test("an album, a playlist or Liked music offers the Listen again pin where YouTube has the toggle")
+    func listenAgainItems() {
+        for kind in [MusicPageKind.album, .playlist, .liked] {
+            #expect(
+                MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: false, homeIsPinned: false, homeCanToggle: true)
+                    == [.pinListenAgain(isPinned: false)]
+            )
+            #expect(
+                MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: true, homeIsPinned: false, homeCanToggle: true)
+                    == [.pinListenAgain(isPinned: true)]
+            )
+            // No toggle from YouTube, no entry: the menu is left out altogether.
+            #expect(
+                MusicPagePills.menuItems(kind: kind, listenAgainIsPinned: nil, homeIsPinned: true, homeCanToggle: true).isEmpty
+            )
+        }
     }
 
-    @Test("the Home pin's help explains the limit only when it is the reason")
-    func pinHelp() {
-        #expect(MusicPagePills.pinHelp(isPinned: true, isEnabled: true) == "Take this artist off Home.")
-        #expect(MusicPagePills.pinHelp(isPinned: true, isEnabled: false) == "Take this artist off Home.")
-        #expect(MusicPagePills.pinHelp(isPinned: false, isEnabled: true) == "Show this artist at the top of Home.")
-        let full = MusicPagePills.pinHelp(isPinned: false, isEnabled: false)
-        #expect(full.contains("\(MusicPinnedArtists.limit)"))
-        #expect(full.contains("Unpin one"))
+    @Test("an artist offers Pin to Home, and says whether Home has room")
+    func homeItem() {
+        #expect(
+            MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: true, homeIsPinned: false, homeCanToggle: true)
+                == [.pinHome(isPinned: false, isEnabled: true)]
+        )
+        #expect(
+            MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: nil, homeIsPinned: false, homeCanToggle: false)
+                == [.pinHome(isPinned: false, isEnabled: false)]
+        )
+        #expect(
+            MusicPagePills.menuItems(kind: .artist, listenAgainIsPinned: nil, homeIsPinned: true, homeCanToggle: true)
+                == [.pinHome(isPinned: true, isEnabled: true)]
+        )
+    }
+}
+
+@MainActor
+@Suite("MusicPageMenuItem")
+struct MusicPageMenuItemTests {
+    @Test("the Listen again entry reads like the song menu's")
+    func listenAgain() {
+        let pin = MusicPageMenuItem.pinListenAgain(isPinned: false)
+        let unpin = MusicPageMenuItem.pinListenAgain(isPinned: true)
+        #expect(pin.title == MusicTrackAction.pinToListenAgain.title)
+        #expect(unpin.title == MusicTrackAction.unpinFromListenAgain.title)
+        #expect(pin.systemImage == MusicTrackAction.pinToListenAgain.systemImage)
+        #expect(unpin.systemImage == MusicTrackAction.unpinFromListenAgain.systemImage)
+        #expect(pin.isEnabled && unpin.isEnabled)
     }
 
-    @Test("VoiceOver hears the action, not the pill's word")
-    func pinAccessibility() {
-        #expect(MusicPagePills.pinAccessibilityLabel(isPinned: false, title: "Fake Artist") == "Pin Fake Artist to Home")
-        #expect(MusicPagePills.pinAccessibilityLabel(isPinned: true, title: "Fake Artist") == "Unpin Fake Artist from Home")
+    @Test("the Home entry pins and unpins, and says when Home is full")
+    func home() {
+        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: true).title == "Pin to Home")
+        #expect(MusicPageMenuItem.pinHome(isPinned: true, isEnabled: true).title == "Unpin from Home")
+        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: false).title == "Pin to Home (Home is full)")
+        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: true).systemImage == "pin")
+        #expect(MusicPageMenuItem.pinHome(isPinned: true, isEnabled: true).systemImage == "pin.slash")
+    }
+
+    @Test("a full Home turns the entry off, and an unpin is always on")
+    func enabled() {
+        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: false).isEnabled == false)
+        #expect(MusicPageMenuItem.pinHome(isPinned: false, isEnabled: true).isEnabled)
+        #expect(MusicPageMenuItem.pinHome(isPinned: true, isEnabled: true).isEnabled)
     }
 }
 
@@ -203,129 +208,262 @@ struct MusicSortNoteTests {
 @MainActor
 @Suite("MusicPageHeroText")
 struct MusicPageHeroTextTests {
+    private let bullet = "\u{2022}"
+    private let dot = "\u{00B7}"
+
+    private func resolve(
+        _ kind: MusicPageKind,
+        title: String = "Fake Title",
+        subtitle: String? = nil,
+        firstArtist: String? = nil,
+        isEditable: Bool = false,
+        songCount: Int? = nil,
+        totalSeconds: Int? = nil,
+        albumCount: Int? = nil
+    ) -> MusicPageHeroText {
+        MusicPageHeroText.resolve(
+            kind: kind, title: title, subtitle: subtitle, firstArtist: firstArtist, isEditable: isEditable,
+            songCount: songCount, totalSeconds: totalSeconds, albumCount: albumCount
+        )
+    }
+
     @Test("YouTube's bullet becomes the design's middle dot, and empty text is nothing")
     func dotted() {
-        #expect(MusicPageHeroText.dotted("Album \u{2022} 2020 \u{2022} 12 songs") == "Album \u{00B7} 2020 \u{00B7} 12 songs")
+        #expect(MusicPageHeroText.dotted("Album \(bullet) 2020 \(bullet) 12 songs") == "Album \(dot) 2020 \(dot) 12 songs")
         #expect(MusicPageHeroText.dotted("  Playlist  ") == "Playlist")
         #expect(MusicPageHeroText.dotted("   ") == nil)
         #expect(MusicPageHeroText.dotted("") == nil)
         #expect(MusicPageHeroText.dotted(nil) == nil)
     }
 
-    @Test("an album shows its artist as the accent and the rest of YouTube's line as the meta")
+    @Test("the parts of YouTube's line come out trimmed, with no empty ones")
+    func parts() {
+        #expect(MusicPageHeroText.parts("Album \(bullet) 2020 \(bullet) 12 songs") == ["Album", "2020", "12 songs"])
+        #expect(MusicPageHeroText.parts(nil).isEmpty)
+        #expect(MusicPageHeroText.parts("  ").isEmpty)
+    }
+
+    @Test("an album says its kind in the kicker, its artist under the title and the year and count in the meta")
     func album() {
-        let text = MusicPageHeroText.resolve(
-            kind: .album, title: "Fake Album", subtitle: "Album \u{2022} Fake Artist \u{2022} 2020 \u{2022} 12 songs", firstArtist: "Fake Artist"
+        let text = resolve(
+            .album, title: "Fake Album", subtitle: "Album \(bullet) Fake Artist \(bullet) 2020 \(bullet) 12 songs", firstArtist: "Fake Artist"
         )
+        #expect(text.kicker == "ALBUM")
         #expect(text.title == "Fake Album")
-        #expect(text.accent == "Fake Artist")
-        #expect(text.meta == "Album \u{00B7} 2020 \u{00B7} 12 songs")
+        #expect(text.sub == "Fake Artist")
+        #expect(text.meta == "2020 \(dot) 12 songs")
     }
 
-    @Test("an album with no known artist keeps YouTube's line whole")
-    func albumWithoutArtist() {
-        let text = MusicPageHeroText.resolve(kind: .album, title: "Fake Album", subtitle: "Album \u{2022} 2020", firstArtist: nil)
-        #expect(text.accent == nil)
-        #expect(text.meta == "Album \u{00B7} 2020")
-        let blank = MusicPageHeroText.resolve(kind: .album, title: "Fake Album", subtitle: nil, firstArtist: "  ")
-        #expect(blank.accent == nil && blank.meta == nil)
+    @Test("a single or an EP takes its own word as the kicker")
+    func singleAndEP() {
+        #expect(resolve(.album, subtitle: "Single \(bullet) Fake Artist \(bullet) 2021", firstArtist: "Fake Artist").kicker == "SINGLE")
+        #expect(resolve(.album, subtitle: "EP \(bullet) Fake Artist \(bullet) 2021", firstArtist: "Fake Artist").kicker == "EP")
+        #expect(resolve(.album, subtitle: "Single \(bullet) Fake Artist \(bullet) 2021", firstArtist: "Fake Artist").meta == "2021")
     }
 
-    @Test("an album whose line is only the artist has no meta line")
-    func albumLineIsArtistOnly() {
-        let text = MusicPageHeroText.resolve(kind: .album, title: "T", subtitle: "Fake Artist", firstArtist: "Fake Artist")
-        #expect(text.accent == "Fake Artist" && text.meta == nil)
+    @Test("an album with no line from YouTube gets its count and length, and one with them does not repeat them")
+    func albumCountAndLength() {
+        let bare = resolve(.album, firstArtist: "Fake Artist", songCount: 12, totalSeconds: 2700)
+        #expect(bare.meta == "12 songs \(dot) 45 min")
+        let given = resolve(
+            .album, subtitle: "Album \(bullet) Fake Artist \(bullet) 2020 \(bullet) 12 songs", firstArtist: "Fake Artist",
+            songCount: 12, totalSeconds: 3000
+        )
+        #expect(given.meta == "2020 \(dot) 12 songs \(dot) 50 min")
+        let full = resolve(
+            .album, subtitle: "Album \(bullet) Fake Artist \(bullet) 12 songs \(bullet) 50 minutes", firstArtist: "Fake Artist",
+            songCount: 12, totalSeconds: 3000
+        )
+        #expect(full.meta == "12 songs \(dot) 50 minutes")
     }
 
-    @Test("an artist page shows the name alone")
+    @Test("an album with no known artist or line has only its kicker and title")
+    func albumBare() {
+        let text = resolve(.album, title: "Fake Album", firstArtist: "  ")
+        #expect(text == MusicPageHeroText(kicker: "ALBUM", title: "Fake Album", sub: nil, meta: nil))
+    }
+
+    @Test("a count or a length that is not known for certain is left out")
+    func unknownCounts() {
+        let text = resolve(.playlist, subtitle: "Playlist \(bullet) Fake Owner")
+        #expect(text.meta == nil)
+    }
+
+    @Test("an artist says its audience under the name and the number of albums in the meta")
     func artist() {
-        let text = MusicPageHeroText.resolve(kind: .artist, title: "Fake Artist", subtitle: "1.2M subscribers", firstArtist: "Other")
-        #expect(text == MusicPageHeroText(title: "Fake Artist", accent: nil, meta: nil))
+        let text = resolve(.artist, title: "Fake Artist", subtitle: "Artist \(bullet) 1.2M subscribers", albumCount: 3)
+        #expect(text == MusicPageHeroText(kicker: "ARTIST", title: "Fake Artist", sub: "1.2M subscribers", meta: "3 albums"))
+        #expect(resolve(.artist, subtitle: "1.2M subscribers", albumCount: 1).meta == "1 album")
+        #expect(resolve(.artist, subtitle: "1.2M subscribers", albumCount: 0).meta == nil)
+        #expect(resolve(.artist, subtitle: nil, albumCount: nil) == MusicPageHeroText(kicker: "ARTIST", title: "Fake Title", sub: nil, meta: nil))
     }
 
-    @Test("Liked music has its own title, and Auto playlist as the default accent")
-    func liked() {
-        let plain = MusicPageHeroText.resolve(kind: .liked, title: "anything", subtitle: nil, firstArtist: nil)
-        #expect(plain == MusicPageHeroText(title: "Liked music", accent: "Auto playlist", meta: nil))
-        let counted = MusicPageHeroText.resolve(kind: .liked, title: "x", subtitle: "Auto playlist \u{2022} 87 songs", firstArtist: nil)
-        #expect(counted.accent == "Auto playlist \u{00B7} 87 songs")
-    }
-
-    @Test("a playlist shows YouTube's line as its accent")
+    @Test("a playlist says who made it, and the count and the length")
     func playlist() {
-        let text = MusicPageHeroText.resolve(kind: .playlist, title: "Fake Mix", subtitle: "Playlist \u{2022} 40 songs", firstArtist: "Fake Artist")
-        #expect(text == MusicPageHeroText(title: "Fake Mix", accent: "Playlist \u{00B7} 40 songs", meta: nil))
-        let bare = MusicPageHeroText.resolve(kind: .playlist, title: "Fake Mix", subtitle: nil, firstArtist: nil)
-        #expect(bare.accent == nil)
+        let text = resolve(
+            .playlist, title: "Fake Mix", subtitle: "Playlist \(bullet) Fake Owner \(bullet) 40 songs \(bullet) 2 hours",
+            firstArtist: "Fake Artist"
+        )
+        #expect(text == MusicPageHeroText(kicker: "PLAYLIST", title: "Fake Mix", sub: "Fake Owner", meta: "40 songs \(dot) 2 hours"))
+        let views = resolve(.playlist, subtitle: "Playlist \(bullet) Fake Owner \(bullet) 1.2M views \(bullet) 40 songs")
+        #expect(views.sub == "Fake Owner")
+        #expect(views.meta == "1.2M views \(dot) 40 songs")
+        let counted = resolve(.playlist, songCount: 3, totalSeconds: 600)
+        #expect(counted.sub == nil)
+        #expect(counted.meta == "3 songs \(dot) 10 min")
+        #expect(resolve(.playlist, songCount: 1, totalSeconds: 200).meta == "1 song \(dot) 3 min")
+    }
+
+    @Test("a playlist the user can edit is Made by you, whoever YouTube names")
+    func editablePlaylist() {
+        let text = resolve(.playlist, subtitle: "Playlist \(bullet) Fake Owner \(bullet) 4 songs", isEditable: true)
+        #expect(text.sub == "Made by you")
+        #expect(text.meta == "4 songs")
+    }
+
+    @Test("Liked music has its own title and line, and the count and length of its songs")
+    func liked() {
+        let plain = resolve(.liked, title: "anything")
+        #expect(plain == MusicPageHeroText(kicker: "AUTO PLAYLIST", title: "Liked music", sub: MusicPageHeroText.likedSub, meta: nil))
+        let counted = resolve(.liked, subtitle: "Auto playlist \(bullet) 87 songs")
+        #expect(counted.meta == "87 songs")
+        #expect(counted.sub == MusicPageHeroText.likedSub)
+        let known = resolve(.liked, songCount: 87, totalSeconds: 18_000)
+        #expect(known.meta == "87 songs \(dot) 5 hr")
+    }
+
+    @Test("an artist's albums are the items of its Albums shelf, and a shelf of anything else is not counted")
+    func albumCount() {
+        let albums = MusicShelf(title: "Albums", items: [.collection(MusicSamples.collection("a1", kind: .album)), .collection(MusicSamples.collection("a2", kind: .album))])
+        let singles = MusicShelf(title: "Singles", items: [.collection(MusicSamples.collection("s1", kind: .album))])
+        #expect(MusicPageHeroText.albumCount(in: [singles, albums]) == 2)
+        #expect(MusicPageHeroText.albumCount(in: [MusicShelf(title: " albums ", items: albums.items)]) == 2)
+        #expect(MusicPageHeroText.albumCount(in: [singles]) == nil)
+        #expect(MusicPageHeroText.albumCount(in: []) == nil)
+        #expect(MusicPageHeroText.albumCount(in: [MusicShelf(title: "Albums", items: [.track(MusicSamples.track("t"))])]) == nil)
     }
 }
 
-@MainActor
-@Suite("MusicPageScroll")
-struct MusicPageScrollTests {
-    @Test("the bar is clear while the hero reaches under the nav row and solid a fade later")
-    func barOpacity() {
-        let hero = MusicPageKind.album.heroHeight
-        let start = hero - MusicPageScroll.barHeight
-        #expect(MusicPageScroll.barOpacity(offset: 0, heroHeight: hero) == 0)
-        #expect(MusicPageScroll.barOpacity(offset: start, heroHeight: hero) == 0)
-        #expect(MusicPageScroll.barOpacity(offset: start + MusicPageScroll.barFade / 2, heroHeight: hero) == 0.5)
-        #expect(MusicPageScroll.barOpacity(offset: start + MusicPageScroll.barFade, heroHeight: hero) == 1)
-        #expect(MusicPageScroll.barOpacity(offset: 5000, heroHeight: hero) == 1)
+@Suite("MusicPageDuration")
+struct MusicPageDurationTests {
+    @Test("a length reads in whole minutes, then hours, rounded and never under a minute")
+    func text() {
+        #expect(MusicPageDuration.text(seconds: 0) == "1 min")
+        #expect(MusicPageDuration.text(seconds: 29) == "1 min")
+        #expect(MusicPageDuration.text(seconds: 90) == "2 min")
+        #expect(MusicPageDuration.text(seconds: 2_280) == "38 min")
+        #expect(MusicPageDuration.text(seconds: 3_540) == "59 min")
+        #expect(MusicPageDuration.text(seconds: 3_600) == "1 hr")
+        #expect(MusicPageDuration.text(seconds: 9_060) == "2 hr 31 min")
+        #expect(MusicPageDuration.text(seconds: -5) == "1 min")
     }
 
-    @Test("an elastic pull above the top and a non-finite offset leave the bar clear")
-    func barOpacityOutOfRange() {
-        #expect(MusicPageScroll.barOpacity(offset: -80, heroHeight: 288) == 0)
-        #expect(MusicPageScroll.barOpacity(offset: .nan, heroHeight: 288) == 0)
-        #expect(MusicPageScroll.barOpacity(offset: .infinity, heroHeight: 288) == 0)
-    }
-
-    @Test("the tint URL does not change when the page's own cover arrives after the collection's")
-    func tintURLIsStable() {
-        let page = URL(string: "https://example.invalid/page")
-        let collection = URL(string: "https://example.invalid/collection")
-        #expect(MusicPageCover.tintURL(page: nil, collection: collection) == collection)
-        #expect(MusicPageCover.tintURL(page: page, collection: collection) == collection)
-        // With no collection cover the page's is the only one there is.
-        #expect(MusicPageCover.tintURL(page: page, collection: nil) == page)
-        #expect(MusicPageCover.tintURL(page: nil, collection: nil) == nil)
+    @Test("the total is the sum, and nil whenever it would be a guess")
+    func total() {
+        #expect(MusicPageDuration.total(of: [200, 100, 40], isComplete: true) == 340)
+        #expect(MusicPageDuration.total(of: [200, 100], isComplete: false) == nil)
+        #expect(MusicPageDuration.total(of: [], isComplete: true) == nil)
+        #expect(MusicPageDuration.total(of: [200, nil], isComplete: true) == nil)
+        #expect(MusicPageDuration.total(of: [200, 0], isComplete: true) == nil)
     }
 }
 
 @MainActor
 @Suite("MusicSongRowLayout")
 struct MusicSongRowLayoutTests {
-    @Test("an album track has a number and no cover, a top song has both, the rest only a cover")
-    func coverAndNumber() {
-        #expect(MusicSongRowLayout.album(number: 7).number == 7)
-        #expect(MusicSongRowLayout.album(number: 7).coverSize == nil)
-        #expect(MusicSongRowLayout.topSong(number: 3).number == 3)
-        #expect(MusicSongRowLayout.topSong(number: 3).coverSize != nil)
-        #expect(MusicSongRowLayout.playlist.number == nil)
-        #expect(MusicSongRowLayout.playlist.coverSize != nil)
-        #expect(MusicSongRowLayout.search.number == nil)
-        #expect(MusicSongRowLayout.search.coverSize != nil)
+    private let withCover: [MusicSongRowLayout] = [.search, .playlist, .topSong, .liked]
+
+    @Test("rows are 40 pt tall, an album's 32, and every row but an album's has a 30 pt cover with a 4 pt radius")
+    func measures() {
+        for layout in withCover {
+            #expect(layout.height == 40)
+            #expect(layout.coverSize == 30)
+            #expect(layout.coverRadius == 4)
+        }
+        #expect(MusicSongRowLayout.album(number: 1).height == 32)
+        #expect(MusicSongRowLayout.album(number: 1).coverSize == nil)
+        #expect(MusicSongRow.height == 40)
+        #expect(MusicSongRow.coverSize == 30)
     }
 
-    @Test("every row with a cover uses the Mixer's 32 to 36 pt art and has room for it above and below")
+    @Test("the cover fits its row with room above and below")
     func coverFitsTheRow() {
-        let layouts: [MusicSongRowLayout] = [.search, .playlist, .topSong(number: 1), .album(number: 1)]
-        for layout in layouts {
-            if let cover = layout.coverSize {
-                #expect((32...36).contains(cover))
-                #expect(layout.height >= cover + 2 * 2)
-            }
-            #expect(layout.height >= 36 && layout.height <= 44)
+        for layout in withCover {
+            #expect(layout.height >= (layout.coverSize ?? 0) + 2 * 4)
         }
     }
 
-    @Test("an album's playing track is marked by the bars, so its title keeps its colour")
-    func accentedTitle() {
-        #expect(!MusicSongRowLayout.album(number: 1).accentsCurrentTitle)
-        #expect(MusicSongRowLayout.playlist.accentsCurrentTitle)
-        #expect(MusicSongRowLayout.topSong(number: 1).accentsCurrentTitle)
-        #expect(MusicSongRowLayout.search.accentsCurrentTitle)
+    @Test("an album track has a number and no cover, the other rows have a cover and no number")
+    func number() {
+        #expect(MusicSongRowLayout.album(number: 7).number == 7)
+        for layout in withCover {
+            #expect(layout.number == nil)
+        }
     }
 
+    @Test("the number sits in an 18 by 16 box, the cover is 12 from the text and the number 10, the title 1 over its line")
+    func gaps() {
+        for layout in withCover + [.album(number: 1)] {
+            #expect(layout.numberBoxWidth == 18)
+            #expect(layout.numberBoxHeight == 16)
+            #expect(layout.textGap == 1)
+            #expect(layout.trailingGap == 8)
+            #expect(layout.horizontalPadding == MusicStyle.Spacing.page)
+        }
+        for layout in withCover {
+            #expect(layout.contentGap == 12)
+        }
+        #expect(MusicSongRowLayout.album(number: 1).contentGap == 10)
+    }
+
+    @Test("the current row's title is a weight heavier and full white, the others 90 percent")
+    func titleStyle() {
+        let layout = MusicSongRowLayout.playlist
+        #expect(layout.titleStyle(isCurrent: true) == MusicStyle.Typeface.rowMedium)
+        #expect(layout.titleStyle(isCurrent: false) == MusicStyle.Typeface.row)
+        #expect(layout.titleColorOpacity(isCurrent: true) == 1.0)
+        #expect(layout.titleColorOpacity(isCurrent: false) == 0.90)
+    }
+
+    @Test("numbers are set in mono, and so are the durations of album and Liked rows")
+    func monoStyles() {
+        for layout in withCover + [.album(number: 1)] {
+            #expect(layout.numberStyle == MusicStyle.Typeface.mono)
+        }
+        #expect(MusicSongRowLayout.album(number: 1).durationStyle == MusicStyle.Typeface.mono)
+        #expect(MusicSongRowLayout.liked.durationStyle == MusicStyle.Typeface.mono)
+        #expect(MusicSongRowLayout.playlist.durationStyle == MusicStyle.Typeface.seeAll)
+        #expect(MusicSongRowLayout.search.durationStyle == MusicStyle.Typeface.seeAll)
+        #expect(MusicSongRowLayout.topSong.durationStyle == MusicStyle.Typeface.seeAll)
+    }
+
+    @Test("only a Liked row shows the heart, 12 pt at 90 percent")
+    func heart() {
+        #expect(MusicSongRowLayout.liked.showsHeart)
+        #expect(MusicSongRowLayout.liked.heartSize == 12)
+        #expect(MusicSongRowLayout.liked.heartOpacity == 0.9)
+        for layout in [MusicSongRowLayout.search, .playlist, .topSong, .album(number: 1)] {
+            #expect(!layout.showsHeart)
+        }
+    }
+
+    @Test("a song row says artist and album under the title, a top song only the album, an album track nothing")
+    func subtitle() {
+        #expect(MusicSongRowLayout.search.subtitle == .artistAndAlbum)
+        #expect(MusicSongRowLayout.playlist.subtitle == .artistAndAlbum)
+        #expect(MusicSongRowLayout.liked.subtitle == .artistAndAlbum)
+        #expect(MusicSongRowLayout.topSong.subtitle == .album)
+        let albumTrack: MusicSongRowLayout.Subtitle = MusicSongRowLayout.album(number: 1).subtitle
+        #expect(albumTrack == MusicSongRowLayout.Subtitle.none)
+    }
+
+    @Test("a duration shows as m:ss, and a song of no known length shows none")
+    func durationText() {
+        #expect(MusicSongRowLayout.durationText(seconds: 225) == "3:45")
+        #expect(MusicSongRowLayout.durationText(seconds: 61) == "1:01")
+        #expect(MusicSongRowLayout.durationText(seconds: 3_725) == "1:02:05")
+        #expect(MusicSongRowLayout.durationText(seconds: nil) == nil)
+        #expect(MusicSongRowLayout.durationText(seconds: 0) == nil)
+        #expect(MusicSongRowLayout.durationText(seconds: -4) == nil)
+    }
 }

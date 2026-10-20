@@ -1,27 +1,12 @@
 // Deci/Views/Music/MusicPageView.swift
 import SwiftUI
 
-/// The page on top of `browse.path`: an album, an artist, a playlist or Liked music. A small nav row (Back, and the
-/// page's title once its header has scrolled away) stays pinned; under it a compact header with the cover on the left
-/// and the title and actions on its right, over a soft wash of the cover's colour that fades into the list and away
-/// as the list scrolls.
+/// The page on top of `browse.path`: an album, an artist, a playlist or Liked music. A Back row stays pinned at the top;
+/// under it a header (cover and text), the action pills and the songs scroll together. A playlist's and Liked music's
+/// songs sit under a "SONGS" bar with the sort; an album numbers its tracks; an artist shows its top songs and shelves.
 struct MusicPageView: View {
     let service: MusicService
     let collection: MusicCollection
-
-    /// The colour of the cover once it is known; until then the page wears the hash palette's tint of its id.
-    @State private var coverTint: MusicTint?
-    /// How opaque the nav row's title is. Only the nav row and the wash read it, so a step of the fade does not run
-    /// this body again or rebuild the lists.
-    @State private var bar = MusicPageBar()
-    @Environment(\.musicContentTop) private var contentTop
-    @Environment(\.colorScheme) private var colorScheme
-
-    init(service: MusicService, collection: MusicCollection) {
-        self.service = service
-        self.collection = collection
-        _coverTint = State(initialValue: MusicCoverTintStore.shared.cachedTint(for: collection.thumbnailURL))
-    }
 
     private var browse: MusicBrowseStore { service.browse }
 
@@ -29,43 +14,21 @@ struct MusicPageView: View {
         .resolve(kind: collection.kind, browseId: collection.browseId)
     }
 
-    private var palette: MusicPagePalette {
-        .resolve(kind: kind, coverTint: coverTint, fallback: MusicTint.forKey(collection.browseId))
-    }
-
-    private var loadedPage: MusicBrowsePage? {
-        if case .loaded(let page) = browse.pageState(collection.browseId) { return page }
-        return nil
-    }
-
-    /// The cover the tint is taken from: one URL for the page's whole life (see `MusicPageCover`).
-    private var tintURL: URL? {
-        MusicPageCover.tintURL(page: loadedPage?.thumbnailURL, collection: collection.thumbnailURL)
+    /// The page this one was opened from on the path, for the Back row's name: the title of the page below it, else the
+    /// tab the path started on.
+    private var backLabel: String {
+        let path = browse.path
+        let previous = path.count > 1 ? path[path.count - 2].title : nil
+        return MusicPageBackLabel.resolve(previousTitle: previous, tab: browse.tab)
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            MusicPageWash(
-                bar: bar,
-                color: palette.wash(for: colorScheme),
-                height: contentTop + MusicPageScroll.barHeight + kind.washDepth
-            )
-            VStack(spacing: 0) {
-                MusicPageNavRow(bar: bar, title: loadedPage?.title ?? collection.title) { browse.back() }
-                    .padding(.top, contentTop)
-                content
-            }
-        }
-        // The cover's colour: from the cache at once, else after the cover is fetched. Failing leaves the fallback.
-        .task(id: tintURL) {
-            guard kind != .liked, let url = tintURL else { return }
-            if let cached = MusicCoverTintStore.shared.cachedTint(for: url) {
-                coverTint = cached
-                return
-            }
-            if let tint = await MusicCoverTintStore.shared.tint(for: url), !Task.isCancelled {
-                withAnimation(.easeInOut(duration: 0.35)) { coverTint = tint }
-            }
+        VStack(spacing: 0) {
+            MusicBackRow(label: backLabel) { browse.back() }
+                .padding(.top, MusicBrowseLayout.pageTop)
+                .padding(.horizontal, MusicStyle.Spacing.page)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            content
         }
     }
 
@@ -89,51 +52,29 @@ struct MusicPageView: View {
     }
 
     private func loadedContent(page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
-        let heroHeight = kind.heroHeight
-        let isSorted = MusicBrowseStore.canSort(page.browseId) && !browse.sort(for: page.browseId).isDefault
-        let note = MusicSortNote.resolve(
-            isLoadingAll: browse.loadingAllTracks.contains(page.browseId),
-            sortLimit: browse.sortedSongLimit(page.browseId)
-        )
-        return ScrollView {
+        ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                header(page: page, loaded: loaded)
-                    // Over the list that follows, so the pin limit tooltip is not cut by its first rows.
-                    .zIndex(1)
+                header(page: page)
+                actions(page: page, loaded: loaded)
 
                 if kind == .artist {
                     artistBody(page: page)
+                        .padding(.top, MusicBrowseLayout.pageGap)
                 } else {
-                    if isSorted, note != .none {
-                        MusicSortNoteView(note: note)
-                            .padding(.top, 4)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: MusicPageKind.sortNoteBlock, alignment: .top)
-                    } else {
-                        Color.clear.frame(height: MusicPageKind.listGap)
-                    }
+                    listBar(page: page)
                     tracks(of: page)
                     shelves(of: page)
                 }
 
                 MusicBottomInsetSpacer()
             }
+            .padding(.top, MusicBrowseLayout.pageGap)
         }
         .scrollIndicators(.never)
-        .onScrollGeometryChange(for: Double.self) { geometry in
-            MusicPageScroll.barOpacity(offset: geometry.contentOffset.y + geometry.contentInsets.top, heroHeight: heroHeight)
-        } action: { _, opacity in
-            bar.opacity = opacity
-        }
     }
 
-    private func header(page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
-        let pills = MusicPagePills.pills(
-            kind: kind,
-            hasTracks: !page.tracks.isEmpty,
-            canSort: MusicBrowseStore.canSort(page.browseId),
-            hasListenAgainPin: listenAgainControl(for: loaded) != nil
-        )
+    private func header(page: MusicBrowsePage) -> some View {
+        let isComplete = page.continuation == nil
         return MusicPageHeader(
             kind: kind,
             coverURL: page.thumbnailURL ?? collection.thumbnailURL,
@@ -141,17 +82,34 @@ struct MusicPageView: View {
                 kind: kind,
                 title: page.title,
                 subtitle: page.subtitle,
-                firstArtist: page.tracks.first?.artist
+                firstArtist: page.tracks.first?.artist,
+                isEditable: page.isEditable,
+                songCount: isComplete ? page.tracks.count : nil,
+                totalSeconds: MusicPageDuration.total(of: page.tracks.map(\.durationSeconds), isComplete: isComplete),
+                albumCount: MusicPageHeroText.albumCount(in: page.shelves)
             )
-        ) {
-            ForEach(pills, id: \.self) { pill in
-                pillView(pill, page: page, loaded: loaded)
+        )
+    }
+
+    // MARK: - Actions
+
+    @ViewBuilder
+    private func actions(page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
+        let items = menuItems(page: page, loaded: loaded)
+        let pills = MusicPagePills.pills(kind: kind, hasTracks: !page.tracks.isEmpty, hasMenuItems: !items.isEmpty)
+        if !pills.isEmpty {
+            HStack(spacing: MusicBrowseLayout.actionsGap) {
+                ForEach(pills, id: \.self) { pill in
+                    pillView(pill, page: page, loaded: loaded, items: items)
+                }
             }
+            .padding(.horizontal, MusicStyle.Spacing.page)
+            .padding(.top, MusicBrowseLayout.pageGap)
         }
     }
 
     @ViewBuilder
-    private func pillView(_ pill: MusicPagePill, page: MusicBrowsePage, loaded: MusicBrowsePage) -> some View {
+    private func pillView(_ pill: MusicPagePill, page: MusicBrowsePage, loaded: MusicBrowsePage, items: [MusicPageMenuItem]) -> some View {
         switch pill {
         case .play:
             MusicPlayPill(title: page.title) {
@@ -159,44 +117,74 @@ struct MusicPageView: View {
             }
         case .shuffle:
             MusicShufflePill(title: page.title) { service.playShuffled(page) }
-        case .sort:
-            MusicSortPill(sort: browse.sort(for: page.browseId)) { browse.pickSort($0, for: page.browseId) }
-        case .pinHome:
-            let pin = pinControl(for: page)
-            MusicPinHomePill(title: page.title, isPinned: pin.isPinned, isEnabled: pin.isEnabled, toggle: pin.toggle)
-        case .pinListenAgain:
-            MusicRoundPinButton(title: page.title, isPinned: isPinned(loaded)) {
-                service.trackActions.togglePin(loaded)
-            }
+        case .more:
+            MusicPageMoreMenu(title: page.title, items: items) { perform($0, page: page, loaded: loaded) }
         }
     }
 
-    // MARK: - Pins
+    // MARK: - Menu
 
-    /// The Pin to Home pill of an artist. The tile keeps the photo of the collection that opened this page: the square
-    /// or round avatar.
-    private func pinControl(for page: MusicBrowsePage) -> (isPinned: Bool, isEnabled: Bool, toggle: () -> Void) {
+    /// What the "..." menu holds: an artist's Pin to Home, the Listen again pin of the page elsewhere. The Listen again
+    /// pin is the page's own toggle on YouTube Music, not Deci's Home; YouTube offers none for Liked Music and most mixes.
+    private func menuItems(page: MusicBrowsePage, loaded: MusicBrowsePage) -> [MusicPageMenuItem] {
+        let trackActions = service.trackActions
         let pins = service.pinnedArtists
-        return (
-            pins.isPinned(page.browseId),
-            pins.canToggle(page.browseId),
-            { pins.toggle(MusicPinnedArtist(page: page, opener: collection)) }
+        return MusicPagePills.menuItems(
+            kind: kind,
+            listenAgainIsPinned: trackActions.listenAgainPin(for: loaded) == nil ? nil : trackActions.isPinnedToListenAgain(loaded),
+            homeIsPinned: pins.isPinned(page.browseId),
+            homeCanToggle: pins.canToggle(page.browseId)
         )
     }
 
-    /// The page's own Listen again toggle, from its header menu: on YouTube Music, not on Deci's Home. Nil when
-    /// YouTube offers none (artist pages, Liked Music, most mixes).
-    private func listenAgainControl(for page: MusicBrowsePage) -> MusicFeedbackToggle? {
-        service.trackActions.listenAgainPin(for: page)
-    }
-
-    /// Whether the page is pinned to Listen again. It reads the toggle itself, so a pin YouTube gives no unpin token
-    /// for still shows as pinned.
-    private func isPinned(_ page: MusicBrowsePage) -> Bool {
-        service.trackActions.isPinnedToListenAgain(page)
+    private func perform(_ item: MusicPageMenuItem, page: MusicBrowsePage, loaded: MusicBrowsePage) {
+        switch item {
+        case .pinListenAgain:
+            service.trackActions.togglePin(loaded)
+        case .pinHome:
+            // The tile keeps the photo of the collection that opened this page: the square or round avatar.
+            service.pinnedArtists.toggle(MusicPinnedArtist(page: page, opener: collection))
+        }
     }
 
     // MARK: - Lists
+
+    /// The bar over a playlist's or Liked music's songs: "SONGS" and the sort, and under a sorted list the note about
+    /// what the sort has or has not reached. Albums have none, nor does an artist.
+    @ViewBuilder
+    private func listBar(page: MusicBrowsePage) -> some View {
+        if kind == .playlist || kind == .liked {
+            let canSort = MusicBrowseStore.canSort(page.browseId)
+            let sort = browse.sort(for: page.browseId)
+            let note = MusicSortNote.resolve(
+                isLoadingAll: browse.loadingAllTracks.contains(page.browseId),
+                sortLimit: browse.sortedSongLimit(page.browseId)
+            )
+            HStack(spacing: 0) {
+                MusicSongsKicker()
+                Spacer(minLength: 8)
+                if canSort {
+                    if kind == .liked {
+                        MusicLikedSortView(sort: sort) { browse.pickSort($0, for: page.browseId) }
+                    } else {
+                        MusicSortChipView(sort: sort) { browse.pickSort($0, for: page.browseId) }
+                    }
+                }
+            }
+            .frame(height: kind == .liked ? MusicBrowseLayout.miniBarHeight : MusicBrowseLayout.chipBarHeight)
+            .padding(.horizontal, MusicStyle.Spacing.page)
+            .padding(.top, MusicBrowseLayout.pageGap)
+            .padding(.bottom, MusicBrowseLayout.listBarGap)
+
+            if canSort, !sort.isDefault, note != .none {
+                MusicSortNoteView(note: note)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, MusicBrowseLayout.listBarGap)
+            }
+        } else {
+            Color.clear.frame(height: MusicBrowseLayout.pageGap)
+        }
+    }
 
     /// The songs of an album, a playlist or Liked music, with the footer that loads more of a long one.
     @ViewBuilder
@@ -216,11 +204,11 @@ struct MusicPageView: View {
                     track: track,
                     isCurrent: nowPlayingId == track.videoId,
                     isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                    layout: kind == .album ? .album(number: index + 1) : .playlist,
-                    playingColor: MusicStyle.Palette.accent
+                    layout: kind.rowLayout(at: index)
                 ) {
                     service.play(track, in: page)
                 }
+                .musicRowHairline(index > 0)
                 .environment(\.musicTrackContext, context)
             }
 
@@ -239,13 +227,13 @@ struct MusicPageView: View {
     private func shelves(of page: MusicBrowsePage) -> some View {
         ForEach(Array(page.shelves.enumerated()), id: \.offset) { _, shelf in
             shelfSection(shelf)
-                .padding(.top, MusicStyle.Spacing.sectionGap)
+                .padding(.top, MusicBrowseLayout.artistSectionGap)
         }
     }
 
-    /// An artist's body, under the header: the top songs in two columns, then Albums, Singles and the rest.
+    /// An artist's body, under the actions: the top songs as rows, then Albums, Singles and the rest.
     private func artistBody(page: MusicBrowsePage) -> some View {
-        VStack(alignment: .leading, spacing: MusicPageKind.artistBodyGap) {
+        VStack(alignment: .leading, spacing: MusicBrowseLayout.artistSectionGap) {
             if page.tracks.isEmpty, page.shelves.isEmpty {
                 MusicStateCard(message: "No songs here yet.", minHeight: 56)
             }
@@ -261,28 +249,22 @@ struct MusicPageView: View {
     private func topSongs(page: MusicBrowsePage) -> some View {
         let context = MusicTrackContext(pageBrowseId: page.browseId, pageTitle: page.title, pageIsEditable: page.isEditable)
         let nowPlayingId = service.player.nowPlaying?.videoId
-        return VStack(alignment: .leading, spacing: MusicStyle.Spacing.sectionContent) {
+        return VStack(alignment: .leading, spacing: MusicBrowseLayout.topSongsTitleGap) {
             MusicSectionHeader(title: "Top songs")
-            LazyVGrid(
-                columns: [
-                    GridItem(.flexible(), spacing: MusicShellLayout.quickPickColumnGap),
-                    GridItem(.flexible()),
-                ],
-                spacing: 0
-            ) {
+            VStack(spacing: 0) {
                 ForEach(Array(page.tracks.enumerated()), id: \.offset) { index, track in
                     MusicSongRow(
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
                         isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                        layout: .topSong(number: index + 1)
+                        layout: .topSong
                     ) {
                         service.play(track, in: page)
                     }
+                    .musicRowHairline(index > 0)
                     .environment(\.musicTrackContext, context)
                 }
             }
-            .padding(.horizontal, MusicStyle.Spacing.page)
         }
     }
 
@@ -294,56 +276,6 @@ struct MusicPageView: View {
             onPlay: { service.play($0) },
             onOpen: { browse.open($0) }
         )
-    }
-}
-
-/// The nav row's opacity, in a model of its own: the scroll sets it, and only the nav row and the wash read it.
-@Observable
-final class MusicPageBar {
-    var opacity: Double = 0
-}
-
-/// The soft wash of the cover's colour behind the header, from the popover's top edge (under the header row) down,
-/// fading to clear. It goes away as the list scrolls up, so rows never sit on it.
-private struct MusicPageWash: View {
-    let bar: MusicPageBar
-    let color: Color
-    let height: CGFloat
-
-    var body: some View {
-        LinearGradient(colors: [color, color.opacity(0)], startPoint: .top, endPoint: .bottom)
-            .frame(height: height)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .opacity(1 - bar.opacity)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-}
-
-/// The pinned nav row: the Back button, and the page's title once the header has scrolled away.
-private struct MusicPageNavRow: View {
-    let bar: MusicPageBar
-    let title: String
-    let onBack: () -> Void
-
-    var body: some View {
-        let opacity = bar.opacity
-        HStack(spacing: DesignTokens.Spacing.xs) {
-            MusicNavBackButton(action: onBack)
-            Text(title)
-                .musicText(MusicStyle.Typeface.heading)
-                .foregroundStyle(MusicStyle.Palette.textPrimary)
-                .lineLimit(1)
-                .opacity(opacity)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, MusicStyle.Spacing.page - 4)
-        .frame(height: MusicPageScroll.barHeight)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(MusicStyle.Palette.lineHairline).frame(height: 1).opacity(opacity)
-        }
     }
 }
 

@@ -87,7 +87,7 @@ struct MusicTrackMenuItems: View {
 
 /// The "..." button. It is a button of its own, so a click on it opens the menu and never plays the row under it.
 struct MusicTrackMoreButton: View {
-    /// How the button is drawn: the bare dots of the compact rows, or the 22 pt Mixer button of the song row.
+    /// How the button is drawn: the bare dots of the compact rows, or the 22 pt circle of the song row.
     enum Style {
         case plain
         case round
@@ -112,14 +112,11 @@ struct MusicTrackMoreButton: View {
                     .contentShape(Rectangle())
             case .round:
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(MusicStyle.Palette.textPrimary)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MusicStyle.Palette.textRow)
                     .frame(width: Self.roundSize, height: Self.roundSize)
-                    .background(
-                        RoundedRectangle(cornerRadius: DesignTokens.Dimensions.buttonRadius, style: .continuous)
-                            .fill(DesignTokens.Colors.pickerBackground)
-                    )
-                    .contentShape(Rectangle())
+                    .background(Circle().fill(MusicStyle.Palette.chipSelected))
+                    .contentShape(Circle())
             }
         }
         .menuStyle(.button)

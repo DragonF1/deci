@@ -9,8 +9,6 @@ struct MusicBrowseView: View {
     /// False while a player screen or the picker covers the browse screens, which stay alive under them.
     var isActive = true
 
-    @Environment(\.musicContentTop) private var contentTop
-
     private var browse: MusicBrowseStore { service.browse }
 
     var body: some View {
@@ -25,9 +23,6 @@ struct MusicBrowseView: View {
             if let top = browse.path.last {
                 MusicPageView(service: service, collection: top)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    // The page's wash reaches under the header row the shell leaves clear; the page lays itself out
-                    // below it again.
-                    .padding(.top, -contentTop)
                     // A fresh view per page, so each one starts at the top.
                     .id("\(browse.path.count)|\(top.browseId)")
             }

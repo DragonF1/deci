@@ -107,7 +107,7 @@ struct MusicAutoplayChip: View {
     let isOn: Bool
     let action: () -> Void
 
-    static let height: CGFloat = MusicPillButtonStyle.height
+    static let height: CGFloat = 24
 
     var body: some View {
         Button(action: action) {

@@ -1,15 +1,6 @@
 // Deci/Views/Music/MusicShellLayout.swift
 import SwiftUI
 
-/// The measures of the browse screens in the right column.
-nonisolated enum MusicShellLayout {
-    /// The side margin of browse screens: the Mixer's content padding.
-    static let pageMargin: CGFloat = 16
-
-    /// The gap between the two Quick picks columns.
-    static let quickPickColumnGap: CGFloat = 12
-}
-
 /// What fills the right column. Browse is Home, Library, search and the pages opened from them; Lyrics and Up next each
 /// take the column in place of it, and the add-to-playlist picker covers all three.
 nonisolated enum MusicRightColumn: Equatable {
@@ -104,19 +95,6 @@ nonisolated enum MusicPopupMetrics {
 
     /// The distance from the popup's trailing edge to the card's, which ends where the avatar does.
     static var accountCardTrailing: CGFloat { borderWidth + rightPaddingSide }
-}
-
-private struct MusicContentTopKey: EnvironmentKey {
-    static let defaultValue: CGFloat = 0
-}
-
-extension EnvironmentValues {
-    /// Where the body of the Music popup starts. The right column has its own header and lays its content under it, so
-    /// this is 0 there; a view that reaches up under a header by it reaches nowhere.
-    var musicContentTop: CGFloat {
-        get { self[MusicContentTopKey.self] }
-        set { self[MusicContentTopKey.self] = newValue }
-    }
 }
 
 // MARK: - Bottom inset
