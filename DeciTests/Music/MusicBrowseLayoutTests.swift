@@ -41,7 +41,6 @@ struct MusicBrowseLayoutTests {
         #expect(MusicBrowseLayout.libraryArtRadius == 4)
         #expect(MusicBrowseLayout.playlistRowHeight > MusicBrowseLayout.playlistArt)
         #expect(MusicBrowseLayout.artistRowHeight > MusicBrowseLayout.artistArt)
-        #expect(MusicBrowseLayout.segmentHeight == 25)
         #expect(MusicBrowseLayout.segmentListGap == 12)
     }
 
@@ -67,32 +66,7 @@ struct MusicBrowseLayoutTests {
         #expect(MusicBrowseLayout.rowHoverInset < MusicStyle.Spacing.page)
     }
 
-    @Test("the Albums grid has four columns in the default 305 pt and three in the compact 265 pt")
-    func gridColumns() {
-        #expect(MusicBrowseLayout.gridColumnCount(contentWidth: 305) == 4)
-        #expect(MusicBrowseLayout.gridColumnCount(contentWidth: 265) == 3)
-        #expect(MusicBrowseLayout.gridColumnCount(contentWidth: 148) == 2)
-    }
-
-    @Test("the grid never has more tiles in a row than fit, at any width")
-    func gridFits() {
-        for width in stride(from: CGFloat(70), through: 700, by: 7) {
-            let columns = CGFloat(MusicBrowseLayout.gridColumnCount(contentWidth: width))
-            let needed = columns * MusicBrowseLayout.shelfTile + (columns - 1) * MusicBrowseLayout.tileGap
-            #expect(needed <= width)
-        }
-    }
-
-    @Test("a width that is too narrow for a tile, or not a number, still gives one column")
-    func gridOddWidths() {
-        #expect(MusicBrowseLayout.gridColumnCount(contentWidth: 0) == 1)
-        #expect(MusicBrowseLayout.gridColumnCount(contentWidth: 69) == 1)
-        #expect(MusicBrowseLayout.gridColumnCount(contentWidth: -50) == 1)
-        #expect(MusicBrowseLayout.gridColumnCount(contentWidth: .nan) == 1)
-        #expect(MusicBrowseLayout.gridColumnCount(contentWidth: .infinity) == 1)
-    }
-
-    @Test("the right column's content width at both popup sizes is what the grid and the shelves are measured against")
+    @Test("the right column's content width at both popup sizes")
     func contentWidths() {
         // The default and the compact popup, 510 and 470 wide.
         #expect(MusicPopupMetrics.rightColumnContentWidth(popupWidth: 510) == 305)
@@ -179,7 +153,6 @@ struct MusicPageBackLabelTests {
     func tab() {
         #expect(MusicPageBackLabel.resolve(previousTitle: nil, tab: .home) == "Home")
         #expect(MusicPageBackLabel.resolve(previousTitle: nil, tab: .library) == "Library")
-        #expect(MusicPageBackLabel.resolve(previousTitle: nil, tab: .search) == "Search")
     }
 
     @Test("a blank title counts as none")

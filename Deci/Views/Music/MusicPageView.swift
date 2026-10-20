@@ -4,11 +4,17 @@ import SwiftUI
 /// The page on top of `browse.path`: an album, an artist, a playlist or Liked music. A Back row stays pinned at the top;
 /// under it a header (cover and text), the action pills and the songs scroll together. A playlist's and Liked music's
 /// songs sit under a "SONGS" bar with the sort; an album numbers its tracks; an artist shows its top songs and shelves.
+/// The header's field filters a playlist's, Liked music's or an album's loaded songs in place: a count line takes the
+/// bar's place, the matches stay in the list's own order with the words tinted, and the shelves step aside.
 struct MusicPageView: View {
     let service: MusicService
+    let navigation: MusicSearchNavigation
     let collection: MusicCollection
 
     private var browse: MusicBrowseStore { service.browse }
+
+    /// What the field holds; empty while it is closed or on an artist page, whose field searches YouTube Music.
+    private var terms: [String] { navigation.browseFilterTerms }
 
     private var kind: MusicPageKind {
         .resolve(kind: collection.kind, browseId: collection.browseId)
@@ -60,6 +66,8 @@ struct MusicPageView: View {
                 if kind == .artist {
                     artistBody(page: page)
                         .padding(.top, MusicBrowseLayout.pageGap)
+                } else if !terms.isEmpty {
+                    filteredTracks(of: page)
                 } else {
                     listBar(page: page)
                     tracks(of: page)
@@ -212,14 +220,76 @@ struct MusicPageView: View {
                 .environment(\.musicTrackContext, context)
             }
 
-            let loadingMore = browse.loadingMoreTracks.contains(page.browseId) || browse.loadingAllTracks.contains(page.browseId)
-            if page.continuation != nil || loadingMore {
-                MusicLoadMoreFooter(isLoading: loadingMore) {
-                    guard !browse.loadingMoreTracks.contains(page.browseId) else { return }
-                    browse.loadMoreTracks(page.browseId)
-                }
+            loadMoreFooter(of: page)
+        }
+    }
+
+    private func isLoadingMore(_ page: MusicBrowsePage) -> Bool {
+        browse.loadingMoreTracks.contains(page.browseId) || browse.loadingAllTracks.contains(page.browseId)
+    }
+
+    @ViewBuilder
+    private func loadMoreFooter(of page: MusicBrowsePage) -> some View {
+        let loadingMore = isLoadingMore(page)
+        if page.continuation != nil || loadingMore {
+            MusicLoadMoreFooter(isLoading: loadingMore) {
+                guard !browse.loadingMoreTracks.contains(page.browseId) else { return }
+                browse.loadMoreTracks(page.browseId)
             }
         }
+    }
+
+    /// The songs the field's words leave: the count line over them, then the matches with their own numbers and the
+    /// words tinted. Of a long list only the loaded part is searched, and the count says so. Nothing matching shows the
+    /// block that offers YouTube Music.
+    @ViewBuilder
+    private func filteredTracks(of page: MusicBrowsePage) -> some View {
+        let matches = MusicLocalSearch.indices(of: page.tracks, terms: terms)
+        let isPartial = page.continuation != nil || isLoadingMore(page)
+        VStack(spacing: 0) {
+            MusicScopeLine(
+                text: MusicSearchCopy.countLine(matched: matches.count, total: page.tracks.count, noun: .song, isPartial: isPartial)
+            ) {
+                navigation.clearField()
+            }
+            .frame(height: MusicBrowseLayout.miniBarHeight)
+            .padding(.top, MusicBrowseLayout.pageGap)
+            .padding(.bottom, MusicBrowseLayout.listBarGap)
+
+            if matches.isEmpty {
+                let copy = MusicSearchCopy.noResults(
+                    noun: .song,
+                    query: navigation.fieldQuery,
+                    place: kind == .album ? "this album" : "this playlist",
+                    beyond: page.title
+                )
+                MusicNoResultsBlock(title: copy.title, detail: copy.detail) {
+                    navigation.searchYouTubeMusicInstead()
+                }
+            } else {
+                let context = MusicTrackContext(
+                    pageBrowseId: page.browseId,
+                    pageTitle: page.title,
+                    pageIsEditable: page.isEditable
+                )
+                let nowPlayingId = service.player.nowPlaying?.videoId
+                ForEach(Array(matches.enumerated()), id: \.element) { position, index in
+                    let track = page.tracks[index]
+                    MusicSongRow(
+                        track: track,
+                        isCurrent: nowPlayingId == track.videoId,
+                        isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
+                        layout: kind.rowLayout(at: index)
+                    ) {
+                        service.play(track, in: page)
+                    }
+                    .musicRowHairline(position > 0)
+                    .environment(\.musicTrackContext, context)
+                }
+            }
+            loadMoreFooter(of: page)
+        }
+        .environment(\.musicHighlightTerms, terms)
     }
 
     /// Shelves under an album's or a playlist's songs (rare), as on an artist's page.

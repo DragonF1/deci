@@ -118,11 +118,14 @@ private struct MusicNotSyncedTag: View {
 
 // MARK: - Up next
 
-/// "Up next", the magnifier, the three playback toggles in one group, and Browse. The magnifier still opens the global
-/// search, as in the browse header.
+/// "Up next", the magnifier, the three playback toggles in one group, and Browse. The magnifier opens a field that
+/// searches the queue; while it is open the field sits between the title and Browse and the toggles step aside.
 struct MusicQueueHeader: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
+
+    /// The width of the field between the title and Browse.
+    static let fieldWidth: CGFloat = 178
 
     var body: some View {
         MusicPanelHeaderBar(sidePadding: MusicPopupMetrics.rightPaddingSide) {
@@ -132,8 +135,13 @@ struct MusicQueueHeader: View {
                 .lineLimit(1)
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
-            MusicSearchButton(isOpen: navigation.isSearchOpen) { navigation.toggleSearch() }
-            MusicPlaybackToggles(service: service)
+            if navigation.isQueueFieldOpen {
+                MusicNavigationSearchField(service: service, navigation: navigation)
+                    .frame(width: Self.fieldWidth)
+            } else {
+                MusicSearchButton { navigation.openField() }
+                MusicPlaybackToggles(service: service)
+            }
             MusicBrowsePill { navigation.closePanel() }
         }
     }

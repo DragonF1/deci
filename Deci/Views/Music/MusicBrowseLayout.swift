@@ -31,8 +31,7 @@ nonisolated enum MusicBrowseLayout {
     /// The gap between two rows of the Albums grid.
     static let gridRowGap: CGFloat = 14
 
-    /// The Library switch's height, and the gap between it and the list.
-    static let segmentHeight: CGFloat = 25
+    /// The gap between the Library switch and the list.
     static let segmentListGap: CGFloat = 12
 
     /// A Library row: a playlist's cover is square, an artist's round.
@@ -65,13 +64,6 @@ nonisolated enum MusicBrowseLayout {
     /// How far a row's hover surface reaches past the row's content on each side.
     static let rowHoverInset: CGFloat = 6
     static let rowHoverRadius: CGFloat = 6
-
-    /// The columns of the Albums grid: four 70 pt tiles fit the 305 pt content of the default size, three the 265 pt of
-    /// the compact one.
-    static func gridColumnCount(contentWidth: CGFloat) -> Int {
-        guard contentWidth.isFinite, contentWidth >= shelfTile else { return 1 }
-        return Int((contentWidth + tileGap) / (shelfTile + tileGap))
-    }
 }
 
 // MARK: - Quick picks
@@ -123,13 +115,13 @@ nonisolated struct MusicSortChip: Equatable {
 
 /// What the Back row of a page is called: the screen it goes back to.
 nonisolated enum MusicPageBackLabel {
-    /// The title of the page below this one on the path, else the tab the path started on.
+    /// The title of the page below this one on the path, else the tab the path started on. A page opened from search
+    /// results sits on the tab the search was typed on, so Back reads "Home" and lands on the results.
     static func resolve(previousTitle: String?, tab: MusicBrowseStore.Tab) -> String {
         if let title = previousTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
         switch tab {
         case .home: return "Home"
         case .library: return "Library"
-        case .search: return "Search"
         }
     }
 }

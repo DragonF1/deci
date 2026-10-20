@@ -1,11 +1,9 @@
 // Deci/Views/Music/MusicStyle.swift
-import AppKit
 import SwiftUI
 
 /// The tokens of the Music popover: the Mixer's type scale (13 pt rows, 11 pt second lines, small section headers) and
 /// its spacing and radii, on the split pane's fixed dark colours. The popup is dark whatever the Mixer wears: its window
-/// is forced to dark Aqua and `musicDarkScope` pins the scheme, so `.primary` is white and blur surfaces are the pinned
-/// dark blur.
+/// is forced to dark Aqua and `musicDarkScope` pins the scheme, so `.primary` is white.
 enum MusicStyle {
 
     // MARK: - Colours
@@ -45,19 +43,11 @@ enum MusicStyle {
             )
         }
 
-        // Accent: the system accent, like the Mixer's sliders and selections.
-        static let accent = Color.accentColor
-        static let accentFill = Color.accentColor.opacity(0.20)
-        static let accentRow = Color.accentColor.opacity(0.10)
-
         // Text
-        static let textPrimary = Color.primary
         static let textSecondary = Color.secondary
         static let textTertiary = DesignTokens.Colors.textTertiary
-        static let textQuaternary = DesignTokens.Colors.textQuaternary
 
         // Fills
-        static let fillControl = Color.primary.opacity(0.10)
         static let sliderTrack = DesignTokens.Colors.sliderTrack
 
         // Lines
@@ -128,7 +118,6 @@ enum MusicStyle {
     /// The Mixer's scale: 13 pt row names, 11 pt second lines and pickers, 10 pt captions. Only a page's name and the
     /// player's song name go a little above it.
     enum Typeface {
-        static let songTitle = TextStyle(15, .semibold)
         static let heading = TextStyle(13, .semibold)
         static let row = TextStyle(13)
         static let rowMedium = TextStyle(13, .medium)
@@ -177,13 +166,9 @@ enum MusicStyle {
         static let page: CGFloat = DesignTokens.Spacing.lg
         /// The gap between a section header and its content.
         static let sectionContent: CGFloat = DesignTokens.Spacing.sm
-        /// The gap between two Home sections.
-        static let sectionGap: CGFloat = DesignTokens.Spacing.md
     }
 
     enum Size {
-        /// The header's round and pill buttons: the Mixer's 26 pt.
-        static let headerButton: CGFloat = 26
         static let pinnedPhoto: CGFloat = 40
         static let pinnedTileWidth: CGFloat = 56
     }
@@ -197,30 +182,10 @@ extension View {
         font(style.font).tracking(style.appliedTracking)
     }
 
-    /// A frosted capsule, card or pill backdrop clipped to `shape`: the system's ultra thin material, or the pinned
-    /// dark blur inside a forced-dark scope.
-    func musicBlurBackground<S: Shape>(in shape: S) -> some View {
-        background { MusicBlurBackground(shape: shape) }
-    }
-
-    /// Reads dark when `isForced`, whatever the window wears: SwiftUI colours resolve in the dark scheme and the
-    /// glass and blur surfaces switch to their pinned dark variants. The system's own glass and materials follow the
-    /// window's NSAppearance, which the Mixer setting owns, so the colour scheme alone does not reach them. Not
+    /// Reads dark when `isForced`, whatever the window wears: SwiftUI colours resolve in the dark scheme. Not
     /// `.preferredColorScheme`: that flips the whole window and fights the appearance bridge.
     func musicDarkScope(_ isForced: Bool = true) -> some View {
         modifier(MusicDarkScopeModifier(isForced: isForced))
-    }
-}
-
-private struct MusicForcedDarkKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
-extension EnvironmentValues {
-    /// True inside `musicDarkScope`: glass and blur surfaces draw their dark variants.
-    var musicForcedDark: Bool {
-        get { self[MusicForcedDarkKey.self] }
-        set { self[MusicForcedDarkKey.self] = newValue }
     }
 }
 
@@ -231,39 +196,5 @@ private struct MusicDarkScopeModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.colorScheme, isForced ? .dark : colorScheme)
-            .environment(\.musicForcedDark, isForced)
-    }
-}
-
-/// A dark frosted blur whose NSAppearance is pinned to dark Aqua, so it stays dark under a light window.
-struct MusicDarkBlur: NSViewRepresentable {
-    /// The pinned view: a HUD material blurring what is behind it inside the window.
-    @MainActor
-    static func makeEffectView() -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.appearance = NSAppearance(named: .darkAqua)
-        view.material = .hudWindow
-        view.blendingMode = .withinWindow
-        view.state = .active
-        return view
-    }
-
-    func makeNSView(context: Context) -> NSVisualEffectView { Self.makeEffectView() }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
-}
-
-/// The frosted backdrop of a card or capsule: the system's ultra thin material, or the pinned dark blur in a forced-dark
-/// scope.
-private struct MusicBlurBackground<S: Shape>: View {
-    let shape: S
-    @Environment(\.musicForcedDark) private var forcedDark
-
-    var body: some View {
-        if forcedDark {
-            MusicDarkBlur().clipShape(shape)
-        } else {
-            shape.fill(.ultraThinMaterial)
-        }
     }
 }

@@ -2,9 +2,10 @@
 import Foundation
 import Observation
 
-/// What the Search tab shows under its field. Kept apart from the view so each combination is tested.
+/// What the search results cover the right column with while the global field has words in it. Kept apart from the view
+/// so each combination is tested.
 nonisolated enum MusicSearchPanel: Equatable {
-    /// Nothing typed: the tab invites a search.
+    /// Nothing typed: no results to show, the screen under the field stays.
     case invite
     /// Typed but not sent yet: Return runs the search.
     case pressReturn
@@ -43,6 +44,14 @@ nonisolated enum MusicSearchPanel: Equatable {
     }
 }
 
+/// Where the browse column is: a tab, how many pages are open on it and the one on top. A search field is opened at one
+/// anchor and only counts while the column is still there.
+struct MusicSearchAnchor: Equatable {
+    let tab: MusicBrowseStore.Tab
+    let depth: Int
+    let pageId: String?
+}
+
 /// What the Music popup's right column shows (Home and Library, search results, Up next, Lyrics, the add-to-playlist
 /// picker), and the one way every artist, album name or tile opens its page, and every "..." menu action runs. It lives
 /// here, not in the view, so the rules can be tested. One instance belongs to each `MusicService` (`MusicServiceHost`
@@ -53,8 +62,6 @@ nonisolated enum MusicSearchPanel: Equatable {
 final class MusicSearchNavigation {
     /// The Up next button shows the queue in the right column in place of whatever is on screen.
     var queueForced = false
-    /// The tab search was opened from, so closing it returns there. nil until search has been opened.
-    private(set) var tabBeforeSearch: MusicBrowseStore.Tab?
     /// The query last sent with Return, so a search that found nothing still shows its result.
     private(set) var submittedQuery: String?
     /// An artist opened from the results is on screen: the results step aside, keeping the query, and come back
@@ -64,6 +71,18 @@ final class MusicSearchNavigation {
     /// How many pages were open under the results when an artist was opened from them. The results sit on those
     /// pages, so Back from the artist returns to the results, and clearing the query leaves the pages as they were.
     @ObservationIgnored private var resultsDepth = 0
+
+    /// Where the YouTube Music field (Home, an artist page) was opened; nil while it is closed. A field belongs to the
+    /// place it was opened on: it folds away, query and all, when the column is anywhere else, except while its
+    /// results wait under a page opened from them.
+    private(set) var searchAnchor: MusicSearchAnchor?
+    /// Where the filter field of a Library tab, a playlist or an album was opened, and its words. Always dropped
+    /// when the column moves on.
+    private(set) var filterAnchor: MusicSearchAnchor?
+    private(set) var filterQuery = ""
+    /// The Up next field and its words. It closes with the queue.
+    private(set) var isQueueFieldOpen = false
+    private(set) var queueQuery = ""
 
     @ObservationIgnored private let service: MusicService
 
@@ -116,22 +135,16 @@ final class MusicSearchNavigation {
         MusicRightColumn.resolve(showsPicker: showsPicker, showsLyrics: showsLyrics, showsQueue: showsQueue)
     }
 
-    /// The header tab to highlight: Library for Library and the pages opened from it, Home for everything else. While
-    /// search is open it keeps the tab it was opened from.
+    /// The header tab to highlight: Library for Library and the pages opened from it, Home for everything else.
     var headerTab: MusicHeaderTab {
-        MusicHeaderTab.resolve(tab: service.browse.tab, tabBeforeSearch: tabBeforeSearch)
-    }
-
-    /// The global search screen is the browse tab.
-    var isSearchOpen: Bool {
-        service.browse.tab == .search
+        MusicHeaderTab.resolve(tab: service.browse.tab)
     }
 
     private var isHidingResults: Bool {
         hidesResults && service.browse.path.count > resultsDepth
     }
 
-    /// What the Search tab shows under the field.
+    /// What the results cover the column with.
     var panel: MusicSearchPanel {
         MusicSearchPanel.resolve(
             queryIsEmpty: trimmedQuery.isEmpty,
@@ -144,7 +157,103 @@ final class MusicSearchNavigation {
 
     // MARK: - Search field
 
-    /// Return in the search field.
+    /// Where the browse column is now: the tab, how many pages are open and the one on top. The Library segment is not
+    /// part of it, so a filter keeps its words from Playlists to Albums.
+    var currentAnchor: MusicSearchAnchor {
+        let path = service.browse.path
+        return MusicSearchAnchor(tab: service.browse.tab, depth: path.count, pageId: path.last?.browseId)
+    }
+
+    private var pageKind: MusicPageKind? {
+        service.browse.path.last.map { MusicPageKind.resolve(kind: $0.kind, browseId: $0.browseId) }
+    }
+
+    /// What a field on the browse screens searches, whatever covers the column.
+    private var browseScope: MusicSearchScope {
+        MusicSearchScope.resolve(column: .browse, tab: service.browse.tab, page: pageKind)
+    }
+
+    /// What the field of the screen on top searches. `.none` where there is no field to open (Lyrics, the picker).
+    var scope: MusicSearchScope {
+        MusicSearchScope.resolve(column: rightColumn, tab: service.browse.tab, page: pageKind)
+    }
+
+    /// The field is open on the screen on top.
+    var isFieldOpen: Bool {
+        switch rightColumn {
+        case .queue: isQueueFieldOpen
+        case .browse: (browseScope.isLocal ? filterAnchor : searchAnchor) == currentAnchor
+        case .lyrics, .picker: false
+        }
+    }
+
+    /// The words in the field. Typing into a YouTube Music field is the service's own query, which Return sends.
+    var fieldQuery: String {
+        get {
+            switch scope {
+            case .global: service.query
+            case .library, .playlist, .album: filterQuery
+            case .queue: queueQuery
+            case .none: ""
+            }
+        }
+        set {
+            switch scope {
+            case .global: service.query = newValue
+            case .library, .playlist, .album: filterQuery = newValue
+            case .queue: queueQuery = newValue
+            case .none: break
+            }
+        }
+    }
+
+    /// The words Library, a playlist or an album is filtered by right now; none while its field is closed or elsewhere.
+    var browseFilterTerms: [String] {
+        guard browseScope.isLocal, filterAnchor == currentAnchor else { return [] }
+        return MusicLocalSearch.terms(of: filterQuery)
+    }
+
+    /// The words Up next is filtered by right now.
+    var queueFilterTerms: [String] {
+        guard showsQueue, isQueueFieldOpen else { return [] }
+        return MusicLocalSearch.terms(of: queueQuery)
+    }
+
+    /// The YouTube Music results (or the Return prompt) cover the browse content: the field is open here and has words.
+    var showsSearchPanel: Bool {
+        browseScope == .global && searchAnchor == currentAnchor && !trimmedQuery.isEmpty
+    }
+
+    /// The magnifier: the field opens, empty, on the screen on top.
+    func openField() {
+        guard !isFieldOpen else { return }
+        switch scope {
+        case .none:
+            return
+        case .queue:
+            queueQuery = ""
+            isQueueFieldOpen = true
+        case .global:
+            dropQuery()
+            hidesResults = false
+            searchAnchor = currentAnchor
+        case .library, .playlist, .album:
+            filterQuery = ""
+            filterAnchor = currentAnchor
+        }
+    }
+
+    /// The clear button, and Clear filter: the words go, the field stays open.
+    func clearField() {
+        switch scope {
+        case .global: dropQuery()
+        case .library, .playlist, .album: filterQuery = ""
+        case .queue: queueQuery = ""
+        case .none: break
+        }
+    }
+
+    /// Return in the YouTube Music field.
     func submit() {
         hidesResults = false
         closePanels()
@@ -163,6 +272,48 @@ final class MusicSearchNavigation {
         }
     }
 
+    /// The "Search YouTube Music instead" link of a filter that found nothing: the same words go to Home's field and
+    /// are sent.
+    func searchYouTubeMusicInstead() {
+        let words = (scope == .queue ? queueQuery : filterQuery).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty else { return }
+        select(.home)
+        searchAnchor = currentAnchor
+        service.query = words
+        submit()
+    }
+
+    /// The column moved (a tab, a page opened or closed): a field left behind folds away with its words. The YouTube
+    /// Music field is the exception while its results wait under a page opened from them, which Back returns to.
+    func reconcile() {
+        let anchor = currentAnchor
+        if filterAnchor != nil, filterAnchor != anchor {
+            filterAnchor = nil
+            filterQuery = ""
+        }
+        if searchAnchor != nil, searchAnchor != anchor, !isHidingResults {
+            searchAnchor = nil
+            dropQuery()
+        }
+    }
+
+    /// Every field closes and forgets its words (a tab was picked, or the session ended).
+    func resetFields() {
+        searchAnchor = nil
+        filterAnchor = nil
+        filterQuery = ""
+        isQueueFieldOpen = false
+        queueQuery = ""
+        dropQuery()
+    }
+
+    /// The words of the YouTube Music field go, and with them its results.
+    private func dropQuery() {
+        guard !service.query.isEmpty else { return }
+        service.query = ""
+        queryChanged()
+    }
+
     // MARK: - Panels
 
     /// The Up next button: the queue takes the right column, or gives it back. Lyrics closes, since they are never both on.
@@ -170,6 +321,8 @@ final class MusicSearchNavigation {
         service.lyrics.setPanelOpen(false)
         service.trackActions.closePicker()
         queueForced.toggle()
+        // A queue opens with its field closed.
+        closeQueueField()
     }
 
     /// The Lyrics button: the lyrics take the right column, or give it back. The lyrics panel is open exactly while its
@@ -183,14 +336,21 @@ final class MusicSearchNavigation {
     /// Lyrics or Up next goes back to browse, the screen under it.
     func closePanel() {
         queueForced = false
+        closeQueueField()
         service.lyrics.setPanelOpen(false)
     }
 
     /// Everything that sits over the browse screens goes away.
     private func closePanels() {
         queueForced = false
+        closeQueueField()
         service.lyrics.setPanelOpen(false)
         service.trackActions.closePicker()
+    }
+
+    private func closeQueueField() {
+        isQueueFieldOpen = false
+        queueQuery = ""
     }
 
     /// Back from the picker, to whatever was under it.
@@ -200,51 +360,46 @@ final class MusicSearchNavigation {
 
     // MARK: - Opening pages
 
-    /// A tab of the header, or search: leaves the panels and any page, and goes to the tab's root. Leaving search for
-    /// another tab drops its query; picking search again keeps the query and shows its results again.
+    /// A tab of the header: leaves the panels and any page, and goes to the tab's root. A field open on the screen it
+    /// leaves folds away, its words with it.
     func select(_ tab: MusicBrowseStore.Tab) {
         closePanels()
-        if tab != .search, showsResults || isHidingResults { service.query = "" }
+        resetFields()
         hidesResults = false
-        let current = service.browse.tab
-        if tab == .search, current != .search { tabBeforeSearch = current }
         service.browse.tab = tab
         service.browse.popToRoot()
     }
 
-    /// The magnifier: the global search screen takes the right column.
-    func openSearch() {
-        select(.search)
-    }
-
-    /// Leaves search for the tab it was opened from (Home when it was not opened from one).
-    func closeSearch() {
-        select(tabBeforeSearch ?? .home)
-    }
-
-    /// The magnifier is a toggle.
-    func toggleSearch() {
-        if isSearchOpen { closeSearch() } else { openSearch() }
-    }
-
     /// Escape: closes the topmost thing over the browse screens and says whether there was one. The picker first, then
-    /// whatever covers the column (Lyrics or Up next), then search. Search closes only at its own root: a page opened
-    /// from its results is a page, and Escape never pops the page stack. The account card is the popup's and closes before
-    /// this is asked.
+    /// whatever covers the column (Lyrics or Up next, where an open field gives way first: its words, then the field),
+    /// then the field of the screen on top, again its words first. Escape never pops the page stack. The account card is
+    /// the popup's and closes before this is asked.
     func escape() -> Bool {
         if showsPicker {
             closePicker()
             return true
         }
-        if showsLyrics || showsQueue {
+        if showsLyrics {
             closePanel()
             return true
         }
-        if isSearchOpen, service.browse.path.isEmpty {
-            closeSearch()
+        if showsQueue {
+            if isQueueFieldOpen {
+                if queueQuery.isEmpty { isQueueFieldOpen = false } else { queueQuery = "" }
+            } else {
+                closePanel()
+            }
             return true
         }
-        return false
+        guard isFieldOpen else { return false }
+        if browseScope.isLocal {
+            if filterQuery.isEmpty { filterAnchor = nil } else { filterQuery = "" }
+        } else if service.query.isEmpty {
+            searchAnchor = nil
+        } else {
+            dropQuery()
+        }
+        return true
     }
 
     /// An artist name or tile was tapped, from anywhere.

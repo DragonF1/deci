@@ -45,6 +45,11 @@ struct MusicQueueListing {
         "NEXT IN QUEUE \u{00B7} \(max(count, 0))"
     }
 
+    /// The same label over a filtered list: "NEXT IN QUEUE · 1 OF 4".
+    static func nextKicker(matched: Int, total: Int) -> String {
+        "NEXT IN QUEUE \u{00B7} \(max(matched, 0)) OF \(max(total, 0))"
+    }
+
     /// The line under "Playing Next". The queue knows its source's id, not its name, so the line says what kind of
     /// source it was where the id tells.
     static func sourceLine(for source: MusicQueue.Source?) -> String? {
@@ -153,19 +158,13 @@ enum MusicLyricsCaption {
     }
 }
 
-/// The measures of a thin slider (the scrubber and the volume): the filled part and the knob, held inside the track.
+/// The measures of a thin slider (the volume): the knob, held inside the track.
 nonisolated enum MusicSliderGeometry {
     /// The knob's leading edge along a track `width` wide: it runs from the start to one knob short of the end, so the
     /// knob never leaves the track. A fraction outside 0...1 or not a number is held inside it.
     static func knobOffset(fraction: Double, width: CGFloat, knob: CGFloat) -> CGFloat {
         guard width.isFinite, knob.isFinite else { return 0 }
         return max(0, width - knob) * CGFloat(clamped(fraction))
-    }
-
-    /// The width of the filled part of a track `width` wide.
-    static func filledWidth(fraction: Double, width: CGFloat) -> CGFloat {
-        guard width.isFinite, width > 0 else { return 0 }
-        return width * CGFloat(clamped(fraction))
     }
 
     private static func clamped(_ fraction: Double) -> Double {

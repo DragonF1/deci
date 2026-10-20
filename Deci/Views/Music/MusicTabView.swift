@@ -65,9 +65,14 @@ private struct MusicSignedInView: View {
             service.lyrics.setPanelOpen(false)
             service.trackActions.closePicker()
             navigation.queueForced = false
+            navigation.resetFields()
         }
         .onChange(of: service.query) {
             navigation.queryChanged()
+        }
+        // The column moved to another tab or page: a field left behind folds away with its words.
+        .onChange(of: navigation.currentAnchor) {
+            navigation.reconcile()
         }
         // The queue ended: the next song played must not pop Up next open again.
         .onChange(of: service.queue.isEmpty) { _, isEmpty in
@@ -97,7 +102,7 @@ private struct MusicSignedInView: View {
         let column = navigation.rightColumn
         let showsBrowse = column == .browse
         return ZStack {
-            MusicBrowseView(service: service, navigation: navigation, isActive: showsBrowse)
+            MusicBrowseView(service: service, navigation: navigation)
                 .opacity(showsBrowse ? 1 : 0)
                 .allowsHitTesting(showsBrowse)
                 .accessibilityHidden(!showsBrowse)
@@ -118,7 +123,7 @@ private struct MusicSignedInView: View {
                 MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
                     .transition(.opacity)
             case .queue:
-                MusicQueueView(service: service)
+                MusicQueueView(service: service, navigation: navigation)
                     .transition(.opacity)
             }
         }

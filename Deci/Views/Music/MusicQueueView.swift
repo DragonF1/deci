@@ -3,18 +3,27 @@ import SwiftUI
 
 /// The body of the Up next panel, under its header (`MusicQueueHeader`): a line that says what Shuffle, Loop and Autoplay
 /// are set to, the song in the player, and under "NEXT IN QUEUE" the songs that follow, in a list that scrolls. A tap on
-/// a song plays it.
+/// a song plays it. The header's field filters the songs that follow, live: the song in the player stays put, the label
+/// counts the matches, the words are tinted and the end of the list says how to get the whole queue back.
 struct MusicQueueView: View {
     let service: MusicService
+    let navigation: MusicSearchNavigation
 
     var body: some View {
         let listing = MusicQueueListing(queue: service.queue)
+        let terms = navigation.queueFilterTerms
+        let matches = terms.isEmpty
+            ? Array(listing.upcoming.indices)
+            : MusicLocalSearch.indices(of: listing.upcoming, terms: terms)
         VStack(alignment: .leading, spacing: 10) {
-            Text(MusicPlaybackStatus.text(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn))
-                .musicText(MusicStyle.Typeface.secondary)
-                .foregroundStyle(MusicStyle.Palette.textMeta)
-                .lineLimit(1)
-                .padding(.horizontal, MusicStyle.Spacing.page)
+            // The three toggles it describes leave the header while the field is open, and the line goes with them.
+            if !navigation.isQueueFieldOpen {
+                Text(MusicPlaybackStatus.text(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn))
+                    .musicText(MusicStyle.Typeface.secondary)
+                    .foregroundStyle(MusicStyle.Palette.textMeta)
+                    .lineLimit(1)
+                    .padding(.horizontal, MusicStyle.Spacing.page)
+            }
 
             if let current = listing.current {
                 VStack(alignment: .leading, spacing: 6) {
@@ -26,8 +35,12 @@ struct MusicQueueView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                MusicQueueKicker(text: MusicQueueListing.nextKicker(count: listing.upcoming.count))
-                upcoming(listing.upcoming)
+                MusicQueueKicker(
+                    text: terms.isEmpty
+                        ? MusicQueueListing.nextKicker(count: listing.upcoming.count)
+                        : MusicQueueListing.nextKicker(matched: matches.count, total: listing.upcoming.count)
+                )
+                upcoming(listing.upcoming, matches: matches, terms: terms)
             }
         }
         .padding(.top, 10)
@@ -36,25 +49,62 @@ struct MusicQueueView: View {
     // MARK: - The list
 
     @ViewBuilder
-    private func upcoming(_ tracks: [MusicTrack]) -> some View {
+    private func upcoming(_ tracks: [MusicTrack], matches: [Int], terms: [String]) -> some View {
         if tracks.isEmpty {
             MusicStateCard(message: "No more songs queued.", minHeight: 48)
                 .frame(maxHeight: .infinity, alignment: .top)
         } else {
+            let shown = matches.map { tracks[$0] }
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                    if shown.isEmpty {
+                        noMatches
+                    }
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, track in
                         MusicSongRow(track: track, isCurrent: false, isPlaying: false, layout: .playlist) {
                             service.jump(to: track)
                         }
                         .musicRowHairline(index > 0)
                     }
+                    if !terms.isEmpty {
+                        clearHint(total: tracks.count)
+                    }
                 }
+                .environment(\.musicHighlightTerms, terms)
                 .padding(.bottom, Self.fadeHeight)
             }
             .scrollIndicators(.never)
             .mask(bottomFade)
         }
+    }
+
+    /// What the filter found nothing in: the block that offers YouTube Music with the same words.
+    private var noMatches: some View {
+        let copy = MusicSearchCopy.noResults(
+            noun: .song,
+            query: navigation.fieldQuery,
+            place: "the queue",
+            beyond: "the queue"
+        )
+        return MusicNoResultsBlock(title: copy.title, detail: copy.detail) {
+            navigation.searchYouTubeMusicInstead()
+        }
+    }
+
+    /// Under a filtered list: a hairline and how to see all of it again.
+    private func clearHint(total: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Rectangle()
+                .fill(MusicStyle.Palette.hairline)
+                .frame(height: 1)
+                .accessibilityHidden(true)
+            Text(MusicSearchCopy.clearHint(total: total, noun: .song))
+                .musicText(MusicStyle.Typeface.secondary)
+                .foregroundStyle(Color.white.opacity(0.40))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, MusicStyle.Spacing.page)
+        .padding(.top, 8)
     }
 
     /// The last rows dissolve into the bottom of the column.

@@ -84,18 +84,6 @@ struct MusicInkTests {
 }
 
 @MainActor
-@Suite("MusicDarkBlur")
-struct MusicDarkBlurTests {
-    @Test("the pinned blur is dark Aqua whatever the window wears, and blurs inside the window")
-    func pinnedDark() {
-        let view = MusicDarkBlur.makeEffectView()
-        #expect(view.appearance?.name == .darkAqua)
-        #expect(view.blendingMode == .withinWindow)
-        #expect(view.state == .active)
-    }
-}
-
-@MainActor
 @Suite("MusicPagePills")
 struct MusicPagePillsTests {
     @Test("an album or a playlist plays and shuffles, and gets the menu when it has an action for it")

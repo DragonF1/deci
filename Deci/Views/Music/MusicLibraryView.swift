@@ -3,13 +3,32 @@ import SwiftUI
 
 /// The Library root: the Playlists / Albums / Artists switch, then the saved list, with Liked music first on
 /// Playlists. Playlists and Artists are rows, Albums a grid of covers. One scroll view, so the switch scrolls away with
-/// the content.
+/// the content. The header's field filters the segment live, from what is loaded: a count line, the rows that match
+/// with the words tinted, and a line for what the other segments hold.
 struct MusicLibraryView: View {
     let service: MusicService
+    let navigation: MusicSearchNavigation
     @Environment(\.musicCollectionPin) private var collectionPin
 
     private var browse: MusicBrowseStore { service.browse }
     private var section: MusicLibrarySection { browse.librarySection }
+
+    /// What the field holds, for the rows to tint; empty while it is closed.
+    private var terms: [String] { navigation.browseFilterTerms }
+
+    /// What the field's words leave of this segment; nil while nothing is typed or the segment is not loaded yet.
+    private var filter: MusicLibraryFilter? {
+        guard !terms.isEmpty, case .loaded = browse.libraryState(section) else { return nil }
+        let loaded = browse.library.compactMapValues { load -> [MusicCollection]? in
+            if case .loaded(let items) = load { items } else { nil }
+        }
+        return MusicLibraryFilter.resolve(
+            section: section,
+            loaded: loaded,
+            hasMore: browse.libraryHasMore,
+            terms: terms
+        )
+    }
 
     private static let topID = "library-top"
 
@@ -35,9 +54,13 @@ struct MusicLibraryView: View {
                 .padding(.bottom, MusicBrowseLayout.segmentListGap)
                 .id(Self.topID)
 
-                // Always first on Playlists, whatever state the list under it is in.
-                likedMusic
-                list
+                if let filter {
+                    filtered(filter)
+                } else {
+                    // Always first on Playlists, whatever state the list under it is in.
+                    likedMusic
+                    list
+                }
 
                 MusicBottomInsetSpacer()
             }
@@ -63,34 +86,80 @@ struct MusicLibraryView: View {
         case .loaded(let items) where items.isEmpty:
             MusicStateCard(message: section.emptyText)
         case .loaded(let items):
-            let loadingMore = browse.loadingMoreLibrary.contains(section)
-            if section == .albums {
-                albumGrid(items)
-            } else {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
-                    let row = MusicCollectionRow(
-                        collection: collection,
-                        isPinned: collectionPin?.isPinned(collection) == true
-                    ) {
-                        browse.open(collection)
-                    }
-                    if let collectionPin, let listenAgain = collectionPin.pin(collection) {
-                        row.contextMenu {
-                            MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
-                        }
-                    } else {
-                        row
-                    }
-                }
-            }
+            rows(items)
+            loadMoreFooter
+        }
+    }
 
-            if browse.libraryHasMore.contains(section) || loadingMore {
-                MusicLoadMoreFooter(isLoading: loadingMore) {
-                    guard !browse.loadingMoreLibrary.contains(section) else { return }
-                    browse.loadMoreLibrary(section)
+    /// The saved rows of the segment, or its grid of covers.
+    @ViewBuilder
+    private func rows(_ items: [MusicCollection]) -> some View {
+        if section == .albums {
+            albumGrid(items)
+        } else {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
+                let row = MusicCollectionRow(
+                    collection: collection,
+                    isPinned: collectionPin?.isPinned(collection) == true
+                ) {
+                    browse.open(collection)
+                }
+                if let collectionPin, let listenAgain = collectionPin.pin(collection) {
+                    row.contextMenu {
+                        MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
+                    }
+                } else {
+                    row
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var loadMoreFooter: some View {
+        let loadingMore = browse.loadingMoreLibrary.contains(section)
+        if browse.libraryHasMore.contains(section) || loadingMore {
+            MusicLoadMoreFooter(isLoading: loadingMore) {
+                guard !browse.loadingMoreLibrary.contains(section) else { return }
+                browse.loadMoreLibrary(section)
+            }
+        }
+    }
+
+    // MARK: - Filtered
+
+    /// The segment under the field's words: the count line, the rows that match (Liked music among them when it does),
+    /// the line for the other segments and, when nothing matched, the block that offers YouTube Music.
+    @ViewBuilder
+    private func filtered(_ filter: MusicLibraryFilter) -> some View {
+        VStack(spacing: 0) {
+            MusicScopeLine(text: filter.countLine)
+                .padding(.bottom, MusicBrowseLayout.listBarGap)
+            if filter.showsLiked {
+                MusicCollectionRow(collection: MusicBrowseStore.likedMusic, isLiked: true) {
+                    browse.open(MusicBrowseStore.likedMusic)
+                }
+            }
+            rows(filter.items)
+            if let other = filter.other {
+                MusicOtherMatchesRow(match: other) {
+                    browse.librarySection = MusicLibrarySection(noun: other.target)
+                }
+            }
+            if filter.isEmpty {
+                let copy = MusicSearchCopy.noResults(
+                    noun: section.noun,
+                    query: navigation.fieldQuery,
+                    place: "your library",
+                    beyond: "your library"
+                )
+                MusicNoResultsBlock(title: copy.title, detail: copy.detail) {
+                    navigation.searchYouTubeMusicInstead()
+                }
+            }
+            loadMoreFooter
+        }
+        .environment(\.musicHighlightTerms, terms)
     }
 
     /// The saved albums as 70 pt covers, as many to a row as the column holds: four at the default size, three at the
@@ -141,6 +210,8 @@ struct MusicCollectionRow: View {
     static let coverSize: CGFloat = MusicBrowseLayout.playlistArt
 
     @State private var isHovered = false
+    @Environment(\.musicAccent) private var accent
+    @Environment(\.musicHighlightTerms) private var highlightTerms
 
     private var isArtist: Bool { collection.kind == .artist }
 
@@ -162,12 +233,12 @@ struct MusicCollectionRow: View {
                 cover
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(collection.title)
+                    Text.highlighted(collection.title, terms: highlightTerms, color: accent.solid)
                         .musicText(MusicStyle.Typeface.row)
                         .foregroundStyle(MusicStyle.Palette.textRow)
                         .lineLimit(1)
                     if !subtitle.isEmpty {
-                        Text(subtitle)
+                        Text.highlighted(subtitle, terms: highlightTerms, color: accent.solid)
                             .musicText(MusicStyle.Typeface.secondary)
                             .foregroundStyle(MusicStyle.Palette.textSub)
                             .lineLimit(1)

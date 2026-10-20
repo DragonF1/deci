@@ -53,11 +53,6 @@ nonisolated enum MusicHomeText {
         }
         return word + " \u{00B7} " + line
     }
-
-    /// "artist · album", or whichever of the two there is.
-    static func songSubtitle(artist: String, album: String?) -> String {
-        [artist, album ?? ""].filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
-    }
 }
 
 // MARK: - Headers
@@ -346,6 +341,7 @@ struct MusicCoverTile: View {
     let action: () -> Void
 
     @Environment(\.musicAccent) private var accent
+    @Environment(\.musicHighlightTerms) private var highlightTerms
 
     var body: some View {
         Button(action: action) {
@@ -371,11 +367,11 @@ struct MusicCoverTile: View {
                 .musicPinBadge(isPinned, coverSize: size, circular: circular, diameter: 14, inset: circular ? 6 : 3)
 
                 VStack(alignment: circular ? .center : .leading, spacing: 0) {
-                    Text(title)
+                    Text.highlighted(title, terms: highlightTerms, color: accent.solid)
                         .musicText(MusicStyle.Typeface.secondaryMedium)
                         .foregroundStyle(isCurrent ? accent.solid : MusicStyle.Palette.textTile)
                         .lineLimit(1)
-                    Text(subtitle.isEmpty ? " " : subtitle)
+                    Text.highlighted(subtitle.isEmpty ? " " : subtitle, terms: highlightTerms, color: accent.solid)
                         .musicText(MusicStyle.Typeface.caption)
                         .foregroundStyle(MusicStyle.Palette.textMeta)
                         .lineLimit(1)

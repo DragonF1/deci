@@ -65,20 +65,10 @@ struct MusicHeaderTabTests {
         #expect(MusicHeaderTab.allCases.map(\.title) == ["Home", "Library"])
     }
 
-    @Test("a tab that is on screen is the one highlighted")
+    @Test("the tab on screen is the one highlighted")
     func plainTabs() {
-        #expect(MusicHeaderTab.resolve(tab: .home, tabBeforeSearch: nil) == .home)
-        #expect(MusicHeaderTab.resolve(tab: .library, tabBeforeSearch: nil) == .library)
-        // The stale record of an earlier search does not matter once a real tab is showing.
-        #expect(MusicHeaderTab.resolve(tab: .home, tabBeforeSearch: .library) == .home)
-    }
-
-    @Test("search keeps the tab it was opened from highlighted, Home when it has none")
-    func searchBorrowsTheEarlierTab() {
-        #expect(MusicHeaderTab.resolve(tab: .search, tabBeforeSearch: .library) == .library)
-        #expect(MusicHeaderTab.resolve(tab: .search, tabBeforeSearch: .home) == .home)
-        #expect(MusicHeaderTab.resolve(tab: .search, tabBeforeSearch: nil) == .home)
-        #expect(MusicHeaderTab.resolve(tab: .search, tabBeforeSearch: .search) == .home)
+        #expect(MusicHeaderTab.resolve(tab: .home) == .home)
+        #expect(MusicHeaderTab.resolve(tab: .library) == .library)
     }
 
     @Test("a header tab maps to the browse tab it opens")
@@ -130,14 +120,6 @@ struct MusicHomeTextTests {
         #expect(MusicHomeText.subtitle("Album \u{2022} Some Band \u{2022} 2013") == "Album \u{00B7} Some Band \u{00B7} 2013")
         #expect(MusicHomeText.subtitle("Plain") == "Plain")
         #expect(MusicHomeText.subtitle("") == "")
-    }
-
-    @Test("a song line joins the artist and the album and skips a missing half")
-    func songSubtitle() {
-        #expect(MusicHomeText.songSubtitle(artist: "Some Band", album: "First Record") == "Some Band \u{00B7} First Record")
-        #expect(MusicHomeText.songSubtitle(artist: "Some Band", album: nil) == "Some Band")
-        #expect(MusicHomeText.songSubtitle(artist: "", album: "First Record") == "First Record")
-        #expect(MusicHomeText.songSubtitle(artist: "", album: nil) == "")
     }
 
     @Test("a Library row leads with its kind, keeps YouTube's line, and does not say the kind twice")

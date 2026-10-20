@@ -110,6 +110,13 @@ struct MusicQueueListingTests {
         #expect(MusicQueueListing.nextKicker(count: 2000) == "NEXT IN QUEUE \u{00B7} 2000")
         #expect(MusicQueueListing.nextKicker(count: -3) == "NEXT IN QUEUE \u{00B7} 0")
     }
+
+    @Test("over a filtered queue the kicker says how many of the later songs match")
+    func filteredNextKicker() {
+        #expect(MusicQueueListing.nextKicker(matched: 1, total: 4) == "NEXT IN QUEUE \u{00B7} 1 OF 4")
+        #expect(MusicQueueListing.nextKicker(matched: 0, total: 4) == "NEXT IN QUEUE \u{00B7} 0 OF 4")
+        #expect(MusicQueueListing.nextKicker(matched: -1, total: -2) == "NEXT IN QUEUE \u{00B7} 0 OF 0")
+    }
 }
 
 @MainActor
@@ -250,14 +257,5 @@ struct MusicSliderGeometryTests {
     func narrowTrack() {
         #expect(MusicSliderGeometry.knobOffset(fraction: 1, width: 4, knob: 10) == 0)
         #expect(MusicSliderGeometry.knobOffset(fraction: 1, width: .nan, knob: 10) == 0)
-    }
-
-    @Test("the filled part is the fraction of the width, held inside it")
-    func filledWidth() {
-        #expect(MusicSliderGeometry.filledWidth(fraction: 0.25, width: 200) == 50)
-        #expect(MusicSliderGeometry.filledWidth(fraction: 2, width: 200) == 200)
-        #expect(MusicSliderGeometry.filledWidth(fraction: -1, width: 200) == 0)
-        #expect(MusicSliderGeometry.filledWidth(fraction: .nan, width: 200) == 0)
-        #expect(MusicSliderGeometry.filledWidth(fraction: 0.5, width: .infinity) == 0)
     }
 }

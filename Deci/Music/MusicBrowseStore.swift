@@ -14,7 +14,6 @@ final class MusicBrowseStore {
     enum Tab: Hashable, CaseIterable {
         case home
         case library
-        case search
     }
 
     enum Load<Value: Equatable>: Equatable {

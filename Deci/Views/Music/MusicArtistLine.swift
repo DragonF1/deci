@@ -28,6 +28,8 @@ struct MusicArtistLine: View {
     var color: Color = DesignTokens.Colors.textSecondary
 
     @Environment(\.openMusicArtist) private var openArtist
+    @Environment(\.musicHighlightTerms) private var highlightTerms
+    @Environment(\.musicAccent) private var accent
 
     var body: some View {
         let segments = openArtist == nil ? [] : MusicArtistSegment.split(artist, links: links)
@@ -54,7 +56,7 @@ struct MusicArtistLine: View {
     }
 
     private func plain(_ text: String) -> some View {
-        Text(text)
+        Text.highlighted(text, terms: highlightTerms, color: accent.solid)
             .font(font)
             .foregroundStyle(color)
             .lineLimit(1)
@@ -69,12 +71,14 @@ private struct MusicArtistButton: View {
     let color: Color
     let open: @MainActor (MusicCollection) -> Void
     @State private var isHovered = false
+    @Environment(\.musicHighlightTerms) private var highlightTerms
+    @Environment(\.musicAccent) private var accent
 
     var body: some View {
         Button {
             open(link.opener)
         } label: {
-            Text(link.name)
+            Text.highlighted(link.name, terms: highlightTerms, color: accent.solid)
                 .font(font)
                 .foregroundStyle(isHovered ? DesignTokens.Colors.textPrimary : color)
                 .underline(isHovered)

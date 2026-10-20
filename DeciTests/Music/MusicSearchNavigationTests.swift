@@ -833,15 +833,19 @@ struct MusicSearchNavigationTests {
 @MainActor
 @Suite("MusicSearchNavigation shell")
 struct MusicSearchNavigationShellTests {
-    @Test("Search keeps its query when it is picked again, and every other tab drops it")
-    func searchTabKeepsTheQuery() async {
+    @Test("picking a tab drops the query and its results, whichever tab it is")
+    func selectDropsTheQuery() async {
         let h = NavHarness()
+        h.nav.openField()
         await h.search("alpha")
-        h.nav.select(.search)
-        #expect(h.service.query == "alpha")
-        #expect(h.service.browse.tab == .search)
         #expect(h.nav.showsResults)
 
+        h.nav.select(.library)
+        #expect(h.service.query.isEmpty)
+        #expect(h.service.browse.tab == .library)
+        #expect(h.nav.showsResults == false)
+
+        await h.search("alpha")
         h.nav.select(.home)
         #expect(h.service.query.isEmpty)
         #expect(h.service.browse.tab == .home)
@@ -953,47 +957,9 @@ struct MusicSearchNavigationShellTests {
         #expect(h.service.browse.tab == .library)
     }
 
-    // MARK: - Search in the right column
+    // MARK: - The header
 
-    @Test("the magnifier opens search and the same button returns to the tab it left")
-    func searchRemembersTheTabItLeft() {
-        let h = NavHarness()
-        h.nav.select(.library)
-        #expect(h.nav.isSearchOpen == false)
-
-        h.nav.toggleSearch()
-        #expect(h.nav.isSearchOpen)
-        #expect(h.service.browse.tab == .search)
-
-        h.nav.toggleSearch()
-        #expect(h.nav.isSearchOpen == false)
-        #expect(h.service.browse.tab == .library)
-    }
-
-    @Test("closing search with no earlier tab goes to Home, and a query typed in it is dropped")
-    func closeSearchDefaultsToHome() async {
-        let h = NavHarness()
-        h.service.browse.tab = .search
-        await h.search("alpha")
-        #expect(h.nav.showsResults)
-
-        h.nav.closeSearch()
-        #expect(h.service.browse.tab == .home)
-        #expect(h.service.query.isEmpty)
-        #expect(h.nav.showsResults == false)
-    }
-
-    @Test("opening search twice keeps the tab it first left")
-    func openSearchTwiceKeepsTheFirstTab() {
-        let h = NavHarness()
-        h.nav.select(.library)
-        h.nav.openSearch()
-        h.nav.openSearch()
-        h.nav.closeSearch()
-        #expect(h.service.browse.tab == .library)
-    }
-
-    @Test("the header highlights Library for Library and its pages, and Home for everything else, search included")
+    @Test("the header highlights Library for Library and its pages, and Home for everything else")
     func headerTabHighlight() {
         let h = NavHarness()
         #expect(h.nav.headerTab == .home)
@@ -1003,18 +969,17 @@ struct MusicSearchNavigationShellTests {
         h.openPage("PLa")
         #expect(h.nav.headerTab == .library)
 
-        h.nav.openSearch()
+        h.nav.openField()
         #expect(h.nav.headerTab == .library)
 
-        h.nav.closeSearch()
         h.nav.select(.home)
-        h.nav.openSearch()
+        h.nav.openField()
         #expect(h.nav.headerTab == .home)
     }
 
     // MARK: - Escape
 
-    @Test("Escape closes the picker first, then what covers the column, then search, and never pops a page")
+    @Test("Escape closes the picker first, then what covers the column, then the field, and never pops a page")
     func escapeOrder() {
         let h = NavHarness()
         h.playSomething()
@@ -1022,24 +987,23 @@ struct MusicSearchNavigationShellTests {
         #expect(h.nav.escape() == false)
 
         h.nav.select(.library)
-        h.nav.openSearch()
+        h.nav.openField()
         h.nav.toggleLyrics()
         h.nav.perform(.saveToPlaylist, for: MusicSamples.track("picked"), in: .none)
         #expect(h.nav.rightColumn == .picker)
 
         #expect(h.nav.escape())
         #expect(h.nav.showsPicker == false)
-        #expect(h.nav.isSearchOpen)
 
-        // Saving a song closed Lyrics for the picker, so open it again: search is under it.
+        // Saving a song closed Lyrics for the picker, so open it again: the field is under it.
         h.nav.toggleLyrics()
         #expect(h.nav.rightColumn == .lyrics)
         #expect(h.nav.escape())
         #expect(h.nav.rightColumn == .browse)
-        #expect(h.nav.isSearchOpen)
+        #expect(h.nav.isFieldOpen)
 
         #expect(h.nav.escape())
-        #expect(h.nav.isSearchOpen == false)
+        #expect(h.nav.isFieldOpen == false)
         #expect(h.service.browse.tab == .library)
 
         #expect(h.nav.escape() == false)
@@ -1048,8 +1012,8 @@ struct MusicSearchNavigationShellTests {
     @Test("Escape on a page opened from search does not pop the page")
     func escapeKeepsThePageStack() async {
         let h = NavHarness()
+        h.nav.openField()
         await h.search("alpha")
-        h.nav.select(.search)
         h.nav.openArtist(NavHarness.artist("UCa"))
         #expect(h.path == ["UCa"])
 

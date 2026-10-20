@@ -126,6 +126,8 @@ struct MusicSongRow: View {
     @Environment(\.musicTrackMenu) private var menu
     @Environment(\.musicTrackContext) private var context
     @Environment(\.musicAccent) private var accent
+    /// The words of the screen's filter, tinted where they match the title, the artist or the album.
+    @Environment(\.musicHighlightTerms) private var highlightTerms
 
     static let height: CGFloat = 40
     static let coverSize: CGFloat = 30
@@ -159,7 +161,7 @@ struct MusicSongRow: View {
                 cover
             }
             VStack(alignment: .leading, spacing: layout.textGap) {
-                Text(track.title)
+                Text.highlighted(track.title, terms: highlightTerms, color: accent.solid)
                     .musicText(layout.titleStyle(isCurrent: isCurrent))
                     .foregroundStyle(Color.white.opacity(layout.titleColorOpacity(isCurrent: isCurrent)))
                     .lineLimit(1)
@@ -257,7 +259,7 @@ struct MusicSongRow: View {
             artistAndAlbum
         case .album:
             if let album = track.album, !album.isEmpty {
-                Text(album)
+                Text.highlighted(album, terms: highlightTerms, color: accent.solid)
                     .musicText(MusicStyle.Typeface.secondary)
                     .foregroundStyle(MusicStyle.Palette.textSub)
                     .lineLimit(1)
@@ -279,7 +281,7 @@ struct MusicSongRow: View {
             )
             .layoutPriority(1)
             if let album = track.album, !album.isEmpty {
-                Text(" \u{00B7} " + album)
+                Text.highlighted(" \u{00B7} " + album, terms: highlightTerms, color: accent.solid)
                     .musicText(MusicStyle.Typeface.secondary)
                     .foregroundStyle(MusicStyle.Palette.textSub)
                     .lineLimit(1)

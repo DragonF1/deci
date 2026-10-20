@@ -1,8 +1,8 @@
 // Deci/Views/Music/MusicShellLayout.swift
 import SwiftUI
 
-/// What fills the right column. Browse is Home, Library, search and the pages opened from them; Lyrics and Up next each
-/// take the column in place of it, and the add-to-playlist picker covers all three.
+/// What fills the right column. Browse is Home, Library and the pages opened from them (search results sit over it);
+/// Lyrics and Up next each take the column in place of it, and the add-to-playlist picker covers all three.
 nonisolated enum MusicRightColumn: Equatable {
     case browse
     case lyrics
@@ -41,8 +41,8 @@ nonisolated enum MusicRightColumn: Equatable {
     }
 }
 
-/// The two tabs of the right column's header. Search is not one: the magnifier opens it, and the tab it was opened from
-/// stays highlighted.
+/// The two tabs of the right column's header. Search is not one: the magnifier opens a field in the header, and the
+/// tab it was opened on stays highlighted.
 nonisolated enum MusicHeaderTab: CaseIterable, Equatable {
     case home
     case library
@@ -62,13 +62,11 @@ nonisolated enum MusicHeaderTab: CaseIterable, Equatable {
         }
     }
 
-    /// The tab to highlight: the one on screen, or while search is open the one it was opened from. Library and the
-    /// pages opened from it are Library; everything else is Home.
-    static func resolve(tab: MusicBrowseStore.Tab, tabBeforeSearch: MusicBrowseStore.Tab?) -> MusicHeaderTab {
+    /// The tab to highlight: Library and the pages opened from it are Library; everything else is Home.
+    static func resolve(tab: MusicBrowseStore.Tab) -> MusicHeaderTab {
         switch tab {
         case .home: .home
         case .library: .library
-        case .search: tabBeforeSearch == .library ? .library : .home
         }
     }
 }
