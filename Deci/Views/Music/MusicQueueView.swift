@@ -16,15 +16,6 @@ struct MusicQueueView: View {
             ? Array(listing.upcoming.indices)
             : MusicLocalSearch.indices(of: listing.upcoming, terms: terms)
         VStack(alignment: .leading, spacing: 10) {
-            // The three toggles it describes leave the header while the field is open, and the line goes with them.
-            if !navigation.isQueueFieldOpen {
-                Text(MusicPlaybackStatus.text(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn))
-                    .musicText(MusicStyle.Typeface.secondary)
-                    .foregroundStyle(MusicStyle.Palette.textMeta)
-                    .lineLimit(1)
-                    .padding(.horizontal, MusicStyle.Spacing.page)
-            }
-
             if let current = listing.current {
                 VStack(alignment: .leading, spacing: 6) {
                     MusicQueueKicker(text: MusicQueueListing.nowPlayingKicker(sourceLine: listing.sourceLine))

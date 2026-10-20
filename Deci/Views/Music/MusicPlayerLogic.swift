@@ -99,26 +99,6 @@ nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
     }
 }
 
-/// The line under the Up next header that says what the three toggles are set to.
-nonisolated enum MusicPlaybackStatus {
-    /// "Shuffle off · Loop all · Autoplay on".
-    static func text(shuffle: Bool, loop: MusicLoopMode, autoplay: Bool) -> String {
-        let separator = " \u{00B7} "
-        return "Shuffle \(word(shuffle))" + separator + "Loop \(loopWord(loop))" + separator + "Autoplay \(word(autoplay))"
-    }
-
-    /// Off, all (the queue starts over) or one (the song repeats).
-    static func loopWord(_ loop: MusicLoopMode) -> String {
-        switch loop {
-        case .off: "off"
-        case .playlist: "all"
-        case .song: "one"
-        }
-    }
-
-    private static func word(_ isOn: Bool) -> String { isOn ? "on" : "off" }
-}
-
 /// What the Lyrics panel says around the lines: the tag by the title, the kicker at the foot and the paragraphs of
 /// lyrics that are not timed.
 @MainActor

@@ -3,15 +3,14 @@ import SwiftUI
 
 /// The left column of the Music popup: what is playing and everything to control it, always on screen. A stack 142 pt
 /// wide (kicker, cover, title and artist, the spectrum that is also the progress bar, the transport, the two buttons
-/// that open Lyrics and Up next in the right column), and at the foot the music row's volume and output device. It
+/// that open Lyrics and Up next in the right column). Volume and output live in the Mixer popover. It
 /// takes the song's colour (`musicAccent`) for its wash and for everything that is on or played.
 ///
-/// It stays whatever the right column shows. `service`, `navigation` and `mixer` are nil before the service exists
-/// and where there is no Mixer; the column then shows its empty layout, and the volume and output are left out.
+/// It stays whatever the right column shows. `service` and `navigation` are nil before the service exists; the column
+/// then shows its empty layout.
 struct MusicPlayerColumn: View {
     let service: MusicService?
     let navigation: MusicSearchNavigation?
-    let mixer: MusicMixerState?
     let spectrum: MusicSpectrumDriver
 
     @Environment(\.musicAccent) private var accent
@@ -39,10 +38,6 @@ struct MusicPlayerColumn: View {
             transport(state)
             viewButtons(state)
             Spacer(minLength: 0)
-            if let mixer {
-                MusicColumnVolumeRow(mixer: mixer)
-                MusicColumnOutputChip(mixer: mixer)
-            }
         }
         .padding(MusicPopupMetrics.playerColumnPadding)
         .frame(width: MusicPopupMetrics.playerColumnWidth, alignment: .topLeading)

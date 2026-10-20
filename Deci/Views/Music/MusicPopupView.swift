@@ -46,7 +46,6 @@ struct MusicPopupView: View {
             MusicPlayerColumn(
                 service: musicHost.service,
                 navigation: musicHost.navigation,
-                mixer: musicHost.mixer,
                 spectrum: musicHost.spectrum
             )
             Rectangle()

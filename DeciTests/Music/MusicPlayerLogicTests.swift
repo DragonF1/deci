@@ -158,25 +158,6 @@ struct MusicPlaybackToggleTests {
 }
 
 @MainActor
-@Suite("MusicPlaybackStatus")
-struct MusicPlaybackStatusTests {
-    @Test("the line reads each setting in turn, joined by dots")
-    func line() {
-        #expect(MusicPlaybackStatus.text(shuffle: false, loop: .playlist, autoplay: true)
-            == "Shuffle off \u{00B7} Loop all \u{00B7} Autoplay on")
-        #expect(MusicPlaybackStatus.text(shuffle: true, loop: .off, autoplay: false)
-            == "Shuffle on \u{00B7} Loop off \u{00B7} Autoplay off")
-        #expect(MusicPlaybackStatus.text(shuffle: true, loop: .song, autoplay: true)
-            == "Shuffle on \u{00B7} Loop one \u{00B7} Autoplay on")
-    }
-
-    @Test("the loop words are off, all and one")
-    func loopWords() {
-        #expect(MusicLoopMode.allCases.map(MusicPlaybackStatus.loopWord) == ["off", "all", "one"])
-    }
-}
-
-@MainActor
 @Suite("MusicLyricsCaption")
 struct MusicLyricsCaptionTests {
     @Test("the header's title is always Lyrics")
