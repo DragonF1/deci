@@ -67,9 +67,10 @@ final class MusicTrackActionsStore {
 
     // MARK: - What a song offers
 
-    /// The model's list for this song, with Pin / Unpin facing the way it was last left this session.
-    func actions(for track: MusicTrack, in context: MusicTrackContext) -> [MusicTrackAction] {
-        MusicTrackActions.available(for: withPinState(track), in: context)
+    /// The model's list for this song, with Pin / Unpin facing the way it was last left this session. `home` is the
+    /// song's Pin to Home state, which the Pinned items hold and this store does not.
+    func actions(for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil) -> [MusicTrackAction] {
+        MusicTrackActions.available(for: withPinState(track), in: context, home: home)
     }
 
     /// Only a song YouTube offered the toggle for has one; another row's pin never gives one to a row that has none.

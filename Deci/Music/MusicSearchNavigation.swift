@@ -429,11 +429,13 @@ final class MusicSearchNavigation {
 
     /// The "..." menu of a song: what it offers here, in menu order.
     func actions(for track: MusicTrack, in context: MusicTrackContext) -> [MusicTrackAction] {
-        service.trackActions.actions(for: track, in: context)
+        let home = MusicPinnedItem(track: track).map { service.pinnedItems.state(for: $0) }
+        return service.trackActions.actions(for: track, in: context, home: home)
     }
 
     /// Runs a menu item. Save to playlist opens the save menu over whatever shows, which stays as it was; Go to album
-    /// and Go to artist open the page; Remove and Pin go to the actions store, which shows what happened as a short line.
+    /// and Go to artist open the page; Remove and Pin to Listen again go to the actions store, which shows what happened
+    /// as a short line; Pin to Home is Deci's own list, changed on the spot.
     func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
@@ -446,6 +448,8 @@ final class MusicSearchNavigation {
             service.trackActions.remove(track, in: context)
         case .pinToListenAgain, .unpinFromListenAgain:
             service.trackActions.togglePin(track)
+        case .pinHome:
+            if let item = MusicPinnedItem(track: track) { service.pinnedItems.toggle(item) }
         }
     }
 }

@@ -341,7 +341,68 @@ struct MusicSearchNavigationActionsTests {
         let h = ActionNavHarness()
         var track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture", pin: MusicSamples.pinToggle())
         track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
-        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinToListenAgain, .goToAlbum, .goToArtist])
+        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinToListenAgain, .pinHome(.canPin), .goToAlbum, .goToArtist])
+    }
+
+    @Test("Pin to Home works on a song YouTube gave no toggle for, and the menu then offers Unpin from Home")
+    func pinHomeWithoutToken() {
+        let h = ActionNavHarness()
+        let track = MusicSamples.track("v1")
+        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
+
+        h.nav.perform(.pinHome(.canPin), for: track, in: .none)
+
+        #expect(h.service.pinnedItems.items.map(\.id) == ["v1"])
+        #expect(h.service.pinnedItems.items.first?.kind == .song)
+        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.pinned)])
+
+        h.nav.perform(.pinHome(.pinned), for: track, in: .none)
+
+        #expect(h.service.pinnedItems.isEmpty)
+        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
+    }
+
+    @Test("Pin to Home never reaches the account: nothing is sent to YouTube")
+    func pinHomeSendsNothing() async {
+        let h = ActionNavHarness()
+        h.nav.perform(.pinHome(.canPin), for: MusicSamples.track("v1", pin: MusicSamples.pinToggle()), in: .none)
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(await h.backend.feedbackTokens.isEmpty)
+        #expect(h.service.trackActions.notice == nil)
+    }
+
+    @Test("A full Home offers the refusal on a new song, and Unpin from Home on a pinned one")
+    func pinHomeWhenFull() {
+        let h = ActionNavHarness()
+        let pinned = MusicSamples.track("kept")
+        h.nav.perform(.pinHome(.canPin), for: pinned, in: .none)
+        for index in 1..<MusicPinnedItems.limit {
+            h.service.pinnedItems.pin(MusicPinnedItem(kind: .artist, id: "UC\(index)", title: "Name \(index)"))
+        }
+        #expect(h.service.pinnedItems.isFull)
+        let fresh = MusicSamples.track("v1")
+        #expect(h.nav.actions(for: fresh, in: .none) == [.saveToPlaylist, .pinHome(.full)])
+        #expect(h.nav.actions(for: pinned, in: .none) == [.saveToPlaylist, .pinHome(.pinned)])
+
+        h.nav.perform(.pinHome(.full), for: fresh, in: .none)
+        #expect(h.service.pinnedItems.items.count == MusicPinnedItems.limit)
+        #expect(!h.service.pinnedItems.isPinned(fresh))
+
+        h.nav.perform(.pinHome(.pinned), for: pinned, in: .none)
+        #expect(!h.service.pinnedItems.isPinned(pinned))
+        #expect(h.nav.actions(for: fresh, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
+    }
+
+    @Test("A Home pin and a Listen again pin of the same song are independent")
+    func pinHomeAndListenAgainIndependent() async {
+        let h = ActionNavHarness()
+        let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())
+        h.nav.perform(.pinHome(.canPin), for: track, in: .none)
+        #expect(h.nav.actions(for: track, in: .none) == [.saveToPlaylist, .pinToListenAgain, .pinHome(.pinned)])
+
+        h.nav.perform(.pinToListenAgain, for: track, in: .none)
+        #expect(await h.until { h.nav.actions(for: track, in: .none).contains(.unpinFromListenAgain) })
+        #expect(h.service.pinnedItems.isPinned(track))
     }
 
     // MARK: - Session

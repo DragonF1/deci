@@ -1,8 +1,9 @@
 // DeciTests/Music/MusicPinBadgeTests.swift
 // The size and place of the pin badge on a cover: it scales with the cover, never under the floor, and a round cover
-// is inset further so the dot sits on the circle's edge.
+// is inset further so the dot sits on the circle's edge. Also who wears it: anything pinned to Listen again or Home.
 
 import CoreGraphics
+import Foundation
 import Testing
 @testable import Deci
 
@@ -51,5 +52,65 @@ struct MusicPinBadgeTests {
                 #expect(reach <= size)
             }
         }
+    }
+
+    // MARK: - Who wears it
+
+    private func store() -> MusicTrackActionsStore {
+        let backend = FakeMusicBackend()
+        return MusicTrackActionsStore(backend: backend, browse: MusicBrowseStore(backend: backend))
+    }
+
+    @Test("A playlist, an album and an artist pinned to Home wear the badge; the same ids as another kind do not")
+    func homePinnedCollectionsWearTheBadge() {
+        let actions = store()
+        let home = MusicPinnedItems(items: [
+            MusicPinnedItem(kind: .playlist, id: "VLPL1", title: "Mix"),
+            MusicPinnedItem(kind: .album, id: "MPRE1", title: "Record"),
+            MusicPinnedItem(kind: .artist, id: "UCa", title: "Ay"),
+        ])
+        func wears(_ collection: MusicCollection) -> Bool {
+            MusicCollectionPinHandler.wearsPinBadge(collection, actions: actions, home: home)
+        }
+
+        #expect(wears(MusicSamples.collection("VLPL1", kind: .playlist)))
+        #expect(wears(MusicSamples.collection("MPRE1", kind: .album)))
+        #expect(wears(MusicSamples.collection("UCa", kind: .artist)))
+        #expect(!wears(MusicSamples.collection("UCa", kind: .playlist)))
+        #expect(!wears(MusicSamples.collection("VLPL1", kind: .album)))
+        #expect(!wears(MusicSamples.collection("VLPL2", kind: .playlist)))
+    }
+
+    @Test("A tile loses the badge when it is unpinned from Home, and Liked music never wears the Home badge")
+    func unpinTakesTheBadgeOff() {
+        let actions = store()
+        let home = MusicPinnedItems(items: [MusicPinnedItem(kind: .playlist, id: "VLPL1", title: "Mix")])
+        let tile = MusicSamples.collection("VLPL1", kind: .playlist)
+        #expect(MusicCollectionPinHandler.wearsPinBadge(tile, actions: actions, home: home))
+
+        home.unpin(MusicPinnedItem(kind: .playlist, id: "VLPL1", title: ""))
+        #expect(!MusicCollectionPinHandler.wearsPinBadge(tile, actions: actions, home: home))
+        #expect(!MusicCollectionPinHandler.wearsPinBadge(MusicBrowseStore.likedMusic, actions: actions, home: home))
+    }
+
+    @Test("A song pinned to Home counts as pinned for its cover's badge, by its video id")
+    func homePinnedSongIsPinned() {
+        let home = MusicPinnedItems(items: [MusicPinnedItem(kind: .song, id: "vid1", title: "Tune")])
+        #expect(home.isPinned(MusicSamples.track("vid1")))
+        #expect(!home.isPinned(MusicSamples.track("vid2")))
+    }
+
+    @Test("A pinned tile on the Home row is small and the same size for every kind")
+    func pinnedRowTileSize() {
+        #expect(MusicStyle.Size.pinnedPhoto <= MusicStyle.Size.pinnedTileWidth)
+        #expect(MusicStyle.Size.pinnedPhoto < MusicBrowseLayout.homeTile)
+    }
+
+    @Test("Each kind of pinned item has its own placeholder until the photo loads")
+    func placeholders() {
+        let kinds: [MusicPinnedItem.Kind] = [.artist, .playlist, .album, .song]
+        #expect(Set(kinds.map(\.placeholderSymbol)).count >= 3)
+        #expect(MusicPinnedItem.Kind.song.placeholderSymbol == "music.note")
+        #expect(MusicPinnedItem.Kind.artist.placeholderSymbol == MusicCollection.Kind.artist.placeholderSymbol)
     }
 }

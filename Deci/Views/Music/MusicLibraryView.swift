@@ -98,19 +98,13 @@ struct MusicLibraryView: View {
             albumGrid(items)
         } else {
             ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
-                let row = MusicCollectionRow(
+                MusicCollectionRow(
                     collection: collection,
                     isPinned: collectionPin?.isPinned(collection) == true
                 ) {
                     browse.open(collection)
                 }
-                if let collectionPin, let listenAgain = collectionPin.pin(collection) {
-                    row.contextMenu {
-                        MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
-                    }
-                } else {
-                    row
-                }
+                .musicCollectionMenu(collection)
             }
         }
     }

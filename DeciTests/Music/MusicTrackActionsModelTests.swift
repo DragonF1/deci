@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicTrackActionsModelTests.swift
 // Which song actions a row offers, and in what order: the pure rules behind the row's "..." button and its
-// context menu, without any view. Save to playlist, Pin to / Unpin from Listen again, Go to album, Go to artist and
-// Remove from playlist, and the blocks the menu cuts them into.
+// context menu, without any view. Save to playlist, Pin to / Unpin from Listen again, Pin to / Unpin from Home, Go to
+// album, Go to artist and Remove from playlist, and the blocks the menu cuts them into.
 
 import Foundation
 import Testing
@@ -12,8 +12,10 @@ import Testing
 struct MusicTrackActionsModelTests {
     private let ownPlaylist = MusicTrackContext(pageBrowseId: "VLPLfixtureMine", pageTitle: "Mine", pageIsEditable: true)
 
-    private func actions(_ track: Deci.MusicTrack, in context: MusicTrackContext = .none) -> [MusicTrackAction] {
-        MusicTrackActions.available(for: track, in: context)
+    private func actions(
+        _ track: Deci.MusicTrack, in context: MusicTrackContext = .none, home: MusicHomePinState? = nil
+    ) -> [MusicTrackAction] {
+        MusicTrackActions.available(for: track, in: context, home: home)
     }
 
     // MARK: - Save to playlist
@@ -36,6 +38,50 @@ struct MusicTrackActionsModelTests {
         var track = fullTrack()
         track.listenAgainPin = MusicSamples.pinToggle(isPinned: true)
         #expect(actions(track, in: ownPlaylist) == [.saveToPlaylist, .unpinFromListenAgain, .goToAlbum, .goToArtist, .removeFromPlaylist])
+    }
+
+    @Test("Pin to Home sits right after the Listen again pin, ahead of go to album, go to artist and remove")
+    func homeEntryInOrder() {
+        let track = fullTrack()
+        #expect(
+            actions(track, in: ownPlaylist, home: .canPin)
+                == [.saveToPlaylist, .pinToListenAgain, .pinHome(.canPin), .goToAlbum, .goToArtist, .removeFromPlaylist]
+        )
+        #expect(
+            actions(MusicSamples.track("v1"), home: .pinned) == [.saveToPlaylist, .pinHome(.pinned)]
+        )
+    }
+
+    @Test("Pin to Home needs no YouTube token: a song with no Listen again toggle still offers it")
+    func homeEntryNeedsNoToken() {
+        let noToggle = MusicSamples.track("v1")
+        let halfToggle = MusicSamples.track("v1", pin: MusicSamples.pinToggle(pin: nil))
+        #expect(actions(noToggle, home: .canPin) == [.saveToPlaylist, .pinHome(.canPin)])
+        #expect(actions(halfToggle, home: .canPin) == [.saveToPlaylist, .pinHome(.canPin)])
+    }
+
+    @Test("With no Home state the entry is left out, which is how every list stood before")
+    func homeEntryLeftOutByDefault() {
+        #expect(!actions(fullTrack(), in: ownPlaylist).contains { if case .pinHome = $0 { true } else { false } })
+    }
+
+    @Test("Pin to Home stays in the library block, with save and the Listen again pin")
+    func homeEntryGroup() {
+        #expect(MusicTrackAction.pinHome(.canPin).group == .library)
+        #expect(MusicTrackAction.pinHome(.pinned).group == .library)
+        #expect(MusicTrackAction.pinHome(.full).group == .library)
+        #expect(MusicTrackActions.groups(of: actions(fullTrack(), in: ownPlaylist, home: .canPin))
+            == [[.saveToPlaylist, .pinToListenAgain, .pinHome(.canPin)], [.goToAlbum, .goToArtist], [.removeFromPlaylist]])
+    }
+
+    @Test("Only the refusal while Home is full is turned off; every other action is on")
+    func enabledState() {
+        #expect(MusicTrackAction.pinHome(.canPin).isEnabled)
+        #expect(MusicTrackAction.pinHome(.pinned).isEnabled)
+        #expect(!MusicTrackAction.pinHome(.full).isEnabled)
+        for action in [MusicTrackAction.saveToPlaylist, .removeFromPlaylist, .pinToListenAgain, .unpinFromListenAgain, .goToAlbum, .goToArtist] {
+            #expect(action.isEnabled)
+        }
     }
 
     /// A song with every extra: an album page, an artist page, a pin toggle and its own place in a playlist.
@@ -198,12 +244,16 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackAction.unpinFromListenAgain.title == "Unpin from Listen again")
         #expect(MusicTrackAction.goToAlbum.title == "Go to album")
         #expect(MusicTrackAction.goToArtist.title == "Go to artist")
+        #expect(MusicTrackAction.pinHome(.canPin).title == "Pin to Home")
+        #expect(MusicTrackAction.pinHome(.pinned).title == "Unpin from Home")
+        #expect(MusicTrackAction.pinHome(.full).title == "Pin to Home (Home is full)")
     }
 
     @Test("No menu word has a dash or an ellipsis, since the menu is text only")
     func noDashesOrEllipses() {
         let all: [MusicTrackAction] = [
             .saveToPlaylist, .removeFromPlaylist, .pinToListenAgain, .unpinFromListenAgain, .goToAlbum, .goToArtist,
+            .pinHome(.canPin), .pinHome(.pinned), .pinHome(.full),
         ]
         for action in all {
             #expect(!action.title.contains("\u{2014}") && !action.title.contains("\u{2013}"))

@@ -76,25 +76,25 @@ enum MusicPagePill: Hashable, Sendable {
 }
 
 /// One entry of the page's "..." menu. Only what the app can really do is here: pin to Listen again (a playlist, an
-/// album or Liked music, where YouTube offers the toggle) and pin to Home (an artist).
+/// album or Liked music, where YouTube offers the toggle) and pin to Home (an artist, a playlist or an album).
 enum MusicPageMenuItem: Hashable, Sendable {
     case pinListenAgain(isPinned: Bool)
-    case pinHome(isPinned: Bool, isEnabled: Bool)
+    case pinHome(MusicHomePinState)
 
     var title: String {
         switch self {
         case .pinListenAgain(let isPinned):
             (isPinned ? MusicTrackAction.unpinFromListenAgain : MusicTrackAction.pinToListenAgain).title
-        case .pinHome(let isPinned, let isEnabled):
-            isPinned ? "Unpin from Home" : (isEnabled ? "Pin to Home" : "Pin to Home (Home is full)")
+        case .pinHome(let state):
+            state.title
         }
     }
 
-    /// Off while Home is full and this artist is not pinned yet.
+    /// Off while Home is full and this page is not pinned yet.
     var isEnabled: Bool {
         switch self {
         case .pinListenAgain: true
-        case .pinHome(_, let isEnabled): isEnabled
+        case .pinHome(let state): state.isEnabled
         }
     }
 }
@@ -112,21 +112,23 @@ enum MusicPagePills {
         return pills
     }
 
-    /// The page's menu: the Home pin on an artist, the Listen again pin elsewhere. `listenAgainIsPinned` is nil where
-    /// YouTube offers no toggle (Liked Music, most mixes), and the pin is then left out.
+    /// The page's menu: the Listen again pin, then the Home pin. `listenAgainIsPinned` is nil where YouTube offers no
+    /// toggle (Liked Music, most mixes), and that pin is then left out. `home` is nil where Home cannot hold the page
+    /// (Liked Music, which belongs to the account and has no cover of its own), and that pin is then left out too.
+    /// An artist's page has no Listen again toggle.
     static func menuItems(
         kind: MusicPageKind,
         listenAgainIsPinned: Bool?,
-        homeIsPinned: Bool,
-        homeCanToggle: Bool
+        home: MusicHomePinState?
     ) -> [MusicPageMenuItem] {
-        switch kind {
-        case .artist:
-            return [.pinHome(isPinned: homeIsPinned, isEnabled: homeCanToggle)]
-        case .album, .playlist, .liked:
-            guard let listenAgainIsPinned else { return [] }
-            return [.pinListenAgain(isPinned: listenAgainIsPinned)]
+        var items: [MusicPageMenuItem] = []
+        if kind != .artist, let listenAgainIsPinned {
+            items.append(.pinListenAgain(isPinned: listenAgainIsPinned))
         }
+        if kind != .liked, let home {
+            items.append(.pinHome(home))
+        }
+        return items
     }
 }
 

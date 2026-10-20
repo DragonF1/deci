@@ -132,16 +132,15 @@ struct MusicPageView: View {
 
     // MARK: - Menu
 
-    /// What the "..." menu holds: an artist's Pin to Home, the Listen again pin of the page elsewhere. The Listen again
-    /// pin is the page's own toggle on YouTube Music, not Deci's Home; YouTube offers none for Liked Music and most mixes.
+    /// What the "..." menu holds: the Listen again pin of the page, then Pin to Home. The Listen again pin is the
+    /// page's own toggle on YouTube Music, not Deci's Home; YouTube offers none for Liked Music and most mixes.
     private func menuItems(page: MusicBrowsePage, loaded: MusicBrowsePage) -> [MusicPageMenuItem] {
         let trackActions = service.trackActions
-        let pins = service.pinnedArtists
+        let pins = service.pinnedItems
         return MusicPagePills.menuItems(
             kind: kind,
             listenAgainIsPinned: trackActions.listenAgainPin(for: loaded) == nil ? nil : trackActions.isPinnedToListenAgain(loaded),
-            homeIsPinned: pins.isPinned(page.browseId),
-            homeCanToggle: pins.canToggle(page.browseId)
+            home: MusicPinnedItem(page: page, opener: collection).map { pins.state(for: $0) }
         )
     }
 
@@ -151,7 +150,9 @@ struct MusicPageView: View {
             service.trackActions.togglePin(loaded)
         case .pinHome:
             // The tile keeps the photo of the collection that opened this page: the square or round avatar.
-            service.pinnedArtists.toggle(MusicPinnedArtist(page: page, opener: collection))
+            if let item = MusicPinnedItem(page: page, opener: collection) {
+                service.pinnedItems.toggle(item)
+            }
         }
     }
 

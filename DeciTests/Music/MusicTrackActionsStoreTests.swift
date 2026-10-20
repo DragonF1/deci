@@ -721,13 +721,16 @@ struct MusicTrackActionsStoreTests {
         #expect(h.store.isPinnedToListenAgain(MusicSamples.track(id, pin: MusicSamples.pinToggle(isPinned: true))))
     }
 
-    @Test("A tile wears the badge for a playlist or album pinned to Listen again, and for an artist pinned to Home")
+    @Test("A tile wears the badge for a playlist or album pinned to Listen again, and for any collection pinned to Home")
     func tileBadgeCombinesBothPins() async {
         let h = ActionsHarness()
-        let pinnedArtist = MusicPinnedArtist(browseId: "UCpinned", title: "Pinned Artist", thumbnailURL: nil)
-        let artists = MusicPinnedArtists(artists: [pinnedArtist])
+        let home = MusicPinnedItems(items: [
+            MusicPinnedItem(kind: .artist, id: "UCpinned", title: "Pinned Artist"),
+            MusicPinnedItem(kind: .playlist, id: "VLPLhome", title: "Pinned Playlist"),
+            MusicPinnedItem(kind: .album, id: "MPREhome", title: "Pinned Album"),
+        ])
         func wears(_ collection: MusicCollection) -> Bool {
-            MusicCollectionPinHandler.wearsPinBadge(collection, actions: h.store, artists: artists)
+            MusicCollectionPinHandler.wearsPinBadge(collection, actions: h.store, home: home)
         }
 
         var playlist = MusicSamples.collection("VLPLmine")
@@ -735,21 +738,43 @@ struct MusicTrackActionsStoreTests {
         var album = MusicSamples.collection("MPREbFixture", kind: .album)
         album.listenAgainPin = MusicSamples.pinToggle(isPinned: true, pin: "p", unpin: nil)
         let homeArtist = MusicSamples.collection("UCpinned", kind: .artist)
+        let homePlaylist = MusicSamples.collection("VLPLhome")
+        let homeAlbum = MusicSamples.collection("MPREhome", kind: .album)
         let otherArtist = MusicSamples.collection("UCother", kind: .artist)
-        // A playlist that shares an id with a pinned artist is not an artist.
+        // A playlist that shares an id with a pinned artist is not that artist.
         let lookalike = MusicSamples.collection("UCpinned")
 
         #expect(!wears(playlist))
         #expect(wears(album))
         #expect(wears(homeArtist))
+        #expect(wears(homePlaylist))
+        #expect(wears(homeAlbum))
         #expect(!wears(otherArtist))
         #expect(!wears(lookalike))
 
         h.store.togglePin(playlist)
         #expect(await h.until { wears(playlist) })
 
-        artists.unpin("UCpinned")
+        home.unpin(MusicPinnedItem(kind: .artist, id: "UCpinned", title: ""))
+        home.unpin(MusicPinnedItem(kind: .playlist, id: "VLPLhome", title: ""))
         #expect(!wears(homeArtist))
+        #expect(!wears(homePlaylist))
+        #expect(wears(homeAlbum))
+    }
+
+    @Test("A Home pin does not touch the Listen again state, and a Listen again pin does not touch Home")
+    func homePinIsSeparateFromListenAgain() {
+        let h = ActionsHarness()
+        let home = MusicPinnedItems()
+        var playlist = MusicSamples.collection("VLPLmine")
+        playlist.listenAgainPin = MusicSamples.pinToggle()
+
+        if let item = MusicPinnedItem(collection: playlist) { home.toggle(item) }
+
+        #expect(home.isPinned(playlist))
+        #expect(!h.store.isPinnedToListenAgain(playlist))
+        #expect(h.store.listenAgainPin(for: playlist)?.isPinned == false)
+        #expect(MusicCollectionPinHandler.wearsPinBadge(playlist, actions: h.store, home: home))
     }
 
     // MARK: - The action list
@@ -813,6 +838,17 @@ struct MusicTrackActionsStoreTests {
         let track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture", setVideoId: "s1", pin: MusicSamples.pinToggle())
         let context = MusicTrackContext(pageBrowseId: "VLPLfixtureMine", pageTitle: "Mine", pageIsEditable: true)
         #expect(h.store.actions(for: track, in: context) == MusicTrackActions.available(for: track, in: context))
+    }
+
+    @Test("A song's menu offers Pin to Home in the library block, whether or not YouTube has a Listen again toggle")
+    func homeEntryInTheStoreList() {
+        let h = ActionsHarness()
+        let bare = MusicSamples.track("v1")
+        let toggled = MusicSamples.track("v2", pin: MusicSamples.pinToggle())
+        #expect(h.store.actions(for: bare, in: .none) == [.saveToPlaylist])
+        #expect(h.store.actions(for: bare, in: .none, home: .canPin) == [.saveToPlaylist, .pinHome(.canPin)])
+        #expect(h.store.actions(for: toggled, in: .none, home: .pinned) == [.saveToPlaylist, .pinToListenAgain, .pinHome(.pinned)])
+        #expect(h.store.actions(for: bare, in: .none, home: .full) == [.saveToPlaylist, .pinHome(.full)])
     }
 
     // MARK: - The notice line

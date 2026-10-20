@@ -48,9 +48,9 @@ final class MusicServiceHost {
                 // Shuffle, loop and Autoplay are remembered in settings.json.
                 preferences: settings?.appSettings.musicPlayback ?? MusicPlaybackPreferences(),
                 savePreferences: MusicServiceHost.savePreferences(to: settings),
-                // The artists pinned to Home are remembered in settings.json too.
-                pinnedArtists: settings?.appSettings.musicPinnedArtists ?? [],
-                savePinnedArtists: MusicServiceHost.savePinnedArtists(to: settings)
+                // The items pinned to Home are remembered in settings.json too.
+                pinnedItems: settings?.appSettings.musicPinnedItems ?? [],
+                savePinnedItems: MusicServiceHost.savePinnedItems(to: settings)
             )
         }
         MusicMemoryLog.log("launch")
@@ -66,12 +66,12 @@ final class MusicServiceHost {
         }
     }
 
-    /// Writes the pinned artists into settings.json, leaving every other setting as it is.
-    static func savePinnedArtists(to settings: SettingsManager?) -> @MainActor ([MusicPinnedArtist]) -> Void {
-        { [weak settings] artists in
+    /// Writes the pinned items into settings.json, leaving every other setting as it is.
+    static func savePinnedItems(to settings: SettingsManager?) -> @MainActor ([MusicPinnedItem]) -> Void {
+        { [weak settings] items in
             guard let settings else { return }
             var appSettings = settings.appSettings
-            appSettings.musicPinnedArtists = artists
+            appSettings.musicPinnedItems = items
             settings.updateAppSettings(appSettings)
         }
     }

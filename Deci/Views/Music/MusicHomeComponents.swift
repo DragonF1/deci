@@ -293,23 +293,25 @@ extension View {
 
 // MARK: - Tile menus
 
-/// The right click menu of a Home tile: "Pin to Listen again" on a playlist or album, and "Unpin from Home" on a
-/// pinned artist. With nothing to offer the tile gets no menu at all, as before.
+/// The right click menu of a playlist, album or artist tile or row: "Pin to Listen again" where YouTube offers the
+/// toggle, and "Pin to Home" or "Unpin from Home" for anything Home can hold. With nothing to offer the tile gets no
+/// menu at all, as before.
 private struct MusicCollectionMenuModifier: ViewModifier {
     let collection: MusicCollection
-    var onUnpin: ((MusicCollection) -> Void)?
     @Environment(\.musicCollectionPin) private var collectionPin
 
     @ViewBuilder
     func body(content: Content) -> some View {
         let listenAgain = collectionPin?.pin(collection)
-        if onUnpin != nil || listenAgain != nil {
+        let home = collectionPin?.homePin(collection)
+        if let collectionPin, listenAgain != nil || home != nil {
             content.contextMenu {
-                if let listenAgain, let collectionPin {
+                if let listenAgain {
                     MusicListenAgainPinItem(toggle: listenAgain) { collectionPin.toggle(collection) }
                 }
-                if let onUnpin {
-                    Button("Unpin from Home") { onUnpin(collection) }
+                if let home {
+                    Button(home.title) { collectionPin.toggleHome(collection) }
+                        .disabled(!home.isEnabled)
                 }
             }
         } else {
@@ -319,8 +321,8 @@ private struct MusicCollectionMenuModifier: ViewModifier {
 }
 
 extension View {
-    func musicCollectionMenu(_ collection: MusicCollection, onUnpin: ((MusicCollection) -> Void)? = nil) -> some View {
-        modifier(MusicCollectionMenuModifier(collection: collection, onUnpin: onUnpin))
+    func musicCollectionMenu(_ collection: MusicCollection) -> some View {
+        modifier(MusicCollectionMenuModifier(collection: collection))
     }
 }
 
@@ -395,21 +397,24 @@ struct MusicCoverTile: View {
     }
 }
 
-/// A pinned artist on Home: a round photo with the name under it.
-struct MusicPinnedArtistTile: View {
-    let collection: MusicCollection
+/// A pinned item on Home: a small photo with the name under it, the same size for every kind so the row lines up.
+/// An artist's photo is round; a playlist, an album and a song show a rounded square cover.
+struct MusicPinnedTile: View {
+    let item: MusicPinnedItem
     let action: () -> Void
 
     var body: some View {
+        let circular = item.kind == .artist
         Button(action: action) {
             VStack(spacing: MusicBrowseLayout.tileTextGap) {
                 MusicThumbnail(
-                    url: collection.thumbnailURL,
+                    url: item.photoURL,
                     size: MusicStyle.Size.pinnedPhoto,
-                    circular: true,
-                    placeholder: MusicCollection.Kind.artist.placeholderSymbol
+                    circular: circular,
+                    placeholder: item.kind.placeholderSymbol,
+                    cornerRadius: circular ? nil : MusicStyle.Radius.small
                 )
-                Text(collection.title)
+                Text(item.title)
                     .musicText(MusicStyle.Typeface.caption)
                     .foregroundStyle(MusicStyle.Palette.textTile)
                     .lineLimit(1)
@@ -421,7 +426,24 @@ struct MusicPinnedArtistTile: View {
         .buttonStyle(.plain)
         .musicTileHover()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(collection.title)
+        .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(.isButton)
+    }
+
+    private var accessibilityText: String {
+        guard let subtitle = item.subtitle, !subtitle.isEmpty else { return item.title }
+        return "\(item.title), \(MusicHomeText.subtitle(subtitle))"
+    }
+}
+
+extension MusicPinnedItem.Kind {
+    /// The symbol a tile shows until its photo loads.
+    var placeholderSymbol: String {
+        switch self {
+        case .artist: MusicCollection.Kind.artist.placeholderSymbol
+        case .playlist: MusicCollection.Kind.playlist.placeholderSymbol
+        case .album: MusicCollection.Kind.album.placeholderSymbol
+        case .song: "music.note"
+        }
     }
 }
