@@ -11,8 +11,6 @@ import SwiftUI
 struct MusicBackRow: View {
     let label: String
     let action: () -> Void
-    /// The tooltip, when "Back to <label>" does not read right (the playlist picker has no screen of its own to name).
-    var help: String?
 
     @State private var isHovered = false
 
@@ -34,7 +32,7 @@ struct MusicBackRow: View {
         .animation(DesignTokens.Animation.hover, value: isHovered)
         .accessibilityLabel("Back")
         .accessibilityHint(label)
-        .help(help ?? "Back to \(label)")
+        .help("Back to \(label)")
     }
 }
 

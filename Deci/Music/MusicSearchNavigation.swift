@@ -120,19 +120,23 @@ final class MusicSearchNavigation {
         return service.isSearching || hasResults || submittedQuery == trimmedQuery
     }
 
-    /// The add-to-playlist picker is open. The store owns it; like Up next and Lyrics it sits over whatever is under
-    /// it, and is never on together with either of them.
+    /// The save to playlist menu is open. The store owns it; it floats over the popup and leaves the column as it was.
     var showsPicker: Bool {
         service.trackActions.picker != nil
     }
 
     var isBrowsing: Bool {
-        !showsQueue && !showsResults && !showsLyrics && !showsPicker
+        !showsQueue && !showsResults && !showsLyrics
     }
 
-    /// What fills the right column: browse, or Lyrics, Up next or the picker in place of it.
+    /// Home's root is on screen with nothing over it, so the header offers the refresh button.
+    var showsHomeRefresh: Bool {
+        isBrowsing && service.browse.tab == .home && service.browse.path.isEmpty
+    }
+
+    /// What fills the right column: browse, or Lyrics or Up next in place of it.
     var rightColumn: MusicRightColumn {
-        MusicRightColumn.resolve(showsPicker: showsPicker, showsLyrics: showsLyrics, showsQueue: showsQueue)
+        MusicRightColumn.resolve(showsLyrics: showsLyrics, showsQueue: showsQueue)
     }
 
     /// The header tab to highlight: Library for Library and the pages opened from it, Home for everything else.
@@ -173,7 +177,7 @@ final class MusicSearchNavigation {
         MusicSearchScope.resolve(column: .browse, tab: service.browse.tab, page: pageKind)
     }
 
-    /// What the field of the screen on top searches. `.none` where there is no field to open (Lyrics, the picker).
+    /// What the field of the screen on top searches. `.none` where there is no field to open (Lyrics).
     var scope: MusicSearchScope {
         MusicSearchScope.resolve(column: rightColumn, tab: service.browse.tab, page: pageKind)
     }
@@ -183,7 +187,7 @@ final class MusicSearchNavigation {
         switch rightColumn {
         case .queue: isQueueFieldOpen
         case .browse: (browseScope.isLocal ? filterAnchor : searchAnchor) == currentAnchor
-        case .lyrics, .picker: false
+        case .lyrics: false
         }
     }
 
@@ -262,8 +266,8 @@ final class MusicSearchNavigation {
     }
 
     /// The query was edited. An emptied field stops the search and drops its results, back to browsing. Typing
-    /// closes the add-to-playlist picker, which sits over the results, but never Lyrics or Up next: the field is under
-    /// them, and a key that reaches it must not take them away.
+    /// closes the save to playlist menu, but never Lyrics or Up next: the field is under them, and a key that reaches it
+    /// must not take them away.
     func queryChanged() {
         hidesResults = false
         service.trackActions.closePicker()
@@ -353,7 +357,7 @@ final class MusicSearchNavigation {
         queueQuery = ""
     }
 
-    /// Back from the picker, to whatever was under it.
+    /// The save to playlist menu closes; nothing under it moved.
     func closePicker() {
         service.trackActions.closePicker()
     }
@@ -370,7 +374,7 @@ final class MusicSearchNavigation {
         service.browse.popToRoot()
     }
 
-    /// Escape: closes the topmost thing over the browse screens and says whether there was one. The picker first, then
+    /// Escape: closes the topmost thing over the browse screens and says whether there was one. The save menu first, then
     /// whatever covers the column (Lyrics or Up next, where an open field gives way first: its words, then the field),
     /// then the field of the screen on top, again its words first. Escape never pops the page stack. The account card is
     /// the popup's and closes before this is asked.
@@ -409,7 +413,7 @@ final class MusicSearchNavigation {
 
     /// An artist or an album (a name, a tile or Go to album) was opened, from anywhere. It opens on top of the pages
     /// already open. Over search results the results step aside, keeping the query and those pages, and Back returns
-    /// to them. Up next, Lyrics and the picker close before the open, so the page is not hidden behind the panel.
+    /// to them. Up next, Lyrics and the save menu close before the open, so the page is not hidden behind them.
     func openCollection(_ collection: MusicCollection) {
         let fromResults = showsResults
         closePanels()
@@ -428,8 +432,8 @@ final class MusicSearchNavigation {
         service.trackActions.actions(for: track, in: context)
     }
 
-    /// Runs a menu item. Save to playlist opens the picker over whatever shows; Go to album and Go to artist open the
-    /// page; Remove and Pin go to the actions store, which shows what happened as a short line.
+    /// Runs a menu item. Save to playlist opens the save menu over whatever shows, which stays as it was; Go to album
+    /// and Go to artist open the page; Remove and Pin go to the actions store, which shows what happened as a short line.
     func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
@@ -437,8 +441,6 @@ final class MusicSearchNavigation {
         case .goToArtist:
             if let artist = MusicTrackActions.artistCollection(for: track, in: context) { openArtist(artist) }
         case .saveToPlaylist:
-            queueForced = false
-            service.lyrics.setPanelOpen(false)
             service.trackActions.openPicker(for: track)
         case .removeFromPlaylist:
             service.trackActions.remove(track, in: context)

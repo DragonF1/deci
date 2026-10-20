@@ -13,7 +13,7 @@ nonisolated enum MusicSearchScope: Equatable {
     case playlist
     case album
     case queue
-    /// Lyrics and the add-to-playlist picker: no magnifier, no field.
+    /// Lyrics: no magnifier, no field.
     case none
 
     /// What the empty field says.
@@ -38,12 +38,12 @@ nonisolated enum MusicSearchScope: Equatable {
         }
     }
 
-    /// The scope of the screen on top: Up next searches the queue, Lyrics and the picker nothing, and browse depends on
+    /// The scope of the screen on top: Up next searches the queue, Lyrics nothing, and browse depends on
     /// the page open on top of the tab (an artist page searches YouTube Music like Home) or the tab itself.
     @MainActor
     static func resolve(column: MusicRightColumn, tab: MusicBrowseStore.Tab, page: MusicPageKind?) -> MusicSearchScope {
         switch column {
-        case .lyrics, .picker:
+        case .lyrics:
             return .none
         case .queue:
             return .queue

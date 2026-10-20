@@ -236,6 +236,7 @@ struct MusicAccountCard: View {
                 isEnabled: rows.switchChannel.isEnabled,
                 action: onSwitchChannel
             )
+            MusicNativeMenuSeparator()
             MusicNativeMenuItem(
                 title: rows.addAccount.title,
                 isEnabled: rows.addAccount.isEnabled,
@@ -272,7 +273,8 @@ struct MusicAccountCard: View {
         .accessibilityLabel(content.spokenLine)
     }
 
-    /// The account in use: a check, its small avatar, its name, and a "Brand" tag on a brand channel.
+    /// The account in use: the check in the slot, then its small avatar on the edge every other title starts on, its
+    /// name, and a "Brand" tag on a brand channel.
     private var currentAccount: some View {
         MusicNativeMenuItem(
             title: content.title,

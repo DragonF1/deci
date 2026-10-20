@@ -7,10 +7,38 @@ import SwiftUI
 import Testing
 @testable import Deci
 
+@Suite("MusicSaveMenuPlacement")
+struct MusicSaveMenuPlacementTests {
+    private let popup = CGSize(width: 720, height: 480)
+    private let menu = CGSize(width: 230, height: 200)
+
+    @Test("the menu's top right corner sits at the pointer, so it unfolds left and down")
+    func atThePointer() {
+        let origin = MusicSaveMenuPlacement.origin(anchor: CGPoint(x: 500, y: 100), size: menu, in: popup)
+        #expect(origin == CGPoint(x: 270, y: 100))
+    }
+
+    @Test("near an edge it slides back inside, 8 from the popup's edges")
+    func clamped() {
+        let low = MusicSaveMenuPlacement.origin(anchor: CGPoint(x: 500, y: 460), size: menu, in: popup)
+        #expect(low == CGPoint(x: 270, y: 272))
+        let left = MusicSaveMenuPlacement.origin(anchor: CGPoint(x: 40, y: 2), size: menu, in: popup)
+        #expect(left == CGPoint(x: 8, y: 8))
+    }
+
+    @Test("no pointer over the popup opens it centred, and a menu taller than the popup keeps the top margin")
+    func centredAndOversized() {
+        #expect(MusicSaveMenuPlacement.origin(anchor: nil, size: menu, in: popup) == CGPoint(x: 245, y: 140))
+        let tall = CGSize(width: 230, height: 600)
+        #expect(MusicSaveMenuPlacement.origin(anchor: CGPoint(x: 500, y: 300), size: tall, in: popup).y == 8)
+        #expect(MusicSaveMenuPlacement.origin(anchor: nil, size: tall, in: popup).y == 8)
+    }
+}
+
 @Suite("MusicRightColumn")
 struct MusicRightColumnTests {
-    private func column(lyrics: Bool = false, queue: Bool = false, picker: Bool = false) -> MusicRightColumn {
-        MusicRightColumn.resolve(showsPicker: picker, showsLyrics: lyrics, showsQueue: queue)
+    private func column(lyrics: Bool = false, queue: Bool = false) -> MusicRightColumn {
+        MusicRightColumn.resolve(showsLyrics: lyrics, showsQueue: queue)
     }
 
     @Test("nothing open is browse")
@@ -25,19 +53,11 @@ struct MusicRightColumnTests {
         #expect(column(lyrics: true, queue: true) == .lyrics)
     }
 
-    @Test("the add to playlist picker covers both panels")
-    func picker() {
-        #expect(column(picker: true) == .picker)
-        #expect(column(lyrics: true, picker: true) == .picker)
-        #expect(column(queue: true, picker: true) == .picker)
-    }
-
-    @Test("Lyrics and Up next wear their own headers, browse and the picker keep the browse one")
+    @Test("Lyrics and Up next wear their own headers, browse keeps the browse one")
     func headers() {
         #expect(MusicRightColumn.lyrics.header == .lyrics)
         #expect(MusicRightColumn.queue.header == .queue)
         #expect(MusicRightColumn.browse.header == .browse)
-        #expect(MusicRightColumn.picker.header == .browse)
     }
 
     @Test("only Lyrics and Up next sit on the accent wash")
@@ -45,7 +65,6 @@ struct MusicRightColumnTests {
         #expect(MusicRightColumn.lyrics.hasWash)
         #expect(MusicRightColumn.queue.hasWash)
         #expect(!MusicRightColumn.browse.hasWash)
-        #expect(!MusicRightColumn.picker.hasWash)
     }
 
     @Test("the wash is 0.10 at the top and gone by 90% of the column, and Lyrics pads 20 at the sides and 8 at the top")

@@ -2,22 +2,20 @@
 import SwiftUI
 
 /// What fills the right column. Browse is Home, Library and the pages opened from them (search results sit over it);
-/// Lyrics and Up next each take the column in place of it, and the add-to-playlist picker covers all three.
+/// Lyrics and Up next each take the column in place of it. The save to playlist menu floats over the popup instead.
 nonisolated enum MusicRightColumn: Equatable {
     case browse
     case lyrics
     case queue
-    case picker
 
-    static func resolve(showsPicker: Bool, showsLyrics: Bool, showsQueue: Bool) -> MusicRightColumn {
-        if showsPicker { return .picker }
+    static func resolve(showsLyrics: Bool, showsQueue: Bool) -> MusicRightColumn {
         if showsLyrics { return .lyrics }
         if showsQueue { return .queue }
         return .browse
     }
 
-    /// Which header the column wears. Lyrics and Up next have their own, with a Browse pill that goes back; the browse
-    /// header (Home, Library, the magnifier, the avatar) stays over the picker.
+    /// Which header the column wears. Lyrics and Up next have their own, with a Browse pill that goes back; browse wears
+    /// Home, Library, the magnifier and the avatar.
     enum Header: Equatable {
         case browse
         case lyrics
@@ -28,15 +26,15 @@ nonisolated enum MusicRightColumn: Equatable {
         switch self {
         case .lyrics: .lyrics
         case .queue: .queue
-        case .browse, .picker: .browse
+        case .browse: .browse
         }
     }
 
-    /// Lyrics and Up next sit on an accent wash; browse and the picker are plain.
+    /// Lyrics and Up next sit on an accent wash; browse is plain.
     var hasWash: Bool {
         switch self {
         case .lyrics, .queue: true
-        case .browse, .picker: false
+        case .browse: false
         }
     }
 }

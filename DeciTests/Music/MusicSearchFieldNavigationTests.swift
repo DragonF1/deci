@@ -87,7 +87,7 @@ private struct FieldNavHarness {
 @MainActor
 @Suite("MusicSearchNavigation field scope")
 struct MusicSearchFieldScopeTests {
-    @Test("the scope follows the screen on top: Home, Library, each kind of page, Up next, Lyrics, the picker")
+    @Test("the scope follows the screen on top: Home, Library, each kind of page, Up next, Lyrics, and the save menu leaves it")
     func scopeFollowsTheScreen() {
         let h = FieldNavHarness()
         #expect(h.nav.scope == .global)
@@ -119,8 +119,9 @@ struct MusicSearchFieldScopeTests {
         h.nav.toggleLyrics()
         #expect(h.nav.scope == .none)
 
+        // The save menu floats over the popup: Lyrics stays the column under it.
         h.nav.perform(.saveToPlaylist, for: MusicSamples.track("picked"), in: .none)
-        #expect(h.nav.rightColumn == .picker)
+        #expect(h.nav.rightColumn == .lyrics)
         #expect(h.nav.scope == .none)
     }
 
@@ -179,7 +180,7 @@ struct MusicSearchFieldScopeTests {
         #expect(h.nav.scope.placeholder == "Search the queue")
     }
 
-    @Test("Lyrics and the picker have no field: opening does nothing, and nothing is left open behind them")
+    @Test("Lyrics has no field: opening does nothing, and nothing is left open behind it, nor behind the save menu")
     func lyricsAndPickerHaveNoField() {
         let h = FieldNavHarness()
         h.playSomething()
@@ -193,7 +194,6 @@ struct MusicSearchFieldScopeTests {
         #expect(h.nav.isQueueFieldOpen == false)
 
         h.nav.perform(.saveToPlaylist, for: MusicSamples.track("picked"), in: .none)
-        h.nav.openField()
         #expect(h.nav.isFieldOpen == false)
         h.nav.closePicker()
         #expect(h.nav.isFieldOpen == false)

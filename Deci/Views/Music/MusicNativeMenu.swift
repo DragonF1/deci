@@ -67,8 +67,11 @@ struct MusicNativeMenuItem<Leading: View>: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: MusicNativeMenuMetrics.itemGap) {
-                leading
+                // The slot keeps its room when it is empty (a frame on an `EmptyView` takes none), so every title in
+                // the menu starts on the same edge.
+                Color.clear
                     .frame(width: leadingWidth, height: MusicNativeMenuMetrics.checkSlot)
+                    .overlay(alignment: .leading) { leading }
                 Text(title)
                     .font(.system(size: 13))
                     .foregroundStyle(Color.white.opacity(isHighlighted ? 1.0 : 0.92))

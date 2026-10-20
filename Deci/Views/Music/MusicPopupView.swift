@@ -58,12 +58,14 @@ struct MusicPopupView: View {
         .padding(MusicPopupMetrics.borderWidth)
         .frame(width: popupDimensions.width, height: MusicPopupMetrics.height)
         .background(MusicStyle.Palette.popupBackground)
+        .overlay { saveMenuLayer }
         .overlay { accountCardLayer }
         .clipShape(shape)
         .overlay(shape.strokeBorder(MusicStyle.Palette.popupBorder, lineWidth: MusicPopupMetrics.borderWidth))
         .musicAccentScope(track: musicHost.service?.player.nowPlaying)
         .environment(\.musicPopupIsVisible, musicHost.isPopupVisible)
         .animation(DesignTokens.Animation.quick, value: musicHost.isAccountCardOpen)
+        .animation(DesignTokens.Animation.quick, value: musicHost.service?.trackActions.picker == nil)
         // Always dark: the window itself, so its chrome and every control read as on dark, and the SwiftUI scheme.
         .background(
             WindowAppearanceBridge(appearance: NSAppearance(named: .darkAqua))
@@ -89,8 +91,9 @@ struct MusicPopupView: View {
             guard isMusicPopup(notification) else { return }
             popupVisibility.setOpen(.music, false)
             musicHost.isPopupVisible = false
-            // A card left open must not greet the next open of the popup.
+            // A card or a save menu left open must not greet the next open of the popup.
             musicHost.isAccountCardOpen = false
+            musicHost.navigation?.closePicker()
         }
         .onChange(of: signedInService == nil) {
             // A session that starts or ends under an open card must not leave it up: it holds the other session's rows.
@@ -110,7 +113,7 @@ struct MusicPopupView: View {
 
     // MARK: - Right column
 
-    /// The column's own header, and under it the content: browse, Lyrics, Up next or the picker. The pages bring their
+    /// The column's own header, and under it the content: browse, Lyrics or Up next. The pages bring their
     /// own side margins, so the column adds none below the header. Lyrics and Up next have a header of their own and sit
     /// on a wash of the song's accent.
     private var rightColumn: some View {
@@ -156,9 +159,20 @@ struct MusicPopupView: View {
         }
     }
 
+    /// The save to playlist menu, over both columns, opened from a song's "..." menu or the chip's card.
+    @ViewBuilder
+    private var saveMenuLayer: some View {
+        if let service = signedInService, let picker = service.trackActions.picker {
+            MusicSaveMenuLayer(store: service.trackActions, picker: picker) {
+                musicHost.navigation?.closePicker()
+            }
+            .transition(.opacity)
+        }
+    }
+
     // MARK: - Actions
 
-    /// Closes the topmost thing: the account card, then the add-to-playlist picker, Lyrics or Up next, and search at its
+    /// Closes the topmost thing: the account card, then the save to playlist menu, Lyrics or Up next, and search at its
     /// root, otherwise the popup itself. It never pops a page: Back is the page's own button.
     private func handleEscape() {
         if musicHost.closeAccountCard() { return }

@@ -1,6 +1,6 @@
 // DeciTests/Music/MusicSearchNavigationActionsTests.swift
 // The song actions through the Music tab's navigation: Go to album and Go to artist open a page the way an artist
-// opens (with Back returning to the results), the picker is a panel like Up next and Lyrics, and the other actions
+// opens (with Back returning to the results), the save menu floats over whatever shows, and the other actions
 // reach the actions store.
 
 import Foundation
@@ -202,20 +202,21 @@ struct MusicSearchNavigationActionsTests {
         #expect(h.path == ["VLunder"])
     }
 
-    // MARK: - Picker panel
+    // MARK: - Save menu
 
-    @Test("Save to playlist opens the picker over whatever shows, and it is not browsing then")
+    @Test("Save to playlist opens the save menu over whatever shows, which stays as it was")
     func pickerOpens() async {
         let h = ActionNavHarness()
         #expect(h.nav.showsPicker == false)
         h.nav.perform(.saveToPlaylist, for: h.album, in: .none)
         #expect(h.nav.showsPicker)
-        #expect(h.nav.isBrowsing == false)
+        #expect(h.nav.isBrowsing)
+        #expect(h.nav.rightColumn == .browse)
         #expect(h.service.trackActions.picker?.track == h.album)
         #expect(await h.until { await h.backend.playlistOptionsCalls == ["s1"] })
     }
 
-    @Test("Closing the picker goes back to what was under it")
+    @Test("Closing the save menu leaves what was under it")
     func pickerCloses() async {
         let h = ActionNavHarness()
         await h.search("q", songs: [h.album])
@@ -227,24 +228,25 @@ struct MusicSearchNavigationActionsTests {
         #expect(h.nav.isBrowsing == false)
     }
 
-    @Test("Opening the picker closes Up next and Lyrics, which would sit on top of it")
-    func pickerClosesOtherPanels() {
+    @Test("Opening the save menu leaves Up next and Lyrics open under it")
+    func pickerKeepsOtherPanels() {
         let h = ActionNavHarness()
         h.playSomething()
         h.nav.toggleQueue()
         h.nav.perform(.saveToPlaylist, for: h.album, in: .none)
-        #expect(h.nav.showsQueue == false)
+        #expect(h.nav.showsQueue)
         #expect(h.nav.showsPicker)
 
         h.nav.closePicker()
+        #expect(h.nav.showsQueue)
         h.loadLyricsTrack()
         h.nav.toggleLyrics()
         h.nav.perform(.saveToPlaylist, for: h.album, in: .none)
-        #expect(h.nav.showsLyrics == false)
+        #expect(h.nav.showsLyrics)
         #expect(h.nav.showsPicker)
     }
 
-    @Test("Up next and Lyrics close the picker when they are turned on")
+    @Test("Up next and Lyrics close the save menu when they are turned on")
     func panelsClosePicker() {
         let h = ActionNavHarness()
         h.playSomething()
@@ -255,13 +257,12 @@ struct MusicSearchNavigationActionsTests {
         #expect(h.nav.showsQueue)
 
         h.nav.perform(.saveToPlaylist, for: h.album, in: .none)
-        #expect(h.nav.showsQueue == false)
         h.nav.toggleLyrics()
         #expect(h.nav.showsPicker == false)
         #expect(h.nav.showsLyrics)
     }
 
-    @Test("Home and Library, a new search and an edited query all close the picker")
+    @Test("Home and Library, a new search and an edited query all close the save menu")
     func browsingClosesPicker() async {
         let h = ActionNavHarness()
         h.nav.perform(.saveToPlaylist, for: h.album, in: .none)
@@ -278,15 +279,17 @@ struct MusicSearchNavigationActionsTests {
         #expect(h.nav.showsPicker == false)
     }
 
-    @Test("Picking a playlist closes the picker, and the saved line stays for the view to show")
-    func pickClosesPanel() async {
+    @Test("Picking a playlist keeps the save menu open for another, and the saved line shows")
+    func pickKeepsMenu() async {
         let h = ActionNavHarness()
         await h.backend.setPlaylistOptions(videoId: "s1", [MusicSamples.playlistOption("PLone", title: "Road Trip")])
         h.nav.perform(.saveToPlaylist, for: h.album, in: .none)
         #expect(await h.until { if case .loaded? = h.service.trackActions.picker?.load { true } else { false } })
         h.service.trackActions.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
-        #expect(await h.until { h.nav.showsPicker == false })
-        #expect(h.service.trackActions.notice?.text == "Saved to Road Trip")
+        #expect(await h.until { h.service.trackActions.notice?.text == "Saved to Road Trip" })
+        #expect(h.nav.showsPicker)
+        #expect(h.nav.escape())
+        #expect(h.nav.showsPicker == false)
     }
 
     // MARK: - Remove and pin
@@ -343,7 +346,7 @@ struct MusicSearchNavigationActionsTests {
 
     // MARK: - Session
 
-    @Test("Signing out closes the picker and clears the pin state")
+    @Test("Signing out closes the save menu and clears the pin state")
     func signOutResets() async {
         let h = ActionNavHarness()
         let track = MusicSamples.track("v1", pin: MusicSamples.pinToggle())

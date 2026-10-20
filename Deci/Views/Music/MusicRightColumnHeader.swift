@@ -1,8 +1,8 @@
 // Deci/Views/Music/MusicRightColumnHeader.swift
 import SwiftUI
 
-/// The right column's own header, 32 pt tall: the Home and Library tabs, and at the trailing edge the magnifier and the
-/// avatar. The magnifier opens the search field in their place: the tabs stay, the field fills the rest and the avatar
+/// The right column's own header, 32 pt tall: the Home and Library tabs, and at the trailing edge Home's refresh (on
+/// Home's root only), the magnifier and the avatar. The magnifier opens the search field in their place: the tabs stay, the field fills the rest and the avatar
 /// goes while it is open. What the field searches depends on the screen (`MusicSearchScope`). The avatar opens the
 /// account card, which holds Settings; there is no gear.
 ///
@@ -52,6 +52,11 @@ struct MusicRightColumnHeader: View {
 
     private var trailing: some View {
         HStack(spacing: 10) {
+            if isSignedIn, let service, let navigation, navigation.showsHomeRefresh {
+                MusicRefreshButton(isRefreshing: service.browse.isRefreshingHome || service.browse.home == .loading) {
+                    service.browse.refreshHome()
+                }
+            }
             if isSignedIn, let navigation, navigation.scope.showsMagnifier {
                 MusicSearchButton {
                     // The card hangs from the avatar, which the field replaces.
@@ -119,6 +124,37 @@ struct MusicSearchButton: View {
         .animation(DesignTokens.Animation.hover, value: isHovered)
         .accessibilityLabel("Search")
         .help("Search")
+    }
+}
+
+/// Home's refresh: asks YouTube Music for new suggestions while the shelves stay up. A spinner takes the arrow's place
+/// while the new shelves load.
+struct MusicRefreshButton: View {
+    let isRefreshing: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if isRefreshing {
+                    MusicSpinner(size: 15, lineWidth: 1.5, color: Color.white.opacity(0.75))
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(Color.white.opacity(isHovered ? 0.85 : 0.55))
+                }
+            }
+            .frame(width: MusicPopupMetrics.avatarSize, height: MusicPopupMetrics.avatarSize)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isRefreshing)
+        .onHover { isHovered = $0 }
+        .animation(DesignTokens.Animation.hover, value: isHovered)
+        .accessibilityLabel(isRefreshing ? "Refreshing Home" : "Refresh Home")
+        .help("Refresh Home")
     }
 }
 

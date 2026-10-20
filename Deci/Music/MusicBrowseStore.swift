@@ -36,6 +36,13 @@ final class MusicBrowseStore {
     private(set) var isLoadingMoreHome = false
     /// Home has more shelves to load.
     private(set) var canLoadMoreHome = false
+    /// `refreshHome` is asking for new shelves while the old ones stay on screen.
+    private(set) var isRefreshingHome = false
+
+    /// Home shelves the owner never wants, matched on the title in any case.
+    static let hiddenHomeShelfTitles: Set<String> = [
+        "from the community", "mixed for you", "mixes for you", "long listens", "live performances",
+    ]
 
     private(set) var library: [MusicLibrarySection: Load<[MusicCollection]>] = [:]
     private(set) var loadingMoreLibrary: Set<MusicLibrarySection> = []
@@ -64,6 +71,8 @@ final class MusicBrowseStore {
     @ObservationIgnored private var runCounter = 0
     @ObservationIgnored private var homeRun: Int?
     @ObservationIgnored private var homeToken: String?
+    /// The token from before a refresh, put back when the refresh fails so scrolling still loads more.
+    @ObservationIgnored private var tokenBeforeRefresh: String?
     @ObservationIgnored private var libraryRuns: [MusicLibrarySection: Int] = [:]
     @ObservationIgnored private var libraryTokens: [MusicLibrarySection: String] = [:]
     @ObservationIgnored private var pageRuns: [String: Int] = [:]
@@ -106,6 +115,30 @@ final class MusicBrowseStore {
         home = .loading
         isLoadingMoreHome = false
         canLoadMoreHome = false
+        isRefreshingHome = false
+        launch("home") { [weak self, backend] in
+            do {
+                let page = try await backend.home()
+                self?.landHome(page, run: run)
+            } catch {
+                self?.failHome(error, run: run)
+            }
+        }
+    }
+
+    /// Asks for Home again while the shelves stay up, so new suggestions replace them in place. A failure keeps
+    /// the old shelves. Loads from the top when nothing is up yet.
+    func refreshHome() {
+        guard case .loaded = home else { return reloadHome() }
+        guard !isRefreshingHome else { return }
+        let run = newRun()
+        homeRun = run
+        tokenBeforeRefresh = homeToken
+        homeToken = nil
+        tasks["home+"]?.cancel()
+        isLoadingMoreHome = false
+        canLoadMoreHome = false
+        isRefreshingHome = true
         launch("home") { [weak self, backend] in
             do {
                 let page = try await backend.home()
@@ -132,6 +165,8 @@ final class MusicBrowseStore {
 
     private func landHome(_ page: MusicHomePage, run: Int) {
         guard homeRun == run else { return }
+        isRefreshingHome = false
+        tokenBeforeRefresh = nil
         home = .loaded(Self.uniqueShelves(page.shelves, after: []))
         homeToken = page.continuation
         canLoadMoreHome = page.continuation != nil
@@ -139,7 +174,15 @@ final class MusicBrowseStore {
 
     private func failHome(_ error: any Error, run: Int) {
         guard homeRun == run else { return }
-        home = .failed(describe(error))
+        if isRefreshingHome {
+            isRefreshingHome = false
+            homeToken = tokenBeforeRefresh
+            tokenBeforeRefresh = nil
+            canLoadMoreHome = homeToken != nil
+            logger.info("home refresh failed: \(MusicService.logDescription(of: error), privacy: .public)")
+        } else {
+            home = .failed(describe(error))
+        }
         expireIfSignedOut(error)
     }
 
@@ -160,9 +203,14 @@ final class MusicBrowseStore {
         expireIfSignedOut(error)
     }
 
+    /// Drops shelves already on screen and the hidden ones.
     private static func uniqueShelves(_ shelves: [MusicShelf], after existing: [MusicShelf]) -> [MusicShelf] {
         var seen = Set(existing.map(\.id))
-        return shelves.filter { seen.insert($0.id).inserted }
+        return shelves.filter { !isHiddenHomeShelf($0) && seen.insert($0.id).inserted }
+    }
+
+    static func isHiddenHomeShelf(_ shelf: MusicShelf) -> Bool {
+        hiddenHomeShelfTitles.contains(shelf.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     // MARK: - Library
@@ -501,6 +549,8 @@ final class MusicBrowseStore {
         home = .idle
         isLoadingMoreHome = false
         canLoadMoreHome = false
+        isRefreshingHome = false
+        tokenBeforeRefresh = nil
         library.removeAll()
         loadingMoreLibrary.removeAll()
         libraryHasMore.removeAll()

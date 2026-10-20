@@ -1,5 +1,5 @@
 // DeciTests/Music/MusicTrackActionsStoreTests.swift
-// The state behind the song actions: the add-to-playlist picker (load, save, already in, errors, late answers),
+// The state behind the song actions: the save to playlist menu (load, save, already in, errors, late answers),
 // removing a row from a playlist page, the Pin / Unpin toggle, the short notice line, and a session that ends.
 
 import Foundation
@@ -159,20 +159,23 @@ struct MusicTrackActionsStoreTests {
 
     // MARK: - Picker: saving
 
-    @Test("Choosing a playlist adds the song, closes the picker and says it saved")
+    @Test("Choosing a playlist adds the song, ticks its row in the menu that stays open, and says it saved")
     func chooseSaves() async {
         let h = ActionsHarness()
         await h.openPicker()
         let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
         h.store.choose(road)
 
-        #expect(await h.until { h.store.picker == nil })
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
         #expect(await h.backend.addToPlaylistCalls == [FakeMusicBackend.AddToPlaylistCall(videoId: "vid-1", playlistId: "PLone")])
-        #expect(h.store.notice?.text == "Saved to Road Trip")
         #expect(h.store.notice?.isError == false)
+        #expect(h.store.picker != nil)
+        #expect(h.store.picker?.saving.isEmpty == true)
+        #expect(h.options?.first { $0.playlistId == "PLone" }?.containsVideo == true)
+        #expect(h.options?.map(\.playlistId) == ["PLone", "PLtwo"])
     }
 
-    @Test("The picker shows saving while the call is out, and a second tap does not send a second call")
+    @Test("A row shows saving while its call is out, and a second tap on it does not send a second call")
     func chooseOnlyOnce() async {
         let h = ActionsHarness()
         await h.openPicker()
@@ -181,11 +184,44 @@ struct MusicTrackActionsStoreTests {
         let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
 
         h.store.choose(road)
-        #expect(h.store.picker?.isSaving == true)
+        #expect(h.store.picker?.saving == ["PLone"])
         h.store.choose(road)
-        h.store.choose(MusicSamples.playlistOption("PLtwo", title: "Workout"))
         await gate.open()
-        #expect(await h.until { h.store.picker == nil })
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        await h.letLateWorkLand()
+        #expect(await h.backend.addToPlaylistCalls.count == 1)
+    }
+
+    @Test("Saves to two playlists go out together, and each row is ticked when its own call lands")
+    func chooseSeveral() async {
+        let h = ActionsHarness()
+        await h.openPicker(options: [
+            MusicSamples.playlistOption("PLone", title: "Road Trip"),
+            MusicSamples.playlistOption("PLtwo", title: "Workout"),
+        ])
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+
+        h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        h.store.choose(MusicSamples.playlistOption("PLtwo", title: "Workout"))
+        #expect(h.store.picker?.saving == ["PLone", "PLtwo"])
+        await gate.open()
+
+        #expect(await h.until { h.options?.allSatisfy(\.containsVideo) == true })
+        #expect(h.store.picker?.saving.isEmpty == true)
+        #expect(await h.backend.addToPlaylistCalls.count == 2)
+    }
+
+    @Test("A row ticked by a save says Already in on the next click, whatever copy of it the click carried")
+    func chooseAfterSaveSaysAlreadyIn() async {
+        let h = ActionsHarness()
+        await h.openPicker()
+        h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+
+        h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        #expect(h.store.notice?.text == "Already in Road Trip")
+        await h.letLateWorkLand()
         #expect(await h.backend.addToPlaylistCalls.count == 1)
     }
 
@@ -200,27 +236,27 @@ struct MusicTrackActionsStoreTests {
         h.store.closePicker()
         await h.openPicker()
         h.store.choose(road)
-        #expect(h.store.picker?.isSaving == false)
+        #expect(h.store.picker?.saving.isEmpty == true)
         await gate.open()
         #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
         await h.letLateWorkLand()
         #expect(await h.backend.addToPlaylistCalls.count == 1)
     }
 
-    @Test("A playlist that already holds the song sends nothing and says so")
+    @Test("A playlist that already holds the song sends nothing, says so, and leaves the menu open")
     func chooseAlreadyIn() async {
         let h = ActionsHarness()
         await h.openPicker()
         h.store.choose(MusicSamples.playlistOption("PLtwo", title: "Workout", contains: true))
 
-        #expect(h.store.picker == nil)
+        #expect(h.store.picker != nil)
         #expect(h.store.notice?.text == "Already in Workout")
         #expect(h.store.notice?.isError == false)
         await h.letLateWorkLand()
         #expect(await h.backend.addToPlaylistCalls.isEmpty)
     }
 
-    @Test("A failed save keeps the picker open for another try, with an error line")
+    @Test("A failed save leaves the row unticked for another try, with an error line")
     func chooseFailureKeepsPicker() async {
         let h = ActionsHarness()
         await h.openPicker()
@@ -231,13 +267,14 @@ struct MusicTrackActionsStoreTests {
         // No dedupe option goes out, so a refusal most likely means the song is already there.
         #expect(h.store.notice?.text == "Not added. Road Trip may already have it.")
         #expect(h.store.notice?.isError == true)
-        #expect(h.store.picker?.isSaving == false)
+        #expect(h.store.picker?.saving.isEmpty == true)
         #expect(h.options?.count == 2)
+        #expect(h.options?.first { $0.playlistId == "PLone" }?.containsVideo == false)
 
         await h.backend.setAddToPlaylistError(nil)
         h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
-        #expect(await h.until { h.store.picker == nil })
-        #expect(h.store.notice?.text == "Saved to Road Trip")
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        #expect(h.options?.first { $0.playlistId == "PLone" }?.containsVideo == true)
     }
 
     @Test("A network failure while saving shows the network line, and does not sign out")
@@ -797,11 +834,13 @@ struct MusicTrackActionsStoreTests {
     @Test("An older notice's timer never clears a newer notice early")
     func newerNoticeSurvives() async {
         let h = ActionsHarness(noticeDuration: .milliseconds(150))
-        await h.openPicker()
-        h.store.choose(MusicSamples.playlistOption("PLtwo", title: "First", contains: true))
+        let first = MusicSamples.playlistOption("PLtwo", title: "First", contains: true)
+        await h.openPicker(options: [first])
+        h.store.choose(first)
         try? await Task.sleep(for: .milliseconds(100))
-        await h.openPicker()
-        h.store.choose(MusicSamples.playlistOption("PLtwo", title: "Second", contains: true))
+        let second = MusicSamples.playlistOption("PLtwo", title: "Second", contains: true)
+        await h.openPicker(options: [second])
+        h.store.choose(second)
         try? await Task.sleep(for: .milliseconds(100))
         #expect(h.store.notice?.text == "Already in Second")
         #expect(await h.until { h.store.notice == nil })

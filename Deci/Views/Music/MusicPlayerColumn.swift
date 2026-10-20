@@ -266,16 +266,19 @@ struct MusicPlayerColumn: View {
     private func viewButtons(_ state: MusicPlayerColumnState) -> some View {
         let hasLyrics = service?.lyrics.track != nil
         let hasQueue = !(service?.queue.isEmpty ?? true)
-        return HStack(spacing: 14) {
+        return HStack(spacing: 0) {
             MusicColumnViewButton(
                 title: "Lyrics", systemImage: "quote.bubble",
                 isActive: navigation?.showsLyrics ?? false, isAvailable: hasLyrics
             ) { navigation?.toggleLyrics() }
+            // Up next sits on the right edge of the column, under the end of the transport.
+            Spacer(minLength: 0)
             MusicColumnViewButton(
                 title: "Up next", systemImage: "list.bullet.indent",
                 isActive: navigation?.showsQueue ?? false, isAvailable: hasQueue
             ) { navigation?.toggleQueue() }
         }
+        .frame(maxWidth: .infinity)
         .frame(height: 12)
         .opacity(state.controlsOpacity)
         .disabled(!state.controlsAreEnabled)

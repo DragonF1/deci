@@ -18,21 +18,32 @@ struct MusicHomeView: View {
     private var nowPlayingId: String? { service.player.nowPlaying?.videoId }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: MusicBrowseLayout.homeSectionGap) {
-                pinnedRow
-                shelves
-                MusicBottomInsetSpacer()
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: MusicBrowseLayout.homeSectionGap) {
+                    Color.clear.frame(height: 0).id(Self.topId)
+                    pinnedRow
+                    shelves
+                    MusicBottomInsetSpacer()
+                }
+                .padding(.top, MusicBrowseLayout.homeTop)
             }
-            .padding(.top, MusicBrowseLayout.homeTop)
-        }
-        .scrollIndicators(.never)
-        .onAppear { browse.loadHomeIfNeeded() }
-        // A channel switch drops what was loaded while this view stays up.
-        .onChange(of: browse.home == .idle) { _, isIdle in
-            if isIdle { browse.loadHomeIfNeeded() }
+            .scrollIndicators(.never)
+            .onAppear { browse.loadHomeIfNeeded() }
+            // A channel switch drops what was loaded while this view stays up.
+            .onChange(of: browse.home == .idle) { _, isIdle in
+                if isIdle { browse.loadHomeIfNeeded() }
+            }
+            // Refreshed shelves start from the top, every Quick picks list closed again.
+            .onChange(of: browse.isRefreshingHome) { wasRefreshing, isRefreshing in
+                guard wasRefreshing, !isRefreshing else { return }
+                expandedQuickPicks = []
+                proxy.scrollTo(Self.topId, anchor: .top)
+            }
         }
     }
+
+    private static let topId = "home-top"
 
     @ViewBuilder
     private var shelves: some View {

@@ -917,8 +917,8 @@ struct MusicSearchNavigationShellTests {
         #expect(h.service.lyrics.isPanelOpen == false)
     }
 
-    @Test("the picker covers Lyrics and Up next, and Lyrics is not open behind it")
-    func pickerOverridesThePanels() {
+    @Test("the save menu floats over Lyrics, which stays open under it and after it")
+    func pickerFloatsOverThePanels() {
         let h = NavHarness()
         let track = MusicSamples.track("picked")
         h.playSomething()
@@ -928,11 +928,11 @@ struct MusicSearchNavigationShellTests {
 
         h.nav.perform(.saveToPlaylist, for: track, in: .none)
         #expect(h.nav.showsPicker)
-        #expect(h.nav.rightColumn == .picker)
-        #expect(h.service.lyrics.isPanelOpen == false)
+        #expect(h.nav.rightColumn == .lyrics)
+        #expect(h.service.lyrics.isPanelOpen)
 
         h.nav.closePicker()
-        #expect(h.nav.rightColumn == .browse)
+        #expect(h.nav.rightColumn == .lyrics)
     }
 
     @Test("opening an artist from a panel leaves the panel for the page")
@@ -979,7 +979,7 @@ struct MusicSearchNavigationShellTests {
 
     // MARK: - Escape
 
-    @Test("Escape closes the picker first, then what covers the column, then the field, and never pops a page")
+    @Test("Escape closes the save menu first, then what covers the column, then the field, and never pops a page")
     func escapeOrder() {
         let h = NavHarness()
         h.playSomething()
@@ -990,13 +990,12 @@ struct MusicSearchNavigationShellTests {
         h.nav.openField()
         h.nav.toggleLyrics()
         h.nav.perform(.saveToPlaylist, for: MusicSamples.track("picked"), in: .none)
-        #expect(h.nav.rightColumn == .picker)
+        #expect(h.nav.showsPicker)
 
         #expect(h.nav.escape())
         #expect(h.nav.showsPicker == false)
 
-        // Saving a song closed Lyrics for the picker, so open it again: the field is under it.
-        h.nav.toggleLyrics()
+        // The save menu left Lyrics open under it; the field is under Lyrics.
         #expect(h.nav.rightColumn == .lyrics)
         #expect(h.nav.escape())
         #expect(h.nav.rightColumn == .browse)

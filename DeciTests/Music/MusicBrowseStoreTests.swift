@@ -180,6 +180,74 @@ struct MusicBrowseStoreTests {
         #expect(await h.backend.moreHomeCalls == ["t1"])
     }
 
+    @Test("Home drops the hidden shelves in any case, on the first page and on more pages")
+    func homeHidesShelves() async {
+        let h = StoreHarness()
+        await h.backend.setHome(shelves: [
+            MusicSamples.shelf("Quick picks", "q"), MusicSamples.shelf("From the community", "fc"),
+            MusicSamples.shelf("Mixed for you", "m"), MusicSamples.shelf(" LONG LISTENS ", "l"),
+        ], continuation: "t1")
+        await h.backend.setMoreHome(continuation: "t1", shelves: [
+            MusicSamples.shelf("Live performances", "lp"), MusicSamples.shelf("Mixes for you", "mx"),
+            MusicSamples.shelf("Listen again", "a"),
+        ])
+        h.store.loadHomeIfNeeded()
+        #expect(await h.until { h.store.home != .loading })
+        #expect(loadedShelves(h.store).map(\.title) == ["Quick picks"])
+        h.store.loadMoreHome()
+        #expect(await h.until { loadedShelves(h.store).count == 2 })
+        #expect(loadedShelves(h.store).map(\.title) == ["Quick picks", "Listen again"])
+    }
+
+    @Test("refreshHome keeps the shelves up while it loads, then swaps in the new ones")
+    func homeRefreshInPlace() async {
+        let h = StoreHarness()
+        await h.backend.setHome(shelves: [MusicSamples.shelf("A", "a")], continuation: "t1")
+        h.store.loadHomeIfNeeded()
+        #expect(await h.until { h.store.home != .loading })
+
+        let gate = MusicTestGate()
+        await h.backend.setHomeGate(gate)
+        await h.backend.setHome(shelves: [MusicSamples.shelf("B", "b")], continuation: "t2")
+        h.store.refreshHome()
+        #expect(h.store.isRefreshingHome)
+        #expect(loadedShelves(h.store).map(\.title) == ["A"])
+        #expect(h.store.canLoadMoreHome == false)
+        h.store.refreshHome()
+        await gate.open()
+        #expect(await h.until { h.store.isRefreshingHome == false })
+        #expect(loadedShelves(h.store).map(\.title) == ["B"])
+        #expect(h.store.canLoadMoreHome)
+        #expect(await h.backend.homeCallCount == 2)
+    }
+
+    @Test("A failed refresh keeps the old shelves and their next token")
+    func homeRefreshFailure() async {
+        let h = StoreHarness()
+        await h.backend.setHome(shelves: [MusicSamples.shelf("A", "a")], continuation: "t1")
+        await h.backend.setMoreHome(continuation: "t1", shelves: [MusicSamples.shelf("B", "b")])
+        h.store.loadHomeIfNeeded()
+        #expect(await h.until { h.store.home != .loading })
+
+        await h.backend.setHomeError(MusicError.http(503))
+        h.store.refreshHome()
+        #expect(await h.until { h.store.isRefreshingHome == false })
+        #expect(loadedShelves(h.store).map(\.title) == ["A"])
+        #expect(h.store.canLoadMoreHome)
+        h.store.loadMoreHome()
+        #expect(await h.until { loadedShelves(h.store).count == 2 })
+    }
+
+    @Test("refreshHome before Home has loaded loads it from the top")
+    func homeRefreshBeforeLoad() async {
+        let h = StoreHarness()
+        await h.backend.setHome(shelves: [MusicSamples.shelf("A", "a")])
+        h.store.refreshHome()
+        #expect(h.store.home == .loading)
+        #expect(h.store.isRefreshingHome == false)
+        #expect(await h.until { h.store.home == .loaded([MusicSamples.shelf("A", "a")]) })
+    }
+
     @Test("A token the server hands back unchanged ends paging instead of looping")
     func homeRepeatedToken() async {
         let h = StoreHarness()

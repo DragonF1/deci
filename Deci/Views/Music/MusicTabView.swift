@@ -1,7 +1,7 @@
 // Deci/Views/Music/MusicTabView.swift
 import SwiftUI
 
-/// The right column's content, under its header: browse, Lyrics, Up next or the picker once signed in, the sign-in note
+/// The right column's content, under its header: browse, Lyrics or Up next once signed in, the sign-in note
 /// before that. It fills the column; the player column and the header are the popup's.
 struct MusicTabView: View {
     let host: MusicServiceHost
@@ -39,12 +39,12 @@ private struct MusicServiceView: View {
     }
 }
 
-/// The signed-in right column: the browse screens, kept alive under Lyrics, Up next and the playlist picker so they keep
+/// The signed-in right column: the browse screens, kept alive under Lyrics and Up next so they keep
 /// their place. Which one shows comes from `navigation.rightColumn`. The tabs and the avatar are the column's header, the
 /// song's controls are the player column.
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
-    /// What shows over the browse screens (Lyrics, Up next, the picker) and how an artist page opens. Owned by the host,
+    /// What shows over the browse screens (Lyrics, Up next) and how an artist page opens. Owned by the host,
     /// so it outlives this view: the popup unmounts the player when the Music icon is hidden and builds it again.
     let navigation: MusicSearchNavigation
 
@@ -96,7 +96,7 @@ private struct MusicSignedInView: View {
 
     // MARK: - Layers
 
-    /// The browse screen stays alive under Lyrics, Up next and the picker, so it keeps its place; they show in its
+    /// The browse screen stays alive under Lyrics and Up next, so it keeps its place; they show in its
     /// place, one at a time.
     private var content: some View {
         let column = navigation.rightColumn
@@ -110,15 +110,6 @@ private struct MusicSignedInView: View {
             switch column {
             case .browse:
                 EmptyView()
-            case .picker:
-                if let picker = service.trackActions.picker {
-                    MusicPlaylistPickerView(
-                        picker: picker,
-                        onBack: { navigation.closePicker() },
-                        onChoose: { service.trackActions.choose($0) },
-                        onRetry: { service.trackActions.openPicker(for: picker.track) }
-                    )
-                }
             case .lyrics:
                 MusicLyricsView(store: service.lyrics) { service.seek(to: $0) }
                     .transition(.opacity)

@@ -5,19 +5,20 @@ import os
 
 private let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicTrackActions")
 
-/// The state behind a song's "..." menu: the add-to-playlist picker, the short line that says what happened, and
+/// The state behind a song's "..." menu: the save to playlist menu, the short line that says what happened, and
 /// which songs, playlists and albums the user pinned to Listen again. `MusicService` owns one (`service.trackActions`). The state lives
 /// here, not in the views, because the popover panel hides whenever it loses focus. Nothing here logs a playlist,
 /// song or token, only counts and error kinds.
 @MainActor
 @Observable
 final class MusicTrackActionsStore {
-    /// The picker panel: the song being saved and the playlists it can go to.
+    /// The save to playlist menu: the song being saved and the playlists it can go to. It stays open while the user
+    /// adds the song to one playlist after another.
     struct Picker: Equatable {
         let track: MusicTrack
         var load: MusicBrowseStore.Load<[MusicPlaylistOption]>
-        /// A save is out; the list ignores taps until it answers.
-        var isSaving = false
+        /// Playlists a save is out for; their rows show it and ignore taps until it answers.
+        var saving: Set<String> = []
     }
 
     /// A short line under the list: what was done, or why it was not.
@@ -146,20 +147,23 @@ final class MusicTrackActionsStore {
         picker = nil
     }
 
-    /// A playlist was tapped. One that already holds the song says so without a call. Otherwise the song is added,
-    /// the picker closes and the line says it saved; a failure keeps the picker open for another try.
+    /// A playlist was tapped. One that already holds the song says so without a call. Otherwise the song is added and
+    /// the line says it saved; the menu stays open, the row ticked, so the song can go to another playlist too. Saves
+    /// to different playlists can be out at once. A failure leaves the row unticked for another try.
     func choose(_ option: MusicPlaylistOption) {
-        guard let current = picker, case .loaded = current.load, !current.isSaving else { return }
+        guard let current = picker, case .loaded(let options) = current.load,
+              !current.saving.contains(option.playlistId) else { return }
+        // The list's own row, which a save since may have ticked, over the copy the tap carried.
+        let option = options.first { $0.playlistId == option.playlistId } ?? option
         if option.containsVideo {
-            closePicker()
             post("Already in \(option.title)")
             return
         }
         let videoId = current.track.videoId
-        // Also guards a reopened picker: `isSaving` goes with the picker, this does not.
+        // Also guards a reopened picker: `saving` goes with the picker, this does not.
         let key = busyKey("save:\(option.playlistId):\(videoId)")
         guard busy.insert(key).inserted else { return }
-        picker?.isSaving = true
+        picker?.saving.insert(option.playlistId)
         let run = pickerRun, session = sessionRun
         Task { [weak self, backend] in
             do {
@@ -187,7 +191,17 @@ final class MusicTrackActionsStore {
     private func landSave(_ option: MusicPlaylistOption, key: String, run: Int, session: Int) {
         busy.remove(key)
         guard sessionRun == session else { return }
-        if pickerRun == run { closePicker() }
+        if pickerRun == run, var current = picker {
+            current.saving.remove(option.playlistId)
+            if case .loaded(var options) = current.load,
+               let index = options.firstIndex(where: { $0.playlistId == option.playlistId }) {
+                let row = options[index]
+                options[index] = MusicPlaylistOption(
+                    playlistId: row.playlistId, title: row.title, thumbnailURL: row.thumbnailURL, containsVideo: true)
+                current.load = .loaded(options)
+            }
+            picker = current
+        }
         post("Saved to \(option.title)")
     }
 
@@ -197,7 +211,7 @@ final class MusicTrackActionsStore {
         busy.remove(key)
         guard sessionRun == session else { return }
         logger.error("save failed: \(MusicService.logDescription(of: error), privacy: .public)")
-        if pickerRun == run { picker?.isSaving = false }
+        if pickerRun == run { picker?.saving.remove(option.playlistId) }
         guard !expireIfSignedOut(error) else { return }
         if (error as? MusicError) == .rejected {
             post("Not added. \(option.title) may already have it.", isError: true)
