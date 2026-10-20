@@ -86,6 +86,23 @@ nonisolated enum MusicCoverColor {
         return tint(rgba: pixels)
     }
 
+    /// The most pixels wide or high a kept cover thumbnail is: enough for a 12 pt chip cover at 2x and a blurred card
+    /// background.
+    static let thumbnailSide = 64
+
+    /// An encoded picture shrunk so its longer side is at most `maxPixelSize`, upright and decoded now, so drawing it
+    /// later costs no decoding. Nil for data that is not a picture.
+    static func thumbnail(imageData: Data, maxPixelSize: Int = thumbnailSide) -> CGImage? {
+        guard maxPixelSize > 0, let source = CGImageSourceCreateWithData(imageData as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
     /// The picture as `sampleSide` squared straight RGBA8 pixels.
     private static func sampledPixels(imageData: Data) -> [UInt8]? {
         guard let source = CGImageSourceCreateWithData(imageData as CFData, nil) else { return nil }

@@ -101,6 +101,21 @@ struct GeneralTab: View {
                     .controlSize(.small)
                     .labelsHidden()
             }
+            SettingsRowDivider()
+            SettingsRow(
+                "Menu bar style",
+                description: "The Music icon, or a small chip with the song's cover and title while one is loaded. Hover the chip for controls."
+            ) {
+                Picker("", selection: $settings.appSettings.musicMenuBarStyle) {
+                    ForEach(MusicMenuBarStyle.allCases, id: \.self) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(!settings.appSettings.showMusicInMenuBar)
+            }
         }
     }
 

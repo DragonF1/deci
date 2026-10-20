@@ -56,6 +56,7 @@ nonisolated struct AppSettings: Codable, Equatable {
     // Popup
     var popupSize: MenuBarPopupSize = .comfortable  // Overall menu bar popup size and density
     var showMusicInMenuBar: Bool = true            // The second menu bar icon, for the music player
+    var musicMenuBarStyle: MusicMenuBarStyle = .default  // That item as the plain icon, or the Now playing chip
 
     // Chrome
     var chromeTabsEnabled: Bool = true             // Show Chrome tabs and let the extension send them
@@ -93,6 +94,8 @@ nonisolated struct AppSettings: Codable, Equatable {
         appearance = try c.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
         popupSize = try c.decodeIfPresent(MenuBarPopupSize.self, forKey: .popupSize) ?? .comfortable
         showMusicInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showMusicInMenuBar) ?? true
+        // A style this build does not know (or a value of the wrong type) must not cost the listener the rest of their settings.
+        musicMenuBarStyle = (try? c.decodeIfPresent(MusicMenuBarStyle.self, forKey: .musicMenuBarStyle)) ?? .default
         chromeTabsEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeTabsEnabled) ?? true
         chromeIncognitoEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeIncognitoEnabled) ?? false
         chromeYTMusicAutoSwitch = try c.decodeIfPresent(Bool.self, forKey: .chromeYTMusicAutoSwitch) ?? true

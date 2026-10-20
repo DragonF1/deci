@@ -42,6 +42,12 @@ final class MenuBarPopupController: MenuBarPopupControlling {
     }
 
     func toggle() {
+        toggle(activatingApp: true)
+    }
+
+    /// `activatingApp: false` opens the popup the way a click on the item does, with the app left as it is: the popup
+    /// is a non-activating panel, so it takes the keyboard without pulling Deci to the front.
+    func toggle(activatingApp: Bool) {
         guard let statusItem = findStatusItem() else {
             Self.logger.debug("toggle: no status item found yet (cold-launch race?); ignoring")
             return
@@ -51,7 +57,7 @@ final class MenuBarPopupController: MenuBarPopupControlling {
             return
         }
 
-        if !NSApp.isActive {
+        if activatingApp, !NSApp.isActive {
             NSApp.activate(ignoringOtherApps: true)
         }
 

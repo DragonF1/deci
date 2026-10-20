@@ -610,6 +610,22 @@ struct MusicMixerStateTests {
         #expect(state.outputLabel == "Default output")
     }
 
+    @Test("the output device's bare name, for the hover card, follows the choice and is nil when none is known")
+    func outputDeviceNameIsTheBareName() {
+        let (none, _, _) = makeState()
+        #expect(none.outputDeviceName == nil)
+
+        let environment = FakeMusicMixerEnvironment()
+        environment.outputDevices = [FakeMusicMixerEnvironment.device("uid-a", id: 1), FakeMusicMixerEnvironment.device("uid-b", id: 2)]
+        environment.defaultOutputDeviceUID = "uid-a"
+        let (state, _, _) = makeState(environment: environment)
+        #expect(state.outputDeviceName == "Device uid-a")
+
+        environment.autoEQProfiles["uid-b"] = profile("Flat Studio")
+        state.selectDevice(uid: "uid-b")
+        #expect(state.outputDeviceName == "Device uid-b", "the profile is not part of the name")
+    }
+
     @Test("a chosen device that disappears drops out of the list, is flagged missing and the music falls back to the default")
     func chosenDeviceDisappears() {
         let environment = FakeMusicMixerEnvironment()

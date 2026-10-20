@@ -148,6 +148,23 @@ struct MusicCoverColorTests {
         #expect(MusicCoverColor.tint(imageData: Data()) == nil)
     }
 
+    @Test("a thumbnail keeps the picture's shape, shrunk so its longer side is at most the limit")
+    func thumbnailShrinks() throws {
+        let image = try #require(MusicCoverColor.thumbnail(imageData: solidPNG(red: 10, green: 120, blue: 200, side: 300)))
+        #expect(image.width == MusicCoverColor.thumbnailSide)
+        #expect(image.height == MusicCoverColor.thumbnailSide)
+
+        let small = try #require(MusicCoverColor.thumbnail(imageData: solidPNG(red: 10, green: 120, blue: 200, side: 300), maxPixelSize: 24))
+        #expect(small.width == 24 && small.height == 24)
+    }
+
+    @Test("a thumbnail of data that is not a picture, empty data or a limit under 1 is nil")
+    func thumbnailOfNothing() {
+        #expect(MusicCoverColor.thumbnail(imageData: Data("not a picture".utf8)) == nil)
+        #expect(MusicCoverColor.thumbnail(imageData: Data()) == nil)
+        #expect(MusicCoverColor.thumbnail(imageData: solidPNG(red: 1, green: 2, blue: 3), maxPixelSize: 0) == nil)
+    }
+
     @Test("unpremultiplying restores a straight colour and leaves opaque and clear pixels alone")
     func unpremultiply() {
         let out = MusicCoverColor.unpremultiplied([64, 32, 0, 128, 10, 20, 30, 255, 0, 0, 0, 0])
@@ -249,6 +266,35 @@ struct MusicCoverTintStoreTests {
         #expect(store.cachedTint(for: url("never")) == nil)
         #expect(store.cachedTint(for: nil) == nil)
         #expect(await store.tint(for: nil) == nil)
+    }
+
+    @Test("the one fetch also keeps the cover's small picture, which is served without another fetch")
+    func keepsThumbnail() async throws {
+        let counter = FetchCounter()
+        let data = solidPNG(red: 200, green: 40, blue: 40, side: 200)
+        let store = MusicCoverTintStore(fetch: { _ in
+            _ = await counter.hit()
+            return data
+        })
+        #expect(store.cachedThumbnail(for: url("a")) == nil)
+        #expect(store.cachedThumbnail(for: nil) == nil)
+        _ = await store.tint(for: url("a"))
+        let thumbnail = try #require(store.cachedThumbnail(for: url("a")))
+        #expect(thumbnail.width == MusicCoverColor.thumbnailSide)
+        #expect(await counter.count == 1)
+    }
+
+    @Test("the small picture goes with its cover when the store is full, and a failed cover has none")
+    func thumbnailFollowsCover() async {
+        let data = red
+        let store = MusicCoverTintStore(fetch: { url in url.lastPathComponent == "dead" ? nil : data }, capacity: 1)
+        _ = await store.tint(for: url("first"))
+        #expect(store.cachedThumbnail(for: url("first")) != nil)
+        _ = await store.tint(for: url("second"))
+        #expect(store.cachedThumbnail(for: url("first")) == nil)
+        #expect(store.cachedThumbnail(for: url("second")) != nil)
+        _ = await store.tint(for: url("dead"))
+        #expect(store.cachedThumbnail(for: url("dead")) == nil)
     }
 
     @Test("two asks for one cover at once share one fetch")

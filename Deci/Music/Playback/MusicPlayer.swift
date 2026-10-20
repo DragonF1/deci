@@ -204,7 +204,7 @@ final class MusicPlayer {
                 fresh = try await provider(track)
             } catch {
                 fresh = nil
-                logger.error("stream refresh failed for \(track.videoId, privacy: .public)")
+                logger.error("stream refresh failed")
             }
             guard let self, generation == self.loadGeneration, !Task.isCancelled else { return }
             self.refreshTask = nil

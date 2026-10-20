@@ -1,9 +1,12 @@
 // Deci/Music/MusicCoverTintStore.swift
+import CoreGraphics
 import Foundation
 
 /// The tint of a cover, found once per cover URL and kept for the session. The cover is fetched through the same
 /// cookie-less, cache-less session the player's artwork uses, shrunk and averaged (`MusicCoverColor`), and only the
-/// colour is kept: no picture and no URL is written anywhere, and nothing here logs one.
+/// colour and a 64 pixel thumbnail are kept, in memory: no picture and no URL is written anywhere, and nothing here
+/// logs one. The thumbnail comes out of the one fetch the tint needs, so the menu bar chip and the hover card have a
+/// cover to draw without a second request.
 ///
 /// A page asks `cachedTint` for what it can draw at once, then `tint(for:)`; until that answers, or when it cannot
 /// (no network, not a picture), the page keeps the hash palette's tint of its id.
@@ -21,16 +24,21 @@ final class MusicCoverTintStore {
     static let failureCapacity = 32
     static let failureLifetime: TimeInterval = 300
 
+    /// A decoded thumbnail that crosses from the decoding task to the main actor. A CGImage is immutable.
+    private struct ThumbnailBox: @unchecked Sendable {
+        let image: CGImage?
+    }
+
     /// What one fetch came to.
     private enum Outcome {
-        case tint(MusicTint)
+        case tint(MusicTint, ThumbnailBox)
         /// The fetch failed or the data held no colour.
         case failed
         /// Everyone waiting for it gave up first.
         case cancelled
 
         var tint: MusicTint? {
-            if case .tint(let tint) = self { tint } else { nil }
+            if case .tint(let tint, _) = self { tint } else { nil }
         }
     }
 
@@ -46,6 +54,8 @@ final class MusicCoverTintStore {
     private let failureCapacity: Int
     private let now: @MainActor () -> Date
     private var cache: [URL: MusicTint] = [:]
+    /// The small picture of each cover in `cache` that had one, evicted with it.
+    private var thumbnails: [URL: CGImage] = [:]
     /// Insertion order of `cache`, oldest first.
     private var order: [URL] = []
     /// When each cover without a tint was found to have none.
@@ -68,6 +78,11 @@ final class MusicCoverTintStore {
     /// The tint of a cover that has been looked at already; nil when it has not, or when it had none.
     func cachedTint(for url: URL?) -> MusicTint? {
         url.flatMap { cache[$0] }
+    }
+
+    /// The thumbnail (at most 64 pixels) of a cover that has been looked at already; nil when it has not.
+    func cachedThumbnail(for url: URL?) -> CGImage? {
+        url.flatMap { thumbnails[$0] }
     }
 
     /// The tint of the cover at `url`: from the cache, or by fetching and averaging it. Nil when there is no URL, the
@@ -113,8 +128,10 @@ final class MusicCoverTintStore {
         guard let data = await fetch(url) else { return Task.isCancelled ? .cancelled : .failed }
         if Task.isCancelled { return .cancelled }
         // Decoding is off the main actor: the picture is a few hundred pixels wide, but still not UI work.
-        let tint = await Task.detached(priority: .utility) { MusicCoverColor.tint(imageData: data) }.value
-        return tint.map(Outcome.tint) ?? .failed
+        let decoded = await Task.detached(priority: .utility) {
+            (MusicCoverColor.tint(imageData: data), ThumbnailBox(image: MusicCoverColor.thumbnail(imageData: data)))
+        }.value
+        return decoded.0.map { Outcome.tint($0, decoded.1) } ?? .failed
     }
 
     /// A waiter was cancelled. The last one to go takes the fetch with it, and the cover is free to be asked for again.
@@ -131,7 +148,7 @@ final class MusicCoverTintStore {
 
     private func finish(_ url: URL, flightID: UUID, outcome: Outcome) {
         switch outcome {
-        case .tint(let tint): remember(tint, for: url)
+        case .tint(let tint, let thumbnail): remember(tint, thumbnail: thumbnail.image, for: url)
         case .failed: rememberFailure(for: url)
         case .cancelled: break
         }
@@ -140,13 +157,16 @@ final class MusicCoverTintStore {
 
     // MARK: - Memory
 
-    private func remember(_ tint: MusicTint, for url: URL) {
+    private func remember(_ tint: MusicTint, thumbnail: CGImage?, for url: URL) {
         failures[url] = nil
         failureOrder.removeAll { $0 == url }
         if cache[url] == nil { order.append(url) }
         cache[url] = tint
+        thumbnails[url] = thumbnail
         while order.count > capacity {
-            cache[order.removeFirst()] = nil
+            let oldest = order.removeFirst()
+            cache[oldest] = nil
+            thumbnails[oldest] = nil
         }
     }
 

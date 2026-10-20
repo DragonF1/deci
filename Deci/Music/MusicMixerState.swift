@@ -158,8 +158,12 @@ final class MusicMixerState: InProcessAudioSink {
 
     /// What the player's output control says: the device the music comes out of and the EQ profile on it.
     var outputLabel: String {
-        let name = effectiveDeviceUID.flatMap { uid in environment.outputDevices.first { $0.uid == uid }?.name }
-        return MusicOutputLabel.text(deviceName: name, profileName: autoEQProfileName)
+        MusicOutputLabel.text(deviceName: outputDeviceName, profileName: autoEQProfileName)
+    }
+
+    /// The name of the device the music comes out of, when it is known.
+    var outputDeviceName: String? {
+        effectiveDeviceUID.flatMap { uid in environment.outputDevices.first { $0.uid == uid }?.name }
     }
 
     // MARK: - The row's controls

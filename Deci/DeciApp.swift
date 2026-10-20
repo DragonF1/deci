@@ -72,6 +72,7 @@ struct DeciApp: App {
     @State private var shortcutsRegistry: ShortcutsRegistry
     @State private var resolver: TargetAppResolver
     @State private var musicHost: MusicServiceHost
+    @State private var musicChip: MusicMenuBarChipController
     @StateObject private var updateManager = UpdateManager()
     @State private var showMenuBarExtra = true
 
@@ -331,6 +332,11 @@ struct DeciApp: App {
         settings.onShowMusicInMenuBarChange = { [popupService, music] shown in
             MenuBarStatusItems.applyMusicVisibility(shown, popupVisibility: popupService, musicHost: music)
         }
+        // The Now playing chip style puts the song on the Music item's button and a hover card under it. Started once
+        // the scene has built the item, like the icon coordinator.
+        let chip = MusicMenuBarChipController(settings: settings, musicHost: music, iconImage: launchMusicIconImage)
+        _musicChip = State(initialValue: chip)
+        DispatchQueue.main.async { [chip] in chip.start() }
 
         // Pass engine to AppDelegate
         _appDelegate.wrappedValue.audioEngine = engine
@@ -358,8 +364,9 @@ struct DeciApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, monitor, accessibilityService, hud, coordinator, music] _ in
+        ) { [settings, monitor, accessibilityService, hud, coordinator, music, chip] _ in
             MainActor.assumeIsolated {
+                chip.stop()
                 coordinator.stop()
                 monitor.stop()
                 accessibilityService.stop()
