@@ -5,14 +5,15 @@ import os
 
 private let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicTrackActions")
 
-/// The state behind a song's or a tile's "..." menu: the save to playlist menu and the short line that says what
-/// happened. `MusicService` owns one (`service.trackActions`). The state lives here, not in the views, because the popover
-/// panel hides whenever it loses focus. Nothing here logs a playlist or song, only counts and error kinds.
+/// The state behind a song's or a tile's "..." menu: the save to playlist menu (which also takes a song back out of a
+/// playlist that holds it) and the short line that says what happened. `MusicService` owns one
+/// (`service.trackActions`). The state lives here, not in the views, because the popover panel hides whenever it loses
+/// focus. Nothing here logs a playlist or song, only counts and error kinds.
 @MainActor
 @Observable
 final class MusicTrackActionsStore {
     /// The save to playlist menu: what is being saved and the playlists it can go to. It stays open while the user
-    /// adds it to one playlist after another.
+    /// adds it to one playlist after another, or takes a song out of the playlists that hold it.
     struct Picker: Equatable {
         /// A song, or a whole album or playlist with the id of the playlist its songs are added from.
         enum Target: Equatable {
@@ -30,8 +31,14 @@ final class MusicTrackActionsStore {
 
         let target: Target
         var load: MusicBrowseStore.Load<[MusicPlaylistOption]>
-        /// Playlists a save is out for; their rows show it and ignore taps until it answers.
+        /// Playlists a write is out for, a save or a removal; their rows show it and ignore taps until it answers.
         var saving: Set<String> = []
+        /// The playlists in `saving` that the song is being taken out of. The rest are being saved to, even a row that
+        /// shows a tick: a late membership read can tick a row while a save to it is still out.
+        var removing: Set<String> = []
+        /// Playlists the song was taken out of in this menu. A membership read that began before the removal landed
+        /// may still have seen the song there, and must not tick the row again.
+        var removedFrom: Set<String> = []
 
         /// The song being saved; nil when it is a whole album or playlist.
         var track: MusicTrack? {
@@ -76,8 +83,12 @@ final class MusicTrackActionsStore {
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     /// Writes in flight, so a second tap on the same thing sends nothing more.
     @ObservationIgnored private var busy: Set<String> = []
-    /// The playlists a save is out for, by what is saved (`Picker.Target.key`), so a menu opened again for it shows them saving.
+    /// The playlists a save or a removal is out for, by what is saved (`Picker.Target.key`), so a menu opened again for
+    /// it shows them saving.
     @ObservationIgnored private var savesOut: [String: Set<String>] = [:]
+    /// The part of `savesOut` that is removals, so a menu opened again for a song says which rows are being removed
+    /// from.
+    @ObservationIgnored private var removalsOut: [String: Set<String>] = [:]
     /// Told when a call says the session is gone, so the service can sign out.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
 
@@ -118,7 +129,9 @@ final class MusicTrackActionsStore {
     private func open(_ target: Picker.Target) {
         pickerRun += 1
         let run = pickerRun
-        picker = Picker(target: target, load: .loading, saving: savesOut[target.key] ?? [])
+        picker = Picker(
+            target: target, load: .loading, saving: savesOut[target.key] ?? [], removing: removalsOut[target.key] ?? []
+        )
         pickerTask?.cancel()
         membershipTask?.cancel()
         pickerTask = Task { [weak self, backend] in
@@ -144,17 +157,21 @@ final class MusicTrackActionsStore {
         picker = nil
     }
 
-    /// A playlist was tapped. One that already holds the song (or all of the album or playlist) says so without a
-    /// call. Otherwise it is added and the line says it saved; the menu stays open, the row ticked, so it can go to
-    /// another playlist too. Saves to different playlists can be out at once. A failure leaves the row unticked for
-    /// another try.
+    /// A playlist was tapped. One that holds all of an album or playlist says so without a call. One that holds a
+    /// song takes it out again (`removeSong`). Otherwise it is added and the line says it saved; the menu stays open,
+    /// the row ticked, so it can go to another playlist too. Writes to different playlists can be out at once. A
+    /// failed save leaves the row unticked for another try.
     func choose(_ option: MusicPlaylistOption) {
         guard let current = picker, case .loaded(let options) = current.load,
               !current.saving.contains(option.playlistId) else { return }
         // The list's own row, which a save since may have ticked, over the copy the tap carried.
         let option = options.first { $0.playlistId == option.playlistId } ?? option
         if option.containsVideo {
-            post("Already in \(option.title)")
+            if case .track(let track) = current.target {
+                removeSong(track, from: option)
+            } else {
+                post("Already in \(option.title)")
+            }
             return
         }
         let target = current.target
@@ -214,6 +231,11 @@ final class MusicTrackActionsStore {
         MusicPlaylistOption(playlistId: row.playlistId, title: row.title, thumbnailURL: row.thumbnailURL, containsVideo: true)
     }
 
+    /// The row with its tick off.
+    private static func unticked(_ row: MusicPlaylistOption) -> MusicPlaylistOption {
+        MusicPlaylistOption(playlistId: row.playlistId, title: row.title, thumbnailURL: row.thumbnailURL, containsVideo: false)
+    }
+
     /// YouTube refuses an add the playlist already holds (no dedupe option is sent), so a refusal most likely means
     /// the list was out of date and it is already there.
     private func failSave(
@@ -235,6 +257,120 @@ final class MusicTrackActionsStore {
     private func endSave(_ playlistId: String, targetKey: String) {
         savesOut[targetKey]?.remove(playlistId)
         if savesOut[targetKey]?.isEmpty == true { savesOut[targetKey] = nil }
+        removalsOut[targetKey]?.remove(playlistId)
+        if removalsOut[targetKey]?.isEmpty == true { removalsOut[targetKey] = nil }
+    }
+
+    // MARK: - Take a song out of a playlist
+
+    /// Why a removal found nothing to send: the playlist, read for the song's place in it, no longer holds the song.
+    private enum RemovalMiss: Error {
+        case notFound
+    }
+
+    /// A tap on a ticked row of a song's menu: that one playlist is read, to its end or the page limit, for the place
+    /// of every row that holds the song (YouTube names a row of a playlist by its setVideoId, and the same song can sit
+    /// in one playlist more than once), and the song goes out of each of them. The read happens on every tap, even for
+    /// a row the membership pass ticked: the pass stops at the first page that shows the song, and the playlist may
+    /// have changed since. The row is busy the way a save is, and stays ticked until YouTube has answered. If the menu
+    /// is closed or the session ends before the read lands, nothing is sent and nothing is said. A session that ends
+    /// between two writes stops the rest the same way; a menu closed between them does not.
+    private func removeSong(_ track: MusicTrack, from option: MusicPlaylistOption) {
+        let targetKey = Picker.Target.track(track).key
+        let key = busyKey("unsave:\(option.playlistId):\(targetKey)")
+        guard busy.insert(key).inserted else { return }
+        savesOut[targetKey, default: []].insert(option.playlistId)
+        removalsOut[targetKey, default: []].insert(option.playlistId)
+        picker?.saving.insert(option.playlistId)
+        picker?.removing.insert(option.playlistId)
+        let session = sessionRun, run = pickerRun
+        Task { [weak self, backend] in
+            var left: [String] = []
+            var done: [String] = []
+            do {
+                left = try await Self.places(of: track.videoId, inPlaylist: option.playlistId, backend: backend)
+                guard self?.pickerRun == run, self?.sessionRun == session else {
+                    self?.dropRemoval(option, targetKey: targetKey, key: key, session: session)
+                    return
+                }
+                if left.isEmpty { throw RemovalMiss.notFound }
+                while let place = left.first {
+                    // Checked before every write: a session that ended while one was out gets none of the rest.
+                    guard self?.sessionRun == session else {
+                        self?.dropRemoval(option, targetKey: targetKey, key: key, session: session)
+                        return
+                    }
+                    try await backend.removeFromPlaylist(videoId: track.videoId, setVideoId: place, playlistId: option.playlistId)
+                    done.append(left.removeFirst())
+                }
+                self?.landSongRemoval(option, removed: done, targetKey: targetKey, key: key, session: session)
+            } catch {
+                self?.failSongRemoval(error, option: option, removed: done, targetKey: targetKey, key: key, session: session)
+            }
+        }
+    }
+
+    /// Unticks the row in whichever menu is open for the song, the one the tap came from or one opened again since, and
+    /// takes the song off a playlist page that is open.
+    private func landSongRemoval(_ option: MusicPlaylistOption, removed: [String], targetKey: String, key: String, session: Int) {
+        busy.remove(key)
+        guard sessionRun == session else { return }
+        endSave(option.playlistId, targetKey: targetKey)
+        if var current = picker, current.target.key == targetKey {
+            current.saving.remove(option.playlistId)
+            current.removing.remove(option.playlistId)
+            current.removedFrom.insert(option.playlistId)
+            if case .loaded(var options) = current.load,
+               let index = options.firstIndex(where: { $0.playlistId == option.playlistId }) {
+                options[index] = Self.unticked(options[index])
+                current.load = .loaded(options)
+            }
+            picker = current
+        }
+        dropFromPage(option, places: removed)
+        post("Removed from \(option.title)")
+    }
+
+    /// A removal that did not go all the way: the row stays ticked, and a tap on it again reads the playlist afresh, so
+    /// it sends only the places that are still there. The places that did go are off an open page already.
+    private func failSongRemoval(
+        _ error: any Error, option: MusicPlaylistOption, removed: [String], targetKey: String, key: String, session: Int
+    ) {
+        busy.remove(key)
+        guard sessionRun == session else { return }
+        logger.error("removal failed: \(MusicService.logDescription(of: error), privacy: .public)")
+        endSave(option.playlistId, targetKey: targetKey)
+        if picker?.target.key == targetKey {
+            picker?.saving.remove(option.playlistId)
+            picker?.removing.remove(option.playlistId)
+        }
+        dropFromPage(option, places: removed)
+        guard !expireIfSignedOut(error) else { return }
+        if case RemovalMiss.notFound = error {
+            post("Not removed. Couldn't find it in \(option.title).", isError: true)
+        } else if (error as? MusicError) == .rejected {
+            post("Not removed from \(option.title).", isError: true)
+        } else {
+            post(MusicService.message(for: error), isError: true)
+        }
+    }
+
+    /// A removal that must not go on: the read of the playlist landed after its menu was closed or its session ended
+    /// (nothing was sent), or the session ended between two of its writes (the rest were not sent). The row is only
+    /// freed, and nothing is said.
+    private func dropRemoval(_ option: MusicPlaylistOption, targetKey: String, key: String, session: Int) {
+        busy.remove(key)
+        guard sessionRun == session else { return }
+        endSave(option.playlistId, targetKey: targetKey)
+        if picker?.target.key == targetKey {
+            picker?.saving.remove(option.playlistId)
+            picker?.removing.remove(option.playlistId)
+        }
+    }
+
+    /// Takes the rows that were removed off the playlist's page, if it is open.
+    private func dropFromPage(_ option: MusicPlaylistOption, places: [String]) {
+        for place in places { browse.removeTrack(setVideoId: place, from: "VL" + option.playlistId) }
     }
 
     // MARK: - Which playlists hold it
@@ -253,11 +389,14 @@ final class MusicTrackActionsStore {
         case sourceTooLong
     }
 
-    /// YouTube Music does not say which playlists already hold the song (its answer has no such flag), so the store reads
-    /// them itself. Each row not ticked yet has its playlist's songs read, `membershipConcurrency` playlists at a time,
-    /// and is ticked the moment the playlist is found to hold all that is being saved. A row is never unticked here: a
-    /// save may have ticked it meanwhile. A read that fails leaves its row as it was and shows nothing, and the others
-    /// go on. Nothing in this pass signs the user out; a gone session shows on the next tap.
+    /// YouTube Music does not say which playlists already hold the song (its answer has no such flag), so the store
+    /// reads them itself. Each row not ticked yet has its playlist's songs read, `membershipConcurrency` playlists at a
+    /// time, and is ticked the moment the playlist is found to hold all that is being saved. The pass only ticks: it
+    /// stops at the first page that shows the song, so it does not know every place the song sits in, and a tap that
+    /// takes the song out reads the playlist again (`removeSong`). A row is never unticked here: a save may have ticked
+    /// it meanwhile, and one the song was taken out of is not ticked again. A read that fails leaves its row as it was
+    /// and shows nothing, and the others go on. Nothing in this pass signs the user out; a gone session shows on the
+    /// next tap.
     private func startMembershipPass(_ options: [MusicPlaylistOption], target: Picker.Target, run: Int) {
         membershipTask?.cancel()
         var listed = Set<String>()
@@ -309,20 +448,21 @@ final class MusicTrackActionsStore {
     }
 
     /// Whether a playlist still needs reading: the same picker is open and its row is not ticked, which a save can do
-    /// while the pass is out.
+    /// while the pass is out, and the song was not taken out of it meanwhile.
     private func needsMembershipRead(_ playlistId: String, run: Int, targetKey: String) -> Bool {
         guard pickerRun == run, let current = picker, current.target.key == targetKey,
               case .loaded(let options) = current.load,
               let row = options.first(where: { $0.playlistId == playlistId }) else { return false }
-        return !row.containsVideo
+        return !row.containsVideo && !current.removedFrom.contains(playlistId)
     }
 
-    /// Ticks one row, in the picker the pass was started for. Never unticks, and leaves a row a save ticked alone.
+    /// Ticks one row, in the picker the pass was started for. Never unticks, and leaves a row a save ticked or a
+    /// removal unticked alone.
     private func landMembership(_ playlistId: String, run: Int, targetKey: String) {
         guard pickerRun == run, var current = picker, current.target.key == targetKey,
               case .loaded(var options) = current.load,
               let index = options.firstIndex(where: { $0.playlistId == playlistId }),
-              !options[index].containsVideo else { return }
+              !options[index].containsVideo, !current.removedFrom.contains(playlistId) else { return }
         options[index] = Self.ticked(options[index])
         current.load = .loaded(options)
         picker = current
@@ -347,7 +487,7 @@ final class MusicTrackActionsStore {
         case .track(let track):
             return [track.videoId]
         case .collection(_, let sourceId):
-            let source = try await videoIds(ofBrowseId: "VL" + sourceId, backend: backend, until: nil)
+            let source = try await readPlaylist(browseId: "VL" + sourceId, backend: backend, until: nil)
             if source.ids.isEmpty { throw MembershipSkip.emptySource }
             if !source.complete { throw MembershipSkip.sourceTooLong }
             return source.ids
@@ -358,32 +498,52 @@ final class MusicTrackActionsStore {
         ofPlaylist playlistId: String, holding wanted: Set<String>, backend: any MusicBackend
     ) async -> Membership {
         do {
-            let read = try await videoIds(ofBrowseId: "VL" + playlistId, backend: backend, until: wanted)
+            let read = try await readPlaylist(browseId: "VL" + playlistId, backend: backend, until: wanted)
             return wanted.isSubset(of: read.ids) ? .holdsAll : .lacksSome
         } catch {
             return Task.isCancelled ? .cancelled : .failed(error)
         }
     }
 
+    /// The setVideoId of every row of a playlist that holds the song, in playlist order, from the whole playlist (up to
+    /// the page limit). Empty when the song is not there, or its rows name no place.
+    nonisolated private static func places(
+        of videoId: String, inPlaylist playlistId: String, backend: any MusicBackend
+    ) async throws -> [String] {
+        try await readPlaylist(browseId: "VL" + playlistId, backend: backend, until: nil, placesOf: videoId).places
+    }
+
     /// The video ids on a playlist page and the pages behind it, at most `membershipPageLimit` pages. With `wanted` it
     /// stops as soon as all of them have been seen. `complete` is false when it stopped at the limit with pages left.
-    nonisolated private static func videoIds(
-        ofBrowseId browseId: String, backend: any MusicBackend, until wanted: Set<String>?
-    ) async throws -> (ids: Set<String>, complete: Bool) {
+    /// With `placesOf` it also gathers the setVideoId of each row holding that song on the pages it read; a row that
+    /// names no place, or one already gathered, adds nothing.
+    nonisolated private static func readPlaylist(
+        browseId: String, backend: any MusicBackend, until wanted: Set<String>?, placesOf song: String? = nil
+    ) async throws -> (ids: Set<String>, complete: Bool, places: [String]) {
         try Task.checkCancellation()
         let first = try await backend.page(browseId: browseId)
         var ids = Set(first.tracks.map(\.videoId))
+        var places: [String] = []
+        gatherPlaces(of: song, in: first.tracks, into: &places)
         var token = first.continuation
         var pages = 1
         while true {
-            if let wanted, wanted.isSubset(of: ids) { return (ids, true) }
-            guard let current = token else { return (ids, true) }
-            guard pages < membershipPageLimit else { return (ids, false) }
+            if let wanted, wanted.isSubset(of: ids) { return (ids, true, places) }
+            guard let current = token else { return (ids, true, places) }
+            guard pages < membershipPageLimit else { return (ids, false, places) }
             try Task.checkCancellation()
             let more = try await backend.moreTracks(browseId: browseId, continuation: current)
             pages += 1
             ids.formUnion(more.tracks.map(\.videoId))
+            gatherPlaces(of: song, in: more.tracks, into: &places)
             token = more.continuation
+        }
+    }
+
+    nonisolated private static func gatherPlaces(of song: String?, in tracks: [MusicTrack], into places: inout [String]) {
+        guard let song else { return }
+        for track in tracks where track.videoId == song {
+            if let place = track.playlistSetVideoId, !place.isEmpty, !places.contains(place) { places.append(place) }
         }
     }
 
@@ -496,5 +656,6 @@ final class MusicTrackActionsStore {
         notice = nil
         busy.removeAll()
         savesOut.removeAll()
+        removalsOut.removeAll()
     }
 }

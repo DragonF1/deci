@@ -22,9 +22,30 @@ nonisolated enum MusicSaveMenuPlacement {
     }
 }
 
+/// What a row of the save to playlist menu says besides its title, in words a test can check. A tick means two things:
+/// in a song's menu a click on it takes the song out of that playlist, in an album's or playlist's menu it only says
+/// the playlist has it already.
+nonisolated enum MusicSaveMenuRowWords {
+    /// The hover help and VoiceOver hint of a row: a ticked row of a song's menu says it removes. Any other row has
+    /// none, since its title already says where a click goes.
+    static func help(title: String, isTicked: Bool, isSong: Bool) -> String? {
+        isTicked && isSong ? "Remove from \(title)" : nil
+    }
+
+    /// What VoiceOver hears as the row's value. A busy row is Removing when the song is being taken out of that
+    /// playlist and Saving for any other write, so a ticked row can still be Saving: a save went out and a late read
+    /// of the playlist ticked the row before the save answered. A row that is not busy says what its tick says, or
+    /// nothing.
+    static func state(isTicked: Bool, isBusy: Bool, isRemoving: Bool, tickedText: String) -> String {
+        if isBusy { return isRemoving ? "Removing" : "Saving" }
+        return isTicked ? tickedText : ""
+    }
+}
+
 /// The save to playlist menu, over the whole popup like the account card. It wears the native menu look: the playlists
 /// a song, album or playlist can go to, a check on those that hold it. A click adds it and ticks the row; the menu stays
-/// open so it can go to another playlist too. A click outside or Escape closes it. There is no New playlist item: the
+/// open so it can go to another playlist too. A click on a ticked row of a song's menu takes the song out of that
+/// playlist again and unticks the row. A click outside or Escape closes it. There is no New playlist item: the
 /// app cannot make one.
 struct MusicSaveMenuLayer: View {
     let store: MusicTrackActionsStore
@@ -123,16 +144,22 @@ struct MusicSaveMenuLayer: View {
 
     private func row(_ option: MusicPlaylistOption) -> some View {
         let isSaving = picker.saving.contains(option.playlistId)
+        let isRemoving = picker.removing.contains(option.playlistId)
+        let help = MusicSaveMenuRowWords.help(title: option.title, isTicked: option.containsVideo, isSong: picker.track != nil)
         return MusicNativeMenuItem(title: option.title, leading: {
-            if option.containsVideo {
-                MusicNativeMenuCheck()
-            } else if isSaving {
+            if isSaving {
                 MusicSpinner(size: 10, lineWidth: 1.5, color: .white.opacity(0.75))
+            } else if option.containsVideo {
+                MusicNativeMenuCheck()
             }
         }) {
             store.choose(option)
         }
-        .accessibilityValue(option.containsVideo ? hasText : isSaving ? "Saving" : "")
+        .help(help ?? "")
+        .accessibilityHint(help ?? "")
+        .accessibilityValue(MusicSaveMenuRowWords.state(
+            isTicked: option.containsVideo, isBusy: isSaving, isRemoving: isRemoving, tickedText: hasText
+        ))
         .accessibilityAddTraits(option.containsVideo ? .isSelected : [])
     }
 

@@ -151,6 +151,7 @@ actor FakeMusicBackend: MusicBackend {
     private var addToPlaylistError: (any Error)?
     private var addToPlaylistGate: MusicTestGate?
     private var removeFromPlaylistError: (any Error)?
+    private var removeFromPlaylistRowErrors: [String: any Error] = [:]
     private var removeFromPlaylistGate: MusicTestGate?
     private var likeStatuses: [String: MusicLikeStatus] = [:]
     private var likeStatusErrors: [String: any Error] = [:]
@@ -312,6 +313,8 @@ actor FakeMusicBackend: MusicBackend {
     func setAddToPlaylistError(_ error: (any Error)?) { addToPlaylistError = error }
     func setAddToPlaylistGate(_ gate: MusicTestGate?) { addToPlaylistGate = gate }
     func setRemoveFromPlaylistError(_ error: (any Error)?) { removeFromPlaylistError = error }
+    /// Makes the removal of one row (named by its setVideoId) throw `error`, while removals of other rows go through; nil clears.
+    func setRemoveFromPlaylistError(setVideoId: String, _ error: (any Error)?) { removeFromPlaylistRowErrors[setVideoId] = error }
     func setRemoveFromPlaylistGate(_ gate: MusicTestGate?) { removeFromPlaylistGate = gate }
 
     // Likes. The like state is scripted per video (an unscripted video has none: nil), and a successful rate call changes
@@ -463,7 +466,7 @@ actor FakeMusicBackend: MusicBackend {
 
     func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws {
         removeFromPlaylistCalls.append(RemoveFromPlaylistCall(videoId: videoId, setVideoId: setVideoId, playlistId: playlistId))
-        let gate = removeFromPlaylistGate, error = removeFromPlaylistError
+        let gate = removeFromPlaylistGate, error = removeFromPlaylistRowErrors[setVideoId] ?? removeFromPlaylistError
         if let gate { await gate.wait() }
         if let error { throw error }
     }
