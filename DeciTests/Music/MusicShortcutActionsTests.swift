@@ -68,6 +68,7 @@ private struct ShortcutActionsHarness {
 @MainActor
 final class FakePopupOpener: MusicPopupOpening {
     var isOnScreen = false
+    var isOpen = false
     var canOpen = true
     private(set) var openCount = 0
     func open() { openCount += 1 }
@@ -251,6 +252,113 @@ struct MusicShortcutActionsTests {
     }
 }
 
+// MARK: - Where an outcome is shown
+
+@MainActor
+@Suite("Music outcome reporter")
+struct MusicOutcomeReporterTests {
+    private struct Setup {
+        let h: ShortcutActionsHarness
+        let hud = RecordingMessageHUD()
+        let reporter: MusicOutcomeReporter
+
+        init(signedIn: Bool = true, loaded: Bool = true, popupOpen: Bool) async {
+            h = ShortcutActionsHarness(signedIn: signedIn, loaded: loaded)
+            await h.service.refreshAuth()
+            h.opener.isOpen = popupOpen
+            h.opener.isOnScreen = popupOpen
+            reporter = MusicOutcomeReporter(musicHost: h.host, popupOpener: h.opener, hud: hud)
+        }
+
+        var notice: MusicTrackActionsStore.Notice? { h.service.trackActions.notice }
+    }
+
+    @Test("With the Music popup open the outcome shows in its notice line and not on the HUD", arguments: MusicActionOutcome.allCases.filter { $0 != .quiet })
+    func popupOpenUsesTheNoticeLine(outcome: MusicActionOutcome) async {
+        let s = await Setup(popupOpen: true)
+
+        s.reporter.report(outcome)
+
+        #expect(s.notice?.text == outcome.noticeText)
+        #expect(s.notice?.isError == outcome.isFailure)
+        #expect(s.hud.messages.isEmpty)
+    }
+
+    @Test("With the Music popup closed the outcome shows on the HUD and not in the notice line", arguments: MusicActionOutcome.allCases.filter { $0 != .quiet })
+    func popupClosedUsesTheHud(outcome: MusicActionOutcome) async {
+        let s = await Setup(popupOpen: false)
+
+        s.reporter.report(outcome)
+
+        #expect(s.hud.messages == [outcome.hudMessage].compactMap { $0 })
+        #expect(s.notice == nil)
+    }
+
+    @Test("A Music popup that is fading out is not open: the outcome goes to the HUD")
+    func closingPopupUsesTheHud() async {
+        let s = await Setup(popupOpen: false)
+        s.h.opener.isOnScreen = true
+
+        s.reporter.report(.liked)
+
+        #expect(s.hud.messages == [MusicActionOutcome.liked.hudMessage].compactMap { $0 })
+        #expect(s.notice == nil)
+    }
+
+    @Test("Another Deci popup open does not matter: with the Music popup closed the HUD shows")
+    func otherPopupOpen() async {
+        let s = await Setup(popupOpen: false)
+        let popups = PopupVisibilityService()
+        popups.setOpen(.mixer, true)
+
+        s.reporter.report(.disliked)
+
+        #expect(popups.isVisible)
+        #expect(s.hud.messages == [MusicActionOutcome.disliked.hudMessage].compactMap { $0 })
+    }
+
+    @Test("A signed-out popup draws no notice line, so the outcome goes to the HUD")
+    func signedOutPopupUsesTheHud() async {
+        let s = await Setup(signedIn: false, popupOpen: true)
+
+        s.reporter.report(.signedOut)
+
+        #expect(s.hud.messages == [MusicActionOutcome.signedOut.hudMessage].compactMap { $0 })
+        #expect(s.notice == nil)
+    }
+
+    @Test("With no player built yet there is no notice line, so the outcome goes to the HUD")
+    func noPlayerUsesTheHud() async {
+        let s = await Setup(loaded: false, popupOpen: true)
+
+        s.reporter.report(.nothingPlaying)
+
+        #expect(s.hud.messages == [MusicActionOutcome.nothingPlaying.hudMessage].compactMap { $0 })
+        #expect(s.h.host.service == nil)
+    }
+
+    @Test("A quiet outcome shows nowhere, popup open or not", arguments: [true, false])
+    func quietShowsNowhere(popupOpen: Bool) async {
+        let s = await Setup(popupOpen: popupOpen)
+
+        s.reporter.report(.quiet)
+
+        #expect(s.hud.messages.isEmpty)
+        #expect(s.notice == nil)
+    }
+
+    @Test("Several outcomes in a row each show, the newest line replacing the older")
+    func severalOutcomes() async {
+        let s = await Setup(popupOpen: true)
+
+        s.reporter.report(.liked)
+        s.reporter.report(.disliked)
+
+        #expect(s.notice?.text == "Disliked")
+        #expect(s.hud.messages.isEmpty)
+    }
+}
+
 // MARK: - The popup opener
 
 @MainActor
@@ -309,6 +417,17 @@ struct MusicPopupOpenerTests {
         #expect(opener.isOnScreen)
         probe.state = .closing
         #expect(opener.isOnScreen)
+    }
+
+    @Test("It reports whether the popup is open: key and on screen, which a popup fading out is not")
+    func reportsOpen() {
+        let probe = Probe()
+        let opener = makeOpener(probe)
+        #expect(!opener.isOpen)
+        probe.state = .open
+        #expect(opener.isOpen)
+        probe.state = .closing
+        #expect(!opener.isOpen)
     }
 
     @Test("It reports whether the Music item is in the menu bar, the only place the popup opens from")

@@ -465,6 +465,19 @@ final class MusicTrackActionsStore {
         }
     }
 
+    /// Shows what a Like, Dislike or Save came to, in the words the hotkey HUD has for it. A refusal or a failed call
+    /// shows as an error. A quiet outcome shows nothing and leaves a line that is up.
+    func post(_ outcome: MusicActionOutcome) {
+        guard let text = outcome.noticeText else { return }
+        post(text, isError: outcome.isFailure)
+    }
+
+    /// Shows only an outcome that did not go through, since the button that made the call already shows one that did.
+    func postIfFailed(_ outcome: MusicActionOutcome) {
+        guard outcome.isRatingFailure else { return }
+        post(outcome)
+    }
+
     private func expireNotice(_ id: Int) {
         if notice?.id == id { notice = nil }
     }

@@ -185,6 +185,7 @@ private struct MusicQueueCurrentRow: View {
         )
         .padding(.horizontal, MusicStyle.Spacing.page)
         .contentShape(Rectangle())
+        .onHover { if $0 { menu?.reveal(track, context) } }
         .contextMenu {
             MusicTrackMenuItems(actions: actions) { menu?.perform($0, track, context) }
         }

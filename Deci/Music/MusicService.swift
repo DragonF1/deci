@@ -1298,7 +1298,15 @@ final class MusicService {
 
     /// Reads the state of the song playing now, once per song (`MusicLikeStore.load` remembers what it has asked).
     private func loadLikeStatus() {
-        guard authState == .signedIn, let track = player.nowPlaying else { return }
+        guard let track = player.nowPlaying else { return }
+        loadLikeStatus(of: track)
+    }
+
+    /// Reads the state of any song, once (`MusicLikeStore.load` remembers what it has asked): the rows' menus call it
+    /// when the user shows interest in a song, so the menu can word Like and Dislike for it. Signed out there is no
+    /// state to read, and nothing is asked.
+    func loadLikeStatus(of track: MusicTrack) {
+        guard authState == .signedIn else { return }
         likes.load(videoId: track.videoId)
     }
 
@@ -1314,10 +1322,23 @@ final class MusicService {
     func dislike() async -> MusicActionOutcome {
         guard let track = player.nowPlaying else { return .nothingPlaying }
         guard authState == .signedIn else { return .signedOut }
-        return await likes.dislike(videoId: track.videoId) { [weak self] in
-            guard let self, self.canGoNext else { return }
-            self.next()
+        return await likes.dislike(videoId: track.videoId) { [weak self] in self?.skipDislikedSong() }
+    }
+
+    /// Makes any song `status`, as the song menus do: not only the one playing, and nothing need be playing. Disliking the
+    /// song that plays skips it, as the shortcut does; disliking any other song leaves the player and the queue alone.
+    func setLike(_ status: MusicLikeStatus, of track: MusicTrack) async -> MusicActionOutcome {
+        guard authState == .signedIn else { return .signedOut }
+        let isPlaying = track.videoId == player.nowPlaying?.videoId
+        return await likes.set(status, videoId: track.videoId) { [weak self] in
+            if isPlaying { self?.skipDislikedSong() }
         }
+    }
+
+    /// With no next song the song keeps playing.
+    private func skipDislikedSong() {
+        guard canGoNext else { return }
+        next()
     }
 
     private func syncNowPlaying() {

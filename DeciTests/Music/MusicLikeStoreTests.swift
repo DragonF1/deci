@@ -770,4 +770,155 @@ struct MusicLikeStoreTests {
 
         #expect(h.store.status(of: "a") == .like)
     }
+
+    // MARK: - Setting a rating
+
+    @Test("Set sends the status asked for on a song never read, and reads nothing first")
+    func setSendsWithoutReading() async {
+        let h = LikeHarness()
+
+        #expect(await h.store.set(.like, videoId: "a") == .liked)
+
+        #expect(h.store.status(of: "a") == .like)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like)])
+        #expect(await h.likeStatusCalls().isEmpty)
+    }
+
+    @Test("Set is not a toggle: Like on a liked song and Dislike on a disliked one are sent again")
+    func setIsIdempotent() async {
+        let h = LikeHarness()
+        await h.know("a", as: .like)
+        await h.know("b", as: .dislike)
+
+        #expect(await h.store.set(.like, videoId: "a") == .liked)
+        #expect(await h.store.set(.dislike, videoId: "b") == .disliked)
+
+        #expect(h.store.status(of: "a") == .like)
+        #expect(h.store.status(of: "b") == .dislike)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like), .init(videoId: "b", status: .dislike)])
+    }
+
+    @Test("Setting a song to neither takes back what it had: Remove like on a liked song, Remove dislike on a disliked one")
+    func setIndifferent() async {
+        let h = LikeHarness()
+        await h.know("a", as: .like)
+        await h.know("b", as: .dislike)
+
+        #expect(await h.store.set(.indifferent, videoId: "a") == .likeRemoved)
+        #expect(await h.store.set(.indifferent, videoId: "b") == .dislikeRemoved)
+
+        #expect(h.store.status(of: "a") == .indifferent)
+        #expect(h.store.status(of: "b") == .indifferent)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .indifferent), .init(videoId: "b", status: .indifferent)])
+    }
+
+    @Test("Set moves a song straight from one rating to the other")
+    func setSwitches() async {
+        let h = LikeHarness()
+        await h.know("a", as: .like)
+
+        #expect(await h.store.set(.dislike, videoId: "a") == .disliked)
+        #expect(h.store.status(of: "a") == .dislike)
+        #expect(await h.store.set(.like, videoId: "a") == .liked)
+        #expect(h.store.status(of: "a") == .like)
+    }
+
+    @Test("Only a dislike runs the skip, and it runs once, after the state shows the dislike")
+    func setSkipsOnlyForDislike() async {
+        let h = LikeHarness()
+        let probe = h.probe
+        let store = h.store
+        var seenAtSkip: MusicLikeStatus?
+
+        _ = await store.set(.like, videoId: "a") { probe.skips += 1 }
+        _ = await store.set(.indifferent, videoId: "a") { probe.skips += 1 }
+        #expect(probe.skips == 0)
+
+        _ = await store.set(.dislike, videoId: "a") { seenAtSkip = store.status(of: "a"); probe.skips += 1 }
+        #expect(probe.skips == 1)
+        #expect(seenAtSkip == .dislike)
+    }
+
+    @Test("A set that fails goes back to what the song was and says it could not reach YouTube")
+    func setRollsBack() async {
+        let h = LikeHarness()
+        await h.know("a", as: .like)
+        await h.backend.setRateError(videoId: "a", URLError(.notConnectedToInternet))
+
+        #expect(await h.store.set(.dislike, videoId: "a") == .failed)
+
+        #expect(h.store.status(of: "a") == .like)
+        #expect(h.probe.expired == 0)
+    }
+
+    @Test("A set that finds the session gone rolls back, reports it, and tells the service once")
+    func setSignedOut() async {
+        let h = LikeHarness()
+        await h.know("a", as: .dislike)
+        await h.backend.setRateError(videoId: "a", MusicError.signedOut)
+
+        #expect(await h.store.set(.like, videoId: "a") == .signedOut)
+
+        #expect(h.store.status(of: "a") == .dislike)
+        #expect(h.probe.expired == 1)
+    }
+
+    @Test("A set on a song whose rating is out shows at once, answers quietly and is sent when the first call is back")
+    func setWhileOut() async {
+        let h = LikeHarness()
+        let gate = MusicTestGate()
+        let first = await h.heldToggle("a", gate: gate)
+
+        let second = await h.store.set(.dislike, videoId: "a")
+
+        #expect(second == .quiet)
+        #expect(h.store.status(of: "a") == .dislike)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like)])
+
+        await gate.open()
+
+        #expect(await first.value == .disliked)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like), .init(videoId: "a", status: .dislike)])
+    }
+
+    @Test("A set for one song does not hold back another song's, and a failure rolls back only its own")
+    func setPerSong() async {
+        let h = LikeHarness()
+        await h.know("a", as: .like)
+        await h.know("b", as: .like)
+        await h.backend.setRateError(videoId: "a", URLError(.timedOut))
+
+        #expect(await h.store.set(.dislike, videoId: "a") == .failed)
+        #expect(await h.store.set(.indifferent, videoId: "b") == .likeRemoved)
+
+        #expect(h.store.status(of: "a") == .like)
+        #expect(h.store.status(of: "b") == .indifferent)
+    }
+
+    @Test("A set with a blank video id sends nothing")
+    func setBlankId() async {
+        let h = LikeHarness()
+
+        #expect(await h.store.set(.like, videoId: "  ") == .quiet)
+        #expect(await h.store.set(.dislike, videoId: "") == .quiet)
+
+        #expect(await h.rateCalls().isEmpty)
+        #expect(h.store.statuses.isEmpty)
+    }
+
+    @Test("A set that lands after a reset changes nothing and reports nothing")
+    func setAfterReset() async {
+        let h = LikeHarness()
+        let gate = MusicTestGate()
+        await h.backend.setRateGate(videoId: "a", gate)
+        let store = h.store
+        let task = Task { await store.set(.like, videoId: "a") }
+        _ = await h.until { await h.rateCalls().count == 1 }
+
+        store.reset()
+        await gate.open()
+
+        #expect(await task.value == .quiet)
+        #expect(store.status(of: "a") == nil)
+    }
 }

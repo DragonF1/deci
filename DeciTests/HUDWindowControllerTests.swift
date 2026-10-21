@@ -238,15 +238,85 @@ struct HUDWindowControllerMessageTests {
         #expect(hud.showDidUpdatePanel == true)
     }
 
-    @Test("While the popup is visible the message is skipped, as the volume HUD is")
-    func popupGuardSkipsTheMessage() {
+    @Test("A message shows while a popup is visible: the user asked for it with a hotkey")
+    func popupDoesNotSkipTheMessage() {
         let hud = makeController(popupVisible: true)
         defer { hud.shutdown() }
 
         hud.showMessage(message)
 
         #expect(hud.showCallCount == 1)
+        #expect(hud.showDidUpdatePanel == true)
+    }
+
+    @Test("The volume HUD is still skipped while a popup is visible")
+    func popupStillSkipsTheVolumeHud() {
+        let hud = makeController(popupVisible: true)
+        defer { hud.shutdown() }
+
+        hud.show(sliderFraction: 0.5, mute: false, deviceName: "")
+
+        #expect(hud.showCallCount == 1)
         #expect(hud.showDidUpdatePanel == false)
+        #expect(hud.panelLevel == nil)
+    }
+
+    @Test("A message sits above the menu bar popups' level, so it shows over an open popup")
+    func messageIsAbovePopups() {
+        let hud = makeController(popupVisible: true)
+        defer { hud.shutdown() }
+        #expect(hud.panelLevel == nil)
+
+        hud.showMessage(message)
+
+        let level = hud.panelLevel
+        #expect(level != nil)
+        #expect((level ?? .normal) > .statusBar)
+        #expect((level ?? .normal) < .popUpMenu)
+        #expect(level == HUDWindowController.messageLevel)
+    }
+
+    @Test("The volume HUD stays at the floating level, below the hover card and the revealed menu bar")
+    func volumeHudStaysFloating() {
+        let hud = makeController()
+        defer { hud.shutdown() }
+
+        hud.show(sliderFraction: 0.5, mute: false, deviceName: "")
+
+        #expect(hud.panelLevel == .floating)
+        #expect(hud.panelLevel == HUDWindowController.volumeLevel)
+        #expect((hud.panelLevel ?? .normal) < .statusBar)
+    }
+
+    @Test("The panel is shared, so each show sets its own level: a message raises it and the next volume HUD lowers it")
+    func eachShowSetsItsLevel() {
+        let hud = makeController()
+        defer { hud.shutdown() }
+
+        hud.show(sliderFraction: 0.5, mute: false, deviceName: "")
+        #expect(hud.panelLevel == HUDWindowController.volumeLevel)
+
+        hud.showMessage(message)
+        #expect(hud.panelLevel == HUDWindowController.messageLevel)
+
+        hud.show(sliderFraction: 0.6, mute: false, deviceName: "")
+        #expect(hud.panelLevel == HUDWindowController.volumeLevel)
+
+        hud.showMessage(HUDMessage(symbol: "hand.thumbsdown.fill", text: "Disliked"))
+        #expect(hud.panelLevel == HUDWindowController.messageLevel)
+    }
+
+    @Test("A volume HUD the guards skip leaves the level a message set alone")
+    func skippedVolumeHudKeepsTheLevel() {
+        let hud = makeController(popupVisible: false, fullscreen: false)
+        defer { hud.shutdown() }
+        hud.showMessage(message)
+
+        hud.fullscreenOverride = true
+        hud.show(sliderFraction: 0.5, mute: false, deviceName: "")
+
+        #expect(hud.showDidUpdatePanel == false)
+        #expect(hud.panelLevel == HUDWindowController.messageLevel)
     }
 
     @Test("A fullscreen app does not hide a message the user asked for with a hotkey")

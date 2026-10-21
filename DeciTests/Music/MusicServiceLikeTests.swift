@@ -218,6 +218,67 @@ struct MusicServiceLikeTests {
         #expect(!h.service.canRate)
     }
 
+    // MARK: - Reading another song's state
+
+    @Test("A song other than the playing one is read when asked for, and only once")
+    func readsAnotherSongOnRequest() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.backend.setLikeStatus(videoId: "z", .like)
+
+        h.service.loadLikeStatus(of: h.song("z"))
+        h.service.loadLikeStatus(of: h.song("z"))
+        h.service.loadLikeStatus(of: h.song("z"))
+        let known = await h.until { h.service.likes.status(of: "z") == .like }
+        await h.letLateWorkLand()
+
+        #expect(known)
+        #expect(await h.likeStatusCalls() == ["z"])
+    }
+
+    @Test("Asking for a song's state reads nothing signed out, nor for a song with no id")
+    func noRequestedReadWhenSignedOutOrWithoutId() async {
+        let out = LikeServiceHarness(signedIn: false)
+        await out.service.refreshAuth()
+        out.service.loadLikeStatus(of: out.song("z"))
+        await out.letLateWorkLand()
+        #expect(await out.likeStatusCalls().isEmpty)
+
+        let h = await LikeServiceHarness.signedIn()
+        h.service.loadLikeStatus(of: h.song(""))
+        h.service.loadLikeStatus(of: h.song("  "))
+        await h.letLateWorkLand()
+        #expect(await h.likeStatusCalls().isEmpty)
+    }
+
+    @Test("A song read on request is not read again when it starts playing")
+    func requestedReadIsRememberedByThePlayer() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.backend.setLikeStatus(videoId: "a", .dislike)
+        h.service.loadLikeStatus(of: h.song("a"))
+        _ = await h.until { h.service.likes.status(of: "a") == .dislike }
+
+        await h.startAlone("a")
+        await h.letLateWorkLand()
+
+        #expect(h.service.likeStatus == .dislike)
+        #expect(await h.likeStatusCalls() == ["a"])
+    }
+
+    @Test("A read on request leaves the state of the playing song alone")
+    func requestedReadLeavesThePlayingSong() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.backend.setLikeStatus(videoId: "a", .like)
+        await h.backend.setLikeStatus(videoId: "z", .dislike)
+        await h.startAlone("a")
+        _ = await h.until { h.service.likeStatus == .like }
+
+        h.service.loadLikeStatus(of: h.song("z"))
+        _ = await h.until { h.service.likes.status(of: "z") == .dislike }
+
+        #expect(h.service.likeStatus == .like)
+        #expect(await h.likeStatusCalls() == ["a", "z"])
+    }
+
     // MARK: - Like
 
     @Test("Like acts on the playing song, and the state shows at once")
@@ -412,6 +473,115 @@ struct MusicServiceLikeTests {
         #expect(service.likes.status(of: "a") == .like)
         #expect(service.likeStatus == .like)
         #expect(h.playingID == "b")
+    }
+
+    // MARK: - Rating any song
+
+    @Test("Rating another song sends that song's id, reports it, and leaves the playing song's state alone")
+    func setLikeOfAnotherSong() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+        let before = h.service.likeStatus
+
+        let outcome = await h.service.setLike(.like, of: h.song("x"))
+
+        #expect(outcome == .liked)
+        #expect(h.service.likes.status(of: "x") == .like)
+        #expect(h.service.likeStatus == before)
+        #expect(await h.rateCalls() == [.init(videoId: "x", status: .like)])
+    }
+
+    @Test("Rating the playing song shows in the player's own state")
+    func setLikeOfThePlayingSong() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+
+        #expect(await h.service.setLike(.like, of: h.song("a")) == .liked)
+
+        #expect(h.service.likeStatus == .like)
+        #expect(h.playingID == "a")
+    }
+
+    @Test("Disliking a song that is not playing never skips and leaves the queue as it was")
+    func dislikeOfAnotherSongDoesNotSkip() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+        let queued = h.service.queue.tracks.map(\.videoId)
+        let loaded = h.loadedIDs
+
+        #expect(await h.service.setLike(.dislike, of: h.song("c")) == .disliked)
+        #expect(await h.service.setLike(.dislike, of: h.song("x")) == .disliked)
+        await h.settle()
+
+        #expect(h.playingID == "a")
+        #expect(h.loadedIDs == loaded)
+        #expect(h.service.queue.tracks.map(\.videoId) == queued)
+        #expect(await h.rateCalls() == [.init(videoId: "c", status: .dislike), .init(videoId: "x", status: .dislike)])
+    }
+
+    @Test("Disliking the playing song skips it, as the shortcut does")
+    func dislikeOfThePlayingSongSkips() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+
+        #expect(await h.service.setLike(.dislike, of: h.song("a")) == .disliked)
+        await h.settle()
+
+        #expect(h.playingID == "b")
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .dislike)])
+    }
+
+    @Test("Disliking the playing song with nothing to follow still sends it and keeps it playing")
+    func dislikeOfThePlayingSongWithNowhereToGo() async {
+        let h = await LikeServiceHarness.signedIn(preferences: MusicPlaybackPreferences(shuffle: false, loop: .off, autoplay: false))
+        await h.startAlone("a")
+
+        #expect(await h.service.setLike(.dislike, of: h.song("a")) == .disliked)
+        await h.settle()
+
+        #expect(h.playingID == "a")
+    }
+
+    @Test("Taking back a dislike, and liking, the playing song do not skip")
+    func otherRatingsOfThePlayingSongDoNotSkip() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.backend.setLikeStatus(videoId: "a", .dislike)
+        await h.startRadio(["a", "b", "c"])
+        _ = await h.until { h.service.likeStatus == .dislike }
+
+        #expect(await h.service.setLike(.indifferent, of: h.song("a")) == .dislikeRemoved)
+        #expect(await h.service.setLike(.like, of: h.song("a")) == .liked)
+        await h.settle()
+
+        #expect(h.playingID == "a")
+    }
+
+    @Test("Any song can be rated with nothing playing")
+    func setLikeWithNothingPlaying() async {
+        let h = await LikeServiceHarness.signedIn()
+
+        #expect(await h.service.setLike(.like, of: h.song("x")) == .liked)
+        #expect(await h.rateCalls() == [.init(videoId: "x", status: .like)])
+    }
+
+    @Test("Rating a song while signed out sends nothing and asks to sign in")
+    func setLikeSignedOut() async {
+        let h = LikeServiceHarness(signedIn: false)
+        await h.service.refreshAuth()
+
+        #expect(await h.service.setLike(.like, of: h.song("x")) == .signedOut)
+        #expect(await h.rateCalls().isEmpty)
+    }
+
+    @Test("A rating YouTube does not take goes back and reports a failure; the session stays")
+    func setLikeFails() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.backend.setRateError(videoId: "x", URLError(.notConnectedToInternet))
+
+        #expect(await h.service.setLike(.like, of: h.song("x")) == .failed)
+
+        #expect(h.service.likes.status(of: "x") == nil)
+        #expect(h.service.authState == .signedIn)
     }
 
     // MARK: - A session that ends

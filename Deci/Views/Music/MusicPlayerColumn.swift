@@ -2,9 +2,9 @@
 import SwiftUI
 
 /// The left column of the Music popup: what is playing and everything to control it, always on screen. A stack 142 pt
-/// wide (kicker, cover, title and artist, the spectrum that is also the progress bar, the transport, the two buttons
-/// that open Lyrics and Up next in the right column). Volume and output live in the Mixer popover. It
-/// takes the song's colour (`musicAccent`) for its wash and for everything that is on or played.
+/// wide (kicker, cover, title and artist, the spectrum that is also the progress bar with Dislike and Like beside it,
+/// the transport, the two buttons that open Lyrics and Up next in the right column). Volume and output live in the
+/// Mixer popover. It takes the song's colour (`musicAccent`) for its wash and for everything that is on or played.
 ///
 /// It stays whatever the right column shows. `service` and `navigation` are nil before the service exists; the column
 /// then shows its empty layout.
@@ -148,6 +148,17 @@ struct MusicPlayerColumn: View {
         }
     }
 
+    /// Dislike and Like for the song playing now, as the Now playing card has them, one over the other. A call that goes
+    /// through shows in the buttons; one that does not shows in the popup's notice line.
+    private func rateButtons(_ service: MusicService) -> some View {
+        MusicRateButtons(
+            status: service.likeStatus,
+            metrics: .popup,
+            onDislike: { Task { service.trackActions.postIfFailed(await service.dislike()) } },
+            onLike: { Task { service.trackActions.postIfFailed(await service.toggleLike()) } }
+        )
+    }
+
     /// The song's actions, as the "..." menu of a row has them, on a right click: there is no button for them here.
     @ViewBuilder
     private func trackActions(_ track: MusicTrack) -> some View {
@@ -162,8 +173,19 @@ struct MusicPlayerColumn: View {
     // MARK: - Spectrum
 
     private func spectrumBlock(_ state: MusicPlayerColumnState) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            MusicSpectrumView(state: state, track: track, service: service, spectrum: spectrum)
+        let showsRate = service?.canRate == true
+        return VStack(alignment: .leading, spacing: 6) {
+            // Dislike and Like stand beside the bars, centred on their height. The spectrum gives up their width and a
+            // gap, so the row is still the column's width, and the times row under it keeps its full width.
+            HStack(spacing: MusicPopupMetrics.rateGap) {
+                MusicSpectrumView(
+                    state: state, track: track, service: service, spectrum: spectrum,
+                    width: MusicPopupMetrics.spectrumWidth(showsRate: showsRate)
+                )
+                if showsRate, let service {
+                    rateButtons(service)
+                }
+            }
             timesRow(state)
         }
     }

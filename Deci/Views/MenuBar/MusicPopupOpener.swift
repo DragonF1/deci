@@ -9,6 +9,8 @@ protocol MusicPopupOpening: AnyObject {
     var canOpen: Bool { get }
     /// The Music popup is on screen: open, or still fading out.
     var isOnScreen: Bool { get }
+    /// The Music popup is open: on screen and key, which a popup fading out no longer is.
+    var isOpen: Bool { get }
     /// Opens the popup, unless it is open: the toggle behind it would close it. A popup that is fading out is opened
     /// again once it has closed.
     func open()
@@ -62,6 +64,8 @@ final class MusicPopupOpener: MusicPopupOpening {
     var canOpen: Bool { isItemShown() }
 
     var isOnScreen: Bool { state() != .closed }
+
+    var isOpen: Bool { state() == .open }
 
     func open() {
         switch state() {

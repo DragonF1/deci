@@ -13,6 +13,15 @@ struct MusicTrackContext: Equatable, Sendable {
     /// The row is one of Up next's, so it also offers Remove from queue.
     var isUpNext = false
 
+    /// The row sits on the user's Liked music page, whose songs are all liked: the library page "VLLM", YouTube's own
+    /// browse id for it, or its playlist id.
+    var isLikedMusic: Bool {
+        guard let pageBrowseId else { return false }
+        return Self.likedMusicIds.contains(pageBrowseId)
+    }
+
+    private static let likedMusicIds: Set<String> = ["VLLM", "FEmusic_liked_videos", "LM"]
+
     static let none = MusicTrackContext(pageBrowseId: nil, pageTitle: nil, pageIsEditable: false)
     static let upNext = MusicTrackContext(pageBrowseId: nil, pageTitle: nil, pageIsEditable: false, isUpNext: true)
 }
@@ -26,6 +35,10 @@ enum MusicTrackAction: Hashable, Sendable {
     case removeFromPlaylist
     /// Pin to Home, Unpin from Home, or the refusal while Home is full. The pin is Deci's own.
     case pinHome(MusicHomePinState)
+    /// Like, or Remove like when the song is liked. A song only: an album, playlist or artist has no like here.
+    case like(removing: Bool)
+    /// Dislike, or Remove dislike when the song is disliked.
+    case dislike(removing: Bool)
     case goToAlbum
     case goToArtist
 
@@ -37,6 +50,8 @@ enum MusicTrackAction: Hashable, Sendable {
         case .saveToPlaylist: "Save to playlist"
         case .removeFromPlaylist: "Remove from playlist"
         case .pinHome(let state): state.title
+        case .like(let removing): removing ? "Remove like" : "Like"
+        case .dislike(let removing): removing ? "Remove dislike" : "Dislike"
         case .goToAlbum: "Go to album"
         case .goToArtist: "Go to artist"
         }
@@ -50,11 +65,22 @@ enum MusicTrackAction: Hashable, Sendable {
         }
     }
 
-    /// The block of the menu the action sits in: what changes the play order, what changes the user's library, where to
-    /// go, and the destructive one.
+    /// What Like, Remove like, Dislike and Remove dislike set the song to: they set it, they do not toggle it. Nil for
+    /// every other action.
+    var ratingStatus: MusicLikeStatus? {
+        switch self {
+        case .like(let removing): removing ? .indifferent : .like
+        case .dislike(let removing): removing ? .indifferent : .dislike
+        default: nil
+        }
+    }
+
+    /// The block of the menu the action sits in: what changes the play order, what changes the user's library, how the
+    /// user rates the song, where to go, and the destructive one.
     enum Group: Int, Comparable, Sendable {
         case queue
         case library
+        case rate
         case navigate
         case remove
 
@@ -65,6 +91,7 @@ enum MusicTrackAction: Hashable, Sendable {
         switch self {
         case .playNext, .addToQueue: .queue
         case .saveToPlaylist, .pinHome: .library
+        case .like, .dislike: .rate
         case .goToAlbum, .goToArtist: .navigate
         case .removeFromPlaylist, .removeFromQueue: .remove
         }
@@ -74,15 +101,22 @@ enum MusicTrackAction: Hashable, Sendable {
 /// Which song actions a row offers. Pure rules, so the row, its context menu and the player column agree and the
 /// rules are tested without a view. An action shows only when it can work.
 enum MusicTrackActions {
-    /// In menu order: play next and add to queue, save, pin or unpin to Home, then go to album and go to artist, then
-    /// remove from playlist and remove from queue last. `home` is where the song stands with the Pinned row on Home; nil
-    /// leaves the entry out. The queue entries show only when the caller offers them (not for the song that is playing),
-    /// and Remove from queue only on an Up next row.
+    /// In menu order: play next and add to queue, save, pin or unpin to Home, like and dislike, then go to album and go
+    /// to artist, then remove from playlist and remove from queue last. `home` is where the song stands with the Pinned
+    /// row on Home; nil leaves the entry out. The queue entries show only when the caller offers them (not for the song
+    /// that is playing), and Remove from queue only on an Up next row. Like and Dislike show only when the user `canRate`
+    /// (signed in) and the song has an id to rate; `likeStatus` is what is known of the song, nil while it is unknown, and
+    /// it turns the entry that is on into its Remove.
     static func available(
-        for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil, offersQueue: Bool = false
+        for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil, offersQueue: Bool = false,
+        canRate: Bool = false, likeStatus: MusicLikeStatus? = nil
     ) -> [MusicTrackAction] {
         var actions: [MusicTrackAction] = offersQueue ? [.playNext, .addToQueue, .saveToPlaylist] : [.saveToPlaylist]
         if let home { actions.append(.pinHome(home)) }
+        if canRate, !track.videoId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            actions.append(.like(removing: likeStatus == .like))
+            actions.append(.dislike(removing: likeStatus == .dislike))
+        }
         if let album = track.albumBrowseId, !album.isEmpty, album != context.pageBrowseId {
             actions.append(.goToAlbum)
         }

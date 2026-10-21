@@ -34,77 +34,84 @@ struct ShortcutsRegistryTests {
         #expect(recorder.toggleCount == 0)
     }
 
-    @Test("Save song to playlist shows what came back, and nothing when the save menu opened", arguments: MusicActionOutcome.allCases)
-    func dispatchSaveShowsOutcome(outcome: MusicActionOutcome) {
+    @Test("Save song to playlist reports what came back", arguments: MusicActionOutcome.allCases)
+    func dispatchSaveReportsOutcome(outcome: MusicActionOutcome) {
         let music = FakeMusicShortcuts()
         music.outcome = outcome
-        let hud = RecordingMessageHUD()
-        let registry = makeRegistry(music: music, hud: hud)
+        let reporter = RecordingOutcomeReporter()
+        let registry = makeRegistry(music: music, outcomes: reporter)
 
         registry.dispatch(.saveSongToPlaylist)
 
-        #expect(hud.messages == [outcome.hudMessage].compactMap { $0 })
+        #expect(reporter.outcomes == [outcome])
     }
 
-    @Test("Like song goes to the music side once and shows what came back", arguments: MusicActionOutcome.allCases)
+    @Test("Like song goes to the music side once and reports what came back", arguments: MusicActionOutcome.allCases)
     func dispatchLike(outcome: MusicActionOutcome) async {
         let music = FakeMusicShortcuts()
         music.outcome = outcome
-        let hud = RecordingMessageHUD()
-        let registry = makeRegistry(music: music, hud: hud)
+        let reporter = RecordingOutcomeReporter()
+        let registry = makeRegistry(music: music, outcomes: reporter)
 
         await registry.dispatch(.likeSong)?.value
 
         #expect(music.calls == [.like])
-        #expect(hud.messages == [outcome.hudMessage].compactMap { $0 })
+        #expect(reporter.outcomes == [outcome])
     }
 
-    @Test("Dislike song goes to the music side once and shows what came back", arguments: MusicActionOutcome.allCases)
+    @Test("Dislike song goes to the music side once and reports what came back", arguments: MusicActionOutcome.allCases)
     func dispatchDislike(outcome: MusicActionOutcome) async {
         let music = FakeMusicShortcuts()
         music.outcome = outcome
-        let hud = RecordingMessageHUD()
-        let registry = makeRegistry(music: music, hud: hud)
+        let reporter = RecordingOutcomeReporter()
+        let registry = makeRegistry(music: music, outcomes: reporter)
 
         await registry.dispatch(.dislikeSong)?.value
 
         #expect(music.calls == [.dislike])
-        #expect(hud.messages == [outcome.hudMessage].compactMap { $0 })
+        #expect(reporter.outcomes == [outcome])
     }
 
-    @Test("The HUD for Like waits for YouTube Music's answer, and the key press does not")
-    func likeHudWaitsForTheAnswer() async {
+    @Test("The report for Like waits for YouTube Music's answer, and the key press does not")
+    func likeReportWaitsForTheAnswer() async {
         let music = FakeMusicShortcuts()
         music.outcome = .liked
         let gate = MusicTestGate()
         music.gate = gate
-        let hud = RecordingMessageHUD()
-        let registry = makeRegistry(music: music, hud: hud)
+        let reporter = RecordingOutcomeReporter()
+        let registry = makeRegistry(music: music, outcomes: reporter)
 
         let task = registry.dispatch(.likeSong)
         for _ in 0..<20 { await Task.yield() }
 
         #expect(music.calls == [.like])
-        #expect(hud.messages.isEmpty)
+        #expect(reporter.outcomes.isEmpty)
 
         await gate.open()
         await task?.value
 
-        #expect(hud.messages == [HUDMessage(symbol: "hand.thumbsup.fill", text: "Liked")])
+        #expect(reporter.outcomes == [.liked])
     }
 
     @Test("A second press while the first is out is a second call to the music side, which answers it quietly")
     func repeatedPressesReachTheMusicSide() async {
         let music = FakeMusicShortcuts()
         music.outcome = .quiet
-        let hud = RecordingMessageHUD()
-        let registry = makeRegistry(music: music, hud: hud)
+        let reporter = RecordingOutcomeReporter()
+        let registry = makeRegistry(music: music, outcomes: reporter)
 
         await registry.dispatch(.dislikeSong)?.value
         await registry.dispatch(.dislikeSong)?.value
 
         #expect(music.calls == [.dislike, .dislike])
-        #expect(hud.messages.isEmpty)
+        #expect(reporter.outcomes == [.quiet, .quiet])
+    }
+
+    @Test("The popup toggle reports nothing")
+    func toggleReportsNothing() {
+        let reporter = RecordingOutcomeReporter()
+        makeRegistry(outcomes: reporter).dispatch(.togglePopup)
+        #expect(reporter.outcomes.isEmpty)
     }
 
     // MARK: - actions
@@ -259,13 +266,13 @@ struct ShortcutsRegistryTests {
         settings: SettingsManager? = nil,
         popupController: (any MenuBarPopupControlling)? = nil,
         music: (any MusicShortcutActing)? = nil,
-        hud: (any MessageHUDPresenting)? = nil
+        outcomes: (any MusicOutcomeReporting)? = nil
     ) -> ShortcutsRegistry {
         ShortcutsRegistry(
             settings: settings ?? makeIsolatedSettings(),
             popupController: popupController ?? RecordingPopupController(),
             music: music ?? FakeMusicShortcuts(),
-            hud: hud ?? RecordingMessageHUD()
+            outcomes: outcomes ?? RecordingOutcomeReporter()
         )
     }
 
@@ -282,10 +289,10 @@ struct MusicActionHUDMessageTests {
     @Test("Each outcome has its own symbol and short line")
     func words() {
         #expect(MusicActionOutcome.liked.hudMessage == HUDMessage(symbol: "hand.thumbsup.fill", text: "Liked"))
-        #expect(MusicActionOutcome.likeRemoved.hudMessage == HUDMessage(symbol: "hand.thumbsup", text: "Like removed"))
+        #expect(MusicActionOutcome.likeRemoved.hudMessage == HUDMessage(symbol: "hand.thumbsup", text: "Removed like"))
         #expect(MusicActionOutcome.disliked.hudMessage == HUDMessage(symbol: "hand.thumbsdown.fill", text: "Disliked"))
         #expect(
-            MusicActionOutcome.dislikeRemoved.hudMessage == HUDMessage(symbol: "hand.thumbsdown", text: "Dislike removed")
+            MusicActionOutcome.dislikeRemoved.hudMessage == HUDMessage(symbol: "hand.thumbsdown", text: "Removed dislike")
         )
         #expect(MusicActionOutcome.nothingPlaying.hudMessage == HUDMessage(symbol: "music.note", text: "Nothing is playing"))
         #expect(
@@ -302,9 +309,27 @@ struct MusicActionHUDMessageTests {
         )
     }
 
-    @Test("A quiet outcome shows nothing")
+    @Test("A quiet outcome shows nothing, on the HUD or in the notice line")
     func quietIsSilent() {
         #expect(MusicActionOutcome.quiet.hudMessage == nil)
+        #expect(MusicActionOutcome.quiet.noticeText == nil)
+    }
+
+    @Test("The notice line and the HUD say the same words for every outcome")
+    func noticeAndHudShareWords() {
+        for outcome in MusicActionOutcome.allCases {
+            #expect(outcome.noticeText == outcome.hudMessage?.text)
+        }
+        #expect(MusicActionOutcome.likeRemoved.noticeText == "Removed like")
+        #expect(MusicActionOutcome.dislikeRemoved.noticeText == "Removed dislike")
+    }
+
+    @Test("Only the four ratings are not failures; a refusal or a failed call is")
+    func failures() {
+        let successes: [MusicActionOutcome] = [.liked, .likeRemoved, .disliked, .dislikeRemoved, .quiet]
+        for outcome in MusicActionOutcome.allCases {
+            #expect(outcome.isFailure == !successes.contains(outcome))
+        }
     }
 
     @Test("Every symbol exists, and every line fits the HUD's one row without an em-dash")
@@ -379,6 +404,13 @@ final class FakeMusicShortcuts: MusicShortcutActing {
         await gate?.wait()
         return outcome
     }
+}
+
+/// Stands in for where a hotkey's outcome is shown: records every outcome it was given.
+@MainActor
+final class RecordingOutcomeReporter: MusicOutcomeReporting {
+    private(set) var outcomes: [MusicActionOutcome] = []
+    func report(_ outcome: MusicActionOutcome) { outcomes.append(outcome) }
 }
 
 @MainActor

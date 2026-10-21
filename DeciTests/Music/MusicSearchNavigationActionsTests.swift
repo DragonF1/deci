@@ -9,11 +9,12 @@ import Testing
 
 @MainActor
 private struct ActionNavHarness {
-    let backend = FakeMusicBackend()
+    let backend: FakeMusicBackend
     let service: MusicService
     let nav: MusicSearchNavigation
 
-    init() {
+    init(signedIn: Bool = true) {
+        backend = FakeMusicBackend(signedIn: signedIn)
         service = MusicService(
             backend: backend,
             player: MusicPlayer(engine: FakePlaybackEngine()),
@@ -437,6 +438,314 @@ struct MusicSearchNavigationActionsTests {
         h.nav.perform(.removeFromQueue, for: MusicSamples.track("b"), in: .upNext)
         #expect(queued() == ["a", "y", "c", "d", "e", "x"])
         #expect(h.service.trackActions.notice?.text == "Removed from queue")
+    }
+
+    // MARK: - Like and Dislike
+
+    private func hasRateEntry(_ actions: [MusicTrackAction]) -> Bool {
+        actions.contains { $0.ratingStatus != nil }
+    }
+
+    @Test("A signed-in user's menu has Like and Dislike after save and the Home pin, worded by the cached state")
+    func rateEntriesInTheMenu() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let track = MusicSamples.track("v1")
+        #expect(h.nav.actions(for: track, in: .none)
+            == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .like(removing: false), .dislike(removing: false)])
+
+        _ = await h.service.setLike(.like, of: track)
+        #expect(h.nav.actions(for: track, in: .none).suffix(2) == [.like(removing: true), .dislike(removing: false)])
+
+        _ = await h.service.setLike(.dislike, of: track)
+        #expect(h.nav.actions(for: track, in: .none).suffix(2) == [.like(removing: false), .dislike(removing: true)])
+    }
+
+    @Test("Signed out, or before the session check has answered, the menu has no Like or Dislike")
+    func rateEntriesHiddenWhenNotSignedIn() async {
+        let unknown = ActionNavHarness()
+        #expect(!hasRateEntry(unknown.nav.actions(for: MusicSamples.track("v1"), in: .none)))
+
+        let out = ActionNavHarness(signedIn: false)
+        await out.service.refreshAuth()
+        #expect(!hasRateEntry(out.nav.actions(for: MusicSamples.track("v1"), in: .none)))
+    }
+
+    @Test("A song with no id has no Like or Dislike")
+    func rateEntriesHiddenWithoutId() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        #expect(!hasRateEntry(h.nav.actions(for: MusicSamples.track(""), in: .none)))
+    }
+
+    @Test("Rating is offered with nothing playing, and for the song in the player too")
+    func rateEntriesWithAndWithoutAPlayer() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        #expect(hasRateEntry(h.nav.actions(for: MusicSamples.track("other"), in: .none)))
+        h.playSomething()
+        #expect(hasRateEntry(h.nav.actions(for: MusicSamples.track("other"), in: .none)))
+        #expect(hasRateEntry(h.nav.actions(for: MusicSamples.track("playing"), in: .none)))
+    }
+
+    @Test("A pick sets its own rating and the notice line says what came of it", arguments: [
+        (MusicTrackAction.like(removing: false), MusicLikeStatus?.none, MusicLikeStatus.like, "Liked"),
+        (.like(removing: true), .like, .indifferent, "Removed like"),
+        (.dislike(removing: false), .none, .dislike, "Disliked"),
+        (.dislike(removing: true), .dislike, .indifferent, "Removed dislike"),
+        (.like(removing: false), .dislike, .like, "Liked"),
+        (.dislike(removing: false), .like, .dislike, "Disliked"),
+    ])
+    func performRate(action: MusicTrackAction, start: MusicLikeStatus?, sent: MusicLikeStatus, line: String) async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        if let start {
+            await h.backend.setLikeStatus(videoId: "v1", start)
+            h.service.likes.load(videoId: "v1")
+            #expect(await h.until { h.service.likes.status(of: "v1") == start })
+        }
+
+        h.nav.perform(action, for: MusicSamples.track("v1"), in: .none)
+
+        #expect(await h.until { h.service.trackActions.notice?.text == line })
+        #expect(h.service.trackActions.notice?.isError == false)
+        #expect(await h.backend.rateCalls == [.init(videoId: "v1", status: sent)])
+        #expect(h.service.likes.status(of: "v1") == sent)
+    }
+
+    @Test("A rating YouTube Music does not take shows as an error line, and the state goes back")
+    func performRateFails() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        await h.backend.setRateError(videoId: "v1", URLError(.notConnectedToInternet))
+
+        h.nav.perform(.like(removing: false), for: MusicSamples.track("v1"), in: .none)
+
+        #expect(await h.until { h.service.trackActions.notice?.text == "Couldn't reach YouTube Music" })
+        #expect(h.service.trackActions.notice?.isError == true)
+        #expect(h.service.likes.status(of: "v1") == nil)
+    }
+
+    @Test("Disliking a song that is not playing leaves the queue and the song in the player alone")
+    func performDislikeOfAnotherSong() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        h.service.play(MusicSamples.track("a"), in: MusicSamples.page("VLPL1", tracks: MusicSamples.tracks("a", "b", "c")))
+        let queued = h.service.queue.tracks.map(\.videoId)
+        let current = h.service.queue.current?.videoId
+
+        h.nav.perform(.dislike(removing: false), for: MusicSamples.track("b"), in: .upNext)
+
+        #expect(await h.until { h.service.trackActions.notice?.text == "Disliked" })
+        #expect(h.service.queue.tracks.map(\.videoId) == queued)
+        #expect(h.service.queue.current?.videoId == current)
+    }
+
+    @Test("A tile has no Like or Dislike, signed in or not, and a pick on one sends nothing")
+    func tilesHaveNoRateEntries() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        for tile in [h.albumTile, h.playlistTile, h.artistTile] {
+            #expect(!hasRateEntry(h.nav.actions(for: tile, in: .none)))
+            h.nav.perform(.like(removing: false), for: tile, in: .none)
+            h.nav.perform(.dislike(removing: false), for: tile, in: .none)
+        }
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(await h.backend.rateCalls.isEmpty)
+        #expect(h.service.trackActions.notice == nil)
+    }
+
+    // MARK: - A song's state, read when the user shows interest
+
+    private func likeEntries(_ actions: [MusicTrackAction]) -> [MusicTrackAction] {
+        actions.filter { $0.ratingStatus != nil }
+    }
+
+    @Test("A song the pointer reached is read, and its menu then offers Remove like or Remove dislike", arguments: [
+        (MusicLikeStatus.like, [MusicTrackAction.like(removing: true), .dislike(removing: false)]),
+        (.dislike, [.like(removing: false), .dislike(removing: true)]),
+    ])
+    func menuFollowsALazyRead(status: MusicLikeStatus, expected: [MusicTrackAction]) async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let track = MusicSamples.track("v1")
+        await h.backend.setLikeStatus(videoId: "v1", status)
+        #expect(likeEntries(h.nav.actions(for: track, in: .none)) == [.like(removing: false), .dislike(removing: false)])
+
+        h.nav.revealLikeStatus(of: track, in: .none)
+
+        #expect(await h.until { likeEntries(h.nav.actions(for: track, in: .none)) == expected })
+    }
+
+    @Test("Reaching the same song again, or on another row, asks once")
+    func lazyReadAsksOnce() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let track = MusicSamples.track("v1")
+
+        for context in [MusicTrackContext.none, .upNext, .none] {
+            h.nav.revealLikeStatus(of: track, in: context)
+        }
+        try? await Task.sleep(for: .milliseconds(60))
+
+        #expect(await h.backend.likeStatusCalls == ["v1"])
+    }
+
+    @Test("Songs the pointer crosses are each read once, and a song it never reaches is not read")
+    func lazyReadOnlyForSongsReached() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+
+        for id in ["a", "b", "c", "a", "b"] {
+            h.nav.revealLikeStatus(of: MusicSamples.track(id), in: .none)
+        }
+        try? await Task.sleep(for: .milliseconds(60))
+
+        #expect(Set(await h.backend.likeStatusCalls) == ["a", "b", "c"])
+        #expect(await h.backend.likeStatusCalls.count == 3)
+    }
+
+    @Test("Signed out, or before the session check has answered, reaching a song reads nothing")
+    func lazyReadNeedsASession() async {
+        let unknown = ActionNavHarness()
+        unknown.nav.revealLikeStatus(of: MusicSamples.track("v1"), in: .none)
+        let out = ActionNavHarness(signedIn: false)
+        await out.service.refreshAuth()
+        out.nav.revealLikeStatus(of: MusicSamples.track("v1"), in: .none)
+        try? await Task.sleep(for: .milliseconds(60))
+
+        #expect(await unknown.backend.likeStatusCalls.isEmpty)
+        #expect(await out.backend.likeStatusCalls.isEmpty)
+    }
+
+    @Test("A row of the Liked music page is liked with no read: its menu offers Remove like, in any of the page's ids", arguments: ["VLLM", "FEmusic_liked_videos", "LM"])
+    func likedMusicRowsAreSeeded(id: String) async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let track = MusicSamples.track("v1")
+        let liked = MusicTrackContext(pageBrowseId: id, pageTitle: "Liked music", pageIsEditable: false)
+
+        #expect(likeEntries(h.nav.actions(for: track, in: liked)) == [.like(removing: true), .dislike(removing: false)])
+        h.nav.revealLikeStatus(of: track, in: liked)
+        try? await Task.sleep(for: .milliseconds(60))
+
+        #expect(await h.backend.likeStatusCalls.isEmpty)
+        #expect(h.service.likes.status(of: "v1") == nil)
+    }
+
+    @Test("The seed is for Liked music only: another playlist's row is unknown until it is read")
+    func otherPlaylistsAreNotSeeded() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let mine = MusicTrackContext(pageBrowseId: "VLPLfixtureMine", pageTitle: "Mine", pageIsEditable: true)
+
+        #expect(likeEntries(h.nav.actions(for: MusicSamples.track("v1"), in: mine)) == [.like(removing: false), .dislike(removing: false)])
+    }
+
+    @Test("What the app knows beats the seed: a Liked music row whose like was taken back offers Like again")
+    func knownStateBeatsTheSeed() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let track = MusicSamples.track("v1")
+        let liked = MusicTrackContext(pageBrowseId: "VLLM", pageTitle: "Liked music", pageIsEditable: false)
+
+        _ = await h.service.setLike(.indifferent, of: track)
+
+        #expect(likeEntries(h.nav.actions(for: track, in: liked)) == [.like(removing: false), .dislike(removing: false)])
+    }
+
+    @Test("Signed out, the Liked music seed does not bring Like and Dislike back")
+    func seedNeedsASession() async {
+        let out = ActionNavHarness(signedIn: false)
+        await out.service.refreshAuth()
+        let liked = MusicTrackContext(pageBrowseId: "VLLM", pageTitle: "Liked music", pageIsEditable: false)
+
+        #expect(likeEntries(out.nav.actions(for: MusicSamples.track("v1"), in: liked)).isEmpty)
+    }
+
+    // MARK: - Where a menu pick's outcome shows
+
+    @Test("A menu pick's outcome goes to the outcome reporter, the one the hotkeys use, and not straight to the notice line", arguments: [
+        (MusicTrackAction.like(removing: false), MusicActionOutcome.liked),
+        (.like(removing: true), .likeRemoved),
+        (.dislike(removing: false), .disliked),
+    ])
+    func pickReportsThroughTheReporter(action: MusicTrackAction, outcome: MusicActionOutcome) async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let reporter = RecordingOutcomeReporter()
+        h.nav.outcomes = reporter
+
+        h.nav.perform(action, for: MusicSamples.track("v1"), in: .none)
+
+        #expect(await h.until { !reporter.outcomes.isEmpty })
+        #expect(reporter.outcomes == [outcome])
+        #expect(h.service.trackActions.notice == nil)
+    }
+
+    @Test("A failed rating is reported too, so a popup closed during the call still gets the HUD")
+    func failedRateReportsThroughTheReporter() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let reporter = RecordingOutcomeReporter()
+        h.nav.outcomes = reporter
+        await h.backend.setRateError(videoId: "v1", URLError(.notConnectedToInternet))
+
+        await h.nav.rate(.like, MusicSamples.track("v1")).value
+
+        #expect(reporter.outcomes == [.failed])
+        #expect(h.service.trackActions.notice == nil)
+    }
+
+    @Test("A signed-out pick is reported as signed out")
+    func signedOutRateReports() async {
+        let h = ActionNavHarness(signedIn: false)
+        await h.service.refreshAuth()
+        let reporter = RecordingOutcomeReporter()
+        h.nav.outcomes = reporter
+
+        await h.nav.rate(.like, MusicSamples.track("v1")).value
+
+        #expect(reporter.outcomes == [.signedOut])
+    }
+
+    @Test("A second pick on a song whose rating is still out reports as well, and its quiet outcome is the reporter's to drop")
+    func foldedRateReportsEachCall() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        let reporter = RecordingOutcomeReporter()
+        h.nav.outcomes = reporter
+        let track = MusicSamples.track("v1")
+
+        let first = h.nav.rate(.like, track)
+        let second = h.nav.rate(.dislike, track)
+        await first.value
+        await second.value
+
+        #expect(reporter.outcomes.count == 2)
+        #expect(reporter.outcomes.contains(.quiet))
+    }
+
+    @Test("With no reporter set the outcome still shows on the notice line")
+    func rateFallsBackToTheNoticeLine() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+
+        await h.nav.rate(.like, MusicSamples.track("v1")).value
+
+        #expect(h.service.trackActions.notice?.text == "Liked")
+    }
+
+    @Test("A reporter that is gone leaves the notice line to show the outcome")
+    func releasedReporterFallsBack() async {
+        let h = ActionNavHarness()
+        await h.service.refreshAuth()
+        h.nav.outcomes = RecordingOutcomeReporter()
+
+        await h.nav.rate(.like, MusicSamples.track("v1")).value
+
+        #expect(h.nav.outcomes == nil)
+        #expect(h.service.trackActions.notice?.text == "Liked")
     }
 
     // MARK: - Collection tiles

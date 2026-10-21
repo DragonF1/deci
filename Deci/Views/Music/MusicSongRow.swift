@@ -141,6 +141,12 @@ struct MusicSongRow: View {
         menu?.perform(action, track, context)
     }
 
+    /// Reads the song's rating for its menu. Called when the pointer reaches the row, when the keyboard does, and when a
+    /// menu opens from it; the read happens once per song.
+    private func reveal() {
+        menu?.reveal(track, context)
+    }
+
     private var accessibilityText: String {
         var text = "\(track.title), \(track.artist)"
         if isPinned { text += ", pinned" }
@@ -179,11 +185,20 @@ struct MusicSongRow: View {
         )
         .animation(DesignTokens.Animation.hover, value: showsMore)
         .padding(.horizontal, layout.horizontalPadding - MusicBrowseLayout.rowHoverInset)
-        .onHover { isHovered = $0 }
+        .onHover {
+            isHovered = $0
+            if $0 { reveal() }
+        }
+        .onChange(of: isKeyboardFocused) { _, focused in
+            if focused { reveal() }
+        }
         // Tracking begins while the pointer is still on the row (the hover ends after the menu window is up), so
         // only the row the menu was opened from takes it. Every end of tracking clears it, and so does the row leaving.
         .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
-            if isHovered { isMenuOpen = true }
+            if isHovered {
+                isMenuOpen = true
+                reveal()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) { _ in
             isMenuOpen = false

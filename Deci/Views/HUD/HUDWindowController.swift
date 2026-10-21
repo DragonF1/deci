@@ -29,6 +29,15 @@ final class HUDWindowController: MediaKeyHUDPresenting {
     var frameProvider: () -> NSRect? = { NSScreen.main?.visibleFrame ?? NSScreen.screens.first?.visibleFrame }
     private(set) var showCallCount: Int = 0
     private(set) var showDidUpdatePanel: Bool = false
+    /// The panel's window level; nil until the first show builds the panel.
+    var panelLevel: NSWindow.Level? { panel?.level }
+
+    /// The volume HUD's level: floating, below the menu bar, the revealed menu bar and the hover card.
+    static let volumeLevel = NSWindow.Level.floating
+
+    /// A message's level, one above the menu bar popups, which are `.statusBar`: a message shown while a popup is open is
+    /// not hidden behind it. The panel is raised for a message only; the volume HUD sets it back.
+    static let messageLevel = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
 
     init(
         settingsManager: SettingsManager,
@@ -88,6 +97,8 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         let appearance = settingsManager.appSettings.appearance
         styleAtLastShow = style
         let panel = ensurePanel()
+        // The panel is shared with the messages, so each show sets its own level.
+        panel.level = Self.volumeLevel
         // Refresh on every show so a preference change between invocations
         // takes effect immediately.
         panel.appearance = appearance.nsAppearance
@@ -155,19 +166,16 @@ final class HUDWindowController: MediaKeyHUDPresenting {
     }
 
     /// Shows one short line with a symbol, for what a hotkey came to. Same panel, place and timing as the volume HUD. It
-    /// bypasses the fullscreen guard because the user explicitly invoked it, but not the popup guard.
+    /// bypasses the fullscreen guard and the popup guard because the user explicitly invoked it: the caller decides
+    /// whether a popup shows the line instead (`MusicOutcomeReporter`).
     func showMessage(_ message: HUDMessage) {
         showCallCount += 1
         showDidUpdatePanel = false
 
-        guard !popupVisibility.isVisible else {
-            logger.debug("Skipping message HUD: popup is visible")
-            return
-        }
-
         let appearance = settingsManager.appSettings.appearance
         styleAtLastShow = .tahoe
         let panel = ensurePanel()
+        panel.level = Self.messageLevel
         panel.appearance = appearance.nsAppearance
         panel.ignoresMouseEvents = true
 
@@ -283,7 +291,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
             backing: .buffered,
             defer: false
         )
-        p.level = .floating
+        p.level = Self.volumeLevel
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]
         p.hasShadow = false
         p.isOpaque = false

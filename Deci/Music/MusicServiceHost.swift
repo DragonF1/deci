@@ -12,6 +12,11 @@ final class MusicServiceHost {
     /// the player is unmounted when the Music icon is hidden in Settings and built again when it is shown, and the
     /// view takes this one back, so an artist opened from the search results is still open (and Back still returns to the results).
     private(set) var navigation: MusicSearchNavigation?
+    /// Where a menu pick's Like or Dislike outcome shows, passed on to the navigation whenever either exists. Not held:
+    /// the reporter holds the host.
+    @ObservationIgnored weak var outcomes: (any MusicOutcomeReporting)? {
+        didSet { navigation?.outcomes = outcomes }
+    }
     /// Told when native playback starts or stops. Set before or after the service exists.
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
     /// Whether the account card in the Music popup's search row is open. Lives here, not in the tab's
@@ -99,7 +104,9 @@ final class MusicServiceHost {
         service.onNativePlayingChange = { [weak self] playing in self?.onNativePlayingChange?(playing) }
         service.lyrics.setPopupVisible(isPopupVisible)
         self.service = service
-        navigation = MusicSearchNavigation(service: service)
+        let navigation = MusicSearchNavigation(service: service)
+        navigation.outcomes = outcomes
+        self.navigation = navigation
         spectrum.sources = MusicSpectrumDriver.Sources(
             level: { [weak mixer = self.mixer] in mixer?.sampleSpectrumLevel() ?? 0 },
             position: { [weak service] in service?.player.livePosition() ?? 0 },

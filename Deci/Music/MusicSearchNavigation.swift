@@ -85,6 +85,10 @@ final class MusicSearchNavigation {
     private(set) var queueQuery = ""
 
     @ObservationIgnored private let service: MusicService
+    /// Where a menu pick's rating outcome shows: the notice line while the Music popup is open, else the HUD, as for the
+    /// hotkeys. The host sets it. Not held: the reporter holds the host, which holds this. Without one the outcome shows
+    /// on the notice line.
+    @ObservationIgnored weak var outcomes: (any MusicOutcomeReporting)?
 
     init(service: MusicService) {
         self.service = service
@@ -444,13 +448,31 @@ final class MusicSearchNavigation {
         // The song in the player is already playing: it is not queued behind itself.
         let playing = service.queue.current ?? service.player.nowPlaying
         let offersQueue = track.videoId != playing?.videoId
-        return MusicTrackActions.available(for: track, in: context, home: home, offersQueue: offersQueue)
+        return MusicTrackActions.available(
+            for: track, in: context, home: home, offersQueue: offersQueue,
+            canRate: service.authState == .signedIn, likeStatus: likeStatus(of: track, in: context)
+        )
+    }
+
+    /// What the menu knows of a song's rating: what the app has (read, or set here), else Liked for a row of the Liked
+    /// music page, whose songs are all liked, so that page's rows offer Remove like with no read.
+    private func likeStatus(of track: MusicTrack, in context: MusicTrackContext) -> MusicLikeStatus? {
+        service.likes.status(of: track.videoId) ?? (context.isLikedMusic ? .like : nil)
+    }
+
+    /// The pointer reached a song's row, or its "..." menu is about to open: reads the song's rating so the menu words
+    /// Like and Dislike for it. A song is read once; one row after another asks once each. A row of the Liked music page
+    /// is known to be liked and is not read. Never call it while a view builds its body.
+    func revealLikeStatus(of track: MusicTrack, in context: MusicTrackContext) {
+        guard !context.isLikedMusic else { return }
+        service.loadLikeStatus(of: track)
     }
 
     /// Runs a menu item. Save to playlist opens the save menu over whatever shows, which stays as it was; Go to album
     /// and Go to artist open the page; Remove goes to the actions store, which shows what happened as a short line;
     /// Pin to Home is Deci's own list, changed on the spot; Play next, Add to queue and Remove from queue edit the play
-    /// order and say so the same way.
+    /// order and say so the same way. Like, Remove like, Dislike and Remove dislike set the song's rating and say what
+    /// came of it where the hotkeys' outcome shows (`rate`).
     func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
@@ -469,6 +491,24 @@ final class MusicSearchNavigation {
             service.removeFromQueue(track)
         case .pinHome:
             if let item = MusicPinnedItem(track: track) { service.pinnedItems.toggle(item) }
+        case .like, .dislike:
+            if let status = action.ratingStatus { rate(status, track) }
+        }
+    }
+
+    /// Sets a song's rating and reports the outcome, a success as well as a failure: the menu closes at the click, so
+    /// nothing else shows that it went through. The report goes where the hotkeys' goes (`outcomes`): the notice line
+    /// while the popup is open, the HUD when it closed during the call. Disliking the song that plays skips it; any
+    /// other song leaves the player alone.
+    @discardableResult
+    func rate(_ status: MusicLikeStatus, _ track: MusicTrack) -> Task<Void, Never> {
+        Task { [service, weak self] in
+            let outcome = await service.setLike(status, of: track)
+            if let outcomes = self?.outcomes {
+                outcomes.report(outcome)
+            } else {
+                service.trackActions.post(outcome)
+            }
         }
     }
 
@@ -493,7 +533,7 @@ final class MusicSearchNavigation {
             service.trackActions.openPicker(for: collection)
         case .pinHome:
             if let item = MusicPinnedItem(collection: collection) { service.pinnedItems.toggle(item) }
-        case .playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist:
+        case .playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist, .like, .dislike:
             break
         }
     }

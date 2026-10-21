@@ -317,11 +317,14 @@ struct DeciApp: App {
         _musicHost = State(initialValue: music)
         // One opener for the Music popup: the Save hotkey and the hover card's buttons open it the same way.
         let musicPopupOpener = MusicPopupOpener()
+        // The hotkeys and the song menus report a Like or Dislike the same way: the popup's notice line, else the HUD.
+        let outcomes = MusicOutcomeReporter(musicHost: music, popupOpener: musicPopupOpener, hud: hud)
+        music.outcomes = outcomes
         let registry = ShortcutsRegistry(
             settings: settings,
             popupController: popupController,
             music: MusicShortcutActions(musicHost: music, popupOpener: musicPopupOpener),
-            hud: hud
+            outcomes: outcomes
         )
         _menuBarPopupController = State(initialValue: popupController)
         _shortcutsRegistry = State(initialValue: registry)

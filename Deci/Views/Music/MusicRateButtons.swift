@@ -33,17 +33,60 @@ nonisolated struct MusicRateButtonLook: Equatable {
     var isSelected: Bool { isActive }
 }
 
-/// The Dislike and Like icons at the end of the Now playing card's title row. Borderless, so a click rates the song and
-/// nothing else: the card stays and the popover does not open.
+/// How the two icons are laid out: the glyph, the hit area of each, the room between them and which way they stand. The
+/// hit area can also reach past `buttonWidth` on both sides, which takes no layout room.
+nonisolated struct MusicRateButtonMetrics: Equatable {
+    let glyphSize: Double
+    let buttonWidth: Double
+    let buttonHeight: Double
+    let spacing: Double
+    let axis: Axis
+    let horizontalReach: Double
+
+    init(
+        glyphSize: Double, buttonWidth: Double, buttonHeight: Double, spacing: Double,
+        axis: Axis = .horizontal, horizontalReach: Double = 0
+    ) {
+        self.glyphSize = glyphSize
+        self.buttonWidth = buttonWidth
+        self.buttonHeight = buttonHeight
+        self.spacing = spacing
+        self.axis = axis
+        self.horizontalReach = horizontalReach
+    }
+
+    /// The end of the Now playing card's title row: a hit area as high as the row.
+    static let hoverCard = MusicRateButtonMetrics(
+        glyphSize: MusicHoverCardMetrics.rateGlyphSize,
+        buttonWidth: MusicHoverCardMetrics.rateButtonWidth,
+        buttonHeight: MusicHoverCardMetrics.rateButtonHeight,
+        spacing: MusicHoverCardMetrics.rateButtonSpacing
+    )
+
+    /// Beside the popup's spectrum: one over the other, with the hit area reaching sideways.
+    static let popup = MusicRateButtonMetrics(
+        glyphSize: MusicPopupMetrics.rateGlyphSize,
+        buttonWidth: MusicPopupMetrics.rateButtonWidth,
+        buttonHeight: MusicPopupMetrics.rateButtonHeight,
+        spacing: MusicPopupMetrics.rateButtonSpacing,
+        axis: .vertical,
+        horizontalReach: MusicPopupMetrics.rateButtonReach
+    )
+}
+
+/// The Dislike and Like icons at the end of the Now playing card's title row, and beside the popup's spectrum. Borderless,
+/// so a click rates the song and nothing else: the card stays and the popover does not open.
 struct MusicRateButtons: View {
     let status: MusicLikeStatus?
+    var metrics: MusicRateButtonMetrics = .hoverCard
     let onDislike: () -> Void
     let onLike: () -> Void
 
-    private typealias Metrics = MusicHoverCardMetrics
-
     var body: some View {
-        HStack(spacing: Metrics.rateButtonSpacing) {
+        let layout = metrics.axis == .vertical
+            ? AnyLayout(VStackLayout(spacing: metrics.spacing))
+            : AnyLayout(HStackLayout(spacing: metrics.spacing))
+        layout {
             button(MusicRateButtonLook(kind: .dislike, status: status), action: onDislike)
             button(MusicRateButtonLook(kind: .like, status: status), action: onLike)
         }
@@ -52,10 +95,12 @@ struct MusicRateButtons: View {
     private func button(_ look: MusicRateButtonLook, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: look.symbolName)
-                .font(.system(size: Metrics.rateGlyphSize, weight: .medium))
+                .font(.system(size: metrics.glyphSize, weight: .medium))
                 .foregroundStyle(Color.white.opacity(look.glyphOpacity))
-                .frame(width: Metrics.rateButtonWidth, height: Metrics.rateButtonHeight)
+                .frame(width: metrics.buttonWidth, height: metrics.buttonHeight)
+                .padding(.horizontal, metrics.horizontalReach)
                 .contentShape(Rectangle())
+                .padding(.horizontal, -metrics.horizontalReach)
         }
         .buttonStyle(.plain)
         .help(look.title)

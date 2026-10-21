@@ -38,6 +38,22 @@ struct MusicServiceHostNavigationTests {
         #expect(host.navigation != nil)
     }
 
+    @Test("The outcome reporter set on the host reaches the navigation, whether it is set before the Music tab opens or after")
+    func reporterReachesTheNavigation() {
+        let reporter = RecordingOutcomeReporter()
+
+        let before = makeHost()
+        before.outcomes = reporter
+        before.loadIfNeeded()
+        #expect(before.navigation?.outcomes === reporter)
+
+        let after = makeHost()
+        after.loadIfNeeded()
+        #expect(after.navigation?.outcomes == nil)
+        after.outcomes = reporter
+        #expect(after.navigation?.outcomes === reporter)
+    }
+
     @Test("Loading again keeps the one navigation, and its service")
     func sameInstanceAfterLoadingAgain() throws {
         let host = makeHost()

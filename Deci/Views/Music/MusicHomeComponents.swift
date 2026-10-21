@@ -323,9 +323,11 @@ private struct MusicTrackMenuModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if let menu, case let actions = menu.actions(track, context), !actions.isEmpty {
-            content.contextMenu {
-                MusicTrackMenuItems(actions: actions) { menu.perform($0, track, context) }
-            }
+            content
+                .onHover { if $0 { menu.reveal(track, context) } }
+                .contextMenu {
+                    MusicTrackMenuItems(actions: actions) { menu.perform($0, track, context) }
+                }
         } else {
             content
         }

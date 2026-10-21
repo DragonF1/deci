@@ -92,6 +92,24 @@ nonisolated enum MusicPopupMetrics {
     /// without that much room shows a shorter count.
     static let timesRowGap: CGFloat = 8
 
+    /// The Dislike and Like icons beside the spectrum, one over the other and centred on its height: a 13 pt glyph in a
+    /// hit area 18 wide and 24 high, with a little room between the two and between them and the spectrum.
+    static let rateGlyphSize: CGFloat = 13
+    static let rateButtonWidth: CGFloat = 18
+    static let rateButtonHeight: CGFloat = 24
+    static let rateButtonSpacing: CGFloat = 2
+    static let rateGap: CGFloat = 4
+
+    /// How far each hit area reaches past its width on both sides, out of the layout, for a comfortable click target. It
+    /// stays inside the gap, so it never covers the spectrum.
+    static let rateButtonReach: CGFloat = 3
+
+    /// What the spectrum gets of the column's width: all of it, or what the icons and their gap leave of it when the song
+    /// can be rated. The times row under it keeps the full width.
+    static func spectrumWidth(showsRate: Bool) -> CGFloat {
+        showsRate ? playerColumnContentWidth - rateGap - rateButtonWidth : playerColumnContentWidth
+    }
+
     /// The right column's own header, and the padding around it and the content under it.
     static let headerHeight: CGFloat = 32
     static let rightPaddingTop: CGFloat = 8

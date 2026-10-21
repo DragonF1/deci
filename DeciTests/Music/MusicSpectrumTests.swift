@@ -125,6 +125,32 @@ struct MusicSpectrumGeometryTests {
         #expect(MusicSpectrum.width(forLevel: 0.404) == 56.5)
     }
 
+    @Test("in a narrower box a bar is 8 + (box - 22) x level wide, so the 7 pt at each side stays")
+    func narrowerBoxWidths() {
+        // The design's box is the same as before.
+        #expect(MusicSpectrum.width(forLevel: 0.5, boxWidth: 142) == MusicSpectrum.width(forLevel: 0.5))
+        #expect(MusicSpectrum.width(forLevel: 1, boxWidth: 142) == 128)
+        // 120 pt: the box beside the Dislike and Like icons.
+        #expect(MusicSpectrum.width(forLevel: 1, boxWidth: 120) == 106)
+        #expect(MusicSpectrum.width(forLevel: 0, boxWidth: 120) == 8)
+        #expect(MusicSpectrum.width(forLevel: 0.5, boxWidth: 120) == 57)
+        for box in [100.0, 120, 142] {
+            for level in stride(from: 0.0, through: 1.0, by: 0.05) {
+                let width = MusicSpectrum.width(forLevel: level, boxWidth: box)
+                #expect(width >= 8)
+                #expect((box - width) / 2 >= 7)
+            }
+        }
+    }
+
+    @Test("a box too narrow for the margins, or not a number, gets the smallest bars")
+    func degenerateBoxWidths() {
+        #expect(MusicSpectrum.width(forLevel: 1, boxWidth: 10) == 8)
+        #expect(MusicSpectrum.width(forLevel: 1, boxWidth: -5) == 8)
+        #expect(MusicSpectrum.width(forLevel: 1, boxWidth: .nan) == 8)
+        #expect(MusicSpectrum.width(forLevel: 1, boxWidth: .infinity) == 8)
+    }
+
     @Test("widths are held between 8 and 128, and a level that is not a number is the smallest bar")
     func widthLimits() {
         #expect(MusicSpectrum.width(forLevel: -4) == 8)

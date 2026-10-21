@@ -111,36 +111,40 @@ final class MusicLikeStore {
         let session = sessionRun
         await readIfUnknown(videoId)
         guard sessionRun == session else { return .quiet }
-        let target: MusicLikeStatus = statuses[videoId] == .like ? .indifferent : .like
-        return await rate(videoId: videoId, to: target)
+        return await set(statuses[videoId] == .like ? .indifferent : .like, videoId: videoId)
     }
 
-    /// Dislikes a song, or takes its dislike back when it is disliked. `onSent` runs once when a dislike (not the
-    /// removal of one) is on its way, right after the state shows it and before YouTube Music answers: the service
-    /// skips the song there. It does not wait for the song's state to be read, so the skip stays instant.
+    /// Dislikes a song, or takes its dislike back when it is disliked. `onSent` runs as `set` runs it. It does not wait
+    /// for the song's state to be read, so the skip stays instant.
     func dislike(videoId: String, onSent: (@MainActor () -> Void)? = nil) async -> MusicActionOutcome {
-        let target: MusicLikeStatus = statuses[videoId] == .dislike ? .indifferent : .dislike
-        return await rate(videoId: videoId, to: target, onSent: target == .dislike ? onSent : nil)
+        await set(statuses[videoId] == .dislike ? .indifferent : .dislike, videoId: videoId, onSent: onSent)
     }
 
-    /// Sends `target` for a song. When a call is already out for it, the tap shows at once, is remembered as what the song
-    /// should end as, and returns `.quiet`: the call that is out sends it when it is back and reports for both. A failed
-    /// call goes back to what YouTube Music last had; a tap made meanwhile is still sent, unless the session is gone.
-    private func rate(
+    /// Makes a song `status`, whatever it was: sending the state it already has does no harm. This is the menus' Like,
+    /// Remove like, Dislike and Remove dislike, and the one call the toggles above end in. `onSent` runs once when a
+    /// dislike (not the removal of one) is on its way, right after the state shows it and before YouTube Music answers:
+    /// the service skips the song there. It never waits for the song's state to be read. A blank id sends nothing.
+    ///
+    /// When a call is already out for the song, the tap shows at once, is remembered as what the song should end as, and
+    /// returns `.quiet`: the call that is out sends it when it is back and reports for both. A failed call goes back to
+    /// what YouTube Music last had; a tap made meanwhile is still sent, unless the session is gone.
+    func set(
+        _ status: MusicLikeStatus,
         videoId: String,
-        to target: MusicLikeStatus,
         onSent: (@MainActor () -> Void)? = nil
     ) async -> MusicActionOutcome {
+        guard !videoId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .quiet }
+        let skip = status == .dislike ? onSent : nil
         guard rating.insert(videoId).inserted else {
-            wanted[videoId] = target
-            statuses[videoId] = target
-            onSent?()
+            wanted[videoId] = status
+            statuses[videoId] = status
+            skip?()
             return .quiet
         }
         let session = sessionRun
         var confirmed = statuses[videoId]
-        var target = target
-        var onSent = onSent
+        var target = status
+        var onSent = skip
         var outcome = MusicActionOutcome.quiet
         while true {
             statuses[videoId] = target

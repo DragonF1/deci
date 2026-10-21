@@ -17,6 +17,8 @@ struct MusicSpectrumCanvas: View, Animatable {
     var fixedWidth: Double?
     /// The box's height: it stretches to fill the column, never under the design's.
     var height: Double = MusicSpectrum.boxHeight
+    /// The box's width: the design's, or less where the column makes room beside it.
+    var boxWidth: Double = MusicSpectrum.boxWidth
 
     var hue: Double
     var saturation: Double
@@ -29,6 +31,7 @@ struct MusicSpectrumCanvas: View, Animatable {
         barsOpacity: Double = 1,
         fixedWidth: Double? = nil,
         height: Double = MusicSpectrum.boxHeight,
+        boxWidth: Double = MusicSpectrum.boxWidth,
         accent: MusicTint
     ) {
         self.levels = levels
@@ -37,6 +40,7 @@ struct MusicSpectrumCanvas: View, Animatable {
         self.barsOpacity = barsOpacity
         self.fixedWidth = fixedWidth
         self.height = height
+        self.boxWidth = boxWidth
         hue = accent.hue
         saturation = accent.saturation
         brightness = accent.brightness
@@ -60,7 +64,7 @@ struct MusicSpectrumCanvas: View, Animatable {
             let edge = MusicSpectrum.fillEdge(height: height)
             let edgeY = MusicSpectrum.fillEdgeY(progress: progress, height: height)
             for (index, level) in levels.enumerated() {
-                let width = fixedWidth ?? MusicSpectrum.width(forLevel: level)
+                let width = fixedWidth ?? MusicSpectrum.width(forLevel: level, boxWidth: size.width)
                 let rect = CGRect(
                     x: (size.width - width) / 2,
                     y: MusicSpectrum.barY(index, height: height),
@@ -82,7 +86,7 @@ struct MusicSpectrumCanvas: View, Animatable {
                 }
             }
         }
-        .frame(width: MusicSpectrum.boxWidth, height: height)
+        .frame(width: boxWidth, height: height)
         .accessibilityHidden(true)
     }
 }
@@ -109,6 +113,8 @@ struct MusicSpectrumView: View {
     let track: MusicTrack?
     let service: MusicService?
     let spectrum: MusicSpectrumDriver
+    /// The box's width: the design's, or less where the column makes room beside it.
+    var width: Double = MusicSpectrum.boxWidth
 
     @Environment(\.musicAccent) private var accent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -153,6 +159,7 @@ struct MusicSpectrumView: View {
                 barsOpacity: state.barsOpacity,
                 fixedWidth: state.isEmptyLayout ? MusicPlayerColumnState.emptyBarWidth : nil,
                 height: height,
+                boxWidth: width,
                 accent: accent
             )
         }
@@ -212,7 +219,7 @@ struct MusicSpectrumView: View {
             ZStack(alignment: .topLeading) {
                 Rectangle()
                     .fill(Color.white.opacity(0.55))
-                    .frame(width: MusicSpectrum.boxWidth, height: 1)
+                    .frame(width: width, height: 1)
                     .offset(y: lineY)
                 Text(MusicTimeFormat.string(time))
                     .font(.system(size: 10, design: .monospaced))
@@ -224,9 +231,9 @@ struct MusicSpectrumView: View {
                             .fill(Color.black.opacity(0.70))
                     )
                     .fixedSize()
-                    .position(x: MusicSpectrum.boxWidth / 2, y: min(max(lineY - 9, 8), height - 8))
+                    .position(x: width / 2, y: min(max(lineY - 9, 8), height - 8))
             }
-            .frame(width: MusicSpectrum.boxWidth, height: height, alignment: .topLeading)
+            .frame(width: width, height: height, alignment: .topLeading)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }

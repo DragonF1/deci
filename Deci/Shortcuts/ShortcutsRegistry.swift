@@ -32,19 +32,19 @@ final class ShortcutsRegistry {
     private let settings: SettingsManager
     private let popupController: any MenuBarPopupControlling
     private let music: any MusicShortcutActing
-    private let hud: any MessageHUDPresenting
+    private let outcomes: any MusicOutcomeReporting
     private var didStart = false
 
     init(
         settings: SettingsManager,
         popupController: any MenuBarPopupControlling,
         music: any MusicShortcutActing,
-        hud: any MessageHUDPresenting
+        outcomes: any MusicOutcomeReporting
     ) {
         self.settings = settings
         self.popupController = popupController
         self.music = music
-        self.hud = hud
+        self.outcomes = outcomes
     }
 
     /// Stable `KeyboardShortcuts.Name` per action. The raw string is part of
@@ -56,9 +56,9 @@ final class ShortcutsRegistry {
     /// Routes a fired action to its handler. Exposed `internal` so tests can
     /// drive it directly without faking a global key event.
     ///
-    /// Like and Dislike wait on YouTube Music, so they run in a task that shows the
-    /// HUD once the answer is in; that task is returned for tests to wait on. The
-    /// other actions finish before this returns.
+    /// Like and Dislike wait on YouTube Music, so they run in a task that reports
+    /// the outcome once the answer is in; that task is returned for tests to wait
+    /// on. The other actions finish before this returns.
     @discardableResult
     func dispatch(_ action: ShortcutAction) -> Task<Void, Never>? {
         switch action {
@@ -82,9 +82,9 @@ final class ShortcutsRegistry {
 
     // MARK: - Music dispatch
 
+    /// Hands the outcome to where it is shown: the Music popup's notice line while that popup is open, else the HUD.
     private func show(_ outcome: MusicActionOutcome) {
-        guard let message = outcome.hudMessage else { return }
-        hud.showMessage(message)
+        outcomes.report(outcome)
     }
 
     /// Idempotent. Subsequent calls are no-ops. Safe to call from a SwiftUI

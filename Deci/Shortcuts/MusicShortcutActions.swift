@@ -49,19 +49,52 @@ final class MusicShortcutActions: MusicShortcutActing {
     }
 }
 
-/// How the hotkey HUD words what an action came to.
+/// How an action's outcome is worded, for the HUD and for the Music popup's notice line alike.
 nonisolated extension MusicActionOutcome {
+    /// The words for what the action came to; nil when there is nothing to report.
+    var noticeText: String? {
+        switch self {
+        case .liked: "Liked"
+        case .likeRemoved: "Removed like"
+        case .disliked: "Disliked"
+        case .dislikeRemoved: "Removed dislike"
+        case .nothingPlaying: "Nothing is playing"
+        case .signedOut: "Sign in to YouTube Music"
+        case .failed: "Couldn't reach YouTube Music"
+        case .musicHidden: "Show Music in the menu bar"
+        case .quiet: nil
+        }
+    }
+
+    /// The action did not happen: a refusal, or a call that did not go through. A rating that was made, a quiet outcome,
+    /// is not one.
+    var isFailure: Bool {
+        switch self {
+        case .liked, .likeRemoved, .disliked, .dislikeRemoved, .quiet: false
+        case .nothingPlaying, .signedOut, .failed, .musicHidden: true
+        }
+    }
+
+    /// A rating call that did not go through: YouTube Music could not be reached, or the session is gone. The Like and
+    /// Dislike buttons show only these, since a call that went through is already shown by the button.
+    var isRatingFailure: Bool { self == .failed || self == .signedOut }
+
     /// The line for the HUD; nil when there is nothing to report.
     var hudMessage: HUDMessage? {
+        guard let text = noticeText, let symbol = hudSymbol else { return nil }
+        return HUDMessage(symbol: symbol, text: text)
+    }
+
+    private var hudSymbol: String? {
         switch self {
-        case .liked: HUDMessage(symbol: "hand.thumbsup.fill", text: "Liked")
-        case .likeRemoved: HUDMessage(symbol: "hand.thumbsup", text: "Like removed")
-        case .disliked: HUDMessage(symbol: "hand.thumbsdown.fill", text: "Disliked")
-        case .dislikeRemoved: HUDMessage(symbol: "hand.thumbsdown", text: "Dislike removed")
-        case .nothingPlaying: HUDMessage(symbol: "music.note", text: "Nothing is playing")
-        case .signedOut: HUDMessage(symbol: "person.crop.circle.badge.exclamationmark", text: "Sign in to YouTube Music")
-        case .failed: HUDMessage(symbol: "exclamationmark.triangle", text: "Couldn't reach YouTube Music")
-        case .musicHidden: HUDMessage(symbol: "menubar.rectangle", text: "Show Music in the menu bar")
+        case .liked: "hand.thumbsup.fill"
+        case .likeRemoved: "hand.thumbsup"
+        case .disliked: "hand.thumbsdown.fill"
+        case .dislikeRemoved: "hand.thumbsdown"
+        case .nothingPlaying: "music.note"
+        case .signedOut: "person.crop.circle.badge.exclamationmark"
+        case .failed: "exclamationmark.triangle"
+        case .musicHidden: "menubar.rectangle"
         case .quiet: nil
         }
     }
@@ -71,7 +104,7 @@ extension MessageHUDPresenting {
     /// The hover card's Like and Dislike buttons: a call that did not go through is worded as the hotkey words it. A
     /// call that went through stays silent, since the button already shows it.
     func showIfFailed(_ outcome: MusicActionOutcome) {
-        guard outcome == .failed || outcome == .signedOut, let message = outcome.hudMessage else { return }
+        guard outcome.isRatingFailure, let message = outcome.hudMessage else { return }
         showMessage(message)
     }
 }

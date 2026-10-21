@@ -8,6 +8,9 @@ struct MusicTrackMenuHandler: Sendable {
     let perform: @MainActor (MusicTrackAction, MusicTrack, MusicTrackContext) -> Void
     /// Whether the song is pinned to Home, for the badge on its cover.
     let isPinned: @MainActor (MusicTrack) -> Bool
+    /// The pointer reached the song's row, or its menu is about to open: reads the song's rating, so the menu can word
+    /// Like and Dislike for it. Reads each song once. A row calls it from its hover or its menu, never from its body.
+    var reveal: @MainActor (MusicTrack, MusicTrackContext) -> Void = { _, _ in }
 }
 
 private struct MusicTrackMenuKey: EnvironmentKey {

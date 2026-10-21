@@ -357,7 +357,113 @@ struct MusicTrackActionsModelTests {
         #expect(titles == ["Save to playlist", "Pin to Home", "Go to album", "Go to artist"])
     }
 
+    // MARK: - Like and Dislike
+
+    private func rated(
+        _ track: Deci.MusicTrack, status: MusicLikeStatus? = nil, canRate: Bool = true,
+        in context: MusicTrackContext = .none, home: MusicHomePinState? = nil
+    ) -> [MusicTrackAction] {
+        MusicTrackActions.available(for: track, in: context, home: home, canRate: canRate, likeStatus: status)
+    }
+
+    @Test("A song the user can rate offers Like and Dislike, and a list asked for without a rating has neither")
+    func rateEntriesOffered() {
+        #expect(rated(MusicSamples.track("v1")) == [.saveToPlaylist, .like(removing: false), .dislike(removing: false)])
+        #expect(actions(MusicSamples.track("v1")) == [.saveToPlaylist])
+    }
+
+    @Test("Like and Dislike read the cached state: Remove like on a liked song, Remove dislike on a disliked one, else the plain words", arguments: [
+        (MusicLikeStatus?.none, "Like", "Dislike"),
+        (.indifferent, "Like", "Dislike"),
+        (.like, "Remove like", "Dislike"),
+        (.dislike, "Like", "Remove dislike"),
+    ])
+    func rateEntryWords(status: MusicLikeStatus?, like: String, dislike: String) {
+        let offered = rated(MusicSamples.track("v1"), status: status)
+        #expect(offered.map(\.title) == ["Save to playlist", like, dislike])
+    }
+
+    @Test("A user who cannot rate, and a song with no id, get neither entry")
+    func rateEntriesHidden() {
+        #expect(rated(MusicSamples.track("v1"), canRate: false) == [.saveToPlaylist])
+        #expect(rated(MusicSamples.track("v1"), status: .like, canRate: false) == [.saveToPlaylist])
+        #expect(rated(MusicSamples.track("")) == [.saveToPlaylist])
+        #expect(rated(MusicSamples.track("  ")) == [.saveToPlaylist])
+    }
+
+    @Test("A page is Liked music by any of its ids: the library page, YouTube's own browse id, or the playlist id", arguments: ["VLLM", "FEmusic_liked_videos", "LM"])
+    func likedMusicIds(id: String) {
+        #expect(MusicTrackContext(pageBrowseId: id, pageTitle: nil, pageIsEditable: false).isLikedMusic)
+    }
+
+    @Test("No other page is Liked music: no page, up next, an ordinary playlist, an album, and ids that only look alike", arguments: [
+        MusicTrackContext.none, .upNext,
+        MusicTrackContext(pageBrowseId: "VLPLfixtureMine", pageTitle: "Mine", pageIsEditable: true),
+        MusicTrackContext(pageBrowseId: "MPREbFixture", pageTitle: "Album", pageIsEditable: false),
+        MusicTrackContext(pageBrowseId: "", pageTitle: nil, pageIsEditable: false),
+        MusicTrackContext(pageBrowseId: "vllm", pageTitle: nil, pageIsEditable: false),
+        MusicTrackContext(pageBrowseId: "VLLM2", pageTitle: nil, pageIsEditable: false),
+    ])
+    func otherPagesAreNotLikedMusic(context: MusicTrackContext) {
+        #expect(!context.isLikedMusic)
+    }
+
+    @Test("Like and Dislike are a block of their own between the library block and the go to block")
+    func rateBlock() {
+        #expect(MusicTrackAction.like(removing: false).group == .rate)
+        #expect(MusicTrackAction.like(removing: true).group == .rate)
+        #expect(MusicTrackAction.dislike(removing: false).group == .rate)
+        #expect(MusicTrackAction.dislike(removing: true).group == .rate)
+        #expect(MusicTrackAction.Group.library < .rate && MusicTrackAction.Group.rate < .navigate)
+
+        #expect(MusicTrackActions.groups(of: rated(fullTrack(), in: ownPlaylist, home: .canPin))
+            == [[.saveToPlaylist, .pinHome(.canPin)], [.like(removing: false), .dislike(removing: false)],
+                [.goToAlbum, .goToArtist], [.removeFromPlaylist]])
+        #expect(MusicTrackActions.groups(of: rated(MusicSamples.track("v1")))
+            == [[.saveToPlaylist], [.like(removing: false), .dislike(removing: false)]])
+    }
+
+    @Test("With the queue entries, the order is queue, save and pin, Like and Dislike, go to, remove")
+    func rateEntriesInFullOrder() {
+        let offered = MusicTrackActions.available(
+            for: fullTrack(), in: ownPlaylist, home: .canPin, offersQueue: true, canRate: true, likeStatus: .like
+        )
+        #expect(offered == [
+            .playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin),
+            .like(removing: true), .dislike(removing: false),
+            .goToAlbum, .goToArtist, .removeFromPlaylist,
+        ])
+    }
+
+    @Test("Each entry sets one rating: Like and Dislike set theirs, and the removals set neither")
+    func ratingStatusOfEachEntry() {
+        #expect(MusicTrackAction.like(removing: false).ratingStatus == .like)
+        #expect(MusicTrackAction.like(removing: true).ratingStatus == .indifferent)
+        #expect(MusicTrackAction.dislike(removing: false).ratingStatus == .dislike)
+        #expect(MusicTrackAction.dislike(removing: true).ratingStatus == .indifferent)
+        for action in [MusicTrackAction.saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist, .playNext, .addToQueue, .removeFromQueue, .pinHome(.canPin)] {
+            #expect(action.ratingStatus == nil)
+        }
+    }
+
+    @Test("Like and Dislike are always on")
+    func rateEntriesEnabled() {
+        for action in [MusicTrackAction.like(removing: false), .like(removing: true), .dislike(removing: false), .dislike(removing: true)] {
+            #expect(action.isEnabled)
+        }
+    }
+
     // MARK: - Words
+
+    @Test("The rate words have no dash or ellipsis either")
+    func rateWords() {
+        let all: [MusicTrackAction] = [.like(removing: false), .like(removing: true), .dislike(removing: false), .dislike(removing: true)]
+        #expect(all.map(\.title) == ["Like", "Remove like", "Dislike", "Remove dislike"])
+        for action in all {
+            #expect(!action.title.contains("\u{2014}") && !action.title.contains("\u{2013}"))
+            #expect(!action.title.contains("...") && !action.title.contains("\u{2026}"))
+        }
+    }
 
     @Test("The menu words are the ones the owner asked for")
     func titles() {
