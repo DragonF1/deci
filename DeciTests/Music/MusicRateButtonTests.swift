@@ -78,7 +78,7 @@ struct MusicRateButtonTests {
 
     // MARK: - In the popup's player column
 
-    @Test("The strip is 12 pt high with a 12 pt glyph, in the 13 pt between the times and the transport, 3 pt into the transport")
+    @Test("The strip is 12 pt high with a 12 pt glyph, in the 23 pt between the times and the transport, 2 pt over the transport")
     func stripMeasures() {
         let m = MusicPopupMetrics.self
         #expect(m.rateGlyphSize == 12)
@@ -87,8 +87,8 @@ struct MusicRateButtonTests {
         #expect(m.rateGlyphSize <= m.rateStripHeight)
         #expect(m.spectrumBlockSpacing == 6)
         #expect(m.playerColumnSpacing == 10)
-        #expect(m.timesToTransport == 13)
-        #expect(m.rateStripOverlap == 3)
+        #expect(m.timesToTransport == 23)
+        #expect(m.rateStripLift == 2)
         // The spectrum block's own padding makes up the rest of the gap over the column's spacing.
         #expect(m.timesToTransport >= m.playerColumnSpacing)
     }
@@ -99,13 +99,13 @@ struct MusicRateButtonTests {
         // Measured in the popup: the digits' ink ends 3 pt above the 13 pt times row's bottom, the icons' ink runs 1 pt
         // past their box, and Previous and Next's ink starts 11 pt into the 32 pt transport.
         let digitsInkBottom = -(m.timesToTransport + 3)
-        let iconTop = -(m.rateStripHeight - m.rateStripOverlap)
-        let iconInkBottom = m.rateStripOverlap + 1
+        let iconTop = -(m.rateStripHeight + m.rateStripLift)
+        let iconInkBottom = -m.rateStripLift + 1
         let skipInkTop: CGFloat = 11
         let above = iconTop - digitsInkBottom
         let below = skipInkTop - iconInkBottom
         #expect(above == below)
-        #expect(above == 7)
+        #expect(above == 12)
     }
 
     @Test("Each icon's hit area is 24 by 20, reaching past its 12 by 12 box, and stays inside the gaps above and below the strip")
@@ -118,7 +118,7 @@ struct MusicRateButtonTests {
         #expect(m.rateGlyphSize + 2 * m.rateReachX == m.rateHitWidth)
         #expect(m.rateStripHeight + 2 * m.rateReachY == m.rateHitHeight)
         // Above the strip, the reach ends at the times row and never covers it.
-        #expect(m.rateReachY <= m.timesToTransport - (m.rateStripHeight - m.rateStripOverlap))
+        #expect(m.rateReachY <= m.timesToTransport - (m.rateStripHeight + m.rateStripLift))
     }
 
     @Test("The icons rest at the brightness of Shuffle and Loop")

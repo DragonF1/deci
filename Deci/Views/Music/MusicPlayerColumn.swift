@@ -42,7 +42,7 @@ struct MusicPlayerColumn: View {
                 // Behind the transport, so its buttons keep their clicks where the icons' reach runs into them.
                 .background(alignment: .top) {
                     rateStrip(state)
-                        .alignmentGuide(.top) { $0[.bottom] - MusicPopupMetrics.rateStripOverlap }
+                        .alignmentGuide(.top) { $0[.bottom] + MusicPopupMetrics.rateStripLift }
                 }
             viewButtons(state)
         }

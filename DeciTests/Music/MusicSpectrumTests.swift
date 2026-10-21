@@ -112,15 +112,15 @@ struct MusicSpectrumGeometryTests {
         #expect(MusicSpectrum.previewLineY(atY: 500, height: height) == height - 1)
     }
 
-    @Test("the rate strip's 3 pt more under the times makes the box 188 pt instead of 191, with the same 28 bars, as thick")
+    @Test("the rate strip's 13 pt more under the times makes the box 178 pt instead of 191, with the same 28 bars, as thick")
     func shorterBoxForTheRateStrip() {
         // The column's 490 pt of content less the cover, the texts, the transport and the 10 pt gaps leaves the block
-        // 210 pt: the box, 6 pt, the 13 pt times row, and now the 3 pt the times sit further from the transport. The
-        // strip itself is out of the layout. 191 before, 188 now.
+        // 210 pt: the box, 6 pt, the 13 pt times row, and now the 13 pt the times sit further from the transport. The
+        // strip itself is out of the layout. 191 before, 178 now.
         let before = 191.0
         let m = MusicPopupMetrics.self
         let after = before - Double(m.timesToTransport - m.playerColumnSpacing)
-        #expect(after == 188)
+        #expect(after == 178)
         #expect(MusicSpectrum.barThickness(height: before) == 3.5)
         #expect(MusicSpectrum.barThickness(height: after) == 3.5)
         for height in [before, after] {
@@ -128,8 +128,8 @@ struct MusicSpectrumGeometryTests {
             #expect(abs(MusicSpectrum.barY(27, height: height) + thickness - height) < 1e-9)
         }
         #expect(abs(MusicSpectrum.pitch(height: before) - 187.5 / 27) < 1e-9)
-        #expect(abs(MusicSpectrum.pitch(height: after) - 169.5 / 27) < 1e-9)
-        // The gap between two bars is 3.4 pt before and 2.8 pt now.
+        #expect(abs(MusicSpectrum.pitch(height: after) - 174.5 / 27) < 1e-9)
+        // The gap between two bars is 3.4 pt before and 3.0 pt now.
         #expect(MusicSpectrum.pitch(height: after) - 3.5 > 2.5)
         // Even the column with no song (a 67 pt text block, 35 pt more than a song's) keeps the bars well over 1.5 pt.
         #expect(MusicSpectrum.barThickness(height: after - 35) >= 1.5)

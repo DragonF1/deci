@@ -100,14 +100,15 @@ nonisolated enum MusicPopupMetrics {
 
     /// The space between the times row and the transport, which holds the strip of Like and Dislike. The spectrum takes
     /// whatever the column leaves, so it ends this much (and its own 6 pt gap and the times) above the transport.
-    static let timesToTransport: CGFloat = 13
+    static let timesToTransport: CGFloat = 23
 
     /// The strip of Like and Dislike: a 12 pt glyph in a box 12 wide and 12 high. It is out of the layout, behind the
-    /// transport, and runs `rateStripOverlap` into the transport's boxes. The times' digits then end 7 pt over the
-    /// icons and the icons 7 pt over Previous and Next, the same gap on both sides.
+    /// transport, and ends `rateStripLift` over the transport's boxes. The times' digits then end 12 pt over the icons
+    /// and the icons 12 pt over Previous and Next, the same gap on both sides and about half the 22 pt from Next down
+    /// to Up next.
     static let rateGlyphSize: CGFloat = 12
     static let rateStripHeight: CGFloat = 12
-    static let rateStripOverlap: CGFloat = 3
+    static let rateStripLift: CGFloat = 2
 
     /// Each icon's hit area, 24 wide and 20 high, centred on its box. It reaches `rateReachX` and `rateReachY` past the
     /// box, out of the layout; above the strip the reach ends where the times row does, and below it the reach runs
