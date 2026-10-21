@@ -14,11 +14,12 @@ private struct MusicTrackMenuKey: EnvironmentKey {
     static let defaultValue: MusicTrackMenuHandler? = nil
 }
 
-/// Pin / Unpin to Home for playlist, album and artist tiles and rows: where a collection stands with Home (nil when
-/// it cannot be pinned there), and what a pick does. The Music tab sets it; outside it a tile has no such items.
+/// What the right click menu of a playlist, album or artist tile or row calls: which actions the collection offers here
+/// (save to playlist, pin to Home, go to the album, go to the artist), and what a pick does. The Music tab sets it;
+/// outside it a tile has no menu.
 struct MusicCollectionPinHandler: Sendable {
-    let homePin: @MainActor (MusicCollection) -> MusicHomePinState?
-    let toggleHome: @MainActor (MusicCollection) -> Void
+    let actions: @MainActor (MusicCollection, MusicTrackContext) -> [MusicTrackAction]
+    let perform: @MainActor (MusicTrackAction, MusicCollection, MusicTrackContext) -> Void
     /// Whether the tile or row is pinned to Home, so its cover wears the pin badge.
     let isPinned: @MainActor (MusicCollection) -> Bool
 }

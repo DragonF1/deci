@@ -91,13 +91,21 @@ struct MusicHomeView: View {
 
                 MusicHorizontalShelf {
                     ForEach(pins.items, id: \.key) { pin in
-                        MusicPinnedTile(item: pin) { open(pin) }
-                            .contextMenu {
-                                Button(MusicHomePinState.pinned.title) { pins.unpin(pin) }
-                            }
+                        pinnedTile(pin)
                     }
                 }
             }
+        }
+    }
+
+    /// A pinned tile has the menu its song or collection has anywhere else. Unpin from Home is in it, in the place of Pin
+    /// to Home, so it shows once.
+    @ViewBuilder
+    private func pinnedTile(_ pin: MusicPinnedItem) -> some View {
+        let tile = MusicPinnedTile(item: pin) { open(pin) }
+        switch pin.shelfItem {
+        case .track(let track): tile.musicTrackMenu(track)
+        case .collection(let collection): tile.musicCollectionMenu(collection)
         }
     }
 
@@ -178,6 +186,7 @@ struct MusicHomeView: View {
             ) {
                 service.play(track)
             }
+            .musicTrackMenu(track)
         case .collection(let collection):
             MusicCoverTile(
                 title: collection.title,

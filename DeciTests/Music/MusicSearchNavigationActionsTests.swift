@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicSearchNavigationActionsTests.swift
 // The song actions through the Music tab's navigation: Go to album and Go to artist open a page the way an artist
 // opens (with Back returning to the results), the save menu floats over whatever shows, and the other actions
-// reach the actions store.
+// reach the actions store. The same menu for an album, playlist or artist tile.
 
 import Foundation
 import Testing
@@ -61,6 +61,18 @@ private struct ActionNavHarness {
         track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
         return track
     }
+
+    /// An album tile with its artist and the playlist id of its songs.
+    var albumTile: MusicCollection {
+        MusicSamples.collection(
+            "MPREbTile", kind: .album, title: "Tile Album", subtitle: "Album",
+            artistLinks: [MusicArtistLink(name: "Tile Artist", browseId: "UCtileArtist")], audioPlaylistId: "OLAK5uy_tile"
+        )
+    }
+
+    var playlistTile: MusicCollection { MusicSamples.collection("VLPLtile", kind: .playlist, title: "Tile Playlist") }
+
+    var artistTile: MusicCollection { MusicSamples.collection("UCtileArtist", kind: .artist, title: "Tile Artist", subtitle: "Artist") }
 }
 
 @MainActor
@@ -425,6 +437,151 @@ struct MusicSearchNavigationActionsTests {
         h.nav.perform(.removeFromQueue, for: MusicSamples.track("b"), in: .upNext)
         #expect(queued() == ["a", "y", "c", "d", "e", "x"])
         #expect(h.service.trackActions.notice?.text == "Removed from queue")
+    }
+
+    // MARK: - Collection tiles
+
+    @Test("An album tile's menu is save, the Home pin, go to album and go to artist; a playlist's is save and the pin; an artist's is the pin and go to artist")
+    func collectionActionsLists() {
+        let h = ActionNavHarness()
+        #expect(h.nav.actions(for: h.albumTile, in: .none) == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist])
+        #expect(h.nav.actions(for: h.playlistTile, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
+        #expect(h.nav.actions(for: h.artistTile, in: .none) == [.pinHome(.canPin), .goToArtist])
+    }
+
+    @Test("A tile's menu has no queue entries, whether or not a song is playing")
+    func collectionActionsHaveNoQueue() {
+        let h = ActionNavHarness()
+        h.playSomething()
+        for tile in [h.albumTile, h.playlistTile, h.artistTile] {
+            let offered = h.nav.actions(for: tile, in: .upNext)
+            #expect(!offered.contains(.playNext) && !offered.contains(.addToQueue) && !offered.contains(.removeFromQueue))
+        }
+    }
+
+    @Test("Go to album on an album tile opens that album over the results, and Back returns to them")
+    func collectionGoToAlbum() async {
+        let h = ActionNavHarness()
+        await h.search("q", songs: [h.album])
+        h.nav.perform(.goToAlbum, for: h.albumTile, in: .none)
+        #expect(h.path == ["MPREbTile"])
+        #expect(h.service.browse.path.last?.kind == .album)
+        #expect(h.service.browse.path.last?.title == "Tile Album")
+        #expect(h.nav.hidesResults)
+        h.service.browse.back()
+        #expect(h.nav.showsResults)
+    }
+
+    @Test("Go to artist opens the artist the album tile links to, and an artist tile opens itself")
+    func collectionGoToArtist() {
+        let h = ActionNavHarness()
+        h.nav.perform(.goToArtist, for: h.albumTile, in: .none)
+        #expect(h.path == ["UCtileArtist"])
+        #expect(h.service.browse.path.last?.kind == .artist)
+        #expect(h.service.browse.path.last?.title == "Tile Artist")
+
+        let other = ActionNavHarness()
+        other.nav.perform(.goToArtist, for: other.artistTile, in: .none)
+        #expect(other.path == ["UCtileArtist"])
+    }
+
+    @Test("Go to artist and Go to album do nothing where the tile has no such page")
+    func collectionGoToWithoutPage() {
+        let h = ActionNavHarness()
+        h.nav.perform(.goToArtist, for: h.playlistTile, in: .none)
+        h.nav.perform(.goToAlbum, for: h.playlistTile, in: .none)
+        h.nav.perform(.goToAlbum, for: h.artistTile, in: .none)
+        h.nav.perform(.goToArtist, for: MusicSamples.collection("MPREbBare", kind: .album), in: .none)
+        #expect(h.path.isEmpty)
+    }
+
+    @Test("Save to playlist on an album tile opens the save menu for the whole album, asking for its playlists by the OLAK id")
+    func collectionPickerForAlbum() async {
+        let h = ActionNavHarness()
+        h.nav.perform(.saveToPlaylist, for: h.albumTile, in: .none)
+        #expect(h.nav.showsPicker)
+        #expect(h.nav.rightColumn == .browse)
+        #expect(h.service.trackActions.picker?.collection == h.albumTile)
+        #expect(h.service.trackActions.picker?.track == nil)
+        #expect(await h.until { await h.backend.sourceOptionsCalls == ["OLAK5uy_tile"] })
+        #expect(await h.backend.playlistOptionsCalls.isEmpty)
+    }
+
+    @Test("Save to playlist on a playlist tile asks for its playlists by the playlist id without its VL")
+    func collectionPickerForPlaylist() async {
+        let h = ActionNavHarness()
+        h.nav.perform(.saveToPlaylist, for: h.playlistTile, in: .none)
+        #expect(await h.until { await h.backend.sourceOptionsCalls == ["PLtile"] })
+    }
+
+    @Test("Save to playlist does nothing for an album with no album playlist id, and for an artist")
+    func collectionPickerNeedsSource() async {
+        let h = ActionNavHarness()
+        h.nav.perform(.saveToPlaylist, for: MusicSamples.collection("MPREbBare", kind: .album), in: .none)
+        h.nav.perform(.saveToPlaylist, for: h.artistTile, in: .none)
+        #expect(h.nav.showsPicker == false)
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(await h.backend.sourceOptionsCalls.isEmpty)
+    }
+
+    @Test("Picking a playlist for an album adds the whole album and keeps the menu open")
+    func collectionPickKeepsMenu() async {
+        let h = ActionNavHarness()
+        await h.backend.setSourceOptions(sourceId: "OLAK5uy_tile", [MusicSamples.playlistOption("PLone", title: "Road Trip")])
+        h.nav.perform(.saveToPlaylist, for: h.albumTile, in: .none)
+        #expect(await h.until { if case .loaded? = h.service.trackActions.picker?.load { true } else { false } })
+        h.service.trackActions.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        #expect(await h.until { h.service.trackActions.notice?.text == "Saved to Road Trip" })
+        #expect(await h.backend.addPlaylistCalls == [FakeMusicBackend.AddPlaylistCall(sourceId: "OLAK5uy_tile", playlistId: "PLone")])
+        #expect(await h.backend.addToPlaylistCalls.isEmpty)
+        #expect(h.nav.showsPicker)
+    }
+
+    @Test("Pin to Home on a tile pins it with its kind, and the menu then offers Unpin from Home")
+    func collectionPinAndUnpin() {
+        let h = ActionNavHarness()
+        h.nav.perform(.pinHome(.canPin), for: h.albumTile, in: .none)
+        #expect(h.service.pinnedItems.items.map(\.key) == ["album:MPREbTile"])
+        #expect(h.nav.actions(for: h.albumTile, in: .none).contains(.pinHome(.pinned)))
+
+        h.nav.perform(.pinHome(.pinned), for: h.albumTile, in: .none)
+        #expect(h.service.pinnedItems.isEmpty)
+
+        h.nav.perform(.pinHome(.canPin), for: h.playlistTile, in: .none)
+        h.nav.perform(.pinHome(.canPin), for: h.artistTile, in: .none)
+        #expect(h.service.pinnedItems.items.map(\.key) == ["playlist:VLPLtile", "artist:UCtileArtist"])
+    }
+
+    @Test("A full Home offers the refusal on a new tile, and nothing is pinned by it")
+    func collectionPinWhenFull() {
+        let h = ActionNavHarness()
+        for index in 0..<MusicPinnedItems.limit {
+            h.service.pinnedItems.pin(MusicPinnedItem(kind: .artist, id: "UC\(index)", title: "Name \(index)"))
+        }
+        #expect(h.nav.actions(for: h.albumTile, in: .none).contains(.pinHome(.full)))
+        h.nav.perform(.pinHome(.full), for: h.albumTile, in: .none)
+        #expect(h.service.pinnedItems.items.count == MusicPinnedItems.limit)
+        #expect(!h.service.pinnedItems.isPinned(h.albumTile))
+    }
+
+    @Test("Liked music offers no Home pin, since it cannot be pinned")
+    func collectionLikedMusicNoPin() {
+        let h = ActionNavHarness()
+        let offered = h.nav.actions(for: MusicBrowseStore.likedMusic, in: .none)
+        #expect(!offered.contains { if case .pinHome = $0 { true } else { false } })
+    }
+
+    @Test("The queue and remove picks do nothing on a tile")
+    func collectionIgnoresSongOnlyPicks() async {
+        let h = ActionNavHarness()
+        h.service.play(MusicSamples.track("a"), in: MusicSamples.page("VLPL1", tracks: MusicSamples.tracks("a", "b")))
+        let queued = h.service.queue.tracks.map(\.videoId)
+        for action in [MusicTrackAction.playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist] {
+            h.nav.perform(action, for: h.albumTile, in: .none)
+        }
+        #expect(h.service.queue.tracks.map(\.videoId) == queued)
+        #expect(h.service.trackActions.notice == nil)
+        #expect(await h.backend.removeFromPlaylistCalls.isEmpty)
     }
 
     // MARK: - Session

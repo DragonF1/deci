@@ -92,6 +92,21 @@ enum MusicTrackActions {
         return actions
     }
 
+    /// The entries of an album, playlist or artist tile, in the song menu's order and words. An album: save the whole
+    /// album, pin, go to the album, go to its artist. A playlist or mix: save and pin. An artist: pin, go to the artist.
+    /// Save shows only for what has a playlist to add from (`playlistSourceId`). Go to album and Go to artist hide on
+    /// the page they would open. `home` is where the tile stands with the Pinned row on Home; nil leaves the entry out.
+    static func available(
+        for collection: MusicCollection, in context: MusicTrackContext, home: MusicHomePinState? = nil
+    ) -> [MusicTrackAction] {
+        var actions: [MusicTrackAction] = []
+        if playlistSourceId(for: collection) != nil { actions.append(.saveToPlaylist) }
+        if let home { actions.append(.pinHome(home)) }
+        if collection.kind == .album, collection.browseId != context.pageBrowseId { actions.append(.goToAlbum) }
+        if artistCollection(for: collection, in: context) != nil { actions.append(.goToArtist) }
+        return actions
+    }
+
     /// The actions cut into the blocks of the menu, in order, with no empty block: a line goes between two blocks.
     static func groups(of actions: [MusicTrackAction]) -> [[MusicTrackAction]] {
         var groups: [[MusicTrackAction]] = []
@@ -112,6 +127,43 @@ enum MusicTrackActions {
         guard let artist = track.artistLinks.first, !artist.browseId.isEmpty,
               artist.browseId != context.pageBrowseId else { return nil }
         return artist.opener
+    }
+
+    /// The artist page a tile opens: an album's first linked artist, an artist's own page. Nil for a playlist or mix,
+    /// for an album with no artist link, and for the page the tile is on.
+    static func artistCollection(for collection: MusicCollection, in context: MusicTrackContext) -> MusicCollection? {
+        switch collection.kind {
+        case .artist:
+            return collection.browseId.isEmpty || collection.browseId == context.pageBrowseId ? nil : collection
+        case .album:
+            guard let artist = collection.artistLinks.first, !artist.browseId.isEmpty,
+                  artist.browseId != context.pageBrowseId else { return nil }
+            return artist.opener
+        case .playlist:
+            return nil
+        }
+    }
+
+    /// The album page an album tile opens: the tile itself, with its name and cover. Nil for any other kind.
+    static func albumCollection(for collection: MusicCollection) -> MusicCollection? {
+        collection.kind == .album && !collection.browseId.isEmpty ? collection : nil
+    }
+
+    /// The playlist a whole-tile save adds from. A playlist or mix: its browse id without the "VL". An album: the
+    /// playlist of its songs, when the tile carried one (its own browse id is not a playlist). Nil for an artist, for
+    /// Liked music (a like, not a playlist) and for an id with nothing after the "VL".
+    static func playlistSourceId(for collection: MusicCollection) -> String? {
+        switch collection.kind {
+        case .playlist:
+            var id = collection.browseId
+            if id.hasPrefix("VL") { id.removeFirst(2) }
+            return id.isEmpty || id == "LM" ? nil : id
+        case .album:
+            guard let id = collection.audioPlaylistId, !id.isEmpty else { return nil }
+            return id
+        case .artist:
+            return nil
+        }
     }
 
     /// The album page a song opens: its id, and the album's name when the row had one, so the page header has a

@@ -55,6 +55,11 @@ actor FakeMusicBackend: MusicBackend {
         let playlistId: String
     }
 
+    nonisolated struct AddPlaylistCall: Hashable, Sendable {
+        let sourceId: String
+        let playlistId: String
+    }
+
     nonisolated struct RemoveFromPlaylistCall: Hashable, Sendable {
         let videoId: String
         let setVideoId: String
@@ -109,6 +114,9 @@ actor FakeMusicBackend: MusicBackend {
     private var playlistOptions: [String: [MusicPlaylistOption]] = [:]
     private var playlistOptionsErrors: [String: any Error] = [:]
     private var playlistOptionsGates: [String: MusicTestGate] = [:]
+    private var sourceOptions: [String: [MusicPlaylistOption]] = [:]
+    private var sourceOptionsErrors: [String: any Error] = [:]
+    private var sourceOptionsGates: [String: MusicTestGate] = [:]
     private var addToPlaylistError: (any Error)?
     private var addToPlaylistGate: MusicTestGate?
     private var removeFromPlaylistError: (any Error)?
@@ -125,7 +133,9 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var pageCalls: [String] = []
     private(set) var moreTracksCalls: [MoreTracksCall] = []
     private(set) var playlistOptionsCalls: [String] = []
+    private(set) var sourceOptionsCalls: [String] = []
     private(set) var addToPlaylistCalls: [AddToPlaylistCall] = []
+    private(set) var addPlaylistCalls: [AddPlaylistCall] = []
     private(set) var removeFromPlaylistCalls: [RemoveFromPlaylistCall] = []
     private(set) var searchedQueries: [String] = []
     private(set) var searchedArtistQueries: [String] = []
@@ -252,11 +262,15 @@ actor FakeMusicBackend: MusicBackend {
         moreTracksGates[MoreTracksCall(browseId: browseId, continuation: continuation)] = gate
     }
 
-    // Song actions. The picker's list is scripted per video; the three write calls share one error and one gate each
-    // and are recorded. A gate holds the call after it was recorded; nil removes a gate or an error.
+    // Song actions. The picker's list is scripted per video, or per source playlist when a whole album or playlist is
+    // being saved; the write calls (a song, or a whole playlist, added) share one error and one gate and are recorded.
+    // A gate holds the call after it was recorded; nil removes a gate or an error.
     func setPlaylistOptions(videoId: String, _ options: [MusicPlaylistOption]) { playlistOptions[videoId] = options }
     func setPlaylistOptionsError(videoId: String, _ error: (any Error)?) { playlistOptionsErrors[videoId] = error }
     func setPlaylistOptionsGate(videoId: String, _ gate: MusicTestGate?) { playlistOptionsGates[videoId] = gate }
+    func setSourceOptions(sourceId: String, _ options: [MusicPlaylistOption]) { sourceOptions[sourceId] = options }
+    func setSourceOptionsError(sourceId: String, _ error: (any Error)?) { sourceOptionsErrors[sourceId] = error }
+    func setSourceOptionsGate(sourceId: String, _ gate: MusicTestGate?) { sourceOptionsGates[sourceId] = gate }
     func setAddToPlaylistError(_ error: (any Error)?) { addToPlaylistError = error }
     func setAddToPlaylistGate(_ gate: MusicTestGate?) { addToPlaylistGate = gate }
     func setRemoveFromPlaylistError(_ error: (any Error)?) { removeFromPlaylistError = error }
@@ -378,8 +392,24 @@ actor FakeMusicBackend: MusicBackend {
         return options
     }
 
+    func addToPlaylistOptions(sourcePlaylistId: String) async throws -> [MusicPlaylistOption] {
+        sourceOptionsCalls.append(sourcePlaylistId)
+        let gate = sourceOptionsGates[sourcePlaylistId], error = sourceOptionsErrors[sourcePlaylistId]
+        let options = sourceOptions[sourcePlaylistId] ?? []
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return options
+    }
+
     func addToPlaylist(videoId: String, playlistId: String) async throws {
         addToPlaylistCalls.append(AddToPlaylistCall(videoId: videoId, playlistId: playlistId))
+        let gate = addToPlaylistGate, error = addToPlaylistError
+        if let gate { await gate.wait() }
+        if let error { throw error }
+    }
+
+    func addPlaylistToPlaylist(sourceId: String, playlistId: String) async throws {
+        addPlaylistCalls.append(AddPlaylistCall(sourceId: sourceId, playlistId: playlistId))
         let gate = addToPlaylistGate, error = addToPlaylistError
         if let gate { await gate.wait() }
         if let error { throw error }
@@ -564,9 +594,19 @@ nonisolated enum MusicSamples {
         _ browseId: String,
         kind: MusicCollection.Kind = .playlist,
         title: String? = nil,
-        subtitle: String = "Playlist"
+        subtitle: String = "Playlist",
+        artistLinks: [MusicArtistLink] = [],
+        audioPlaylistId: String? = nil
     ) -> MusicCollection {
-        MusicCollection(browseId: browseId, kind: kind, title: title ?? "Title \(browseId)", subtitle: subtitle, thumbnailURL: nil)
+        MusicCollection(
+            browseId: browseId,
+            kind: kind,
+            title: title ?? "Title \(browseId)",
+            subtitle: subtitle,
+            thumbnailURL: nil,
+            artistLinks: artistLinks,
+            audioPlaylistId: audioPlaylistId
+        )
     }
 
     static func collections(_ ids: String...) -> [MusicCollection] {

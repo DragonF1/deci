@@ -107,8 +107,16 @@ actor MusicBackendLive: MusicBackend {
         try await client.addToPlaylistOptions(videoId: videoId)
     }
 
+    func addToPlaylistOptions(sourcePlaylistId: String) async throws -> [MusicPlaylistOption] {
+        try await client.addToPlaylistOptions(sourcePlaylistId: sourcePlaylistId)
+    }
+
     func addToPlaylist(videoId: String, playlistId: String) async throws {
         try await client.addVideo(videoId, toPlaylist: playlistId)
+    }
+
+    func addPlaylistToPlaylist(sourceId: String, playlistId: String) async throws {
+        try await client.addPlaylist(sourceId, toPlaylist: playlistId)
     }
 
     func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws {

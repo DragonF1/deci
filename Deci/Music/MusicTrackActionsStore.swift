@@ -5,19 +5,51 @@ import os
 
 private let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicTrackActions")
 
-/// The state behind a song's "..." menu: the save to playlist menu and the short line that says what happened.
-/// `MusicService` owns one (`service.trackActions`). The state lives here, not in the views, because the popover
+/// The state behind a song's or a tile's "..." menu: the save to playlist menu and the short line that says what
+/// happened. `MusicService` owns one (`service.trackActions`). The state lives here, not in the views, because the popover
 /// panel hides whenever it loses focus. Nothing here logs a playlist or song, only counts and error kinds.
 @MainActor
 @Observable
 final class MusicTrackActionsStore {
-    /// The save to playlist menu: the song being saved and the playlists it can go to. It stays open while the user
-    /// adds the song to one playlist after another.
+    /// The save to playlist menu: what is being saved and the playlists it can go to. It stays open while the user
+    /// adds it to one playlist after another.
     struct Picker: Equatable {
-        let track: MusicTrack
+        /// A song, or a whole album or playlist with the id of the playlist its songs are added from.
+        enum Target: Equatable {
+            case track(MusicTrack)
+            case collection(MusicCollection, sourceId: String)
+
+            /// Names what is saved, for the saves out and the busy keys. A song and a playlist never share one.
+            var key: String {
+                switch self {
+                case .track(let track): "track:" + track.videoId
+                case .collection(_, let sourceId): "list:" + sourceId
+                }
+            }
+        }
+
+        let target: Target
         var load: MusicBrowseStore.Load<[MusicPlaylistOption]>
         /// Playlists a save is out for; their rows show it and ignore taps until it answers.
         var saving: Set<String> = []
+
+        /// The song being saved; nil when it is a whole album or playlist.
+        var track: MusicTrack? {
+            if case .track(let track) = target { track } else { nil }
+        }
+
+        /// The album or playlist being saved; nil when it is a song.
+        var collection: MusicCollection? {
+            if case .collection(let collection, _) = target { collection } else { nil }
+        }
+
+        /// The name of what is being saved.
+        var title: String {
+            switch target {
+            case .track(let track): track.title
+            case .collection(let collection, _): collection.title
+            }
+        }
     }
 
     /// A short line under the list: what was done, or why it was not.
@@ -42,7 +74,7 @@ final class MusicTrackActionsStore {
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     /// Writes in flight, so a second tap on the same thing sends nothing more.
     @ObservationIgnored private var busy: Set<String> = []
-    /// The playlists a save is out for, by song, so a menu opened again for that song shows them saving.
+    /// The playlists a save is out for, by what is saved (`Picker.Target.key`), so a menu opened again for it shows them saving.
     @ObservationIgnored private var savesOut: [String: Set<String>] = [:]
     /// Told when a call says the session is gone, so the service can sign out.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
@@ -60,14 +92,36 @@ final class MusicTrackActionsStore {
 
     /// Opens the picker for a song and loads its playlists. Opening it again retries a failed list.
     func openPicker(for track: MusicTrack) {
+        open(.track(track))
+    }
+
+    /// Opens the picker for a whole album or playlist and loads the playlists it can go to. Does nothing for a tile
+    /// with no playlist to add from (`MusicTrackActions.playlistSourceId`).
+    func openPicker(for collection: MusicCollection) {
+        guard let sourceId = MusicTrackActions.playlistSourceId(for: collection) else { return }
+        open(.collection(collection, sourceId: sourceId))
+    }
+
+    /// The menu's Try again: loads the open picker's list again.
+    func retryPicker() {
+        guard let target = picker?.target else { return }
+        open(target)
+    }
+
+    private func open(_ target: Picker.Target) {
         pickerRun += 1
         let run = pickerRun
-        picker = Picker(track: track, load: .loading, saving: savesOut[track.videoId] ?? [])
+        picker = Picker(target: target, load: .loading, saving: savesOut[target.key] ?? [])
         pickerTask?.cancel()
-        let videoId = track.videoId
         pickerTask = Task { [weak self, backend] in
             do {
-                let options = try await backend.addToPlaylistOptions(videoId: videoId)
+                let options: [MusicPlaylistOption]
+                switch target {
+                case .track(let track):
+                    options = try await backend.addToPlaylistOptions(videoId: track.videoId)
+                case .collection(_, let sourceId):
+                    options = try await backend.addToPlaylistOptions(sourcePlaylistId: sourceId)
+                }
                 self?.landOptions(options, run: run)
             } catch {
                 self?.failOptions(error, run: run)
@@ -81,9 +135,10 @@ final class MusicTrackActionsStore {
         picker = nil
     }
 
-    /// A playlist was tapped. One that already holds the song says so without a call. Otherwise the song is added and
-    /// the line says it saved; the menu stays open, the row ticked, so the song can go to another playlist too. Saves
-    /// to different playlists can be out at once. A failure leaves the row unticked for another try.
+    /// A playlist was tapped. One that already holds the song (or all of the album or playlist) says so without a
+    /// call. Otherwise it is added and the line says it saved; the menu stays open, the row ticked, so it can go to
+    /// another playlist too. Saves to different playlists can be out at once. A failure leaves the row unticked for
+    /// another try.
     func choose(_ option: MusicPlaylistOption) {
         guard let current = picker, case .loaded(let options) = current.load,
               !current.saving.contains(option.playlistId) else { return }
@@ -93,18 +148,23 @@ final class MusicTrackActionsStore {
             post("Already in \(option.title)")
             return
         }
-        let videoId = current.track.videoId
-        let key = busyKey("save:\(option.playlistId):\(videoId)")
+        let target = current.target
+        let key = busyKey("save:\(option.playlistId):\(target.key)")
         guard busy.insert(key).inserted else { return }
-        savesOut[videoId, default: []].insert(option.playlistId)
+        savesOut[target.key, default: []].insert(option.playlistId)
         picker?.saving.insert(option.playlistId)
         let session = sessionRun
         Task { [weak self, backend] in
             do {
-                try await backend.addToPlaylist(videoId: videoId, playlistId: option.playlistId)
-                self?.landSave(option, videoId: videoId, key: key, session: session)
+                switch target {
+                case .track(let track):
+                    try await backend.addToPlaylist(videoId: track.videoId, playlistId: option.playlistId)
+                case .collection(_, let sourceId):
+                    try await backend.addPlaylistToPlaylist(sourceId: sourceId, playlistId: option.playlistId)
+                }
+                self?.landSave(option, targetKey: target.key, key: key, session: session)
             } catch {
-                self?.failSave(error, option: option, videoId: videoId, key: key, session: session)
+                self?.failSave(error, option: option, targetKey: target.key, key: key, session: session)
             }
         }
     }
@@ -122,12 +182,12 @@ final class MusicTrackActionsStore {
         expireIfSignedOut(error)
     }
 
-    /// Ticks the row in whichever menu is open for the song, the one the tap came from or one opened again since.
-    private func landSave(_ option: MusicPlaylistOption, videoId: String, key: String, session: Int) {
+    /// Ticks the row in whichever menu is open for what was saved, the one the tap came from or one opened again since.
+    private func landSave(_ option: MusicPlaylistOption, targetKey: String, key: String, session: Int) {
         busy.remove(key)
         guard sessionRun == session else { return }
-        endSave(option.playlistId, videoId: videoId)
-        if var current = picker, current.track.videoId == videoId {
+        endSave(option.playlistId, targetKey: targetKey)
+        if var current = picker, current.target.key == targetKey {
             current.saving.remove(option.playlistId)
             if case .loaded(var options) = current.load,
                let index = options.firstIndex(where: { $0.playlistId == option.playlistId }) {
@@ -144,13 +204,13 @@ final class MusicTrackActionsStore {
     /// YouTube refuses an add the playlist already holds (no dedupe option is sent), so a refusal most likely means
     /// the list was out of date and it is already there.
     private func failSave(
-        _ error: any Error, option: MusicPlaylistOption, videoId: String, key: String, session: Int
+        _ error: any Error, option: MusicPlaylistOption, targetKey: String, key: String, session: Int
     ) {
         busy.remove(key)
         guard sessionRun == session else { return }
         logger.error("save failed: \(MusicService.logDescription(of: error), privacy: .public)")
-        endSave(option.playlistId, videoId: videoId)
-        if picker?.track.videoId == videoId { picker?.saving.remove(option.playlistId) }
+        endSave(option.playlistId, targetKey: targetKey)
+        if picker?.target.key == targetKey { picker?.saving.remove(option.playlistId) }
         guard !expireIfSignedOut(error) else { return }
         if (error as? MusicError) == .rejected {
             post("Not added. \(option.title) may already have it.", isError: true)
@@ -159,9 +219,9 @@ final class MusicTrackActionsStore {
         }
     }
 
-    private func endSave(_ playlistId: String, videoId: String) {
-        savesOut[videoId]?.remove(playlistId)
-        if savesOut[videoId]?.isEmpty == true { savesOut[videoId] = nil }
+    private func endSave(_ playlistId: String, targetKey: String) {
+        savesOut[targetKey]?.remove(playlistId)
+        if savesOut[targetKey]?.isEmpty == true { savesOut[targetKey] = nil }
     }
 
     // MARK: - Remove from playlist

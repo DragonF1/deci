@@ -175,6 +175,11 @@ struct MusicCollection: Sendable, Hashable, Identifiable {
     /// YouTube's own second line, e.g. "Album • Daft Punk • 2013" or "Playlist • 50 songs".
     let subtitle: String
     let thumbnailURL: URL?
+    /// The artists the subtitle links to, in the order shown. Only a Home or shelf tile has them; empty elsewhere.
+    var artistLinks: [MusicArtistLink] = []
+    /// An album's playlist of songs ("OLAK5uy_..."), the id a whole-album save adds from. Only an album tile that
+    /// carries one has it; nil elsewhere.
+    var audioPlaylistId: String?
 
     var id: String { browseId }
 }
@@ -311,8 +316,14 @@ protocol MusicBackend: Sendable {
     func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage
     /// The playlists the user can add `videoId` to, each marked when it already holds the song.
     func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption]
+    /// The playlists the user can add a whole playlist or album to (`sourcePlaylistId`, a leading "VL" is ignored).
+    /// Each is marked when it already holds all of it.
+    func addToPlaylistOptions(sourcePlaylistId: String) async throws -> [MusicPlaylistOption]
     /// Adds `videoId` to the playlist (a leading "VL" is ignored). Throws `.rejected` when YouTube does not say it worked.
     func addToPlaylist(videoId: String, playlistId: String) async throws
+    /// Adds every song of the playlist `sourceId` (an album's "OLAK..." id works too) to the playlist `playlistId`. Throws
+    /// `.rejected` when YouTube does not say it worked.
+    func addPlaylistToPlaylist(sourceId: String, playlistId: String) async throws
     /// Removes one row of the playlist, named by its `setVideoId`. Throws `.rejected` when YouTube does not say it worked.
     func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws
     /// Sends one history ping and returns the HTTP status YouTube answered with (200 or 204 when

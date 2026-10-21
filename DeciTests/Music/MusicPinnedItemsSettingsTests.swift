@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicPinnedItemsSettingsTests.swift
-// The pinned items are remembered across launches in settings.json (`musicPinnedItems`), and the artists an older
-// build saved under `musicPinnedArtists` carry over.
+// The pinned items are remembered across launches in settings.json (`musicPinnedItems`), an album pin keeps its
+// artist links and album playlist id there (an older file without them still reads), and the artists an older build
+// saved under `musicPinnedArtists` carry over.
 
 import Foundation
 import Testing
@@ -148,6 +149,81 @@ struct MusicPinnedItemsSettingsTests {
         let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
         #expect(decoded == settings)
         #expect(decoded.musicPinnedItems == sample)
+    }
+
+    // MARK: - Album extras
+
+    private let albumSample = MusicPinnedItem(
+        kind: .album,
+        id: "MPRE1",
+        title: "Record",
+        subtitle: "Album \u{2022} Ay",
+        album: MusicPinnedAlbum(audioPlaylistId: "OLAK5uy_a", artists: [.init(name: "Ay", browseId: "UCa")])
+    )
+
+    @Test("an album pin keeps its extras under album: the playlist id and the artists")
+    func albumExtrasShape() throws {
+        let json = #"""
+        {"musicPinnedItems": [
+            {"kind": "album", "id": "MPRE1", "title": "Record", "subtitle": "Album • Ay",
+             "album": {"audioPlaylistId": "OLAK5uy_a", "artists": [{"name": "Ay", "browseId": "UCa"}]}}
+        ]}
+        """#
+        #expect(try decode(json).musicPinnedItems == [albumSample])
+    }
+
+    @Test("an album pin saved before the extras existed still reads, with none")
+    func oldAlbumPinReads() throws {
+        let json = #"{"musicPinnedItems": [{"kind": "album", "id": "MPRE1", "title": "Record", "subtitle": "Album"}]}"#
+        let item = try #require(decode(json).musicPinnedItems.first)
+        #expect(item.id == "MPRE1")
+        #expect(item.album == nil)
+    }
+
+    @Test("an album payload this build cannot read keeps the pin and drops the extras")
+    func badAlbumPayloadKeepsPin() throws {
+        let json = #"""
+        {"musicPinnedItems": [
+            {"kind": "album", "id": "MPRE1", "title": "Record", "album": "oops"},
+            {"kind": "album", "id": "MPRE2", "title": "Other", "album": {"audioPlaylistId": 7, "artists": [1, 2]}},
+            {"kind": "album", "id": "MPRE3", "title": "Third", "album": {"audioPlaylistId": "OLAK5uy_c", "artists": "no"}}
+        ]}
+        """#
+        let items = try decode(json).musicPinnedItems
+        #expect(items.map(\.id) == ["MPRE1", "MPRE2", "MPRE3"])
+        #expect(items[0].album == nil)
+        #expect(items[1].album?.audioPlaylistId == nil)
+        #expect(items[1].album?.artists.isEmpty == true)
+        #expect(items[2].album?.audioPlaylistId == "OLAK5uy_c")
+        #expect(items[2].album?.artists.isEmpty == true)
+    }
+
+    @Test("only an album keeps an album payload")
+    func albumPayloadOnAlbumOnly() throws {
+        let json = #"""
+        {"musicPinnedItems": [
+            {"kind": "playlist", "id": "VLPL1", "title": "Mix", "album": {"audioPlaylistId": "OLAK5uy_x"}},
+            {"kind": "artist", "id": "UCa", "title": "Ay", "album": {"audioPlaylistId": "OLAK5uy_x"}},
+            {"kind": "song", "id": "vid1", "title": "Tune", "album": {"audioPlaylistId": "OLAK5uy_x"}}
+        ]}
+        """#
+        #expect(try decode(json).musicPinnedItems.allSatisfy { $0.album == nil })
+    }
+
+    @Test("an album pin's extras survive an encode and decode")
+    func albumExtrasRoundTrip() throws {
+        var settings = AppSettings()
+        settings.musicPinnedItems = sample + [albumSample]
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded == settings)
+        #expect(decoded.musicPinnedItems.last?.album == albumSample.album)
+    }
+
+    @Test("a pin with no extras writes no album key, so the file stays as an older build wrote it")
+    func noExtrasNoKey() throws {
+        let data = try JSONEncoder().encode(sample[2])
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["album"] == nil)
     }
 
     // MARK: - From the old key

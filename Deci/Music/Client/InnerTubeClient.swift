@@ -325,6 +325,19 @@ actor InnerTubeClient {
         return options
     }
 
+    /// The playlists the user can add a whole playlist or album to, each marked when it already holds all of it. The
+    /// source goes without the "VL" a browse id carries. Only the count is logged.
+    func addToPlaylistOptions(sourcePlaylistId: String) async throws -> [MusicPlaylistOption] {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let id = Self.plainPlaylistId(sourcePlaylistId)
+        guard !id.isEmpty else { return [] }
+        let session = try await sessionOrFallback()
+        let data = try await post("playlist/get_add_to_playlist", session: session, body: ["playlistId": id])
+        let options = try InnerTubeParser.addToPlaylistOptions(from: data)
+        Self.log.info("add to playlist picker for a playlist returned \(options.count) playlists")
+        return options
+    }
+
     /// Adds one song to a playlist. No `dedupeOption`: "DEDUPE_OPTION_SKIP" skips YouTube's duplicate check and adds
     /// the song twice (ytmusicapi sends it only for `duplicates=True`). Without it a song the playlist already holds
     /// is refused, which lands as `.rejected`.
@@ -332,6 +345,15 @@ actor InnerTubeClient {
         guard !videoId.isEmpty else { throw MusicError.parse("playlist edit has no video id") }
         let action: [String: Any] = ["action": "ACTION_ADD_VIDEO", "addedVideoId": videoId]
         try await editPlaylist(playlistId, action: action, what: "add")
+    }
+
+    /// Adds every song of the playlist `sourceId` (an album's "OLAK..." id works too) to a playlist, with one
+    /// ACTION_ADD_PLAYLIST. Like the song add it sends no `dedupeOption`.
+    func addPlaylist(_ sourceId: String, toPlaylist playlistId: String) async throws {
+        let source = Self.plainPlaylistId(sourceId)
+        guard !source.isEmpty else { throw MusicError.parse("playlist edit has no source playlist id") }
+        let action: [String: Any] = ["action": "ACTION_ADD_PLAYLIST", "addedFullListId": source]
+        try await editPlaylist(playlistId, action: action, what: "add playlist")
     }
 
     /// Removes one row of a playlist, named by its `setVideoId` (the same song twice is two rows).
@@ -345,14 +367,20 @@ actor InnerTubeClient {
     /// worked is logged, never an id.
     private func editPlaylist(_ playlistId: String, action: [String: Any], what: String) async throws {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
-        var id = playlistId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if id.hasPrefix("VL") { id.removeFirst(2) }
+        let id = Self.plainPlaylistId(playlistId)
         guard !id.isEmpty else { throw MusicError.parse("playlist edit has no playlist id") }
         let session = try await sessionOrFallback()
         let data = try await post("browse/edit_playlist", session: session, body: ["playlistId": id, "actions": [action]])
         let succeeded = try InnerTubeParser.playlistEditSucceeded(in: data)
         Self.log.info("playlist \(what, privacy: .public) succeeded \(succeeded, privacy: .public)")
         guard succeeded else { throw MusicError.rejected }
+    }
+
+    /// A playlist id as the edit calls take it: trimmed, without the "VL" a browse id carries.
+    private static func plainPlaylistId(_ playlistId: String) -> String {
+        var id = playlistId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if id.hasPrefix("VL") { id.removeFirst(2) }
+        return id
     }
 
     private func browse(browseId: String) async throws -> Data {

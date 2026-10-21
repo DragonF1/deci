@@ -379,7 +379,14 @@ extension InnerTubeParser {
         let thumbnail = pickThumbnail(tile["thumbnailRenderer"], near: 300)
 
         if let browse = endpoint?["browseEndpoint"] as? [String: Any] {
-            return collection(browse, title: title, subtitle: text(of: subtitleRuns), thumbnail: thumbnail)
+            return collection(
+                browse,
+                title: title,
+                subtitle: text(of: subtitleRuns),
+                thumbnail: thumbnail,
+                artistLinks: artistLinks(in: subtitleRuns),
+                audioPlaylistId: albumPlaylistId(in: tile)
+            )
         }
         if let watch = endpoint?["watchEndpoint"] as? [String: Any] {
             if let videoId = string(watch["videoId"]) {
@@ -424,12 +431,37 @@ extension InnerTubeParser {
     /// "Episodes for later" (playlist SE) lists podcast episodes only, which Deci cannot play, so its page would be empty.
     private static let episodesForLaterBrowseId = "VLSE"
 
-    private static func collection(_ browse: [String: Any], title: String, subtitle: String?, thumbnail: URL?) -> MusicShelfItem? {
+    /// `artistLinks` are the subtitle's artists. `audioPlaylistId` is read for every tile but kept only for an album.
+    private static func collection(
+        _ browse: [String: Any],
+        title: String,
+        subtitle: String?,
+        thumbnail: URL?,
+        artistLinks: [MusicArtistLink] = [],
+        audioPlaylistId: String? = nil
+    ) -> MusicShelfItem? {
         guard var browseId = string(browse["browseId"]), browseId != episodesForLaterBrowseId,
               let kind = collectionKind(of: browse) else { return nil }
         // A library artist links to "MPLA" + its channel id; the artist page is the channel id (as ytmusicapi does).
         if kind == .artist, browseId.hasPrefix("MPLAUC") { browseId.removeFirst(4) }
-        return .collection(MusicCollection(browseId: browseId, kind: kind, title: title, subtitle: subtitle ?? "", thumbnailURL: thumbnail))
+        return .collection(MusicCollection(
+            browseId: browseId,
+            kind: kind,
+            title: title,
+            subtitle: subtitle ?? "",
+            thumbnailURL: thumbnail,
+            artistLinks: artistLinks,
+            audioPlaylistId: kind == .album ? audioPlaylistId : nil
+        ))
+    }
+
+    /// The playlist of an album's songs, behind the play button over its cover ("OLAK5uy_..."). A radio or mix id, a
+    /// blank one, or a tile with no play button gives nil, so no save is offered on a guess.
+    private static func albumPlaylistId(in tile: [String: Any]) -> String? {
+        let target = path(tile, "thumbnailOverlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint") as? [String: Any]
+        let endpoint = (target?["watchPlaylistEndpoint"] ?? target?["watchEndpoint"]) as? [String: Any]
+        guard let id = string(endpoint?["playlistId"]), id.hasPrefix("OLAK") else { return nil }
+        return id
     }
 
     /// A mix has no page of its own, only a playlist id: its page is "VL" + that id.

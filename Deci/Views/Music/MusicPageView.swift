@@ -309,7 +309,7 @@ struct MusicPageView: View {
     @ViewBuilder
     private func shelves(of page: MusicBrowsePage) -> some View {
         ForEach(Array(page.shelves.enumerated()), id: \.offset) { _, shelf in
-            shelfSection(shelf)
+            shelfSection(shelf, on: page)
                 .padding(.top, MusicBrowseLayout.artistSectionGap)
         }
     }
@@ -324,7 +324,7 @@ struct MusicPageView: View {
                 topSongs(page: page)
             }
             ForEach(Array(page.shelves.enumerated()), id: \.offset) { _, shelf in
-                shelfSection(shelf)
+                shelfSection(shelf, on: page)
             }
         }
     }
@@ -351,13 +351,19 @@ struct MusicPageView: View {
         }
     }
 
-    private func shelfSection(_ shelf: MusicShelf) -> some View {
+    /// A shelf on `page`. Its tiles' menus know the page, so they never offer to open the page they are on; their songs
+    /// are not the page's own rows, so the page counts as not editable for them (no Remove).
+    private func shelfSection(_ shelf: MusicShelf, on page: MusicBrowsePage) -> some View {
         MusicShelfView(
             shelf: shelf,
             nowPlayingId: service.player.nowPlaying?.videoId,
             isPlaying: service.player.isPlaying,
             onPlay: { service.play($0) },
             onOpen: { browse.open($0) }
+        )
+        .environment(
+            \.musicTrackContext,
+            MusicTrackContext(pageBrowseId: page.browseId, pageTitle: page.title, pageIsEditable: false)
         )
     }
 }

@@ -167,14 +167,10 @@ private struct MusicActionsModifier: ViewModifier {
 
     /// Also which tiles and rows wear the pin badge: those pinned to Home.
     private var collectionPin: MusicCollectionPinHandler? {
-        guard let service else { return nil }
+        guard let service, let navigation else { return nil }
         return MusicCollectionPinHandler(
-            homePin: { collection in
-                MusicPinnedItem(collection: collection).map { service.pinnedItems.state(for: $0) }
-            },
-            toggleHome: { collection in
-                if let item = MusicPinnedItem(collection: collection) { service.pinnedItems.toggle(item) }
-            },
+            actions: { navigation.actions(for: $0, in: $1) },
+            perform: { navigation.perform($0, for: $1, in: $2) },
             isPinned: { service.pinnedItems.isPinned($0) }
         )
     }

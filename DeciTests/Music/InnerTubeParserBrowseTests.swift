@@ -60,6 +60,31 @@ struct InnerTubeParserBrowseTests {
         return #"{"browseEndpoint":{"browseId":"\#(id)"\#(config)}}"#
     }
 
+    /// A tile whose subtitle is the given runs (raw JSON, joined with commas), so a run can carry a destination.
+    private func tile(title: String, endpoint: String, subtitleRuns: [String], extra: String = "") -> String {
+        """
+        {"musicTwoRowItemRenderer":{"title":{"runs":[{"text":"\(title)"}]},"subtitle":{"runs":[\(subtitleRuns.joined(separator: ","))]},\
+        "navigationEndpoint":\(endpoint)\(extra)}}
+        """
+    }
+
+    private func run(_ text: String) -> String { #"{"text":"\#(text)"}"# }
+
+    private var bullet: String { run(" \u{2022} ") }
+
+    /// A subtitle run that opens a page of `pageType`.
+    private func linkRun(_ text: String, id: String, pageType: String) -> String {
+        #"{"text":"\#(text)","navigationEndpoint":\#(browseEndpoint(id, pageType: pageType))}"#
+    }
+
+    /// The play button over a tile's cover, with the endpoint under `key` carrying `playlistId`.
+    private func playOverlay(_ playlistId: String, key: String = "watchPlaylistEndpoint") -> String {
+        """
+        ,"thumbnailOverlay":{"musicItemThumbnailOverlayRenderer":{"content":{"musicPlayButtonRenderer":\
+        {"playNavigationEndpoint":{"\(key)":{"playlistId":"\(playlistId)"}}}}}}
+        """
+    }
+
     // MARK: - Continuation tokens
 
     @Test("A query-style token carries the q: prefix, a body-style token goes through bare")
@@ -246,6 +271,125 @@ struct InnerTubeParserBrowseTests {
         let tiles = (0..<5_000).map { tile(title: "Album \($0)", endpoint: browseEndpoint("MPREb\($0)", pageType: "MUSIC_PAGE_TYPE_ALBUM")) }
         let page = try InnerTubeParser.homePage(from: homeData(tiles: tiles))
         #expect(page.shelves.first?.items.count == 5_000)
+    }
+
+    // MARK: - Collection tiles: artist link and album playlist id
+
+    @Test("An album tile keeps the artist its subtitle links to and the OLAK playlist id behind its play button")
+    func homeAlbumTileKeepsArtistAndAudioPlaylist() throws {
+        let data = homeData(tiles: [
+            tile(
+                title: "Random Access Memories",
+                endpoint: browseEndpoint("MPREbalbum", pageType: "MUSIC_PAGE_TYPE_ALBUM"),
+                subtitleRuns: [
+                    run("Album"), bullet, linkRun("Daft Punk", id: "UCdaft", pageType: "MUSIC_PAGE_TYPE_ARTIST"), bullet, run("2013"),
+                ],
+                extra: playOverlay("OLAK5uy_random")
+            ),
+        ])
+        let album = try #require(collections(in: InnerTubeParser.homePage(from: data).shelves[0]).first)
+        #expect(album.kind == .album)
+        #expect(album.browseId == "MPREbalbum")
+        #expect(album.subtitle == "Album \u{2022} Daft Punk \u{2022} 2013")
+        #expect(album.artistLinks == [MusicArtistLink(name: "Daft Punk", browseId: "UCdaft")])
+        #expect(album.audioPlaylistId == "OLAK5uy_random")
+    }
+
+    @Test("An album tile with several credited artists keeps each once, in order, and a library artist opens its channel")
+    func homeAlbumTileKeepsEveryArtist() throws {
+        let data = homeData(tiles: [
+            tile(
+                title: "Collab",
+                endpoint: browseEndpoint("MPREbcollab", pageType: "MUSIC_PAGE_TYPE_ALBUM"),
+                subtitleRuns: [
+                    run("Album"), bullet,
+                    linkRun("First", id: "UCfirst", pageType: "MUSIC_PAGE_TYPE_ARTIST"), run(", "),
+                    linkRun("Second", id: "MPLAUCsecond", pageType: "MUSIC_PAGE_TYPE_LIBRARY_ARTIST"), run(" & "),
+                    linkRun("First", id: "UCfirst", pageType: "MUSIC_PAGE_TYPE_ARTIST"), run(" & Plain Name"),
+                ]
+            ),
+        ])
+        let album = try #require(collections(in: InnerTubeParser.homePage(from: data).shelves[0]).first)
+        #expect(album.artistLinks == [
+            MusicArtistLink(name: "First", browseId: "UCfirst"),
+            MusicArtistLink(name: "Second", browseId: "UCsecond"),
+        ])
+    }
+
+    @Test("An album tile reads the OLAK id from a watch endpoint too, and ignores an id that is not an album's")
+    func homeAlbumTileAudioPlaylistVariants() throws {
+        let album = browseEndpoint("MPREbalbum", pageType: "MUSIC_PAGE_TYPE_ALBUM")
+        let data = homeData(tiles: [
+            tile(title: "Watch", endpoint: browseEndpoint("MPREb1", pageType: "MUSIC_PAGE_TYPE_ALBUM"), extra: playOverlay("OLAK5uy_watch", key: "watchEndpoint")),
+            tile(title: "Radio", endpoint: browseEndpoint("MPREb2", pageType: "MUSIC_PAGE_TYPE_ALBUM"), extra: playOverlay("RDAMPLOLAK5uy_radio")),
+            tile(title: "Blank", endpoint: browseEndpoint("MPREb3", pageType: "MUSIC_PAGE_TYPE_ALBUM"), extra: playOverlay("")),
+            tile(title: "No button", endpoint: album),
+        ])
+        let items = collections(in: try InnerTubeParser.homePage(from: data).shelves[0])
+        #expect(items.map(\.audioPlaylistId) == ["OLAK5uy_watch", nil, nil, nil])
+        #expect(items.allSatisfy { $0.artistLinks.isEmpty })
+    }
+
+    @Test("An album subtitle without a linked artist, or with an artist name that has no page, keeps no artist link")
+    func homeAlbumTileWithoutArtistLink() throws {
+        let data = homeData(tiles: [
+            tile(title: "Single", endpoint: browseEndpoint("MPREb1", pageType: "MUSIC_PAGE_TYPE_ALBUM"), subtitle: "Single \u{2022} 2021"),
+            tile(
+                title: "Unlinked",
+                endpoint: browseEndpoint("MPREb2", pageType: "MUSIC_PAGE_TYPE_ALBUM"),
+                subtitleRuns: [run("Album"), bullet, run("Nobody")]
+            ),
+            tile(
+                title: "User channel",
+                endpoint: browseEndpoint("MPREb3", pageType: "MUSIC_PAGE_TYPE_ALBUM"),
+                subtitleRuns: [run("Album"), bullet, linkRun("Someone", id: "UCuser", pageType: "MUSIC_PAGE_TYPE_USER_CHANNEL")]
+            ),
+        ])
+        let items = collections(in: try InnerTubeParser.homePage(from: data).shelves[0])
+        #expect(items.count == 3)
+        #expect(items.allSatisfy { $0.artistLinks.isEmpty })
+    }
+
+    @Test("A playlist tile and a mix tile keep no artist and no album playlist id, even with a play button")
+    func homePlaylistTileKeepsNoArtist() throws {
+        let data = homeData(tiles: [
+            tile(
+                title: "Road Trip",
+                endpoint: browseEndpoint("VLPLroad", pageType: "MUSIC_PAGE_TYPE_PLAYLIST"),
+                subtitleRuns: [run("Playlist"), bullet, run("50 songs")],
+                extra: playOverlay("PLroad")
+            ),
+            tile(title: "My Mix 1", endpoint: #"{"watchPlaylistEndpoint":{"playlistId":"RDAMPLmixone"}}"#, extra: playOverlay("RDAMPLmixone")),
+        ])
+        let items = collections(in: try InnerTubeParser.homePage(from: data).shelves[0])
+        #expect(items.map(\.kind) == [.playlist, .playlist])
+        #expect(items.map(\.browseId) == ["VLPLroad", "VLRDAMPLmixone"])
+        #expect(items.allSatisfy { $0.artistLinks.isEmpty && $0.audioPlaylistId == nil })
+    }
+
+    @Test("An artist tile keeps no artist link and no album playlist id")
+    func homeArtistTileKeepsNothingExtra() throws {
+        let data = homeData(tiles: [
+            tile(
+                title: "Daft Punk",
+                endpoint: browseEndpoint("UCdaft", pageType: "MUSIC_PAGE_TYPE_ARTIST"),
+                subtitleRuns: [run("Artist"), bullet, run("9.1M subscribers")],
+                extra: playOverlay("RDEMdaft")
+            ),
+        ])
+        let artist = try #require(collections(in: InnerTubeParser.homePage(from: data).shelves[0]).first)
+        #expect(artist.kind == .artist)
+        #expect(artist.browseId == "UCdaft")
+        #expect(artist.artistLinks.isEmpty)
+        #expect(artist.audioPlaylistId == nil)
+    }
+
+    @Test("The captured home keeps its playlists as they were: no artist, no album playlist id")
+    func homeCaptureCollectionsUnchanged() throws {
+        let page = try InnerTubeParser.homePage(from: fixture("browse-home.json"))
+        let lists = collections(in: try shelf("Trending community playlists", in: page.shelves))
+        #expect(lists.count == 3)
+        #expect(lists.allSatisfy { $0.artistLinks.isEmpty && $0.audioPlaylistId == nil })
     }
 
     // MARK: - History

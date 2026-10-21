@@ -68,6 +68,7 @@ struct MusicShelfView: View {
             ) {
                 onPlay(track)
             }
+            .musicTrackMenu(track)
         case .collection(let collection):
             MusicCoverTile(
                 title: collection.title,

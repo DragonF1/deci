@@ -51,6 +51,29 @@ nonisolated struct MusicPinnedSong: Codable, Equatable, Sendable {
     }
 }
 
+/// What a pinned album needs on top of the shared fields for its menu to work like the tile it was pinned from: the
+/// artists its subtitle links to (Go to artist) and the playlist of its songs (Save to playlist). Saved as one object,
+/// so a payload this build cannot read costs the album only these extras. A pin saved before they existed has none, and
+/// its menu leaves those entries out.
+nonisolated struct MusicPinnedAlbum: Codable, Equatable, Sendable {
+    var audioPlaylistId: String?
+    var artists: [MusicPinnedSong.Artist]
+
+    init(audioPlaylistId: String? = nil, artists: [MusicPinnedSong.Artist] = []) {
+        self.audioPlaylistId = audioPlaylistId
+        self.artists = artists
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        audioPlaylistId = try? c.decodeIfPresent(String.self, forKey: .audioPlaylistId)
+        artists = (try? c.decodeIfPresent([MusicPinnedSong.Artist].self, forKey: .artists)) ?? []
+    }
+
+    /// Nothing worth keeping.
+    var isEmpty: Bool { (audioPlaylistId ?? "").isEmpty && artists.isEmpty }
+}
+
 /// One item pinned to Music Home as settings.json keeps it: what the Home tile draws and what a tap opens or plays.
 /// The photo is kept as the URL string, so a value that is not a URL cannot cost the listener the rest of their
 /// settings.
@@ -71,6 +94,8 @@ nonisolated struct MusicPinnedItem: Codable, Equatable, Sendable {
     var thumbnailURL: String?
     /// Only a song has it.
     var song: MusicPinnedSong?
+    /// Only an album has it, and only one pinned from a tile that carried them.
+    var album: MusicPinnedAlbum?
 
     init(
         kind: Kind,
@@ -78,7 +103,8 @@ nonisolated struct MusicPinnedItem: Codable, Equatable, Sendable {
         title: String,
         subtitle: String? = nil,
         thumbnailURL: String? = nil,
-        song: MusicPinnedSong? = nil
+        song: MusicPinnedSong? = nil,
+        album: MusicPinnedAlbum? = nil
     ) {
         self.kind = kind
         self.id = id
@@ -86,6 +112,7 @@ nonisolated struct MusicPinnedItem: Codable, Equatable, Sendable {
         self.subtitle = subtitle
         self.thumbnailURL = thumbnailURL
         self.song = song
+        self.album = kind == .album ? album : nil
     }
 
     /// An entry needs its kind, id and title. The rest is optional, and a wrong type there costs only that field.
@@ -100,6 +127,11 @@ nonisolated struct MusicPinnedItem: Codable, Equatable, Sendable {
             song = try? c.decodeIfPresent(MusicPinnedSong.self, forKey: .song)
         } else {
             song = nil
+        }
+        if kind == .album {
+            album = try? c.decodeIfPresent(MusicPinnedAlbum.self, forKey: .album)
+        } else {
+            album = nil
         }
     }
 
@@ -167,7 +199,8 @@ extension MusicPinnedItem {
             id: collection.browseId,
             title: collection.title,
             subtitle: kind == .artist ? nil : Self.line(collection.subtitle),
-            thumbnailURL: collection.thumbnailURL?.absoluteString
+            thumbnailURL: collection.thumbnailURL?.absoluteString,
+            album: Self.albumExtras(of: collection)
         )
     }
 
@@ -184,7 +217,8 @@ extension MusicPinnedItem {
             id: page.browseId,
             title: page.title.isEmpty ? opener.title : page.title,
             subtitle: kind == .artist ? nil : Self.line(opener.subtitle) ?? Self.line(page.subtitle ?? ""),
-            thumbnailURL: photo?.absoluteString
+            thumbnailURL: photo?.absoluteString,
+            album: Self.albumExtras(of: opener)
         )
     }
 
@@ -205,6 +239,16 @@ extension MusicPinnedItem {
                 artists: track.artistLinks.map { MusicPinnedSong.Artist(name: $0.name, browseId: $0.browseId) }
             )
         )
+    }
+
+    /// What an album tile carries for its menu; nil for any other kind, and for a tile that carries neither extra.
+    private static func albumExtras(of collection: MusicCollection) -> MusicPinnedAlbum? {
+        guard collection.kind == .album else { return nil }
+        let extras = MusicPinnedAlbum(
+            audioPlaylistId: collection.audioPlaylistId,
+            artists: collection.artistLinks.map { MusicPinnedSong.Artist(name: $0.name, browseId: $0.browseId) }
+        )
+        return extras.isEmpty ? nil : extras
     }
 
     private static func line(_ text: String) -> String? {
@@ -232,7 +276,15 @@ extension MusicPinnedItem {
         case .playlist:
             .collection(MusicCollection(browseId: id, kind: .playlist, title: title, subtitle: subtitle ?? "", thumbnailURL: photoURL))
         case .album:
-            .collection(MusicCollection(browseId: id, kind: .album, title: title, subtitle: subtitle ?? "", thumbnailURL: photoURL))
+            .collection(MusicCollection(
+                browseId: id,
+                kind: .album,
+                title: title,
+                subtitle: subtitle ?? "",
+                thumbnailURL: photoURL,
+                artistLinks: (album?.artists ?? []).map { MusicArtistLink(name: $0.name, browseId: $0.browseId) },
+                audioPlaylistId: album?.audioPlaylistId
+            ))
         }
     }
 }

@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicPinnedItemsTests.swift
 // The "Pinned" row on Music Home: pin order, the cap of 30 across every kind, repeats, refreshed names and photos,
-// what gets saved, the tile each pin draws, how a pin is made from a tile, a page or a song, and the Pin to Home
-// button's words.
+// what gets saved, the tile each pin draws, how a pin is made from a tile, a page or a song, what an album pin keeps
+// so its menu can go to the artist and save the album, and the Pin to Home button's words.
 
 import Foundation
 import SwiftUI
@@ -412,6 +412,43 @@ struct MusicPinnedItemsTests {
         #expect(second.browseId == "MPRE1")
     }
 
+    @Test("an album's tile has the artist links and album playlist id it was pinned with; an older pin has neither")
+    func shelfItemAlbumExtras() {
+        let pin = MusicPinnedItem(
+            kind: .album, id: "MPRE1", title: "Record", subtitle: "Album",
+            album: MusicPinnedAlbum(audioPlaylistId: "OLAK5uy_a", artists: [.init(name: "Ay", browseId: "UCa"), .init(name: "Bee", browseId: "UCb")])
+        )
+        guard case .collection(let collection) = pin.shelfItem else {
+            Issue.record("an album opens its page")
+            return
+        }
+        #expect(collection.audioPlaylistId == "OLAK5uy_a")
+        #expect(collection.artistLinks == [MusicArtistLink(name: "Ay", browseId: "UCa"), MusicArtistLink(name: "Bee", browseId: "UCb")])
+
+        let old = MusicPinnedItem(kind: .album, id: "MPRE1", title: "Record", subtitle: "Album")
+        guard case .collection(let bare) = old.shelfItem else {
+            Issue.record("an album opens its page")
+            return
+        }
+        #expect(bare.audioPlaylistId == nil)
+        #expect(bare.artistLinks.isEmpty)
+    }
+
+    @Test("only an album tile carries extras: a playlist or artist pin made with some draws without them")
+    func shelfItemOtherKindsNoExtras() {
+        let extras = MusicPinnedAlbum(audioPlaylistId: "OLAK5uy_a", artists: [.init(name: "Ay", browseId: "UCa")])
+        for kind in [MusicPinnedItem.Kind.playlist, .artist] {
+            let pin = MusicPinnedItem(kind: kind, id: "id1", title: "Name", album: extras)
+            #expect(pin.album == nil, "kind \(kind)")
+            guard case .collection(let collection) = pin.shelfItem else {
+                Issue.record("a \(kind) opens its page")
+                continue
+            }
+            #expect(collection.audioPlaylistId == nil)
+            #expect(collection.artistLinks.isEmpty)
+        }
+    }
+
     @Test("a song's tile plays the song with what the row it came from knew")
     func shelfItemSong() {
         let pin = MusicPinnedItem(
@@ -495,6 +532,39 @@ struct MusicPinnedItemsTests {
         let artist = MusicPinnedItem(collection: MusicSamples.collection("UCa", kind: .artist, title: "Ay", subtitle: "Artist"))
         #expect(artist?.kind == .artist)
         #expect(artist?.subtitle == nil)
+    }
+
+    @Test("an album tile makes a pin that keeps its artist links and album playlist id")
+    func pinFromAlbumTileKeepsExtras() {
+        let tile = MusicSamples.collection(
+            "MPRE1", kind: .album, title: "Record", subtitle: "Album",
+            artistLinks: [MusicArtistLink(name: "Ay", browseId: "UCa")], audioPlaylistId: "OLAK5uy_a"
+        )
+        let pin = MusicPinnedItem(collection: tile)
+        #expect(pin?.album == MusicPinnedAlbum(audioPlaylistId: "OLAK5uy_a", artists: [.init(name: "Ay", browseId: "UCa")]))
+        // The pin plays back as the tile it was made from.
+        if let pin, case .collection(let back) = pin.shelfItem {
+            #expect(back == tile)
+        } else {
+            Issue.record("an album pin opens its page")
+        }
+    }
+
+    @Test("an album tile with neither extra makes a pin with none, equal to one made before they existed")
+    func pinFromBareAlbumTile() {
+        let pin = MusicPinnedItem(collection: MusicSamples.collection("MPRE1", kind: .album, title: "Record", subtitle: "Album"))
+        #expect(pin?.album == nil)
+        #expect(pin == MusicPinnedItem(kind: .album, id: "MPRE1", title: "Record", subtitle: "Album"))
+    }
+
+    @Test("a playlist or artist tile keeps no extras, whatever the tile held")
+    func pinFromOtherTilesKeepsNoExtras() {
+        for kind in [MusicCollection.Kind.playlist, .artist] {
+            let tile = MusicSamples.collection(
+                "id1", kind: kind, artistLinks: [MusicArtistLink(name: "Ay", browseId: "UCa")], audioPlaylistId: "OLAK5uy_a"
+            )
+            #expect(MusicPinnedItem(collection: tile)?.album == nil, "kind \(kind)")
+        }
     }
 
     @Test("Liked music and a tile with no id cannot be pinned to Home")
@@ -597,6 +667,30 @@ struct MusicPinnedItemsTests {
         let fromPlaylist = MusicPinnedItem(page: page("VLPL1", title: "Mix", subtitle: "Playlist \u{2022} 9 songs"), opener: list)
         #expect(fromPlaylist?.kind == .playlist)
         #expect(fromPlaylist?.subtitle == "Playlist \u{2022} 9 songs")
+    }
+
+    @Test("an album pin made on a page keeps the extras of the tile that opened it")
+    func pinFromAlbumPageKeepsOpenerExtras() {
+        let opener = MusicSamples.collection(
+            "MPRE1", kind: .album, title: "Short", subtitle: "Album",
+            artistLinks: [MusicArtistLink(name: "Ay", browseId: "UCa")], audioPlaylistId: "OLAK5uy_a"
+        )
+        let pin = MusicPinnedItem(page: page("MPRE1", title: "Record"), opener: opener)
+        #expect(pin?.album == MusicPinnedAlbum(audioPlaylistId: "OLAK5uy_a", artists: [.init(name: "Ay", browseId: "UCa")]))
+
+        let bare = MusicPinnedItem(page: page("MPRE1", title: "Record"), opener: MusicSamples.collection("MPRE1", kind: .album))
+        #expect(bare?.album == nil)
+        let playlist = MusicSamples.collection("VLPL1", artistLinks: [MusicArtistLink(name: "Ay", browseId: "UCa")])
+        #expect(MusicPinnedItem(page: page("VLPL1", title: "Mix"), opener: playlist)?.album == nil)
+    }
+
+    @Test("a refreshed title and photo leave the album extras as they were")
+    func refreshKeepsAlbumExtras() {
+        let extras = MusicPinnedAlbum(audioPlaylistId: "OLAK5uy_a", artists: [.init(name: "Ay", browseId: "UCa")])
+        let (pins, _) = make([MusicPinnedItem(kind: .album, id: "MPRE1", title: "Old", album: extras)])
+        pins.refresh(MusicPinnedItem(kind: .album, id: "MPRE1", title: "New"))
+        #expect(pins.items.first?.title == "New")
+        #expect(pins.items.first?.album == extras)
     }
 
     @Test("a page with a blank title keeps the title of the tile that opened it")

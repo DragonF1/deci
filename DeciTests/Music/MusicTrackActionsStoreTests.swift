@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicTrackActionsStoreTests.swift
 // The state behind the song actions: the save to playlist menu (load, save, already in, errors, late answers),
-// removing a row from a playlist page, the short notice line, and a session that ends.
+// saving a whole album or playlist through the same menu, removing a row from a playlist page, the short notice
+// line, and a session that ends.
 
 import Foundation
 import Testing
@@ -64,6 +65,26 @@ private struct ActionsHarness {
         browse.open(MusicSamples.collection(id, title: "Mine"))
         _ = await until { if case .loaded = browse.pageState(id) { true } else { false } }
         return MusicTrackContext(pageBrowseId: id, pageTitle: "Mine", pageIsEditable: true)
+    }
+
+    /// An album tile with the playlist id of its songs, and a playlist tile.
+    let albumTile = MusicSamples.collection(
+        "MPREbTile", kind: .album, title: "Tile Album", subtitle: "Album", audioPlaylistId: "OLAK5uy_tile"
+    )
+    let playlistTile = MusicSamples.collection("VLPLtile", kind: .playlist, title: "Tile Playlist")
+
+    /// Opens the picker for a whole album or playlist over the options scripted for `sourceId`, and waits for the list.
+    func openCollectionPicker(
+        for collection: MusicCollection,
+        sourceId: String,
+        options: [MusicPlaylistOption] = [
+            MusicSamples.playlistOption("PLone", title: "Road Trip"),
+            MusicSamples.playlistOption("PLtwo", title: "Workout", contains: true),
+        ]
+    ) async {
+        await backend.setSourceOptions(sourceId: sourceId, options)
+        store.openPicker(for: collection)
+        _ = await until { if case .loaded? = store.picker?.load { true } else { false } }
     }
 
     func pageIds(_ id: String = "VLPLfixtureMine") -> [String] {
@@ -357,6 +378,239 @@ struct MusicTrackActionsStoreTests {
         await h.openPicker(options: [MusicSamples.playlistOption("PLone", title: title)])
         h.store.choose(MusicSamples.playlistOption("PLone", title: title))
         #expect(await h.until { h.store.notice?.text == "Saved to \(title)" })
+    }
+
+    // MARK: - Save a whole album or playlist
+
+    @Test("Opening the picker for an album asks for the playlists it can go to by the album's playlist id, not by a song")
+    func collectionPickerLoads() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        await h.backend.setSourceOptionsGate(sourceId: "OLAK5uy_tile", gate)
+        await h.backend.setSourceOptions(sourceId: "OLAK5uy_tile", [MusicSamples.playlistOption("PLone"), MusicSamples.playlistOption("PLtwo")])
+
+        h.store.openPicker(for: h.albumTile)
+        #expect(h.store.picker?.collection == h.albumTile)
+        #expect(h.store.picker?.track == nil)
+        #expect(h.store.picker?.load == .loading)
+        await gate.open()
+
+        #expect(await h.until { h.options?.map(\.playlistId) == ["PLone", "PLtwo"] })
+        #expect(await h.backend.sourceOptionsCalls == ["OLAK5uy_tile"])
+        #expect(await h.backend.playlistOptionsCalls.isEmpty)
+    }
+
+    @Test("A playlist tile asks by its playlist id without the VL, a mix by its RD id")
+    func collectionPickerSourceIds() async {
+        let h = ActionsHarness()
+        await h.openCollectionPicker(for: h.playlistTile, sourceId: "PLtile")
+        h.store.closePicker()
+        await h.openCollectionPicker(for: MusicSamples.collection("VLRDAMPLmixone"), sourceId: "RDAMPLmixone")
+        #expect(await h.backend.sourceOptionsCalls == ["PLtile", "RDAMPLmixone"])
+    }
+
+    @Test("Nothing opens for what has no playlist to save: an album with no album playlist id, an artist, Liked music")
+    func collectionPickerNeedsSource() async {
+        let h = ActionsHarness()
+        for tile in [
+            MusicSamples.collection("MPREbBare", kind: .album),
+            MusicSamples.collection("UCa", kind: .artist, audioPlaylistId: "OLAK5uy_x"),
+            MusicBrowseStore.likedMusic,
+            MusicSamples.collection("VL"),
+        ] {
+            h.store.openPicker(for: tile)
+            #expect(h.store.picker == nil, "tile \(tile.browseId)")
+        }
+        await h.letLateWorkLand()
+        #expect(await h.backend.sourceOptionsCalls.isEmpty)
+    }
+
+    @Test("Choosing a playlist adds the whole album to it, ticks the row and says it saved, as a song does")
+    func collectionChooseSaves() async {
+        let h = ActionsHarness()
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile")
+        h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+
+        #expect(h.store.picker?.saving == ["PLone"])
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        #expect(await h.backend.addPlaylistCalls == [FakeMusicBackend.AddPlaylistCall(sourceId: "OLAK5uy_tile", playlistId: "PLone")])
+        #expect(await h.backend.addToPlaylistCalls.isEmpty)
+        #expect(h.store.notice?.isError == false)
+        #expect(h.store.picker?.saving.isEmpty == true)
+        #expect(h.options?.first { $0.playlistId == "PLone" }?.containsVideo == true)
+    }
+
+    @Test("Choosing a playlist for a playlist tile adds the source playlist, named without its VL")
+    func collectionChooseSavesPlaylist() async {
+        let h = ActionsHarness()
+        await h.openCollectionPicker(for: h.playlistTile, sourceId: "PLtile")
+        h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        #expect(await h.backend.addPlaylistCalls == [FakeMusicBackend.AddPlaylistCall(sourceId: "PLtile", playlistId: "PLone")])
+    }
+
+    @Test("A playlist that already holds the whole album sends nothing and says so")
+    func collectionChooseAlreadyIn() async {
+        let h = ActionsHarness()
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile")
+        h.store.choose(MusicSamples.playlistOption("PLtwo", title: "Workout", contains: true))
+        #expect(h.store.notice?.text == "Already in Workout")
+        #expect(h.store.notice?.isError == false)
+        await h.letLateWorkLand()
+        #expect(await h.backend.addPlaylistCalls.isEmpty)
+    }
+
+    @Test("A second tap while the album is going to a playlist sends nothing more")
+    func collectionChooseOnlyOnce() async {
+        let h = ActionsHarness()
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile")
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
+        h.store.choose(road)
+        h.store.choose(road)
+        await gate.open()
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        await h.letLateWorkLand()
+        #expect(await h.backend.addPlaylistCalls.count == 1)
+    }
+
+    @Test("A refused album save leaves the row unticked with the same line as a song, and a retry can go through")
+    func collectionChooseFailure() async {
+        let h = ActionsHarness()
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile")
+        await h.backend.setAddToPlaylistError(MusicError.rejected)
+        h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+
+        #expect(await h.until { h.store.notice != nil })
+        #expect(h.store.notice?.text == "Not added. Road Trip may already have it.")
+        #expect(h.store.notice?.isError == true)
+        #expect(h.store.picker?.saving.isEmpty == true)
+        #expect(h.options?.first { $0.playlistId == "PLone" }?.containsVideo == false)
+
+        await h.backend.setAddToPlaylistError(nil)
+        h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        #expect(h.options?.first { $0.playlistId == "PLone" }?.containsVideo == true)
+    }
+
+    @Test("A network failure while saving an album shows the network line, and a gone session tells the service")
+    func collectionChooseErrors() async {
+        let h = ActionsHarness()
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile")
+        await h.backend.setAddToPlaylistError(URLError(.notConnectedToInternet))
+        h.store.choose(MusicSamples.playlistOption("PLone"))
+        #expect(await h.until { h.store.notice != nil })
+        #expect(h.store.notice?.text == "Network problem. Check your connection.")
+        #expect(h.probe.expired == 0)
+
+        await h.backend.setAddToPlaylistError(MusicError.signedOut)
+        h.store.choose(MusicSamples.playlistOption("PLone"))
+        #expect(await h.until { h.probe.expired == 1 })
+    }
+
+    @Test("A list that fails shows a message, and Try again asks for the same album's playlists again")
+    func collectionListFailureThenRetry() async {
+        let h = ActionsHarness()
+        await h.backend.setSourceOptionsError(sourceId: "OLAK5uy_tile", MusicError.http(500))
+        h.store.openPicker(for: h.albumTile)
+        #expect(await h.until { h.store.picker?.load == .failed(MusicService.message(for: MusicError.http(500))) })
+
+        await h.backend.setSourceOptionsError(sourceId: "OLAK5uy_tile", nil)
+        await h.backend.setSourceOptions(sourceId: "OLAK5uy_tile", [MusicSamples.playlistOption("PLone")])
+        h.store.retryPicker()
+        #expect(h.store.picker?.load == .loading)
+        #expect(h.store.picker?.collection == h.albumTile)
+        #expect(await h.until { h.options?.map(\.playlistId) == ["PLone"] })
+        #expect(await h.backend.sourceOptionsCalls == ["OLAK5uy_tile", "OLAK5uy_tile"])
+    }
+
+    @Test("Try again on a song's picker asks for the song's playlists again, and with no picker open does nothing")
+    func songRetry() async {
+        let h = ActionsHarness()
+        h.store.retryPicker()
+        #expect(h.store.picker == nil)
+        await h.backend.setPlaylistOptionsError(videoId: "vid-1", MusicError.http(500))
+        h.store.openPicker(for: h.song)
+        #expect(await h.until { if case .failed? = h.store.picker?.load { true } else { false } })
+        await h.backend.setPlaylistOptionsError(videoId: "vid-1", nil)
+        h.store.retryPicker()
+        #expect(h.store.picker?.track == h.song)
+        #expect(await h.until { if case .loaded? = h.store.picker?.load { true } else { false } })
+        #expect(await h.backend.playlistOptionsCalls == ["vid-1", "vid-1"])
+    }
+
+    @Test("A slow list for a closed album picker never brings it back, nor overwrites the song opened since")
+    func collectionSlowListDropped() async {
+        let h = ActionsHarness()
+        let slow = MusicTestGate()
+        await h.backend.setSourceOptionsGate(sourceId: "OLAK5uy_tile", slow)
+        await h.backend.setSourceOptions(sourceId: "OLAK5uy_tile", [MusicSamples.playlistOption("PLold")])
+        h.store.openPicker(for: h.albumTile)
+        await h.openPicker(options: [MusicSamples.playlistOption("PLnew")])
+        await slow.open()
+        await h.letLateWorkLand()
+        #expect(h.options?.map(\.playlistId) == ["PLnew"])
+        #expect(h.store.picker?.track == h.song)
+    }
+
+    @Test("A save out for an album never shows saving in a song's picker, though they share a playlist id")
+    func collectionSavingStaysWithItsTarget() async {
+        let h = ActionsHarness()
+        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [road])
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        h.store.choose(road)
+        #expect(h.store.picker?.saving == ["PLone"])
+
+        await h.openPicker(options: [road])
+        #expect(h.store.picker?.saving.isEmpty == true)
+        await gate.open()
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        #expect(h.options?.first?.containsVideo == false)
+    }
+
+    @Test("An album picker closed and opened again while its save is out shows saving, and sends nothing twice")
+    func collectionReopenedPickerDoesNotResend() async {
+        let h = ActionsHarness()
+        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [road])
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        h.store.choose(road)
+        h.store.closePicker()
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [road])
+        #expect(h.store.picker?.saving == ["PLone"])
+        h.store.choose(road)
+        await gate.open()
+        #expect(await h.until { h.options?.first?.containsVideo == true })
+        await h.letLateWorkLand()
+        #expect(await h.backend.addPlaylistCalls.count == 1)
+    }
+
+    @Test("A save that finishes after the album picker was closed still says it saved; a reset drops it")
+    func collectionSaveAfterCloseAndReset() async {
+        let h = ActionsHarness()
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile")
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        h.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        h.store.closePicker()
+        await gate.open()
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        #expect(h.store.picker == nil)
+
+        let again = ActionsHarness()
+        await again.openCollectionPicker(for: again.albumTile, sourceId: "OLAK5uy_tile")
+        let held = MusicTestGate()
+        await again.backend.setAddToPlaylistGate(held)
+        again.store.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+        again.store.reset()
+        await held.open()
+        await again.letLateWorkLand()
+        #expect(again.store.notice == nil)
+        #expect(again.store.picker == nil)
     }
 
     // MARK: - Remove from playlist

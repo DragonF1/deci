@@ -293,18 +293,38 @@ extension View {
 
 // MARK: - Tile menus
 
-/// The right click menu of a playlist, album or artist tile or row: "Pin to Home" or "Unpin from Home" for anything
-/// Home can hold. With nothing to offer the tile gets no menu at all, as before.
+/// The right click menu of a playlist, album or artist tile or row: the same words, order and symbols as a song's menu.
+/// An album offers Save to playlist, Pin to Home, Go to album and Go to artist; a playlist or mix, Save to playlist and
+/// Pin to Home; an artist, Pin to Home and Go to artist. With nothing to offer the tile gets no menu at all.
 private struct MusicCollectionMenuModifier: ViewModifier {
     let collection: MusicCollection
     @Environment(\.musicCollectionPin) private var collectionPin
+    @Environment(\.musicTrackContext) private var context
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if let collectionPin, let home = collectionPin.homePin(collection) {
+        if let collectionPin, case let actions = collectionPin.actions(collection, context), !actions.isEmpty {
             content.contextMenu {
-                Button(home.title) { collectionPin.toggleHome(collection) }
-                    .disabled(!home.isEnabled)
+                MusicTrackMenuItems(actions: actions) { collectionPin.perform($0, collection, context) }
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// The right click menu of a song tile: the song's own menu, the one its row in Quick picks has. A pinned song's menu
+/// holds Unpin from Home in the place of Pin to Home, so the pinned row needs no entry of its own.
+private struct MusicTrackMenuModifier: ViewModifier {
+    let track: MusicTrack
+    @Environment(\.musicTrackMenu) private var menu
+    @Environment(\.musicTrackContext) private var context
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let menu, case let actions = menu.actions(track, context), !actions.isEmpty {
+            content.contextMenu {
+                MusicTrackMenuItems(actions: actions) { menu.perform($0, track, context) }
             }
         } else {
             content
@@ -315,6 +335,10 @@ private struct MusicCollectionMenuModifier: ViewModifier {
 extension View {
     func musicCollectionMenu(_ collection: MusicCollection) -> some View {
         modifier(MusicCollectionMenuModifier(collection: collection))
+    }
+
+    func musicTrackMenu(_ track: MusicTrack) -> some View {
+        modifier(MusicTrackMenuModifier(track: track))
     }
 }
 

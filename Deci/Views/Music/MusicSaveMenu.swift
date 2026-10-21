@@ -23,9 +23,9 @@ nonisolated enum MusicSaveMenuPlacement {
 }
 
 /// The save to playlist menu, over the whole popup like the account card. It wears the native menu look: the playlists
-/// the song can go to, a check on those that hold it. A click adds the song and ticks the row; the menu stays open so it
-/// can go to another playlist too. A click outside or Escape closes it. There is no New playlist item: the app cannot
-/// make one.
+/// a song, album or playlist can go to, a check on those that hold it. A click adds it and ticks the row; the menu stays
+/// open so it can go to another playlist too. A click outside or Escape closes it. There is no New playlist item: the
+/// app cannot make one.
 struct MusicSaveMenuLayer: View {
     let store: MusicTrackActionsStore
     let picker: MusicTrackActionsStore.Picker
@@ -61,8 +61,8 @@ struct MusicSaveMenuLayer: View {
                 anchor = Self.pointer(in: geometry.frame(in: .global))
                 placed = true
             }
-            // Opened again for another song while open (the chip's card): it moves to the new pointer.
-            .onChange(of: picker.track.videoId) { anchor = Self.pointer(in: geometry.frame(in: .global)) }
+            // Opened again for another song or tile while open (the chip's card): it moves to the new pointer.
+            .onChange(of: picker.target.key) { anchor = Self.pointer(in: geometry.frame(in: .global)) }
         }
     }
 
@@ -80,7 +80,7 @@ struct MusicSaveMenuLayer: View {
                 }, action: {})
             case .failed(let message):
                 MusicNativeMenuItem(title: message, isEnabled: false) {}
-                MusicNativeMenuItem(title: "Try again") { store.openPicker(for: picker.track) }
+                MusicNativeMenuItem(title: "Try again") { store.retryPicker() }
             case .loaded(let options) where options.isEmpty:
                 MusicNativeMenuItem(title: "No playlists you can add to", isEnabled: false) {}
             case .loaded(let options):
@@ -88,7 +88,16 @@ struct MusicSaveMenuLayer: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Save \(picker.track.title) to playlist")
+        .accessibilityLabel("Save \(picker.title) to playlist")
+    }
+
+    /// What a ticked row says to VoiceOver: the playlist holds what is being saved.
+    private var hasText: String {
+        switch picker.collection?.kind {
+        case nil: "Has this song"
+        case .album: "Has this album"
+        case .playlist, .artist: "Has this playlist"
+        }
     }
 
     /// The rows, scrolling once there are more than fit.
@@ -123,7 +132,7 @@ struct MusicSaveMenuLayer: View {
         }) {
             store.choose(option)
         }
-        .accessibilityValue(option.containsVideo ? "Has this song" : isSaving ? "Saving" : "")
+        .accessibilityValue(option.containsVideo ? hasText : isSaving ? "Saving" : "")
         .accessibilityAddTraits(option.containsVideo ? .isSelected : [])
     }
 

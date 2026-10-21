@@ -471,4 +471,30 @@ final class MusicSearchNavigation {
             if let item = MusicPinnedItem(track: track) { service.pinnedItems.toggle(item) }
         }
     }
+
+    // MARK: - Tile actions
+
+    /// The "..." menu of an album, playlist or artist tile: what it offers here, in menu order.
+    func actions(for collection: MusicCollection, in context: MusicTrackContext) -> [MusicTrackAction] {
+        let home = MusicPinnedItem(collection: collection).map { service.pinnedItems.state(for: $0) }
+        return MusicTrackActions.available(for: collection, in: context, home: home)
+    }
+
+    /// Runs a tile's menu item, with the same effects as the song menu's: Save to playlist opens the save menu for the
+    /// whole album or playlist, Go to album and Go to artist open the page, Pin to Home changes Deci's own list. The
+    /// song-only entries do nothing on a tile.
+    func perform(_ action: MusicTrackAction, for collection: MusicCollection, in context: MusicTrackContext) {
+        switch action {
+        case .goToAlbum:
+            if let album = MusicTrackActions.albumCollection(for: collection) { openCollection(album) }
+        case .goToArtist:
+            if let artist = MusicTrackActions.artistCollection(for: collection, in: context) { openArtist(artist) }
+        case .saveToPlaylist:
+            service.trackActions.openPicker(for: collection)
+        case .pinHome:
+            if let item = MusicPinnedItem(collection: collection) { service.pinnedItems.toggle(item) }
+        case .playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist:
+            break
+        }
+    }
 }

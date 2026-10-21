@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicTrackActionsModelTests.swift
 // Which song actions a row offers, and in what order: the pure rules behind the row's "..." button and its
 // context menu, without any view. Save to playlist, Pin to / Unpin from Home, Go to album, Go to artist and Remove
-// from playlist, and the blocks the menu cuts them into.
+// from playlist, and the blocks the menu cuts them into. The same rules for an album, playlist or artist tile.
 
 import Foundation
 import Testing
@@ -237,6 +237,124 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackActions.albumCollection(for: track)?.title == "Fixture Album")
         #expect(MusicTrackActions.albumCollection(for: MusicSamples.track("v1")) == nil)
         #expect(MusicTrackActions.albumCollection(for: MusicSamples.track("v1", albumBrowseId: "")) == nil)
+    }
+
+    // MARK: - Album, playlist and artist tiles
+
+    private let daftPunk = MusicArtistLink(name: "Daft Punk", browseId: "UCdaft")
+
+    private func album(
+        links: [MusicArtistLink]? = nil, audio: String? = "OLAK5uy_random", id: String = "MPREbalbum"
+    ) -> MusicCollection {
+        MusicSamples.collection(id, kind: .album, title: "Random Access Memories", artistLinks: links ?? [daftPunk], audioPlaylistId: audio)
+    }
+
+    private func actions(_ collection: MusicCollection, in context: MusicTrackContext = .none, home: MusicHomePinState? = nil) -> [MusicTrackAction] {
+        MusicTrackActions.available(for: collection, in: context, home: home)
+    }
+
+    @Test("An album tile offers save, go to album and go to artist, with the Home pin after save")
+    func albumTileOffers() {
+        #expect(actions(album()) == [.saveToPlaylist, .goToAlbum, .goToArtist])
+        #expect(actions(album(), home: .canPin) == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist])
+        #expect(actions(album(), home: .pinned) == [.saveToPlaylist, .pinHome(.pinned), .goToAlbum, .goToArtist])
+        #expect(actions(album(), home: .full) == [.saveToPlaylist, .pinHome(.full), .goToAlbum, .goToArtist])
+    }
+
+    @Test("An album tile cuts into the same blocks as a song: save and pin, then the pages to go to")
+    func albumTileBlocks() {
+        let blocks = MusicTrackActions.groups(of: actions(album(), home: .canPin))
+        #expect(blocks == [[.saveToPlaylist, .pinHome(.canPin)], [.goToAlbum, .goToArtist]])
+    }
+
+    @Test("An album tile with no artist link has no Go to artist, and one with several opens the first")
+    func albumTileArtist() {
+        #expect(actions(album(links: [])) == [.saveToPlaylist, .goToAlbum])
+        let two = album(links: [daftPunk, MusicArtistLink(name: "Pharrell", browseId: "UCpharrell")])
+        #expect(MusicTrackActions.artistCollection(for: two, in: .none) == daftPunk.opener)
+        #expect(MusicTrackActions.artistCollection(for: album(links: []), in: .none) == nil)
+        #expect(MusicTrackActions.artistCollection(for: album(links: [MusicArtistLink(name: "Nobody", browseId: "")]), in: .none) == nil)
+    }
+
+    @Test("An album tile on its artist's own page has no Go to artist, and on its own page no Go to album")
+    func albumTileOnOwnPages() {
+        let artistPage = MusicTrackContext(pageBrowseId: "UCdaft", pageTitle: "Daft Punk", pageIsEditable: false)
+        #expect(actions(album(), in: artistPage) == [.saveToPlaylist, .goToAlbum])
+        let ownPage = MusicTrackContext(pageBrowseId: "MPREbalbum", pageTitle: "Random Access Memories", pageIsEditable: false)
+        #expect(actions(album(), in: ownPage) == [.saveToPlaylist, .goToArtist])
+    }
+
+    @Test("An album tile with no album playlist id cannot be saved, whatever else it offers")
+    func albumTileNeedsAudioPlaylist() {
+        #expect(actions(album(audio: nil)) == [.goToAlbum, .goToArtist])
+        #expect(actions(album(audio: ""), home: .canPin) == [.pinHome(.canPin), .goToAlbum, .goToArtist])
+    }
+
+    @Test("A playlist or mix tile offers save and the Home pin, and no artist or album entry")
+    func playlistTileOffers() {
+        let list = MusicSamples.collection("VLPLroad", kind: .playlist, artistLinks: [daftPunk])
+        #expect(actions(list) == [.saveToPlaylist])
+        #expect(actions(list, home: .canPin) == [.saveToPlaylist, .pinHome(.canPin)])
+        let mix = MusicSamples.collection("VLRDAMPLmixone", kind: .playlist)
+        #expect(actions(mix, home: .pinned) == [.saveToPlaylist, .pinHome(.pinned)])
+    }
+
+    @Test("Liked music, a bare VL and a blank id have nothing to save")
+    func playlistTileWithoutSource() {
+        for id in ["VLLM", "LM", "VL", ""] {
+            let list = MusicSamples.collection(id, kind: .playlist)
+            #expect(MusicTrackActions.playlistSourceId(for: list) == nil, "id \(id)")
+            #expect(actions(list, home: .canPin) == [.pinHome(.canPin)], "id \(id)")
+        }
+    }
+
+    @Test("An artist tile offers Go to artist, with the Home pin ahead of it, and hides it on that artist's page")
+    func artistTileOffers() {
+        let artist = MusicSamples.collection("UCdaft", kind: .artist, title: "Daft Punk")
+        #expect(actions(artist) == [.goToArtist])
+        #expect(actions(artist, home: .canPin) == [.pinHome(.canPin), .goToArtist])
+        let ownPage = MusicTrackContext(pageBrowseId: "UCdaft", pageTitle: "Daft Punk", pageIsEditable: false)
+        #expect(actions(artist, in: ownPage) == [])
+        #expect(actions(artist, in: ownPage, home: .pinned) == [.pinHome(.pinned)])
+        #expect(MusicTrackActions.artistCollection(for: artist, in: .none) == artist)
+        #expect(MusicTrackActions.artistCollection(for: artist, in: ownPage) == nil)
+    }
+
+    @Test("A collection tile never offers the queue entries or Remove from playlist")
+    func collectionTileHasNoSongOnlyEntries() {
+        let editable = MusicTrackContext(pageBrowseId: "VLPLfixtureMine", pageTitle: "Mine", pageIsEditable: true, isUpNext: true)
+        let tiles = [album(), MusicSamples.collection("VLPLroad"), MusicSamples.collection("UCdaft", kind: .artist)]
+        for tile in tiles {
+            let offered = actions(tile, in: editable, home: .canPin)
+            for song in [MusicTrackAction.playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist] {
+                #expect(!offered.contains(song), "\(tile.browseId) offers \(song)")
+            }
+        }
+    }
+
+    @Test("The playlist a tile saves is the playlist without its VL, and the album's OLAK id for an album")
+    func playlistSourceIdPerKind() {
+        #expect(MusicTrackActions.playlistSourceId(for: MusicSamples.collection("VLPLroad")) == "PLroad")
+        #expect(MusicTrackActions.playlistSourceId(for: MusicSamples.collection("VLRDAMPLmixone")) == "RDAMPLmixone")
+        #expect(MusicTrackActions.playlistSourceId(for: MusicSamples.collection("PLbare")) == "PLbare")
+        #expect(MusicTrackActions.playlistSourceId(for: album()) == "OLAK5uy_random")
+        // An album's browse id is not a playlist id.
+        #expect(MusicTrackActions.playlistSourceId(for: album(audio: nil)) == nil)
+        #expect(MusicTrackActions.playlistSourceId(for: MusicSamples.collection("UCdaft", kind: .artist, audioPlaylistId: "OLAK5uy_x")) == nil)
+    }
+
+    @Test("An album tile opens the album it is, with its name and cover")
+    func albumCollectionOfATile() {
+        let tile = album()
+        #expect(MusicTrackActions.albumCollection(for: tile) == tile)
+        #expect(MusicTrackActions.albumCollection(for: MusicSamples.collection("VLPLroad")) == nil)
+        #expect(MusicTrackActions.albumCollection(for: MusicSamples.collection("UCdaft", kind: .artist)) == nil)
+    }
+
+    @Test("A collection tile's menu words are the song menu's words")
+    func collectionTileWords() {
+        let titles = actions(album(), home: .canPin).map(\.title)
+        #expect(titles == ["Save to playlist", "Pin to Home", "Go to album", "Go to artist"])
     }
 
     // MARK: - Words
