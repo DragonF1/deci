@@ -14,7 +14,7 @@ nonisolated enum MusicRightColumn: Equatable {
         return .browse
     }
 
-    /// Which header the column wears. Lyrics and Up next have their own, with a Browse pill that goes back; browse wears
+    /// Which header the column wears. Lyrics and Up next have their own; browse wears
     /// Home, Library, History, the magnifier and the avatar.
     enum Header: Equatable {
         case browse

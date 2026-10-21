@@ -2,7 +2,8 @@
 import SwiftUI
 
 // The headers of the two panels that take the right column in place of browse: Lyrics and Up next. Each is 32 pt tall
-// like the browse header, has no tabs and no avatar, and ends in the Browse pill that gives the column back.
+// like the browse header and has no tabs and no avatar. The player's Lyrics and Up next buttons, Escape and the tabs
+// give the column back.
 
 /// The wash behind Lyrics and Up next: the song's accent at 0.10 at the top of the column, gone by 90% of its height.
 struct MusicPanelWash: View {
@@ -28,31 +29,6 @@ struct MusicPanelWash: View {
     }
 }
 
-/// The outlined "Browse" pill at the trailing end of a panel header.
-struct MusicBrowsePill: View {
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Text("Browse")
-                .musicText(MusicStyle.Typeface.chip)
-                .foregroundStyle(Color.white.opacity(isHovered ? MusicStyle.Opacity.row : MusicStyle.Opacity.pageSub))
-                .lineLimit(1)
-                .padding(.horizontal, 10)
-                .frame(height: 23)
-                .overlay(Capsule(style: .continuous).strokeBorder(MusicStyle.Palette.strokeSoft, lineWidth: 1))
-                .contentShape(Capsule(style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .animation(DesignTokens.Animation.hover, value: isHovered)
-        .accessibilityLabel("Browse")
-        .help("Back to browsing")
-    }
-}
-
 /// The 32 pt bar both headers sit in, 8 pt below the popup's top edge.
 private struct MusicPanelHeaderBar<Content: View>: View {
     let sidePadding: CGFloat
@@ -70,11 +46,9 @@ private struct MusicPanelHeaderBar<Content: View>: View {
 
 // MARK: - Lyrics
 
-/// "Lyrics", the title of the song, a "Not synced" tag over plain lyrics, and Browse. No magnifier: Lyrics has no search
-/// to open.
+/// "Lyrics", the title of the song and a "Not synced" tag over plain lyrics. No magnifier: Lyrics has no search to open.
 struct MusicLyricsHeader: View {
     let store: MusicLyricsStore
-    let onBrowse: () -> Void
 
     var body: some View {
         MusicPanelHeaderBar(sidePadding: MusicPopupMetrics.lyricsPaddingSide) {
@@ -95,7 +69,6 @@ struct MusicLyricsHeader: View {
                 MusicNotSyncedTag(text: tag)
             }
             Spacer(minLength: 0)
-            MusicBrowsePill(action: onBrowse)
         }
     }
 }
@@ -118,13 +91,13 @@ private struct MusicNotSyncedTag: View {
 
 // MARK: - Up next
 
-/// "Up next", the magnifier, the three playback toggles in one group, and Browse. The magnifier opens a field that
-/// searches the queue; while it is open the field sits between the title and Browse and the toggles step aside.
+/// "Up next", the magnifier and the three playback toggles in one group. The magnifier opens a field that searches the
+/// queue; while it is open the field sits at the trailing end and the toggles step aside.
 struct MusicQueueHeader: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
 
-    /// The width of the field between the title and Browse.
+    /// The width of the queue's field.
     static let fieldWidth: CGFloat = 178
 
     var body: some View {
@@ -142,7 +115,6 @@ struct MusicQueueHeader: View {
                 MusicSearchButton { navigation.openField() }
                 MusicPlaybackToggles(service: service)
             }
-            MusicBrowsePill { navigation.closePanel() }
         }
     }
 }
