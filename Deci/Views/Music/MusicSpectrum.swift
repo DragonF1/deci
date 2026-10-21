@@ -67,18 +67,11 @@ nonisolated enum MusicSpectrum {
 
     // MARK: - Drawing
 
-    /// The least a bar is wide, and the least room between a bar and the side of the box.
-    static let minBarWidth: Double = 8
-    static let barInset: Double = 7
-
-    /// A bar's width for its level in a box `boxWidth` wide: 8 + (box - 22) x level, rounded to a half point. In the
-    /// design's 142 pt box that is 8 + 120 x level, so 8 to 128 across it. A narrower box keeps the 7 pt at each side, so
-    /// its bars shrink with it. A box too narrow for them, or not a number, gets the smallest bars.
-    static func width(forLevel level: Double, boxWidth: Double = boxWidth) -> Double {
-        guard level.isFinite, boxWidth.isFinite else { return minBarWidth }
+    /// A bar's width for its level: 8 + 120 x level, rounded to a half point, so 8 to 128 across the box.
+    static func width(forLevel level: Double) -> Double {
+        guard level.isFinite else { return 8 }
         let clamped = min(max(level, 0), 1)
-        let span = max(0, boxWidth - 2 * barInset - minBarWidth)
-        return (2 * (minBarWidth + span * clamped)).rounded() / 2
+        return (2 * (8 + 120 * clamped)).rounded() / 2
     }
 
     /// The top of bar `index` in the box.

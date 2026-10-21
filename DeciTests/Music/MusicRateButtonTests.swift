@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicRateButtonTests.swift
 // The Like and Dislike icons of the Now playing hover card and of the popup's player column: which glyph, brightness and
-// words each shows for the song's state, and the measures that keep them inside the title row, or beside the popup's
-// spectrum. Pure values, and a few small layouts measured offscreen.
+// words each shows for the song's state, and the measures that keep them inside the title row, or in the strip between
+// the times and the transport. Pure values, and a few small layouts measured offscreen.
 
 import AppKit
 import Foundation
@@ -64,113 +64,158 @@ struct MusicRateButtonTests {
         #expect(m.titleRowHeight == 18)
     }
 
+    @Test("A look can dim its outline glyph differently, and an active one stays full white either way")
+    func inactiveOpacity() {
+        for status in statuses {
+            let like = MusicRateButtonLook(kind: .like, status: status, inactiveOpacity: 0.5)
+            #expect(like.glyphOpacity == (status == .like ? 1 : 0.5))
+            let dislike = MusicRateButtonLook(kind: .dislike, status: status, inactiveOpacity: 0.5)
+            #expect(dislike.glyphOpacity == (status == .dislike ? 1 : 0.5))
+            // The card does not pass one, so it keeps its 0.6.
+            #expect(MusicRateButtonLook(kind: .like, status: status).glyphOpacity == (status == .like ? 1 : 0.6))
+        }
+    }
+
     // MARK: - In the popup's player column
 
-    @Test("The popup's icons are a 13 pt glyph in an 18 by 24 hit area, one over the other with 2 pt between")
-    func popupMeasures() {
+    @Test("The strip is 12 pt high with a 12 pt glyph, and with the 6 pt gap above it takes 18 pt from the spectrum")
+    func stripMeasures() {
         let m = MusicPopupMetrics.self
-        #expect(m.rateGlyphSize == 13)
-        #expect(m.rateButtonWidth == 18)
-        #expect(m.rateButtonHeight == 24)
-        #expect(m.rateButtonSpacing == 2)
-        #expect(m.rateGap == 4)
-        #expect(m.rateGlyphSize < m.rateButtonWidth)
-        #expect(m.rateGlyphSize < m.rateButtonHeight)
-        // The pair stands in the room beside the spectrum, which is never lower than its 104 pt.
-        #expect(2 * Double(m.rateButtonHeight) + Double(m.rateButtonSpacing) <= MusicSpectrum.boxHeight)
+        #expect(m.rateGlyphSize == 12)
+        #expect((12.0...13.0).contains(Double(m.rateGlyphSize)))
+        #expect(m.rateStripHeight == 12)
+        #expect(m.spectrumBlockSpacing == 6)
+        #expect(m.rateStripReserve == 18)
+        #expect((16.0...18.0).contains(Double(m.rateStripReserve)))
+        #expect(m.rateGlyphSize <= m.rateStripHeight)
     }
 
-    @Test("The hit area reaches 3 pt past the icon on each side, inside the gap to the spectrum, without taking layout room")
-    func popupReach() {
+    @Test("Each icon's hit area is 24 by 20, reaching past its 12 by 12 box, and stays inside the gaps above and below the strip")
+    func stripHitArea() {
         let m = MusicPopupMetrics.self
-        #expect(m.rateButtonReach == 3)
-        #expect(m.rateButtonReach < m.rateGap)
-        let popup = MusicRateButtonMetrics.popup
-        #expect(popup.horizontalReach == Double(m.rateButtonReach))
-        #expect(popup.axis == .vertical)
-        // The Now playing card keeps its hit area, and its row, as they are.
-        #expect(MusicRateButtonMetrics.hoverCard.horizontalReach == 0)
-        #expect(MusicRateButtonMetrics.hoverCard.axis == .horizontal)
+        #expect(m.rateHitWidth == 24)
+        #expect(m.rateHitHeight == 20)
+        #expect(m.rateReachX == 6)
+        #expect(m.rateReachY == 4)
+        #expect(m.rateGlyphSize + 2 * m.rateReachX == m.rateHitWidth)
+        #expect(m.rateStripHeight + 2 * m.rateReachY == m.rateHitHeight)
+        // Above is the 6 pt gap to the times row; below, the column's 10 pt gap to the transport.
+        #expect(m.rateReachY <= m.spectrumBlockSpacing)
+        #expect(m.rateReachY < 10)
     }
 
-    @Test("Beside the icons the spectrum takes what the icons and their gap leave of the column")
-    func popupSpectrumWidth() {
-        let m = MusicPopupMetrics.self
-        #expect(m.spectrumWidth(showsRate: true) + m.rateGap + m.rateButtonWidth == m.playerColumnContentWidth)
-        #expect(m.spectrumWidth(showsRate: true) == 120)
-    }
-
-    @Test("Without the icons the spectrum keeps the column's full width")
-    func popupSpectrumWidthWithoutIcons() {
-        let m = MusicPopupMetrics.self
-        #expect(m.spectrumWidth(showsRate: false) == m.playerColumnContentWidth)
-        #expect(m.spectrumWidth(showsRate: false) == 142)
-        #expect(Double(m.spectrumWidth(showsRate: false)) == MusicSpectrum.boxWidth)
+    @Test("The icons rest at the brightness of Shuffle and Loop")
+    func stripRestingBrightness() {
+        #expect(MusicTransportMetrics.restingGlyphOpacity == 0.50)
     }
 
     @MainActor
-    @Test("The icons are 18 pt wide and 2 pt apart in the layout, whatever the hit area reaches")
-    func iconsKeepTheirLayoutSize() {
-        let size = fittingSize(MusicRateButtons(status: nil, metrics: .popup, onDislike: {}, onLike: {}))
-        #expect(size.width == MusicPopupMetrics.rateButtonWidth)
-        #expect(size.height == 2 * MusicPopupMetrics.rateButtonHeight + MusicPopupMetrics.rateButtonSpacing)
-        // The card's pair stays a row.
+    @Test("The strip is the column's width and 12 pt high with the icons and without, so the layout never jumps")
+    func stripKeepsItsSpace() {
+        let width = MusicPopupMetrics.playerColumnContentWidth
+        for available in [true, false] {
+            for status in statuses {
+                let size = fittingSize(MusicRateStrip(isAvailable: available, status: status, onDislike: {}, onLike: {}))
+                #expect(size.width == width)
+                #expect(size.height == MusicPopupMetrics.rateStripHeight)
+            }
+        }
+    }
+
+    @MainActor
+    @Test("Like stands over the gap between Shuffle and Previous, Dislike over the gap between Next and Loop")
+    func stripPlacesTheIcons() throws {
+        let ink = try inkOfStrip(status: nil)
+        let like = try #require(ink.left)
+        let dislike = try #require(ink.right)
+        // The glyphs' own ink is not quite symmetric in their boxes, so a point of slack.
+        #expect(abs(like.centreX - Double(MusicTransportMetrics.likeCentreX())) <= 1)
+        #expect(abs(dislike.centreX - Double(MusicTransportMetrics.dislikeCentreX())) <= 1)
+        // 20.25 and 121.75 in the 142 pt column: Like is the left one.
+        #expect(like.centreX < Double(MusicPopupMetrics.playerColumnContentWidth) / 2)
+        #expect(dislike.centreX > Double(MusicPopupMetrics.playerColumnContentWidth) / 2)
+        // Both sit in the middle of the strip's height.
+        #expect(abs(like.centreY - Double(MusicPopupMetrics.rateStripHeight) / 2) <= 1.5)
+        #expect(abs(dislike.centreY - Double(MusicPopupMetrics.rateStripHeight) / 2) <= 1.5)
+    }
+
+    @MainActor
+    @Test("A liked song fills the left icon in full white and leaves the right one outlined at half brightness")
+    func likedSong() throws {
+        let ink = try inkOfStrip(status: .like)
+        #expect(try #require(ink.left).peak > 0.9)
+        let right = try #require(ink.right).peak
+        #expect(right > 0.45)
+        #expect(right <= 0.52)
+    }
+
+    @MainActor
+    @Test("A disliked song fills the right icon in full white and leaves the left one outlined at half brightness")
+    func dislikedSong() throws {
+        let ink = try inkOfStrip(status: .dislike)
+        #expect(try #require(ink.right).peak > 0.9)
+        let left = try #require(ink.left).peak
+        #expect(left > 0.45)
+        #expect(left <= 0.52)
+    }
+
+    @MainActor
+    @Test("With nothing to rate the strip is empty")
+    func unavailableStripIsEmpty() throws {
+        let ink = try inkOfStrip(status: .like, available: false)
+        #expect(ink.left == nil)
+        #expect(ink.right == nil)
+    }
+
+    @MainActor
+    @Test("The card's pair stays a row of two 22 by 18 areas, 2 pt apart")
+    func cardKeepsItsLayout() {
         let card = fittingSize(MusicRateButtons(status: nil, onDislike: {}, onLike: {}))
         #expect(Double(card.width) == 2 * MusicHoverCardMetrics.rateButtonWidth + MusicHoverCardMetrics.rateButtonSpacing)
         #expect(Double(card.height) == MusicHoverCardMetrics.rateButtonHeight)
     }
 
-    @MainActor
-    @Test("Beside the spectrum the icons are centred on its height and the row is the column's width")
-    func iconsCentredBesideTheSpectrum() throws {
-        let height = 150.0
-        let row = HStack(spacing: MusicPopupMetrics.rateGap) {
-            Color.clear.frame(width: MusicPopupMetrics.spectrumWidth(showsRate: true))
-            MusicRateButtons(status: .like, metrics: .popup, onDislike: {}, onLike: {})
-        }
-        .frame(width: MusicPopupMetrics.playerColumnContentWidth, height: height)
-        .background(Color.black)
-        #expect(fittingSize(row).width == MusicPopupMetrics.playerColumnContentWidth)
+    // MARK: - Helpers
 
-        let renderer = ImageRenderer(content: row)
+    /// Where one half of the strip has ink: its middle, in points from the strip's top left, and its brightest pixel.
+    private struct Ink {
+        let centreX: Double
+        let centreY: Double
+        let peak: Double
+    }
+
+    /// The ink of the strip's left and right halves, drawn at four times the size on black. A half with none is nil.
+    @MainActor
+    private func inkOfStrip(status: MusicLikeStatus?, available: Bool = true) throws -> (left: Ink?, right: Ink?) {
+        let strip = MusicRateStrip(isAvailable: available, status: status, onDislike: {}, onLike: {})
+            .background(Color.black)
+        let renderer = ImageRenderer(content: strip)
         renderer.scale = 4
         let image = try #require(renderer.cgImage)
         let rep = NSBitmapImageRep(cgImage: image)
-        var top = Int.max
-        var bottom = -1
-        for y in 0..<rep.pixelsHigh {
-            for x in 0..<rep.pixelsWide where (rep.colorAt(x: x, y: y)?.redComponent ?? 0) > 0.25 {
-                top = min(top, y)
-                bottom = max(bottom, y)
+        let middle = rep.pixelsWide / 2
+        func measure(_ columns: Range<Int>) -> Ink? {
+            var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1
+            var peak = 0.0
+            for y in 0..<rep.pixelsHigh {
+                for x in columns {
+                    let red = rep.colorAt(x: x, y: y)?.redComponent ?? 0
+                    guard red > 0.15 else { continue }
+                    minX = min(minX, x)
+                    maxX = max(maxX, x)
+                    minY = min(minY, y)
+                    maxY = max(maxY, y)
+                    peak = max(peak, Double(red))
+                }
             }
+            guard maxX >= minX else { return nil }
+            return Ink(centreX: Double(minX + maxX + 1) / 8, centreY: Double(minY + maxY + 1) / 8, peak: peak)
         }
-        try #require(bottom >= top)
-        let centre = Double(top + bottom + 1) / 8
-        #expect(abs(centre - height / 2) <= 1)
+        return (measure(0..<middle), measure(middle..<rep.pixelsWide))
     }
 
     @MainActor
     private func fittingSize<V: View>(_ view: V) -> CGSize {
         NSHostingView(rootView: view).fittingSize
-    }
-
-    @Test("The card keeps its measures and the popup's are its own, set for the column beside the spectrum")
-    func buttonMetrics() {
-        let card = MusicRateButtonMetrics.hoverCard
-        let popup = MusicRateButtonMetrics.popup
-        #expect(card == MusicRateButtonMetrics(glyphSize: 12, buttonWidth: 22, buttonHeight: 18, spacing: 2))
-        #expect(card.glyphSize == MusicHoverCardMetrics.rateGlyphSize)
-        #expect(card.buttonWidth == MusicHoverCardMetrics.rateButtonWidth)
-        #expect(card.buttonHeight == MusicHoverCardMetrics.rateButtonHeight)
-        #expect(card.spacing == MusicHoverCardMetrics.rateButtonSpacing)
-        #expect(popup == MusicRateButtonMetrics(
-            glyphSize: 13, buttonWidth: 18, buttonHeight: 24, spacing: 2, axis: .vertical, horizontalReach: 3
-        ))
-        #expect(popup.glyphSize == Double(MusicPopupMetrics.rateGlyphSize))
-        #expect(popup.buttonWidth == Double(MusicPopupMetrics.rateButtonWidth))
-        #expect(popup.buttonHeight == Double(MusicPopupMetrics.rateButtonHeight))
-        #expect(popup.spacing == Double(MusicPopupMetrics.rateButtonSpacing))
-        #expect(popup.horizontalReach == Double(MusicPopupMetrics.rateButtonReach))
-        #expect(popup != card)
     }
 }

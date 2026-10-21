@@ -2,9 +2,9 @@
 import SwiftUI
 
 /// The left column of the Music popup: what is playing and everything to control it, always on screen. A stack 142 pt
-/// wide (kicker, cover, title and artist, the spectrum that is also the progress bar with Dislike and Like beside it,
-/// the transport, the two buttons that open Lyrics and Up next in the right column). Volume and output live in the
-/// Mixer popover. It takes the song's colour (`musicAccent`) for its wash and for everything that is on or played.
+/// wide (kicker, cover, title and artist, the spectrum that is also the progress bar, the times, a strip with Like and
+/// Dislike, the transport, the two buttons that open Lyrics and Up next in the right column). Volume and output live in
+/// the Mixer popover. It takes the song's colour (`musicAccent`) for its wash and for everything that is on or played.
 ///
 /// It stays whatever the right column shows. `service` and `navigation` are nil before the service exists; the column
 /// then shows its empty layout.
@@ -148,17 +148,6 @@ struct MusicPlayerColumn: View {
         }
     }
 
-    /// Dislike and Like for the song playing now, as the Now playing card has them, one over the other. A call that goes
-    /// through shows in the buttons; one that does not shows in the popup's notice line.
-    private func rateButtons(_ service: MusicService) -> some View {
-        MusicRateButtons(
-            status: service.likeStatus,
-            metrics: .popup,
-            onDislike: { Task { service.trackActions.postIfFailed(await service.dislike()) } },
-            onLike: { Task { service.trackActions.postIfFailed(await service.toggleLike()) } }
-        )
-    }
-
     /// The song's actions, as the "..." menu of a row has them, on a right click: there is no button for them here.
     @ViewBuilder
     private func trackActions(_ track: MusicTrack) -> some View {
@@ -173,21 +162,34 @@ struct MusicPlayerColumn: View {
     // MARK: - Spectrum
 
     private func spectrumBlock(_ state: MusicPlayerColumnState) -> some View {
-        let showsRate = service?.canRate == true
-        return VStack(alignment: .leading, spacing: 6) {
-            // Dislike and Like stand beside the bars, centred on their height. The spectrum gives up their width and a
-            // gap, so the row is still the column's width, and the times row under it keeps its full width.
-            HStack(spacing: MusicPopupMetrics.rateGap) {
-                MusicSpectrumView(
-                    state: state, track: track, service: service, spectrum: spectrum,
-                    width: MusicPopupMetrics.spectrumWidth(showsRate: showsRate)
-                )
-                if showsRate, let service {
-                    rateButtons(service)
-                }
-            }
+        VStack(alignment: .leading, spacing: MusicPopupMetrics.spectrumBlockSpacing) {
+            MusicSpectrumView(state: state, track: track, service: service, spectrum: spectrum)
             timesRow(state)
+            // The strip's height comes out of the spectrum's, which takes whatever the column leaves, so the transport
+            // and everything under it stay where they were.
+            rateStrip(state)
         }
+    }
+
+    /// Like and Dislike for the song playing now, as the Now playing card has them, in the strip under the times. The
+    /// strip's space is kept even when there is nothing to rate. A call that goes through shows in the icons; one that
+    /// does not shows in the popup's notice line. They fade and switch off with the transport.
+    private func rateStrip(_ state: MusicPlayerColumnState) -> some View {
+        let service = service
+        return MusicRateStrip(
+            isAvailable: service?.canRate == true,
+            status: service?.likeStatus,
+            onDislike: {
+                guard let service else { return }
+                Task { service.trackActions.postIfFailed(await service.dislike()) }
+            },
+            onLike: {
+                guard let service else { return }
+                Task { service.trackActions.postIfFailed(await service.toggleLike()) }
+            }
+        )
+        .opacity(state.controlsOpacity)
+        .disabled(!state.controlsAreEnabled)
     }
 
     /// The row under the spectrum. A song that plays reads "0:08 / 4:15" on the left and its view count on the right
@@ -270,30 +272,32 @@ struct MusicPlayerColumn: View {
         let canGoNext = service?.canGoNext ?? false
         let isShuffleOn = service?.isShuffleOn ?? false
         let loopMode = service?.loopMode ?? .off
+        let rest = MusicTransportMetrics.restingGlyphOpacity
         return HStack(spacing: 0) {
             MusicColumnGlyphButton(
-                title: "Shuffle", systemImage: "shuffle", fontSize: 12, box: 13,
-                color: isShuffleOn ? accent.solid : Color.white.opacity(0.50), isSelected: isShuffleOn
+                title: "Shuffle", systemImage: "shuffle", fontSize: 12, box: MusicTransportMetrics.box(.shuffle),
+                color: isShuffleOn ? accent.solid : Color.white.opacity(rest), isSelected: isShuffleOn
             ) { service?.setShuffle(!isShuffleOn) }
             Spacer(minLength: 0)
             MusicColumnGlyphButton(
-                title: "Previous", systemImage: "backward.end.fill", fontSize: 14, box: 16,
-                color: Color.white.opacity(0.90)
+                title: "Previous", systemImage: "backward.end.fill", fontSize: 14,
+                box: MusicTransportMetrics.box(.previous), color: Color.white.opacity(0.90)
             ) { service?.previous() }
             Spacer(minLength: 0)
             playPause(state)
             Spacer(minLength: 0)
             MusicColumnGlyphButton(
-                title: "Next", systemImage: "forward.end.fill", fontSize: 14, box: 16,
+                title: "Next", systemImage: "forward.end.fill", fontSize: 14, box: MusicTransportMetrics.box(.next),
                 color: Color.white.opacity(canGoNext ? 0.90 : 0.30), isDisabled: !canGoNext
             ) { service?.next() }
             Spacer(minLength: 0)
             MusicColumnGlyphButton(
-                title: loopMode.label, systemImage: loopMode.systemImage, fontSize: 12, box: 13,
-                color: loopMode != .off ? accent.solid : Color.white.opacity(0.50), isSelected: loopMode != .off
+                title: loopMode.label, systemImage: loopMode.systemImage, fontSize: 12,
+                box: MusicTransportMetrics.box(.loop),
+                color: loopMode != .off ? accent.solid : Color.white.opacity(rest), isSelected: loopMode != .off
             ) { service?.cycleLoopMode() }
         }
-        .frame(width: MusicPopupMetrics.playerColumnContentWidth, height: 32)
+        .frame(width: MusicPopupMetrics.playerColumnContentWidth, height: MusicTransportMetrics.height)
         .opacity(state.controlsOpacity)
         .disabled(!state.controlsAreEnabled)
     }
@@ -317,7 +321,7 @@ struct MusicPlayerColumn: View {
                         .foregroundStyle(MusicStyle.Palette.popupBackground)
                 }
             }
-            .frame(width: 32, height: 32)
+            .frame(width: MusicTransportMetrics.box(.playPause), height: MusicTransportMetrics.height)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -370,7 +374,7 @@ private struct MusicColumnGlyphButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: fontSize, weight: .medium))
                 .foregroundStyle(color)
-                .frame(width: box, height: 32)
+                .frame(width: box, height: MusicTransportMetrics.height)
                 .padding(.horizontal, Self.reach)
                 .contentShape(Rectangle())
                 .padding(.horizontal, -Self.reach)

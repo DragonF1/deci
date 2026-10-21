@@ -92,23 +92,23 @@ nonisolated enum MusicPopupMetrics {
     /// without that much room shows a shorter count.
     static let timesRowGap: CGFloat = 8
 
-    /// The Dislike and Like icons beside the spectrum, one over the other and centred on its height: a 13 pt glyph in a
-    /// hit area 18 wide and 24 high, with a little room between the two and between them and the spectrum.
-    static let rateGlyphSize: CGFloat = 13
-    static let rateButtonWidth: CGFloat = 18
-    static let rateButtonHeight: CGFloat = 24
-    static let rateButtonSpacing: CGFloat = 2
-    static let rateGap: CGFloat = 4
+    /// The gap between the spectrum, the times row and the strip under it.
+    static let spectrumBlockSpacing: CGFloat = 6
 
-    /// How far each hit area reaches past its width on both sides, out of the layout, for a comfortable click target. It
-    /// stays inside the gap, so it never covers the spectrum.
-    static let rateButtonReach: CGFloat = 3
+    /// The strip of Like and Dislike between the times row and the transport: a 12 pt glyph in a box 12 wide and 12
+    /// high. With the gap above it the strip takes `rateStripReserve` from the spectrum, which is whatever the column
+    /// leaves.
+    static let rateGlyphSize: CGFloat = 12
+    static let rateStripHeight: CGFloat = 12
+    static var rateStripReserve: CGFloat { spectrumBlockSpacing + rateStripHeight }
 
-    /// What the spectrum gets of the column's width: all of it, or what the icons and their gap leave of it when the song
-    /// can be rated. The times row under it keeps the full width.
-    static func spectrumWidth(showsRate: Bool) -> CGFloat {
-        showsRate ? playerColumnContentWidth - rateGap - rateButtonWidth : playerColumnContentWidth
-    }
+    /// Each icon's hit area, 24 wide and 20 high, centred on its box. It reaches `rateReachX` and `rateReachY` past the
+    /// box, out of the layout; above the strip is the gap to the times row and below it the column's gap to the
+    /// transport, which both hold the reach.
+    static let rateHitWidth: CGFloat = 24
+    static let rateHitHeight: CGFloat = 20
+    static var rateReachX: CGFloat { (rateHitWidth - rateGlyphSize) / 2 }
+    static var rateReachY: CGFloat { (rateHitHeight - rateStripHeight) / 2 }
 
     /// The right column's own header, and the padding around it and the content under it.
     static let headerHeight: CGFloat = 32
@@ -153,6 +153,63 @@ nonisolated enum MusicPopupMetrics {
 
     /// The distance from the popup's trailing edge to the card's, which ends where the avatar does.
     static var accountCardTrailing: CGFloat { borderWidth + rightPaddingSide }
+}
+
+/// The transport row's layout rule. Five boxes stand in a row (Shuffle, Previous, play and pause, Next and Loop), with
+/// the row's spare width shared equally by the four Spacers between them. The row is built from these measures, and so
+/// is what is placed against its glyphs (the strip of Like and Dislike above it), so the two cannot drift apart. Pure.
+nonisolated enum MusicTransportMetrics {
+    /// The boxes, left to right.
+    enum Slot: Int, CaseIterable {
+        case shuffle
+        case previous
+        case playPause
+        case next
+        case loop
+    }
+
+    /// The width the design draws each glyph in.
+    static func box(_ slot: Slot) -> CGFloat {
+        switch slot {
+        case .shuffle, .loop: 13
+        case .previous, .next: 16
+        case .playPause: 32
+        }
+    }
+
+    /// The row's height, which is the play and pause button's.
+    static let height: CGFloat = 32
+
+    /// How bright Shuffle and Loop are while off, and the strip's icons while they are not the song's rating.
+    static let restingGlyphOpacity = 0.50
+
+    /// The room between two neighbouring boxes: the width the five boxes leave, over the four gaps. A row with no room
+    /// to spare has no gap.
+    static func gap(width: CGFloat = MusicPopupMetrics.playerColumnContentWidth) -> CGFloat {
+        guard width.isFinite else { return 0 }
+        let boxes = Slot.allCases.reduce(CGFloat(0)) { $0 + box($1) }
+        return max(0, (width - boxes) / CGFloat(Slot.allCases.count - 1))
+    }
+
+    /// The middle of a glyph's box, from the row's leading edge.
+    static func centreX(of slot: Slot, width: CGFloat = MusicPopupMetrics.playerColumnContentWidth) -> CGFloat {
+        let spacing = gap(width: width)
+        var left: CGFloat = 0
+        for earlier in Slot.allCases where earlier.rawValue < slot.rawValue {
+            left += box(earlier) + spacing
+        }
+        return left + box(slot) / 2
+    }
+
+    /// Like's middle: halfway between the centres of Shuffle and Previous.
+    static func likeCentreX(width: CGFloat = MusicPopupMetrics.playerColumnContentWidth) -> CGFloat {
+        (centreX(of: .shuffle, width: width) + centreX(of: .previous, width: width)) / 2
+    }
+
+    /// Dislike's middle: halfway between the centres of Next and Loop.
+    static func dislikeCentreX(width: CGFloat = MusicPopupMetrics.playerColumnContentWidth) -> CGFloat {
+        (centreX(of: .next, width: width) + centreX(of: .loop, width: width)) / 2
+    }
 }
 
 // MARK: - Bottom inset
