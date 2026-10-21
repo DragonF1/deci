@@ -1,10 +1,11 @@
 // DeciTests/Music/MusicChipBurstCenteringTests.swift
 // Where the like animation's thumb sits in the menu bar pill, measured on the pixels. The pill and the overlay are drawn
 // offscreen as the status item draws them (MusicChipBurstRender), the white ink of the held thumb is measured to a
-// fraction of a point, and its middle is compared with the middle of the cover it takes the place of. The thumb as the
-// symbol draws it stands low and a little right of its box in that drawing, which is what MusicChipLayout's ink
-// nudge puts right. The render stands in for a 1x and a 2x display (RenderWindow), because the backing scale decides
-// how SwiftUI snaps what it places: to half a point at 2x, to whole points at 1x.
+// fraction of a point, and its middle is compared with the middle of the cover it takes the place of, moved by the
+// kind's shift (MusicChipLayout.burstShift). The thumb as the symbol draws it stands low and a little right of its box
+// in that drawing, which is what MusicChipLayout's ink nudge puts right. The render stands in for a 1x and a 2x display
+// (RenderWindow), because the backing scale decides how SwiftUI snaps what it places: to half a point at 2x, to whole
+// points at 1x.
 
 import AppKit
 import Testing
@@ -59,40 +60,41 @@ struct MusicChipBurstCenteringTests {
         }
     }
 
-    @Test("The held thumb of a like or a dislike has its ink centred on the cover's middle, up and down, at 1x and 2x")
-    func burstThumbIsCentredVertically() throws {
+    @Test("The held thumb of a like or a dislike has its ink at its kind's shift from the cover's middle, up and down, at 1x and 2x")
+    func burstThumbIsPlacedVertically() throws {
         for kind in kinds {
             for height in heights {
                 for scale in scales {
                     let m = try measure(kind: kind, isRemoval: false, scale: scale, height: height)
-                    let off = m.thumb.centerY - m.cover.centerY
+                    let off = m.thumb.centerY - m.cover.centerY - MusicChipLayout.burstShift(of: kind).height
                     #expect(abs(off) <= tolerance(scale: scale, vertical: true), "\(kind) burst, height \(height) at \(scale)x is \(off) pt off")
                 }
             }
         }
     }
 
-    @Test("The held thumb of a like or a dislike has its ink centred on the cover's middle, left and right, at 1x and 2x")
-    func burstThumbIsCentredHorizontally() throws {
+    @Test("The held thumb of a like or a dislike has its ink at its kind's shift from the cover's middle, left and right, at 1x and 2x")
+    func burstThumbIsPlacedHorizontally() throws {
         for kind in kinds {
             for height in heights {
                 for scale in scales {
                     let m = try measure(kind: kind, isRemoval: false, scale: scale, height: height)
-                    let off = m.thumb.centerX - m.cover.centerX
+                    let off = m.thumb.centerX - m.cover.centerX - MusicChipLayout.burstShift(of: kind).width
                     #expect(abs(off) <= tolerance(scale: scale, vertical: false), "\(kind) burst, height \(height) at \(scale)x is \(off) pt off")
                 }
             }
         }
     }
 
-    @Test("The outline thumb of a removal is centred on the cover's middle too, up and down and left and right")
-    func removalThumbIsCentred() throws {
+    @Test("The outline thumb of a removal stands at its kind's shift from the cover's middle too, up and down and left and right")
+    func removalThumbIsPlaced() throws {
         for kind in kinds {
             for height in heights {
                 for scale in scales {
                     let m = try measure(kind: kind, isRemoval: true, scale: scale, height: height)
-                    let vertical = m.thumb.centerY - m.cover.centerY
-                    let horizontal = m.thumb.centerX - m.cover.centerX
+                    let shift = MusicChipLayout.burstShift(of: kind)
+                    let vertical = m.thumb.centerY - m.cover.centerY - shift.height
+                    let horizontal = m.thumb.centerX - m.cover.centerX - shift.width
                     #expect(abs(vertical) <= tolerance(scale: scale, vertical: true), "\(kind) removal, height \(height) at \(scale)x is \(vertical) pt off, up and down")
                     #expect(abs(horizontal) <= tolerance(scale: scale, vertical: false), "\(kind) removal, height \(height) at \(scale)x is \(horizontal) pt off, sideways")
                 }

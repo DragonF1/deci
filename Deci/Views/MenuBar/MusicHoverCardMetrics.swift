@@ -23,7 +23,7 @@ nonisolated enum MusicHoverCardMetrics {
     /// The round buttons of the controls row.
     static let controlCircleSize: Double = 28
 
-    /// The Dislike and Like icons at the end of the title row: a 12 pt glyph in a hit area as high as the row, so the row
+    /// The Like and Dislike icons at the end of the title row: a 12 pt glyph in a hit area as high as the row, so the row
     /// keeps its height, with a little room between the two.
     static let rateGlyphSize: Double = 12
     static let rateButtonWidth: Double = 22

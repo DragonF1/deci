@@ -192,6 +192,17 @@ struct MusicRateButtonTests {
         #expect(Double(card.height) == MusicHoverCardMetrics.rateButtonHeight)
     }
 
+    @MainActor
+    @Test("The card's pair has Like on the left and Dislike on the right, as the strip has them")
+    func cardOrder() throws {
+        let liked = try inkOfHalves(MusicRateButtons(status: .like, onDislike: {}, onLike: {}))
+        #expect(try #require(liked.left).peak > 0.9)
+        #expect(try #require(liked.right).peak <= 0.62)
+        let disliked = try inkOfHalves(MusicRateButtons(status: .dislike, onDislike: {}, onLike: {}))
+        #expect(try #require(disliked.right).peak > 0.9)
+        #expect(try #require(disliked.left).peak <= 0.62)
+    }
+
     // MARK: - Helpers
 
     /// Where one half of the strip has ink: its middle, in points from the strip's top left, and its brightest pixel.
@@ -204,9 +215,13 @@ struct MusicRateButtonTests {
     /// The ink of the strip's left and right halves, drawn at four times the size on black. A half with none is nil.
     @MainActor
     private func inkOfStrip(status: MusicLikeStatus?, available: Bool = true) throws -> (left: Ink?, right: Ink?) {
-        let strip = MusicRateStrip(isAvailable: available, status: status, onDislike: {}, onLike: {})
-            .background(Color.black)
-        let renderer = ImageRenderer(content: strip)
+        try inkOfHalves(MusicRateStrip(isAvailable: available, status: status, onDislike: {}, onLike: {}))
+    }
+
+    /// The ink of a view's left and right halves, drawn at four times the size on black. A half with none is nil.
+    @MainActor
+    private func inkOfHalves<V: View>(_ view: V) throws -> (left: Ink?, right: Ink?) {
+        let renderer = ImageRenderer(content: view.background(Color.black))
         renderer.scale = 4
         let image = try #require(renderer.cgImage)
         let rep = NSBitmapImageRep(cgImage: image)

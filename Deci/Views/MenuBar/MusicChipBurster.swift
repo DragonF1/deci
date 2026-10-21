@@ -17,7 +17,7 @@ final class MusicChipBurstModel {
     var event: MusicRateBurstCenter.Event?
     /// Whether the thumb is drawn. It fades in with the burst and out when the hold is over.
     var isShown = false
-    /// How far right of the pill's middle the thumb stands.
+    /// How far right of the pill's middle the cover's slot is; the kind's shift (`MusicChipLayout.burstShift`) is added.
     var slotOffset: Double = 0
     /// Whether a removal's thumb comes in from nothing; false when it replaces a thumb that is showing.
     var fadesIn = true
@@ -25,7 +25,7 @@ final class MusicChipBurstModel {
     var pinnedElapsed: TimeInterval?
 }
 
-/// The thumb and its sparks, in the middle of the item, moved to the cover's slot.
+/// The thumb and its sparks, in the middle of the item, moved to the cover's slot and then by the kind's shift.
 struct MusicChipBurstOverlay: View {
     let model: MusicChipBurstModel
 
@@ -41,7 +41,10 @@ struct MusicChipBurstOverlay: View {
                     inkOffset: MusicChipLayout.burstInkNudge,
                     fadesIn: model.fadesIn
                 )
-                .offset(x: model.slotOffset)
+                .offset(
+                    x: model.slotOffset + MusicChipLayout.burstShift(of: event.kind).width,
+                    y: MusicChipLayout.burstShift(of: event.kind).height
+                )
                 // Whole from the first frame, so the collapse and the pop are seen; it fades only on the way out.
                 .opacity(model.isShown ? 1 : 0)
                 .animation(.easeInOut(duration: MusicRateBurst.Metrics.pillFade), value: model.isShown)
@@ -92,9 +95,9 @@ final class MusicChipBurster {
         self.sleep = sleep
     }
 
-    /// Shows `event` with its thumb `slotOffset` points right of the pill's middle. A burst or a removal that is already
-    /// showing is replaced: the cover stays away, a removal's thumb does not fade in again over the one that was there,
-    /// and the way back is the new one's.
+    /// Shows `event` with its thumb `slotOffset` points right of the pill's middle, then moved by its kind's shift. A
+    /// burst or a removal that is already showing is replaced: the cover stays away, a removal's thumb does not fade in
+    /// again over the one that was there, and the way back is the new one's.
     func play(_ event: MusicRateBurstCenter.Event, slotOffset: Double) {
         sequence?.cancel()
         if host == nil {

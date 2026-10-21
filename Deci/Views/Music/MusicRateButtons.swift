@@ -36,8 +36,8 @@ nonisolated struct MusicRateButtonLook: Equatable {
     var isSelected: Bool { isActive }
 }
 
-/// The Dislike and Like icons at the end of the Now playing card's title row. Borderless, so a click rates the song and
-/// nothing else: the card stays and the popover does not open.
+/// The Like and Dislike icons at the end of the Now playing card's title row, Like on the left as in the popup's strip.
+/// Borderless, so a click rates the song and nothing else: the card stays and the popover does not open.
 struct MusicRateButtons: View {
     let status: MusicLikeStatus?
     let onDislike: () -> Void
@@ -47,8 +47,8 @@ struct MusicRateButtons: View {
 
     var body: some View {
         HStack(spacing: Metrics.rateButtonSpacing) {
-            button(MusicRateButtonLook(kind: .dislike, status: status), action: onDislike)
             button(MusicRateButtonLook(kind: .like, status: status), action: onLike)
+            button(MusicRateButtonLook(kind: .dislike, status: status), action: onDislike)
         }
     }
 

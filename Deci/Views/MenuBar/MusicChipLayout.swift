@@ -61,8 +61,18 @@ nonisolated enum MusicChipLayout {
     static let burstInkNudgeX: Double = -0.15
     static let burstInkNudgeY: Double = -0.65
     static let burstInkNudge = CGSize(width: burstInkNudgeX, height: burstInkNudgeY)
+    /// Where each thumb stands from the cover's middle once its ink is centred, set by eye in the menu bar: the like
+    /// thumb 3 pt right and 2 pt up, the dislike thumb 2 pt right. A burst and a removal of one kind share it, and the
+    /// overlay moves the whole animation by it, so the sparks still come from the thumb.
+    static func burstShift(of kind: MusicRateBurst.Kind) -> CGSize {
+        switch kind {
+        case .like: CGSize(width: 3, height: -2)
+        case .dislike: CGSize(width: 2, height: 0)
+        }
+    }
     /// The menu bar item the pill stands in is this high, and the pill is centred in it. The animation's sparks may reach
-    /// half of it from the thumb's middle, so they are never cut off.
+    /// half of it from the thumb's middle, so they are never cut off; the like's, 2 pt up with its thumb, can end about a
+    /// point past the top of a 22 pt item at their furthest.
     static let statusItemHeight: Double = 22
     static let burstReach: Double = statusItemHeight / 2
 
