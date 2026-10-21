@@ -79,9 +79,9 @@ struct MusicChipBurstTests {
         #expect(MusicChipLayout.burstInkNudge == CGSize(width: MusicChipLayout.burstInkNudgeX, height: MusicChipLayout.burstInkNudgeY))
     }
 
-    @Test("The like thumb stands 3 pt right and 2 pt up of the cover's middle, the dislike thumb 2 pt right")
+    @Test("The like and the dislike thumb both stand 2 pt right of the cover's middle, on its line")
     func shiftByKind() {
-        #expect(MusicChipLayout.burstShift(of: .like) == CGSize(width: 3, height: -2))
+        #expect(MusicChipLayout.burstShift(of: .like) == CGSize(width: 2, height: 0))
         #expect(MusicChipLayout.burstShift(of: .dislike) == CGSize(width: 2, height: 0))
     }
 
