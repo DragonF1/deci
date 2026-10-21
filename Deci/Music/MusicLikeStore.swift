@@ -5,7 +5,8 @@ import os
 
 private let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicLikes")
 
-/// What Like, Dislike and the save shortcut came to, as the shortcut HUD words it.
+/// What Like, Dislike and the save shortcut came to. A refusal or a failure has words, which the shortcut HUD and the
+/// popup's notice line show; a rating that was made has none, since the like animation shows it.
 nonisolated enum MusicActionOutcome: CaseIterable, Equatable, Sendable {
     case liked
     case likeRemoved
@@ -49,6 +50,14 @@ final class MusicLikeStore {
     @ObservationIgnored private var wanted: [String: MusicLikeStatus] = [:]
     /// Told when a call says the session is gone, so the service can sign out.
     @ObservationIgnored var onSessionExpired: (@MainActor () -> Void)?
+    /// Told, with the song, what it now shows and what it showed before (nil when it was not known), each time a tap
+    /// makes a song show a new rating: as the state flips, before YouTube Music answers, and before `onSent` runs. A
+    /// rollback, a read that lands and the call that sends a tap already shown are not told. The service turns it into
+    /// the like animation.
+    @ObservationIgnored var onRatingShown: (@MainActor (_ videoId: String, _ status: MusicLikeStatus, _ previous: MusicLikeStatus?) -> Void)?
+    /// Told, with the song and the rating it was showing, when a call that failed puts the song back to another one. The
+    /// service cuts that rating's animation short.
+    @ObservationIgnored var onRatingRolledBack: (@MainActor (_ videoId: String, _ shown: MusicLikeStatus?) -> Void)?
 
     init(backend: any MusicBackend) {
         self.backend = backend
@@ -137,7 +146,7 @@ final class MusicLikeStore {
         let skip = status == .dislike ? onSent : nil
         guard rating.insert(videoId).inserted else {
             wanted[videoId] = status
-            statuses[videoId] = status
+            show(status, videoId: videoId)
             skip?()
             return .quiet
         }
@@ -146,8 +155,11 @@ final class MusicLikeStore {
         var target = status
         var onSent = skip
         var outcome = MusicActionOutcome.quiet
+        var isFirstCall = true
         while true {
-            statuses[videoId] = target
+            // The tap shows as the first call goes out. A call that sends a tap made meanwhile shows nothing: it showed.
+            if isFirstCall { show(target, videoId: videoId) } else { statuses[videoId] = target }
+            isFirstCall = false
             onSent?()
             onSent = nil
             do {
@@ -158,7 +170,9 @@ final class MusicLikeStore {
             } catch {
                 guard sessionRun == session else { return .quiet }
                 logger.error("rating failed: \(MusicService.logDescription(of: error), privacy: .public)")
+                let shown = statuses[videoId]
                 statuses[videoId] = confirmed
+                if shown != confirmed { onRatingRolledBack?(videoId, shown) }
                 // A song still unknown is read again the next time it is loaded.
                 if confirmed == nil { asked.remove(videoId) }
                 if expireIfSignedOut(error) {
@@ -173,6 +187,13 @@ final class MusicLikeStore {
         }
         rating.remove(videoId)
         return outcome
+    }
+
+    /// Makes a song show `status` at once, and says so when that is a new rating.
+    private func show(_ status: MusicLikeStatus, videoId: String) {
+        let previous = statuses[videoId]
+        statuses[videoId] = status
+        onRatingShown?(videoId, status, previous)
     }
 
     private static func outcome(of target: MusicLikeStatus, after previous: MusicLikeStatus?) -> MusicActionOutcome {

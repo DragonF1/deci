@@ -496,10 +496,11 @@ final class MusicSearchNavigation {
         }
     }
 
-    /// Sets a song's rating and reports the outcome, a success as well as a failure: the menu closes at the click, so
-    /// nothing else shows that it went through. The report goes where the hotkeys' goes (`outcomes`): the notice line
-    /// while the popup is open, the HUD when it closed during the call. Disliking the song that plays skips it; any
-    /// other song leaves the player alone.
+    /// Sets a song's rating and reports the outcome. Only a failure shows: a rating of the playing song is shown by the
+    /// like animation, and one of any other song shows nowhere (a row shows no rating); the song's menu words Like and
+    /// Dislike by it the next time it opens. The report goes where the hotkeys' goes (`outcomes`): the notice line while
+    /// the popup is open, the HUD when it closed during the call. Disliking the song that plays skips it; any other song
+    /// leaves the player alone.
     @discardableResult
     func rate(_ status: MusicLikeStatus, _ track: MusicTrack) -> Task<Void, Never> {
         Task { [service, weak self] in

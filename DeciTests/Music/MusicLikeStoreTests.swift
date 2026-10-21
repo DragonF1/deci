@@ -9,8 +9,16 @@ import Testing
 
 @MainActor
 private final class LikeProbe {
+    /// One rating the store showed: the song, what it now shows and what it showed before.
+    struct Shown: Equatable {
+        let videoId: String
+        let status: MusicLikeStatus
+        let previous: MusicLikeStatus?
+    }
+
     var expired = 0
     var skips = 0
+    var shown: [Shown] = []
 }
 
 @MainActor
@@ -23,6 +31,9 @@ private struct LikeHarness {
         store = MusicLikeStore(backend: backend)
         let probe = self.probe
         store.onSessionExpired = { probe.expired += 1 }
+        store.onRatingShown = { videoId, status, previous in
+            probe.shown.append(.init(videoId: videoId, status: status, previous: previous))
+        }
     }
 
     func until(_ condition: () async -> Bool) async -> Bool {
@@ -920,5 +931,89 @@ struct MusicLikeStoreTests {
 
         #expect(await task.value == .quiet)
         #expect(store.status(of: "a") == nil)
+    }
+
+    // MARK: - Telling that a rating shows
+
+    @Test("A like is told as soon as the state shows it, before YouTube has answered, with what the song was")
+    func shownAtTheOptimisticSwitch() async {
+        let h = LikeHarness()
+        await h.know("a", as: .indifferent)
+        let gate = MusicTestGate()
+        let task = await h.heldToggle("a", gate: gate)
+
+        #expect(h.probe.shown == [.init(videoId: "a", status: .like, previous: .indifferent)])
+
+        await gate.open()
+        #expect(await task.value == .liked)
+        // The answer coming back is not a second showing.
+        #expect(h.probe.shown.count == 1)
+    }
+
+    @Test("A song that was not known yet shows its first rating with no earlier state")
+    func shownWithNoEarlierState() async {
+        let h = LikeHarness()
+        _ = await h.store.dislike(videoId: "a")
+        #expect(h.probe.shown == [.init(videoId: "a", status: .dislike, previous: nil)])
+    }
+
+    @Test("Taking a rating back is told too, as the state it went to, so the listener can tell it from a rating")
+    func removalIsShown() async {
+        let h = LikeHarness()
+        await h.know("a", as: .like)
+        #expect(await h.store.set(.indifferent, videoId: "a") == .likeRemoved)
+        #expect(h.probe.shown == [.init(videoId: "a", status: .indifferent, previous: .like)])
+    }
+
+    @Test("A dislike is told before the skip runs, so the song is still the one that was rated")
+    func shownBeforeTheSkip() async {
+        let h = LikeHarness()
+        let probe = h.probe
+        var shownAtSkip = 0
+        _ = await h.store.dislike(videoId: "a") { shownAtSkip = probe.shown.count }
+        #expect(shownAtSkip == 1)
+    }
+
+    @Test("A tap on a song whose rating is out is told at once, and not again when the call that is out sends it")
+    func tapWhileOutIsShownOnce() async {
+        let h = LikeHarness()
+        let gate = MusicTestGate()
+        let first = await h.heldToggle("a", gate: gate)
+        #expect(h.probe.shown.map(\.status) == [.like])
+
+        _ = await h.store.dislike(videoId: "a")
+        #expect(h.probe.shown == [
+            .init(videoId: "a", status: .like, previous: nil),
+            .init(videoId: "a", status: .dislike, previous: .like),
+        ])
+
+        await gate.open()
+        _ = await first.value
+        #expect(h.probe.shown.count == 2)
+        #expect(h.store.status(of: "a") == .dislike)
+    }
+
+    @Test("A rating that fails is not told again when it rolls back")
+    func rollbackIsNotShown() async {
+        let h = LikeHarness()
+        await h.know("a", as: .indifferent)
+        await h.backend.setRateError(videoId: "a", MusicError.http(500))
+        #expect(await h.store.toggleLike(videoId: "a") == .failed)
+        #expect(h.store.status(of: "a") == .indifferent)
+        #expect(h.probe.shown == [.init(videoId: "a", status: .like, previous: .indifferent)])
+    }
+
+    @Test("A state read from YouTube is not a rating and is not told")
+    func readsAreNotShown() async {
+        let h = LikeHarness()
+        await h.know("a", as: .like)
+        #expect(h.probe.shown.isEmpty)
+    }
+
+    @Test("A blank video id shows nothing")
+    func blankShowsNothing() async {
+        let h = LikeHarness()
+        _ = await h.store.set(.like, videoId: " ")
+        #expect(h.probe.shown.isEmpty)
     }
 }

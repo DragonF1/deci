@@ -47,6 +47,14 @@ nonisolated enum MusicChipLayout {
     /// The title's left edge: after the inset, the cover and the gap.
     static let titleOriginX: Double = leadingInset + thumbnailSize + gap
 
+    /// The thumb of the like animation, which takes the cover's place: a point under the cover's 12, so the filled thumb
+    /// sits well inside the 18 pt pill.
+    static let burstGlyphSize: Double = 11
+    /// The menu bar item the pill stands in is this high, and the pill is centred in it. The animation's sparks may reach
+    /// half of it from the thumb's middle, so they are never cut off.
+    static let statusItemHeight: Double = 22
+    static let burstReach: Double = statusItemHeight / 2
+
     /// What a title makes of the pill, measured by `measure` in the chip font. A width that cannot be measured counts
     /// as none. The window is measured on the first `maxCharacters` characters only, so a long title's tail does not
     /// widen it.
@@ -88,6 +96,14 @@ nonisolated enum MusicChipLayout {
     /// The strength the play glyph is drawn at: only on a paused pill.
     static func playGlyphAlpha(isPlaying: Bool) -> Double {
         isPlaying ? 0 : 1
+    }
+
+    /// Where the like animation's thumb stands, measured to the right of the pill's middle (which is the middle of the item).
+    /// A playing song's thumb takes the cover's place: the cover's middle is the inset and half the cover from the pill's
+    /// left edge. A paused pill has only the play glyph, in its middle, and the thumb stands there.
+    static func burstSlotOffset(pillWidth: Double, isPlaying: Bool) -> Double {
+        guard isPlaying else { return 0 }
+        return leadingInset + thumbnailSize / 2 - usable(pillWidth) / 2
     }
 
     /// What the chip says: the song's title, else its artist, else a plain phrase. One line: a line break in a title

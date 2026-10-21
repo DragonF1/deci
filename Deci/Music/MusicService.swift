@@ -73,6 +73,12 @@ final class MusicService {
     private(set) var isAutoplayOn: Bool
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
+    /// Told when a tap turns Like or Dislike on for the song playing now, as its state flips and before YouTube Music
+    /// answers. A song that is not playing, and the removal of a rating, are not told. The like animation plays on it.
+    @ObservationIgnored var onRatingBurst: (@MainActor (MusicRateBurst.Kind) -> Void)?
+    /// Told, with the kind, when a tap takes the playing song's Like or Dislike away and no burst replaces it, so a burst
+    /// of that kind still playing is cut short. A song that is not playing is not told.
+    @ObservationIgnored var onRatingBurstCancel: (@MainActor (MusicRateBurst.Kind) -> Void)?
 
     /// One playback session: one CPN, one listening-time count, one playback ping and, when the stream has a
     /// watchtime URL, the watchtime pings with the same CPN: one with the playback ping, one per 40 s of playing
@@ -246,6 +252,12 @@ final class MusicService {
         browse.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         trackActions.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         likes.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
+        likes.onRatingShown = { [weak self] videoId, status, previous in
+            self?.ratingShown(videoId: videoId, status: status, previous: previous)
+        }
+        likes.onRatingRolledBack = { [weak self] videoId, shown in
+            self?.ratingRolledBack(videoId: videoId, shown: shown)
+        }
         browse.onPageLoaded = { [weak self] page, opener in self?.pageLoaded(page, opener: opener) }
         if refreshOnCreate {
             Task { [weak self] in await self?.refreshAuth() }
@@ -1333,6 +1345,25 @@ final class MusicService {
         return await likes.set(status, videoId: track.videoId) { [weak self] in
             if isPlaying { self?.skipDislikedSong() }
         }
+    }
+
+    /// The like animation plays for the song on screen: a rating of any other song (from a row's menu) shows only in its
+    /// own state. The store tells this before a dislike skips, so the song is still the one that was rated. A Like or
+    /// Dislike taken back cuts its burst short, so the thumb does not show a rating the song no longer has.
+    private func ratingShown(videoId: String, status: MusicLikeStatus, previous: MusicLikeStatus?) {
+        guard videoId == player.nowPlaying?.videoId else { return }
+        if let kind = MusicRateBurst.kind(from: previous, to: status) {
+            onRatingBurst?(kind)
+        } else if let kind = MusicRateBurst.kindTakenBack(from: previous, to: status) {
+            onRatingBurstCancel?(kind)
+        }
+    }
+
+    /// A rating YouTube Music did not take cuts its animation short as the song goes back, so the thumb does not stay
+    /// filled for a rating the song never got.
+    private func ratingRolledBack(videoId: String, shown: MusicLikeStatus?) {
+        guard videoId == player.nowPlaying?.videoId, let shown, let kind = MusicRateBurst.kind(from: nil, to: shown) else { return }
+        onRatingBurstCancel?(kind)
     }
 
     /// With no next song the song keeps playing.

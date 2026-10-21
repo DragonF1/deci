@@ -46,7 +46,8 @@ struct MusicPopupView: View {
             MusicPlayerColumn(
                 service: musicHost.service,
                 navigation: musicHost.navigation,
-                spectrum: musicHost.spectrum
+                spectrum: musicHost.spectrum,
+                burst: musicHost.burst.stripEvent
             )
             Rectangle()
                 .fill(MusicStyle.Palette.hairline)

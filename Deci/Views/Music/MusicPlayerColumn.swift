@@ -12,6 +12,8 @@ struct MusicPlayerColumn: View {
     let service: MusicService?
     let navigation: MusicSearchNavigation?
     let spectrum: MusicSpectrumDriver
+    /// The like animation the strip's Like or Dislike icon is playing; nil when there is none.
+    let burst: MusicRateBurstCenter.Event?
 
     @Environment(\.musicAccent) private var accent
     @Environment(\.musicTrackMenu) private var trackMenu
@@ -175,13 +177,15 @@ struct MusicPlayerColumn: View {
     }
 
     /// Like and Dislike for the song playing now, as the Now playing card has them, in the strip over the transport. The
-    /// strip's space is kept even when there is nothing to rate. A call that goes through shows in the icons; one that
-    /// does not shows in the popup's notice line. They fade and switch off with the transport.
+    /// strip's space is kept even when there is nothing to rate. A call that goes through shows in the icons, with the
+    /// like animation on the one that turned on; one that does not shows in the popup's notice line. They fade and
+    /// switch off with the transport.
     private func rateStrip(_ state: MusicPlayerColumnState) -> some View {
         let service = service
         return MusicRateStrip(
             isAvailable: service?.canRate == true,
             status: service?.likeStatus,
+            burst: burst,
             onDislike: {
                 guard let service else { return }
                 Task { service.trackActions.postIfFailed(await service.dislike()) }

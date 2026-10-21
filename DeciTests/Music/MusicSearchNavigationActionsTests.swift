@@ -488,15 +488,15 @@ struct MusicSearchNavigationActionsTests {
         #expect(hasRateEntry(h.nav.actions(for: MusicSamples.track("playing"), in: .none)))
     }
 
-    @Test("A pick sets its own rating and the notice line says what came of it", arguments: [
-        (MusicTrackAction.like(removing: false), MusicLikeStatus?.none, MusicLikeStatus.like, "Liked"),
-        (.like(removing: true), .like, .indifferent, "Removed like"),
-        (.dislike(removing: false), .none, .dislike, "Disliked"),
-        (.dislike(removing: true), .dislike, .indifferent, "Removed dislike"),
-        (.like(removing: false), .dislike, .like, "Liked"),
-        (.dislike(removing: false), .like, .dislike, "Disliked"),
+    @Test("A pick sets its own rating and the notice line stays empty: the animation, or the plain switch, is the answer", arguments: [
+        (MusicTrackAction.like(removing: false), MusicLikeStatus?.none, MusicLikeStatus.like),
+        (.like(removing: true), .like, .indifferent),
+        (.dislike(removing: false), .none, .dislike),
+        (.dislike(removing: true), .dislike, .indifferent),
+        (.like(removing: false), .dislike, .like),
+        (.dislike(removing: false), .like, .dislike),
     ])
-    func performRate(action: MusicTrackAction, start: MusicLikeStatus?, sent: MusicLikeStatus, line: String) async {
+    func performRate(action: MusicTrackAction, start: MusicLikeStatus?, sent: MusicLikeStatus) async {
         let h = ActionNavHarness()
         await h.service.refreshAuth()
         if let start {
@@ -507,10 +507,12 @@ struct MusicSearchNavigationActionsTests {
 
         h.nav.perform(action, for: MusicSamples.track("v1"), in: .none)
 
-        #expect(await h.until { h.service.trackActions.notice?.text == line })
-        #expect(h.service.trackActions.notice?.isError == false)
+        #expect(await h.until { await h.backend.rateCalls.count == 1 })
         #expect(await h.backend.rateCalls == [.init(videoId: "v1", status: sent)])
-        #expect(h.service.likes.status(of: "v1") == sent)
+        #expect(await h.until { h.service.likes.status(of: "v1") == sent })
+        // Time for a notice, were one coming.
+        try? await Task.sleep(for: .milliseconds(60))
+        #expect(h.service.trackActions.notice == nil)
     }
 
     @Test("A rating YouTube Music does not take shows as an error line, and the state goes back")
@@ -536,7 +538,9 @@ struct MusicSearchNavigationActionsTests {
 
         h.nav.perform(.dislike(removing: false), for: MusicSamples.track("b"), in: .upNext)
 
-        #expect(await h.until { h.service.trackActions.notice?.text == "Disliked" })
+        #expect(await h.until { await h.backend.rateCalls.count == 1 })
+        #expect(await h.backend.rateCalls == [.init(videoId: "b", status: .dislike)])
+        #expect(h.service.trackActions.notice == nil)
         #expect(h.service.queue.tracks.map(\.videoId) == queued)
         #expect(h.service.queue.current?.videoId == current)
     }
@@ -726,26 +730,31 @@ struct MusicSearchNavigationActionsTests {
         #expect(reporter.outcomes.contains(.quiet))
     }
 
-    @Test("With no reporter set the outcome still shows on the notice line")
+    @Test("With no reporter set a failure still shows on the notice line, and a rating that went through does not")
     func rateFallsBackToTheNoticeLine() async {
         let h = ActionNavHarness()
         await h.service.refreshAuth()
 
         await h.nav.rate(.like, MusicSamples.track("v1")).value
+        #expect(h.service.trackActions.notice == nil)
 
-        #expect(h.service.trackActions.notice?.text == "Liked")
+        await h.backend.setRateError(videoId: "v2", URLError(.notConnectedToInternet))
+        await h.nav.rate(.like, MusicSamples.track("v2")).value
+        #expect(h.service.trackActions.notice?.text == "Couldn't reach YouTube Music")
+        #expect(h.service.trackActions.notice?.isError == true)
     }
 
-    @Test("A reporter that is gone leaves the notice line to show the outcome")
+    @Test("A reporter that is gone leaves the notice line to show a failure")
     func releasedReporterFallsBack() async {
         let h = ActionNavHarness()
         await h.service.refreshAuth()
         h.nav.outcomes = RecordingOutcomeReporter()
+        await h.backend.setRateError(videoId: "v1", URLError(.notConnectedToInternet))
 
         await h.nav.rate(.like, MusicSamples.track("v1")).value
 
         #expect(h.nav.outcomes == nil)
-        #expect(h.service.trackActions.notice?.text == "Liked")
+        #expect(h.service.trackActions.notice?.text == "Couldn't reach YouTube Music")
     }
 
     // MARK: - Collection tiles

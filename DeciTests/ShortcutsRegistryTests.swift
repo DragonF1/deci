@@ -286,14 +286,8 @@ struct ShortcutsRegistryTests {
 
 @Suite("Music action HUD messages")
 struct MusicActionHUDMessageTests {
-    @Test("Each outcome has its own symbol and short line")
+    @Test("A refusal or a failed call has its own symbol and short line")
     func words() {
-        #expect(MusicActionOutcome.liked.hudMessage == HUDMessage(symbol: "hand.thumbsup.fill", text: "Liked"))
-        #expect(MusicActionOutcome.likeRemoved.hudMessage == HUDMessage(symbol: "hand.thumbsup", text: "Removed like"))
-        #expect(MusicActionOutcome.disliked.hudMessage == HUDMessage(symbol: "hand.thumbsdown.fill", text: "Disliked"))
-        #expect(
-            MusicActionOutcome.dislikeRemoved.hudMessage == HUDMessage(symbol: "hand.thumbsdown", text: "Removed dislike")
-        )
         #expect(MusicActionOutcome.nothingPlaying.hudMessage == HUDMessage(symbol: "music.note", text: "Nothing is playing"))
         #expect(
             MusicActionOutcome.signedOut.hudMessage
@@ -309,10 +303,12 @@ struct MusicActionHUDMessageTests {
         )
     }
 
-    @Test("A quiet outcome shows nothing, on the HUD or in the notice line")
-    func quietIsSilent() {
-        #expect(MusicActionOutcome.quiet.hudMessage == nil)
-        #expect(MusicActionOutcome.quiet.noticeText == nil)
+    @Test("A rating that went through, and a quiet outcome, show nothing, on the HUD or in the notice line")
+    func successesAreSilent() {
+        for outcome in [MusicActionOutcome.liked, .likeRemoved, .disliked, .dislikeRemoved, .quiet] {
+            #expect(outcome.hudMessage == nil)
+            #expect(outcome.noticeText == nil)
+        }
     }
 
     @Test("The notice line and the HUD say the same words for every outcome")
@@ -320,8 +316,8 @@ struct MusicActionHUDMessageTests {
         for outcome in MusicActionOutcome.allCases {
             #expect(outcome.noticeText == outcome.hudMessage?.text)
         }
-        #expect(MusicActionOutcome.likeRemoved.noticeText == "Removed like")
-        #expect(MusicActionOutcome.dislikeRemoved.noticeText == "Removed dislike")
+        #expect(MusicActionOutcome.failed.noticeText == "Couldn't reach YouTube Music")
+        #expect(MusicActionOutcome.signedOut.noticeText == "Sign in to YouTube Music")
     }
 
     @Test("Only the four ratings are not failures; a refusal or a failed call is")
@@ -334,7 +330,9 @@ struct MusicActionHUDMessageTests {
 
     @Test("Every symbol exists, and every line fits the HUD's one row without an em-dash")
     func symbolsAndLength() {
-        for outcome in MusicActionOutcome.allCases where outcome != .quiet {
+        let shown = MusicActionOutcome.allCases.filter { $0.hudMessage != nil }
+        #expect(shown == [.nothingPlaying, .signedOut, .failed, .musicHidden])
+        for outcome in shown {
             let message = outcome.hudMessage
             #expect(message != nil)
             #expect(NSImage(systemSymbolName: message?.symbol ?? "", accessibilityDescription: nil) != nil)

@@ -273,7 +273,10 @@ struct MusicOutcomeReporterTests {
         var notice: MusicTrackActionsStore.Notice? { h.service.trackActions.notice }
     }
 
-    @Test("With the Music popup open the outcome shows in its notice line and not on the HUD", arguments: MusicActionOutcome.allCases.filter { $0 != .quiet })
+    /// What fails or cannot be done: the outcomes that still show. A rating that went through is told by the animation.
+    nonisolated private static let reported = MusicActionOutcome.allCases.filter { $0.hudMessage != nil }
+
+    @Test("With the Music popup open the outcome shows in its notice line and not on the HUD", arguments: MusicOutcomeReporterTests.reported)
     func popupOpenUsesTheNoticeLine(outcome: MusicActionOutcome) async {
         let s = await Setup(popupOpen: true)
 
@@ -284,7 +287,7 @@ struct MusicOutcomeReporterTests {
         #expect(s.hud.messages.isEmpty)
     }
 
-    @Test("With the Music popup closed the outcome shows on the HUD and not in the notice line", arguments: MusicActionOutcome.allCases.filter { $0 != .quiet })
+    @Test("With the Music popup closed the outcome shows on the HUD and not in the notice line", arguments: MusicOutcomeReporterTests.reported)
     func popupClosedUsesTheHud(outcome: MusicActionOutcome) async {
         let s = await Setup(popupOpen: false)
 
@@ -294,14 +297,31 @@ struct MusicOutcomeReporterTests {
         #expect(s.notice == nil)
     }
 
+    @Test("The reported outcomes are the refusals and the failures, and the table is not empty")
+    func reportedAreTheFailures() {
+        #expect(Self.reported == [.nothingPlaying, .signedOut, .failed, .musicHidden])
+    }
+
+    @Test("A rating that went through shows nowhere, popup open or not: the animation is its answer", arguments: [
+        MusicActionOutcome.liked, .likeRemoved, .disliked, .dislikeRemoved,
+    ], [true, false])
+    func successfulRatingsShowNowhere(outcome: MusicActionOutcome, popupOpen: Bool) async {
+        let s = await Setup(popupOpen: popupOpen)
+
+        s.reporter.report(outcome)
+
+        #expect(s.hud.messages.isEmpty)
+        #expect(s.notice == nil)
+    }
+
     @Test("A Music popup that is fading out is not open: the outcome goes to the HUD")
     func closingPopupUsesTheHud() async {
         let s = await Setup(popupOpen: false)
         s.h.opener.isOnScreen = true
 
-        s.reporter.report(.liked)
+        s.reporter.report(.failed)
 
-        #expect(s.hud.messages == [MusicActionOutcome.liked.hudMessage].compactMap { $0 })
+        #expect(s.hud.messages == [MusicActionOutcome.failed.hudMessage].compactMap { $0 })
         #expect(s.notice == nil)
     }
 
@@ -311,10 +331,10 @@ struct MusicOutcomeReporterTests {
         let popups = PopupVisibilityService()
         popups.setOpen(.mixer, true)
 
-        s.reporter.report(.disliked)
+        s.reporter.report(.failed)
 
         #expect(popups.isVisible)
-        #expect(s.hud.messages == [MusicActionOutcome.disliked.hudMessage].compactMap { $0 })
+        #expect(s.hud.messages == [MusicActionOutcome.failed.hudMessage].compactMap { $0 })
     }
 
     @Test("A signed-out popup draws no notice line, so the outcome goes to the HUD")
@@ -351,10 +371,22 @@ struct MusicOutcomeReporterTests {
     func severalOutcomes() async {
         let s = await Setup(popupOpen: true)
 
-        s.reporter.report(.liked)
-        s.reporter.report(.disliked)
+        s.reporter.report(.failed)
+        s.reporter.report(.nothingPlaying)
 
-        #expect(s.notice?.text == "Disliked")
+        #expect(s.notice?.text == "Nothing is playing")
+        #expect(s.hud.messages.isEmpty)
+    }
+
+    @Test("A success after a failure leaves the failure's line as it was, and adds nothing")
+    func successLeavesTheFailureLine() async {
+        let s = await Setup(popupOpen: true)
+
+        s.reporter.report(.failed)
+        s.reporter.report(.liked)
+
+        #expect(s.notice?.text == "Couldn't reach YouTube Music")
+        #expect(s.notice?.isError == true)
         #expect(s.hud.messages.isEmpty)
     }
 }

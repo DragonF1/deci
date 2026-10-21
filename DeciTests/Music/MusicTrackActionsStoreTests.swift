@@ -1228,23 +1228,32 @@ struct MusicTrackActionsStoreTests {
 
     // MARK: - Rating outcomes
 
-    @Test("A rating's outcome shows in the notice line in the hotkey's words, and a refusal as an error", arguments: [
-        (MusicActionOutcome.liked, "Liked", false),
-        (.likeRemoved, "Removed like", false),
-        (.disliked, "Disliked", false),
-        (.dislikeRemoved, "Removed dislike", false),
-        (.nothingPlaying, "Nothing is playing", true),
-        (.signedOut, "Sign in to YouTube Music", true),
-        (.failed, "Couldn't reach YouTube Music", true),
-        (.musicHidden, "Show Music in the menu bar", true),
+    @Test("A refusal or a failed call shows in the notice line in the hotkey's words, as an error", arguments: [
+        (MusicActionOutcome.nothingPlaying, "Nothing is playing"),
+        (.signedOut, "Sign in to YouTube Music"),
+        (.failed, "Couldn't reach YouTube Music"),
+        (.musicHidden, "Show Music in the menu bar"),
     ])
-    func postsAnOutcome(outcome: MusicActionOutcome, text: String, isError: Bool) {
+    func postsAnOutcome(outcome: MusicActionOutcome, text: String) {
         let h = ActionsHarness()
 
         h.store.post(outcome)
 
         #expect(h.store.notice?.text == text)
-        #expect(h.store.notice?.isError == isError)
+        #expect(h.store.notice?.isError == true)
+    }
+
+    @Test("A rating that went through posts no line, and leaves one already showing", arguments: [
+        MusicActionOutcome.liked, .likeRemoved, .disliked, .dislikeRemoved,
+    ])
+    func successfulRatingPostsNothing(outcome: MusicActionOutcome) {
+        let h = ActionsHarness()
+        h.store.post(outcome)
+        #expect(h.store.notice == nil)
+
+        h.store.post("Saved to Road Trip")
+        h.store.post(outcome)
+        #expect(h.store.notice?.text == "Saved to Road Trip")
     }
 
     @Test("A quiet outcome posts nothing, and leaves a line already showing")
@@ -1276,12 +1285,12 @@ struct MusicTrackActionsStoreTests {
     @Test("A newer outcome replaces the older line, and the older line's timer does not clear it")
     func outcomesReplaceEachOther() async {
         let h = ActionsHarness(noticeDuration: .milliseconds(80))
-        h.store.post(.liked)
+        h.store.post(.failed)
         try? await Task.sleep(for: .milliseconds(50))
-        h.store.post(.disliked)
+        h.store.post(.nothingPlaying)
         try? await Task.sleep(for: .milliseconds(50))
 
-        #expect(h.store.notice?.text == "Disliked")
+        #expect(h.store.notice?.text == "Nothing is playing")
         #expect(await h.until { h.store.notice == nil })
     }
 }

@@ -20,6 +20,9 @@ final class MusicChipView: NSView {
     private let highlight = CALayer()
     private var content: MusicChipContent?
     private var scale: CGFloat
+    /// Whether the like animation's thumb stands where the cover and the play glyph do. While it does, neither shows, and
+    /// a song that arrives builds its cover away.
+    private var isBurstShown = false
 
     private static let highlightAlpha: CGFloat = 0.2
     private static let highlightWidth: CGFloat = 1_000
@@ -39,6 +42,10 @@ final class MusicChipView: NSView {
     /// How strong the cover and the title are drawn (their model value); zero while paused and before any song shows. Read
     /// by the tests.
     var contentOpacity: Double { Double(content?.layer.opacity ?? 0) }
+
+    /// How strong the cover is drawn (its model value): 1 normally, 0 while the like animation's thumb stands in its
+    /// place, and 0 before any song shows. Read by the tests.
+    var coverOpacity: Double { content?.coverOpacity ?? 0 }
 
     /// How strong the pill's highlight is drawn (its model value): 1 while the popover is open, 0 otherwise. Read by the
     /// tests.
@@ -152,7 +159,13 @@ final class MusicChipView: NSView {
             setFill(MusicChipRenderer.fillColor(for: spec.tint), animated: true)
             showPlayback(spec: spec, geometry: geometry, widthDuration: widthDuration, animated: true)
         case .content:
-            let next = MusicChipContent(spec: spec, geometry: geometry, thumbnail: thumbnail, scale: scale)
+            let next = MusicChipContent(
+                spec: spec,
+                geometry: geometry,
+                thumbnail: thumbnail,
+                scale: scale,
+                coverHidden: isBurstShown
+            )
             let previous = content
             content = next
             CATransaction.begin()
@@ -185,6 +198,18 @@ final class MusicChipView: NSView {
         setPillWidth(MusicChipLayout.shownPillWidth(for: geometry, isPlaying: spec.isPlaying), duration: widthDuration)
     }
 
+    /// Gives the cover's place (and a paused pill's play glyph) to the like animation's thumb, which is drawn by a view over
+    /// this one, and takes it back. The cover and the glyph fade over `duration` seconds (no time: at once); the title
+    /// stays. Asking for what already is changes nothing. A pause, a play or a new song while the thumb shows keeps the
+    /// cover and the glyph away until it goes.
+    func setBurstShown(_ shown: Bool, duration: Double) {
+        guard shown != isBurstShown else { return }
+        isBurstShown = shown
+        guard let content else { return }
+        content.setCoverHidden(shown, duration: duration)
+        setGlyph(isPlaying: content.isPlaying, duration: duration)
+    }
+
     /// Lights the pill while the Music popover is open, as the system lights an open item, but only as big as the pill.
     /// The change fades by the layer's own implicit animation.
     func setHighlighted(_ isOn: Bool) {
@@ -212,9 +237,10 @@ final class MusicChipView: NSView {
         pill.add(fade, forKey: Self.fillKey)
     }
 
-    /// The play glyph fades in on a paused pill and out on a playing one, over `duration` seconds (no time: at once).
+    /// The play glyph fades in on a paused pill and out on a playing one, over `duration` seconds (no time: at once). It is
+    /// out while the like animation's thumb stands in its place.
     private func setGlyph(isPlaying: Bool, duration: Double) {
-        let alpha = Float(MusicChipLayout.playGlyphAlpha(isPlaying: isPlaying))
+        let alpha = isBurstShown ? 0 : Float(MusicChipLayout.playGlyphAlpha(isPlaying: isPlaying))
         guard glyph.opacity != alpha else { return }
         let from = glyph.presentation()?.opacity ?? glyph.opacity
         CATransaction.begin()

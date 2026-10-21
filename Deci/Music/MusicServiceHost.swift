@@ -32,6 +32,10 @@ final class MusicServiceHost {
     /// Lives here for the same reason as the navigation: it keeps the bars it has seen while the popup is closed.
     let spectrum = MusicSpectrumDriver()
 
+    /// Where the like animation plays, the popup's strip or the menu bar pill. Lives here for the same reason as the
+    /// spectrum: the strip and the chip controller both read it, and it exists before the service does.
+    let burst = MusicRateBurstCenter()
+
     /// The music player row's model in the Mixer popup (shown there as Deci). Lives here, not in the service, so the row's settings load at
     /// launch and the service stays lazy. nil in tests that do not care about audio.
     let mixer: MusicMixerState?
@@ -103,6 +107,8 @@ final class MusicServiceHost {
         let service = makeService()
         service.onNativePlayingChange = { [weak self] playing in self?.onNativePlayingChange?(playing) }
         service.lyrics.setPopupVisible(isPopupVisible)
+        service.onRatingBurst = { [weak self] kind in self?.burst.play(kind) }
+        service.onRatingBurstCancel = { [weak self] kind in self?.burst.cancel(kind) }
         self.service = service
         let navigation = MusicSearchNavigation(service: service)
         navigation.outcomes = outcomes

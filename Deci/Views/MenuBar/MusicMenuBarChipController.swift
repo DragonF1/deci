@@ -5,7 +5,8 @@
 // started with, exactly as before. While the chip shows, the item has an explicit length that follows the pill: a new
 // song, a pause or a play makes it grow or shrink on the pill's own curve (MusicChipLengthAnimator), the pill and its
 // content animate by Core Animation (MusicChipView), a title longer than the max scrolls, and a paused song is only the
-// cover's colour with a play glyph.
+// cover's colour with a play glyph. A Like or Dislike of the playing song while the popup is not open plays the like
+// animation in the pill, in the cover's place (MusicChipBurster).
 
 import AppKit
 import Observation
@@ -33,6 +34,8 @@ final class MusicMenuBarChipController {
         return MusicChipLayout.shownPillWidth(for: appliedGeometry, isPlaying: applied.isPlaying)
     }
     private var chipView: MusicChipView?
+    /// Plays the like animation over the pill; exists while the chip does.
+    private var burster: MusicChipBurster?
     private var lengthAnimator: MusicChipLengthAnimator?
     private var reduceMotionObserver: NSObjectProtocol?
     /// What the hover card was last told about the chip being on offer, so a refresh that changes nothing says nothing.
@@ -58,6 +61,10 @@ final class MusicMenuBarChipController {
     func start() {
         guard !started else { return }
         started = true
+        // A rating of the playing song while the popup is not open is shown in the pill, in the cover's place.
+        musicHost.burst.onPill = { [weak self] event in self?.playBurst(event) }
+        // A rating taken back while its burst shows in the pill cuts the burst short.
+        musicHost.burst.onPillCancel = { [weak self] kind in self?.burster?.cancel(kind) }
         scheduleTracking()
         refreshWhenButtonExists(retriesLeft: 20)
     }
@@ -65,6 +72,9 @@ final class MusicMenuBarChipController {
     /// Takes everything down, for the app quitting.
     func stop() {
         stopped = true
+        musicHost.burst.onPill = nil
+        musicHost.burst.onPillCancel = nil
+        burster?.stop()
         popupWatcher.stop()
         highlightWatcher.stop()
         cancelCoverLoad()
@@ -203,6 +213,8 @@ final class MusicMenuBarChipController {
         if !isInstall, widthChanges, !holdsLength {
             lengthAnimator?.animate(to: pillWidth, duration: duration)
         }
+        // A thumb showing in the cover's place goes along with the pill as it grows or shrinks.
+        burster?.moveSlot(to: MusicChipLayout.burstSlotOffset(pillWidth: pillWidth, isPlaying: spec.isPlaying), duration: duration)
         button.setAccessibilityLabel(MusicChipLayout.accessibilityLabel(title: spec.title, isPlaying: spec.isPlaying))
     }
 
@@ -222,6 +234,7 @@ final class MusicMenuBarChipController {
         button.addSubview(view)
         view.appear()
         chipView = view
+        burster = MusicChipBurster(chipView: view, container: button)
         observeReduceMotion()
         highlightWatcher.start { [weak self] in
             self?.syncHighlight()
@@ -242,6 +255,8 @@ final class MusicMenuBarChipController {
         stopObservingReduceMotion()
         highlightWatcher.stop()
         fade(button)
+        burster?.stop()
+        burster = nil
         chipView?.teardown()
         chipView?.removeFromSuperview()
         chipView = nil
@@ -251,6 +266,13 @@ final class MusicMenuBarChipController {
         button.highlight(MusicPopupKeyWatcher.isPopupOpen)
         // Nil makes the button read the icon's own description again ("Deci Music").
         button.setAccessibilityLabel(nil)
+    }
+
+    /// Shows a rating's animation in the pill. Nothing is shown when the chip is not on the button (the Icon style, or no
+    /// song): there is nothing to show it on.
+    private func playBurst(_ event: MusicRateBurstCenter.Event) {
+        guard !stopped, let burster, let applied, let appliedPillWidth else { return }
+        burster.play(event, slotOffset: MusicChipLayout.burstSlotOffset(pillWidth: appliedPillWidth, isPlaying: applied.isPlaying))
     }
 
     /// The system lights an open item across its whole status window, which runs 8 pt past the button on each side, so

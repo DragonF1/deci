@@ -49,20 +49,18 @@ final class MusicShortcutActions: MusicShortcutActing {
     }
 }
 
-/// How an action's outcome is worded, for the HUD and for the Music popup's notice line alike.
+/// How an action's outcome is worded, for the HUD and for the Music popup's notice line alike. Only an action that did
+/// not happen has words: a rating that was made shows as the like animation and in the icons, not as a notice.
 nonisolated extension MusicActionOutcome {
-    /// The words for what the action came to; nil when there is nothing to report.
+    /// The words for what the action came to; nil when there is nothing to report, which includes every rating that was
+    /// made.
     var noticeText: String? {
         switch self {
-        case .liked: "Liked"
-        case .likeRemoved: "Removed like"
-        case .disliked: "Disliked"
-        case .dislikeRemoved: "Removed dislike"
         case .nothingPlaying: "Nothing is playing"
         case .signedOut: "Sign in to YouTube Music"
         case .failed: "Couldn't reach YouTube Music"
         case .musicHidden: "Show Music in the menu bar"
-        case .quiet: nil
+        case .liked, .likeRemoved, .disliked, .dislikeRemoved, .quiet: nil
         }
     }
 
@@ -79,7 +77,7 @@ nonisolated extension MusicActionOutcome {
     /// Dislike buttons show only these, since a call that went through is already shown by the button.
     var isRatingFailure: Bool { self == .failed || self == .signedOut }
 
-    /// The line for the HUD; nil when there is nothing to report.
+    /// The line for the HUD; nil when there is nothing to report, as for a rating that was made.
     var hudMessage: HUDMessage? {
         guard let text = noticeText, let symbol = hudSymbol else { return nil }
         return HUDMessage(symbol: symbol, text: text)
@@ -87,15 +85,11 @@ nonisolated extension MusicActionOutcome {
 
     private var hudSymbol: String? {
         switch self {
-        case .liked: "hand.thumbsup.fill"
-        case .likeRemoved: "hand.thumbsup"
-        case .disliked: "hand.thumbsdown.fill"
-        case .dislikeRemoved: "hand.thumbsdown"
         case .nothingPlaying: "music.note"
         case .signedOut: "person.crop.circle.badge.exclamationmark"
         case .failed: "exclamationmark.triangle"
         case .musicHidden: "menubar.rectangle"
-        case .quiet: nil
+        case .liked, .likeRemoved, .disliked, .dislikeRemoved, .quiet: nil
         }
     }
 }

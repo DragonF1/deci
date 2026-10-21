@@ -71,15 +71,22 @@ struct MusicRateButtons: View {
 /// stands over the gap between Shuffle and Previous, Dislike over the gap between Next and Loop: each is centred where
 /// the transport's rule (`MusicTransportMetrics`) puts the middle of that gap. The strip is always the column's width
 /// and `MusicPopupMetrics.rateStripHeight` high, so the column does not move when there is nothing to rate: the icons
-/// are then not drawn at all. Each icon's hit area reaches past its box, out of the layout.
+/// are then not drawn at all. Each icon's hit area reaches past its box, out of the layout. A rating that has just
+/// turned on plays the like animation on its icon (`burst`); its sparks are drawn over the strip, past the box, and
+/// move nothing.
 struct MusicRateStrip: View {
     /// Whether the song can be rated: signed in, with a song playing.
     let isAvailable: Bool
     let status: MusicLikeStatus?
+    /// The animation the strip is playing, if any. One for the pill is not the strip's and is not drawn.
+    var burst: MusicRateBurstCenter.Event?
     let onDislike: () -> Void
     let onLike: () -> Void
 
     private typealias Metrics = MusicPopupMetrics
+
+    /// How long a finished burst takes to hand its icon back to the plain one.
+    private static let handBackFade = 0.2
 
     var body: some View {
         let width = Metrics.playerColumnContentWidth
@@ -99,11 +106,16 @@ struct MusicRateStrip: View {
         .frame(width: width, height: Metrics.rateStripHeight, alignment: .leading)
     }
 
+    /// The burst this icon plays, if the strip's current one is for it.
+    private func burstEvent(for look: MusicRateButtonLook) -> MusicRateBurstCenter.Event? {
+        guard let burst, burst.surface == .strip, burst.kind == look.kind else { return nil }
+        return burst
+    }
+
     private func button(_ look: MusicRateButtonLook, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: look.symbolName)
-                .font(.system(size: Metrics.rateGlyphSize, weight: .medium))
-                .foregroundStyle(Color.white.opacity(look.glyphOpacity))
+        let event = burstEvent(for: look)
+        return Button(action: action) {
+            glyph(look, burst: event)
                 .frame(width: Metrics.rateGlyphSize, height: Metrics.rateStripHeight)
                 .padding(.horizontal, Metrics.rateReachX)
                 .padding(.vertical, Metrics.rateReachY)
@@ -115,5 +127,28 @@ struct MusicRateStrip: View {
         .help(look.title)
         .accessibilityLabel(look.title)
         .accessibilityAddTraits(look.isSelected ? .isSelected : [])
+    }
+
+    /// The plain icon, or the burst in its place. The burst begins on the icon's own pixels, so it starts without a
+    /// fade; it fades out when it ends, so a thumb that no longer matches the song (a dislike skips the song) does not
+    /// snap.
+    private func glyph(_ look: MusicRateButtonLook, burst: MusicRateBurstCenter.Event?) -> some View {
+        ZStack {
+            if let burst {
+                MusicRateBurstView(
+                    event: burst,
+                    glyphSize: Metrics.rateGlyphSize,
+                    restingOpacity: look.inactiveOpacity,
+                    sparkReach: .infinity
+                )
+                .transition(.asymmetric(insertion: .identity, removal: .opacity))
+            } else {
+                Image(systemName: look.symbolName)
+                    .font(.system(size: Metrics.rateGlyphSize, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(look.glyphOpacity))
+                    .transition(.identity)
+            }
+        }
+        .animation(.easeOut(duration: Self.handBackFade), value: burst?.id)
     }
 }

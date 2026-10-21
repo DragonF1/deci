@@ -18,6 +18,8 @@ final class MusicChipContent {
     let geometry: MusicChipGeometry
 
     private(set) var isPlaying: Bool
+    /// Whether the cover is held away, for the like animation's thumb that stands in its place.
+    private(set) var isCoverHidden: Bool
     private var scale: CGFloat
     /// The cover on screen; nil while it is still loading, and the faint disc with the note shows instead.
     private(set) var thumbnail: CGImage?
@@ -43,13 +45,21 @@ final class MusicChipContent {
     private static let returnKey = "chipMarqueeReturn"
     private static let opacityKey = "chipContentOpacity"
     private static let coverKey = "chipCoverFade"
+    private static let coverHideKey = "chipCoverHide"
 
-    init(spec: MusicChipSpec, geometry: MusicChipGeometry, thumbnail: CGImage?, scale: CGFloat) {
+    /// How strong the cover is drawn (its model value): 1, or 0 while the like animation's thumb stands in its place. Read
+    /// by the tests.
+    var coverOpacity: Double { Double(cover.opacity) }
+
+    /// `coverHidden` builds the cover away already: a song that arrives while the like animation shows has no picture
+    /// for the thumb to be drawn over.
+    init(spec: MusicChipSpec, geometry: MusicChipGeometry, thumbnail: CGImage?, scale: CGFloat, coverHidden: Bool = false) {
         self.spec = spec
         self.geometry = geometry
         self.thumbnail = thumbnail
         self.scale = scale
         self.isPlaying = spec.isPlaying
+        self.isCoverHidden = coverHidden
 
         layer.bounds = CGRect(x: 0, y: 0, width: geometry.pillWidth, height: MusicChipLayout.height)
         layer.anchorPoint = .zero
@@ -72,6 +82,7 @@ final class MusicChipContent {
         )
         cover.cornerRadius = side / 2
         cover.masksToBounds = true
+        cover.opacity = isCoverHidden ? 0 : 1
         cover.contentsGravity = .resizeAspectFill
         cover.minificationFilter = .trilinear
         if let thumbnail {
@@ -224,6 +235,29 @@ final class MusicChipContent {
         note.contents = nil
         note.removeFromSuperlayer()
         CATransaction.commit()
+    }
+
+    /// Fades the cover out for the like animation's thumb, and back in after it, over `duration` seconds (no time: at once).
+    /// The title stays.
+    func setCoverHidden(_ hidden: Bool, duration: Double) {
+        guard hidden != isCoverHidden else { return }
+        isCoverHidden = hidden
+        let alpha: Float = hidden ? 0 : 1
+        let from = cover.presentation()?.opacity ?? cover.opacity
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cover.opacity = alpha
+        CATransaction.commit()
+        guard duration > 0 else {
+            cover.removeAnimation(forKey: Self.coverHideKey)
+            return
+        }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = from
+        fade.toValue = alpha
+        fade.duration = duration
+        fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        cover.add(fade, forKey: Self.coverHideKey)
     }
 
     // MARK: - Playing

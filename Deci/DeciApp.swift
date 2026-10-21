@@ -317,7 +317,10 @@ struct DeciApp: App {
         _musicHost = State(initialValue: music)
         // One opener for the Music popup: the Save hotkey and the hover card's buttons open it the same way.
         let musicPopupOpener = MusicPopupOpener()
-        // The hotkeys and the song menus report a Like or Dislike the same way: the popup's notice line, else the HUD.
+        // The like animation plays on the popup's strip while the popup is open (on screen and key, the outcome reporter's
+        // rule) and in the menu bar pill otherwise.
+        music.burst.isPopupOpen = { [musicPopupOpener] in musicPopupOpener.isOpen }
+        // The hotkeys and the song menus report a Like or Dislike that failed the same way: the popup's notice line, else the HUD.
         let outcomes = MusicOutcomeReporter(musicHost: music, popupOpener: musicPopupOpener, hud: hud)
         music.outcomes = outcomes
         let registry = ShortcutsRegistry(

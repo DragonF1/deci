@@ -1,7 +1,8 @@
 // Deci/Shortcuts/MusicOutcomeReporter.swift
 import Foundation
 
-/// Shows what a Like, Dislike or Save shortcut came to. `ShortcutsRegistry` holds one, so tests can stand in for it.
+/// Shows what a Like, Dislike or Save shortcut could not do. `ShortcutsRegistry` holds one, so tests can stand in for
+/// it.
 @MainActor
 protocol MusicOutcomeReporting: AnyObject {
     func report(_ outcome: MusicActionOutcome)
@@ -25,7 +26,8 @@ final class MusicOutcomeReporter: MusicOutcomeReporting {
         self.hud = hud
     }
 
-    /// A quiet outcome shows nowhere.
+    /// A quiet outcome shows nowhere, and neither does a rating that was made: that one is shown by the like animation. A
+    /// refusal or a failure shows where the user is looking.
     func report(_ outcome: MusicActionOutcome) {
         guard let message = outcome.hudMessage else { return }
         if popupOpener.isOpen, let service = musicHost.service, service.authState == .signedIn {
