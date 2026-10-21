@@ -65,6 +65,8 @@ struct ResolvedStream: Sendable, Equatable {
     let playbackTrackingURL: URL?
     /// playbackTracking.videostatsWatchtimeUrl.baseUrl, used for the watchtime ping that follows it.
     let watchtimeTrackingURL: URL?
+    /// videoDetails.viewCount of the player response; nil when YouTube did not send one.
+    let viewCount: Int?
     /// Headers AVURLAsset must send with the stream (User-Agent).
     let httpHeaders: [String: String]
 
@@ -76,6 +78,7 @@ struct ResolvedStream: Sendable, Equatable {
         expiresAt: Date,
         playbackTrackingURL: URL?,
         watchtimeTrackingURL: URL? = nil,
+        viewCount: Int? = nil,
         httpHeaders: [String: String]
     ) {
         self.videoId = videoId
@@ -85,6 +88,7 @@ struct ResolvedStream: Sendable, Equatable {
         self.expiresAt = expiresAt
         self.playbackTrackingURL = playbackTrackingURL
         self.watchtimeTrackingURL = watchtimeTrackingURL
+        self.viewCount = viewCount
         self.httpHeaders = httpHeaders
     }
 }

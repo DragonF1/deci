@@ -324,6 +324,29 @@ struct InnerTubeParserTests {
         #expect(response.formats.first?.bitrate == 128_000)
     }
 
+    @Test("The view count is read from videoDetails, as the string YouTube sends")
+    func playerViewCount() throws {
+        let json = #"{"playabilityStatus":{"status":"OK"},"videoDetails":{"lengthSeconds":"215","viewCount":"1234567"}}"#
+        #expect(try InnerTubeParser.playerResponse(from: Data(json.utf8)).viewCount == 1_234_567)
+
+        let number = #"{"playabilityStatus":{"status":"OK"},"videoDetails":{"viewCount":42}}"#
+        #expect(try InnerTubeParser.playerResponse(from: Data(number.utf8)).viewCount == 42)
+    }
+
+    @Test("A missing or unreadable view count is nil, never a failure")
+    func playerViewCountMissing() throws {
+        let missing = #"{"playabilityStatus":{"status":"OK"},"videoDetails":{"lengthSeconds":"215"}}"#
+        #expect(try InnerTubeParser.playerResponse(from: Data(missing.utf8)).viewCount == nil)
+
+        let noDetails = #"{"playabilityStatus":{"status":"OK"}}"#
+        #expect(try InnerTubeParser.playerResponse(from: Data(noDetails.utf8)).viewCount == nil)
+
+        for bad in [#""viewCount":"many""#, #""viewCount":"""#, #""viewCount":null"#, #""viewCount":true"#, #""viewCount":{"n":1}"#] {
+            let json = #"{"playabilityStatus":{"status":"OK"},"videoDetails":{\#(bad)}}"#
+            #expect(try InnerTubeParser.playerResponse(from: Data(json.utf8)).viewCount == nil)
+        }
+    }
+
     @Test("A format with no itag is dropped")
     func playerDropsFormatWithoutItag() throws {
         let json = #"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"mimeType":"audio/mp4"},{"itag":140,"mimeType":"audio/mp4"}]}}"#

@@ -168,6 +168,8 @@ struct MusicPlayerColumn: View {
         }
     }
 
+    /// The row under the spectrum. A song that plays reads "0:08 / 4:15" on the left and its view count on the right
+    /// ("1.2M views"); loading shows the spinner and nothing on the right; with no song it is a dimmed "0:00 / 0:00".
     private func timesRow(_ state: MusicPlayerColumnState) -> some View {
         let duration = player?.duration ?? 0
         let total = duration > 0 ? duration : TimeInterval(track?.durationSeconds ?? 0)
@@ -181,22 +183,59 @@ struct MusicPlayerColumn: View {
                         .foregroundStyle(Color.white.opacity(0.60))
                 }
                 Spacer(minLength: 0)
-                time(total, opacity: 0.40)
             case .playing, .paused:
-                time(player?.currentTime ?? 0, opacity: 0.70)
-                Spacer(minLength: 0)
-                time(total, opacity: 0.40)
+                playbackTimes(current: player?.currentTime ?? 0, total: total, viewCount: player?.viewCount)
             case .signedOut, .empty:
-                time(0, opacity: 0.30)
+                timePair(current: 0, total: 0, currentOpacity: 0.30, totalOpacity: 0.30)
                 Spacer(minLength: 0)
-                time(0, opacity: 0.30)
             }
         }
         .frame(height: 13)
     }
 
+    /// The times of a song that plays and its view count. The count gives way before the times do: the first of
+    /// "1.2M views", "1.2M" and nothing that fits the column's width is the one shown.
+    private func playbackTimes(current: TimeInterval, total: TimeInterval, viewCount: Int?) -> some View {
+        let long = MusicViewCountFormat.label(viewCount)
+        let short = viewCount.flatMap(MusicViewCountFormat.abbreviated)
+        let full = MusicViewCountFormat.fullLabel(viewCount)
+        return ViewThatFits(in: .horizontal) {
+            playbackLine(current: current, total: total, views: long, tooltip: full)
+            playbackLine(current: current, total: total, views: short, tooltip: full)
+            playbackLine(current: current, total: total, views: nil, tooltip: nil)
+        }
+    }
+
+    /// One candidate of the playing row. The times take the width first, so they never truncate.
+    private func playbackLine(current: TimeInterval, total: TimeInterval, views: String?, tooltip: String?) -> some View {
+        HStack(spacing: 0) {
+            timePair(current: current, total: total, currentOpacity: 0.70, totalOpacity: 0.40)
+                .layoutPriority(1)
+            // A count comes with its gap, so the fit check counts the gap too.
+            Spacer(minLength: views == nil ? 0 : MusicPopupMetrics.timesRowGap)
+            if let views {
+                mono(views, opacity: 0.40)
+                    .lineLimit(1)
+                    .help(tooltip ?? views)
+            }
+        }
+    }
+
+    /// "0:08 / 4:15": the position, then the length behind a slash, side by side.
+    private func timePair(current: TimeInterval, total: TimeInterval, currentOpacity: Double, totalOpacity: Double) -> some View {
+        HStack(spacing: 0) {
+            time(current, opacity: currentOpacity)
+            mono(" / " + MusicTimeFormat.string(total), opacity: totalOpacity)
+        }
+    }
+
     private func time(_ seconds: TimeInterval, opacity: Double) -> some View {
-        Text(MusicTimeFormat.string(seconds))
+        mono(MusicTimeFormat.string(seconds), opacity: opacity)
+    }
+
+    /// The row's one font: 10 pt monospaced, so a column of times and counts keeps its width as the digits change.
+    private func mono(_ text: String, opacity: Double) -> some View {
+        Text(text)
             .font(.system(size: 10, design: .monospaced))
             .monospacedDigit()
             .foregroundStyle(Color.white.opacity(opacity))

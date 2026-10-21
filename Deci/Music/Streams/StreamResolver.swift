@@ -66,6 +66,7 @@ actor StreamResolver {
             expiresAt: expiresAt,
             playbackTrackingURL: response.playbackTrackingURL,
             watchtimeTrackingURL: response.watchtimeTrackingURL,
+            viewCount: response.viewCount,
             httpHeaders: ["User-Agent": MusicAuthHeaders.userAgent]
         )
     }

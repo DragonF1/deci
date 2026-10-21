@@ -4150,8 +4150,8 @@ struct MusicPlayerTests {
             self.player = player
         }
 
-        func load(_ track: MusicTrack = MusicSamples.track(), expiresIn seconds: TimeInterval = 3600) {
-            let stream = MusicSamples.stream(videoId: track.videoId, expiresAt: clock.now.addingTimeInterval(seconds))
+        func load(_ track: MusicTrack = MusicSamples.track(), expiresIn seconds: TimeInterval = 3600, viewCount: Int? = nil) {
+            let stream = MusicSamples.stream(videoId: track.videoId, expiresAt: clock.now.addingTimeInterval(seconds), viewCount: viewCount)
             player.load(stream: stream, track: track)
         }
     }
@@ -4234,6 +4234,32 @@ struct MusicPlayerTests {
         #expect(rig.player.isLoading)
         #expect(rig.player.currentTime == 0)
         #expect(rig.player.duration == 245)
+    }
+
+    @Test("the view count comes from the stream and is nil when the stream has none")
+    func viewCountFromStream() {
+        let rig = Rig()
+        #expect(rig.player.viewCount == nil)
+
+        rig.load(MusicSamples.track("counted"), viewCount: 1_234_567)
+        #expect(rig.player.viewCount == 1_234_567)
+
+        rig.load(MusicSamples.track("uncounted"))
+        #expect(rig.player.viewCount == nil)
+    }
+
+    @Test("beginLoading and stop clear the view count, so a song never shows the previous one's")
+    func viewCountClears() {
+        let rig = Rig()
+        rig.load(MusicSamples.track("old"), viewCount: 9_000)
+
+        rig.player.beginLoading(MusicSamples.track("next"))
+        #expect(rig.player.viewCount == nil)
+
+        rig.load(MusicSamples.track("again"), viewCount: 42)
+        #expect(rig.player.viewCount == 42)
+        rig.player.stop()
+        #expect(rig.player.viewCount == nil)
     }
 
     @Test("a failed stream is re-resolved once and resumes at the same position")

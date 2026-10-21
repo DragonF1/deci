@@ -149,6 +149,25 @@ struct StreamResolverTests {
         #expect(stream.durationSeconds == 215)
     }
 
+    @Test("The song's view count rides along on the stream, and is nil when the response has none")
+    func viewCountReachesTheStream() async throws {
+        func response(details: String) -> Data {
+            Data(#"""
+            {"playabilityStatus":{"status":"OK"},"streamingData":{"expiresInSeconds":"21540","adaptiveFormats":[
+              {"itag":140,"mimeType":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":128000,
+               "url":"https://rr1---sn-fixture.googlevideo.com/videoplayback?itag=140&expire=1792305256&sig=abc"}]},
+             "videoDetails":\#(details)}
+            """#.utf8)
+        }
+        let counted = makeHarness(youtube: FakeYouTube { $0.playerBody = response(details: #"{"lengthSeconds":"215","viewCount":"1234567"}"#) })
+        defer { finish(counted) }
+        #expect(try await counted.resolver.resolve(videoId: Self.videoId).viewCount == 1_234_567)
+
+        let uncounted = makeHarness(youtube: FakeYouTube { $0.playerBody = response(details: #"{"lengthSeconds":"215"}"#) })
+        defer { finish(uncounted) }
+        #expect(try await uncounted.resolver.resolve(videoId: Self.videoId).viewCount == nil)
+    }
+
     @Test("Without an expire parameter the expiry comes from expiresInSeconds")
     func expiryFallback() async throws {
         let json = #"""

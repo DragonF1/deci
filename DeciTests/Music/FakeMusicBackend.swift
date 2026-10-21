@@ -602,7 +602,8 @@ nonisolated enum MusicSamples {
         expiresAt: Date = Date(timeIntervalSinceNow: 6 * 3600),
         trackingURL: URL? = URL(string: "https://music.example.test/stats?ev=1"),
         watchtimeURL: URL? = nil,
-        duration: Double? = 200
+        duration: Double? = 200,
+        viewCount: Int? = nil
     ) -> ResolvedStream {
         ResolvedStream(
             videoId: videoId,
@@ -612,6 +613,7 @@ nonisolated enum MusicSamples {
             expiresAt: expiresAt,
             playbackTrackingURL: trackingURL,
             watchtimeTrackingURL: watchtimeURL,
+            viewCount: viewCount,
             httpHeaders: ["User-Agent": "test-agent"]
         )
     }

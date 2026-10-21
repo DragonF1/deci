@@ -16,6 +16,9 @@ final class MusicPlayer {
     private(set) var isLoading = false
     private(set) var currentTime: TimeInterval = 0
     private(set) var duration: TimeInterval = 0
+    /// How many times YouTube says the current song was viewed. Nil until the song's stream is resolved, when nothing
+    /// plays, and when the response did not carry one: never the previous song's.
+    private(set) var viewCount: Int?
     private(set) var error: String?
 
     /// Position ticks for the service's listening-time accounting.
@@ -166,6 +169,7 @@ final class MusicPlayer {
         wantsPlay = autoplay
         currentTime = startAt
         duration = stream.durationSeconds ?? Double(track.durationSeconds ?? 0)
+        viewCount = stream.viewCount
         engine.load(stream, startAt: startAt, autoplay: autoplay)
         notifyStateChange()
     }
@@ -185,6 +189,7 @@ final class MusicPlayer {
         wantsPlay = false
         currentTime = 0
         duration = 0
+        viewCount = nil
     }
 
     // MARK: - Recovery

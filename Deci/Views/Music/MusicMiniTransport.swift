@@ -34,6 +34,44 @@ enum MusicTimeFormat {
     }
 }
 
+/// A song's view count the way YouTube writes it: "999", "1.2K", "354K", "1.2M", "1.9B". A count is cut, never rounded
+/// up, so it never reads higher than it is.
+enum MusicViewCountFormat {
+    /// The units from the largest down, each with the count it starts at.
+    private static let units: [(size: Int, suffix: String)] = [
+        (1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"),
+    ]
+
+    /// Exact under 1,000. From there one decimal while the unit count is under 10 ("1.2K", a ".0" dropped), then whole
+    /// units ("354K"). Nil for a negative count.
+    static func abbreviated(_ count: Int) -> String? {
+        guard count >= 0 else { return nil }
+        guard let unit = units.first(where: { count >= $0.size }) else { return String(count) }
+        let whole = count / unit.size
+        let tenths = (count % unit.size) / (unit.size / 10)
+        if whole >= 10 || tenths == 0 { return "\(whole)\(unit.suffix)" }
+        return "\(whole).\(tenths)\(unit.suffix)"
+    }
+
+    /// "1.2M views", or "1 view" for exactly one. Nil while the count is unknown or negative.
+    static func label(_ count: Int?) -> String? {
+        guard let count, let short = abbreviated(count) else { return nil }
+        return "\(short) \(noun(count))"
+    }
+
+    /// Every digit, grouped by thousands: "1,234,567 views". For a tooltip. Nil while the count is unknown or negative.
+    static func fullLabel(_ count: Int?) -> String? {
+        guard let count, count >= 0 else { return nil }
+        let digits = count.formatted(.number.locale(Locale(identifier: "en_US")))
+        return "\(digits) \(noun(count))"
+    }
+
+    /// "view" for exactly one, "views" for every other count.
+    private static func noun(_ count: Int) -> String {
+        count == 1 ? "view" : "views"
+    }
+}
+
 /// Small square cover art with a neutral placeholder while it loads or when a track has none.
 /// Artists get a round one.
 struct MusicThumbnail: View {

@@ -28,6 +28,8 @@ struct PlayerResponse: Sendable, Equatable {
     let formats: [PlayerFormat]
     let expiresInSeconds: Int?
     let lengthSeconds: Int?
+    /// videoDetails.viewCount, which YouTube sends as a numeric string; nil when it is missing or not a number.
+    let viewCount: Int?
     let playbackTrackingURL: URL?
     let watchtimeTrackingURL: URL?
 }
@@ -382,12 +384,14 @@ enum InnerTubeParser {
         let streaming = root["streamingData"] as? [String: Any]
         let formats = (streaming?["adaptiveFormats"] as? [[String: Any]] ?? []).compactMap(format(from:))
         let tracking = root["playbackTracking"] as? [String: Any]
+        let details = root["videoDetails"] as? [String: Any]
         return PlayerResponse(
             status: string(playability?["status"]) ?? "UNKNOWN",
             reason: reason(in: playability),
             formats: formats,
             expiresInSeconds: int(streaming?["expiresInSeconds"]),
-            lengthSeconds: int((root["videoDetails"] as? [String: Any])?["lengthSeconds"]),
+            lengthSeconds: int(details?["lengthSeconds"]),
+            viewCount: int(details?["viewCount"]),
             playbackTrackingURL: trackingURL(tracking?["videostatsPlaybackUrl"]),
             watchtimeTrackingURL: trackingURL(tracking?["videostatsWatchtimeUrl"])
         )

@@ -88,6 +88,10 @@ nonisolated enum MusicPopupMetrics {
     /// What the player column's content gets: the cover, the spectrum and the transport are this wide.
     static var playerColumnContentWidth: CGFloat { playerColumnWidth - 2 * playerColumnPadding }
 
+    /// The least space between the times and the view count under the spectrum, so the two never read as one run. A row
+    /// without that much room shows a shorter count.
+    static let timesRowGap: CGFloat = 8
+
     /// The right column's own header, and the padding around it and the content under it.
     static let headerHeight: CGFloat = 32
     static let rightPaddingTop: CGFloat = 8
