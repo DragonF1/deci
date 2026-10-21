@@ -15,8 +15,14 @@ final class MusicChipView: NSView {
     /// The play triangle of a paused pill. It sits in the view's layer, over the pill and at the view's middle, so it stays
     /// in the pill's middle while the pill and the item change width.
     private let glyph = CALayer()
+    /// The pill's own highlight while the Music popover is open, under the cover and title. It stands in for the
+    /// system's, which lights the whole status window and so spreads past the pill.
+    private let highlight = CALayer()
     private var content: MusicChipContent?
     private var scale: CGFloat
+
+    private static let highlightAlpha: CGFloat = 0.2
+    private static let highlightWidth: CGFloat = 1_000
 
     private static let widthKey = "chipPillWidth"
     private static let fillKey = "chipPillFill"
@@ -34,6 +40,10 @@ final class MusicChipView: NSView {
     /// by the tests.
     var contentOpacity: Double { Double(content?.layer.opacity ?? 0) }
 
+    /// How strong the pill's highlight is drawn (its model value): 1 while the popover is open, 0 otherwise. Read by the
+    /// tests.
+    var highlightOpacity: Double { Double(highlight.opacity) }
+
     init(frame: NSRect, scale: CGFloat) {
         self.scale = scale
         super.init(frame: frame)
@@ -48,6 +58,13 @@ final class MusicChipView: NSView {
         pill.bounds = CGRect(x: 0, y: 0, width: 0, height: MusicChipLayout.height)
         pill.contentsScale = scale
         layer?.addSublayer(pill)
+
+        // First in the pill, so the content added later sits over it. Wider than any pill: the pill clips it to its own
+        // shape at every width, also while the width animates.
+        highlight.backgroundColor = NSColor.white.withAlphaComponent(Self.highlightAlpha).cgColor
+        highlight.frame = CGRect(x: 0, y: 0, width: Self.highlightWidth, height: MusicChipLayout.height)
+        highlight.opacity = 0
+        pill.addSublayer(highlight)
 
         let side = MusicChipLayout.playGlyphSide
         glyph.bounds = CGRect(x: 0, y: 0, width: side, height: side)
@@ -166,6 +183,12 @@ final class MusicChipView: NSView {
         content.setPlaying(spec.isPlaying, fadeDuration: fade)
         setGlyph(isPlaying: spec.isPlaying, duration: fade)
         setPillWidth(MusicChipLayout.shownPillWidth(for: geometry, isPlaying: spec.isPlaying), duration: widthDuration)
+    }
+
+    /// Lights the pill while the Music popover is open, as the system lights an open item, but only as big as the pill.
+    /// The change fades by the layer's own implicit animation.
+    func setHighlighted(_ isOn: Bool) {
+        highlight.opacity = isOn ? 1 : 0
     }
 
     /// Stops the marquee from starting again, before the view comes off the button.

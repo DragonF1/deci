@@ -202,6 +202,18 @@ struct MusicChipViewTests {
         #expect(view.pillWidth == 28)
     }
 
+    @Test("the pill lights itself while the popover is open and goes dark again when it closes")
+    func pillHighlight() {
+        let view = makeView()
+        view.show(spec: spec(shortTitle), geometry: geometry(shortTitle), thumbnail: nil, change: .content, widthDuration: 0)
+        #expect(view.highlightOpacity == 0)
+        view.setHighlighted(true)
+        #expect(view.highlightOpacity == 1)
+        #expect(view.contentOpacity == 1)
+        view.setHighlighted(false)
+        #expect(view.highlightOpacity == 0)
+    }
+
     // MARK: - The cover
 
     @Test("a cover that was missing is taken in once it arrives")

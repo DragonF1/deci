@@ -19,6 +19,8 @@ final class MusicMenuBarChipController {
     private let hoverCard: MusicHoverCardController
 
     private let popupWatcher = MusicPopupKeyWatcher()
+    /// Follows the Music popover while the chip shows, to keep the button unlit and light the pill instead.
+    private let highlightWatcher = MusicPopupKeyWatcher()
 
     private var started = false
     private var stopped = false
@@ -58,6 +60,7 @@ final class MusicMenuBarChipController {
     func stop() {
         stopped = true
         popupWatcher.stop()
+        highlightWatcher.stop()
         cancelCoverLoad()
         lengthAnimator?.cancel()
         chipView?.teardown()
@@ -214,6 +217,12 @@ final class MusicMenuBarChipController {
         view.appear()
         chipView = view
         observeReduceMotion()
+        highlightWatcher.start { [weak self] in
+            self?.syncHighlight()
+            // In case the popover's own handler lights the button after this one ran.
+            Task { @MainActor in self?.syncHighlight() }
+        }
+        syncHighlight()
     }
 
     /// Back to the icon, only if the chip was put there: with the Icon style the button is never touched. The item goes
@@ -225,14 +234,26 @@ final class MusicMenuBarChipController {
         lengthAnimator?.cancel()
         lengthAnimator = nil
         stopObservingReduceMotion()
+        highlightWatcher.stop()
         fade(button)
         chipView?.teardown()
         chipView?.removeFromSuperview()
         chipView = nil
         item.length = NSStatusItem.variableLength
         button.image = iconImage
+        // The icon wears the system's highlight again, lit if the popover is open now.
+        button.highlight(MusicPopupKeyWatcher.isPopupOpen)
         // Nil makes the button read the icon's own description again ("Deci Music").
         button.setAccessibilityLabel(nil)
+    }
+
+    /// The system lights an open item across its whole status window, which runs 8 pt past the button on each side, so
+    /// the chip would sit in a wider grey box. While the chip shows, the button stays unlit (FluidMenuBarExtra lights it
+    /// when its popover becomes key) and the pill lights itself instead.
+    private func syncHighlight() {
+        guard let chipView, let button = MenuBarStatusItems.statusItem(for: .music)?.button else { return }
+        if button.isHighlighted { button.highlight(false) }
+        chipView.setHighlighted(MusicPopupKeyWatcher.isPopupOpen)
     }
 
     private func fade(_ button: NSStatusBarButton) {
