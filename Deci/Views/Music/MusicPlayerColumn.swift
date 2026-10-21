@@ -166,8 +166,10 @@ struct MusicPlayerColumn: View {
             MusicSpectrumView(state: state, track: track, service: service, spectrum: spectrum)
             timesRow(state)
             // The strip's height comes out of the spectrum's, which takes whatever the column leaves, so the transport
-            // and everything under it stay where they were.
+            // and everything under it stay where they were. It is drawn lower than its place, in the gap above the
+            // transport.
             rateStrip(state)
+                .offset(y: MusicPopupMetrics.rateStripDrop)
         }
     }
 

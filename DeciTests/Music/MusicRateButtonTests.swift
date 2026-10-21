@@ -99,9 +99,17 @@ struct MusicRateButtonTests {
         #expect(m.rateReachY == 4)
         #expect(m.rateGlyphSize + 2 * m.rateReachX == m.rateHitWidth)
         #expect(m.rateStripHeight + 2 * m.rateReachY == m.rateHitHeight)
-        // Above is the 6 pt gap to the times row; below, the column's 10 pt gap to the transport.
-        #expect(m.rateReachY <= m.spectrumBlockSpacing)
-        #expect(m.rateReachY < 10)
+        // Above the dropped strip is its 6 pt gap plus the drop to the times row.
+        #expect(m.rateReachY <= m.spectrumBlockSpacing + m.rateStripDrop)
+    }
+
+    @Test("The strip is drawn 10 pt under its place, into the column's 10 pt gap, so the glyphs end where the transport starts")
+    func stripDrop() {
+        let m = MusicPopupMetrics.self
+        #expect(m.rateStripDrop == 10)
+        // The column's spacing between the spectrum block and the transport.
+        let columnGap: CGFloat = 10
+        #expect(m.rateStripDrop <= columnGap)
     }
 
     @Test("The icons rest at the brightness of Shuffle and Loop")

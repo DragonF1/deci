@@ -102,9 +102,14 @@ nonisolated enum MusicPopupMetrics {
     static let rateStripHeight: CGFloat = 12
     static var rateStripReserve: CGFloat { spectrumBlockSpacing + rateStripHeight }
 
+    /// How far the strip is drawn under its place in the layout: down into the column's 10 pt gap to the transport, so
+    /// the icons sit just over Shuffle and Previous, Next and Loop rather than under the times. The spectrum and the
+    /// transport do not move, and the glyphs end where the transport's boxes start.
+    static let rateStripDrop: CGFloat = 10
+
     /// Each icon's hit area, 24 wide and 20 high, centred on its box. It reaches `rateReachX` and `rateReachY` past the
-    /// box, out of the layout; above the strip is the gap to the times row and below it the column's gap to the
-    /// transport, which both hold the reach.
+    /// box, out of the layout; above the dropped strip is the 16 pt gap to the times row, and below it the reach runs
+    /// into the transport's boxes, which are drawn later and so keep their own clicks.
     static let rateHitWidth: CGFloat = 24
     static let rateHitHeight: CGFloat = 20
     static var rateReachX: CGFloat { (rateHitWidth - rateGlyphSize) / 2 }
