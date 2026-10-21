@@ -26,6 +26,32 @@ actor MusicTestGate {
     }
 }
 
+/// Stands in for the wait before a disliked song is skipped. A wait returns at once, unless `hold()` was called: then each
+/// wait parks until `release()`. It records how many seconds each wait was asked for, so a test can check the delay.
+@MainActor
+final class DislikeSkipSleep {
+    private(set) var requested: [TimeInterval] = []
+    private var holds = false
+    private var parked: [CheckedContinuation<Void, Never>] = []
+
+    /// From now on a wait parks until `release()`.
+    func hold() { holds = true }
+
+    func sleep(_ seconds: TimeInterval) async {
+        requested.append(seconds)
+        guard holds else { return }
+        await withCheckedContinuation { parked.append($0) }
+    }
+
+    /// Lets the waits that are parked return; waits asked for later return at once.
+    func release() {
+        holds = false
+        let waiting = parked
+        parked = []
+        for continuation in waiting { continuation.resume() }
+    }
+}
+
 actor FakeMusicBackend: MusicBackend {
     nonisolated struct Report: Equatable, Sendable {
         let kind: HistoryPing.Kind

@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicServiceLikeTests.swift
 // Like and Dislike through the service, with a fake backend and a fake AVPlayer seam: the state of the playing song is
-// read once when it starts, Like and Dislike act on the song playing now, Dislike skips it, and a session that ends
+// read once when it starts, Like and Dislike act on the song playing now, Dislike skips it once the dislike animation
+// has played (and not when the song changed, the dislike was taken back or it failed meanwhile), and a session that ends
 // takes the remembered states with it.
 
 import Foundation
@@ -15,6 +16,8 @@ private struct LikeServiceHarness {
     let clock = MutableClock()
     let pick = ChannelPick()
     let signInPick = ChannelPick()
+    /// The wait before a disliked song is skipped: instant until a test holds it.
+    let skipSleep = DislikeSkipSleep()
     let service: MusicService
 
     init(signedIn: Bool = true, preferences: MusicPlaybackPreferences = MusicPlaybackPreferences()) {
@@ -22,6 +25,7 @@ private struct LikeServiceHarness {
         let clock = self.clock
         let pick = self.pick
         let signInPick = self.signInPick
+        let skipSleep = self.skipSleep
         service = MusicService(
             backend: backend,
             player: MusicPlayer(engine: engine),
@@ -35,6 +39,7 @@ private struct LikeServiceHarness {
             savePreferences: { _ in },
             shuffleSeed: 1,
             queueRetryDelay: .seconds(60),
+            sleep: { seconds in await skipSleep.sleep(seconds) },
             refreshOnCreate: false
         )
     }
@@ -54,6 +59,12 @@ private struct LikeServiceHarness {
             await radio?.value
             if service.playTask == play, service.radioTask == radio { break }
         }
+    }
+
+    /// Waits for the pending skip of a disliked song to run its course, and for the song change it makes to load.
+    func finishSkip() async {
+        await service.dislikeSkip?.value
+        await settle()
     }
 
     func until(_ condition: () async -> Bool) async -> Bool {
@@ -327,7 +338,7 @@ struct MusicServiceLikeTests {
         #expect(await h.rateCalls() == [.init(videoId: "a", status: .indifferent)])
     }
 
-    @Test("Dislike pressed while a like is out skips at once and is sent after it")
+    @Test("Dislike pressed while a like is out skips without waiting for it and is sent after it")
     func dislikeWhileLikeIsOut() async {
         let h = await LikeServiceHarness.signedIn()
         await h.startRadio(["a", "b", "c"])
@@ -338,6 +349,7 @@ struct MusicServiceLikeTests {
         _ = await h.until { await h.rateCalls().count == 1 }
 
         let dislike = await service.dislike()
+        await service.dislikeSkip?.value
         let skipped = await h.until { h.playingID == "b" }
 
         #expect(dislike == .quiet)
@@ -383,18 +395,42 @@ struct MusicServiceLikeTests {
 
     // MARK: - Dislike
 
-    @Test("Dislike rates the playing song and skips to the next at once")
+    @Test("Dislike rates the playing song and skips to the next once the wait is over")
     func dislikeSkips() async {
         let h = await LikeServiceHarness.signedIn()
         await h.startRadio(["a", "b", "c"])
 
         let outcome = await h.service.dislike()
-        await h.settle()
+        await h.finishSkip()
 
         #expect(outcome == .disliked)
         #expect(await h.rateCalls() == [.init(videoId: "a", status: .dislike)])
         #expect(h.loadedIDs.last == "b")
         #expect(h.playingID == "b")
+    }
+
+    @Test("The skip waits for the dislike animation and a beat, so the animation is seen on the song it rates")
+    func dislikeSkipWaitsForTheAnimation() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+        h.skipSleep.hold()
+
+        #expect(await h.service.dislike() == .disliked)
+        let waiting = await h.until { h.skipSleep.requested.count == 1 }
+        await h.letLateWorkLand()
+
+        // The wait is out and the song on screen is still the one that was rated.
+        #expect(waiting)
+        #expect(h.skipSleep.requested == [MusicRateBurst.Metrics.dislikeSkipDelay])
+        #expect(h.service.likeStatus == .dislike)
+        #expect(h.playingID == "a")
+        #expect(h.loadedIDs.last == "a")
+
+        h.skipSleep.release()
+        await h.finishSkip()
+
+        #expect(h.playingID == "b")
+        #expect(h.loadedIDs.last == "b")
     }
 
     @Test("The skip does not wait for YouTube's answer to the dislike")
@@ -406,6 +442,8 @@ struct MusicServiceLikeTests {
         let service = h.service
 
         let task = Task { await service.dislike() }
+        _ = await h.until { service.dislikeSkip != nil }
+        await service.dislikeSkip?.value
         let skipped = await h.until { h.playingID == "b" }
 
         #expect(skipped)
@@ -421,10 +459,11 @@ struct MusicServiceLikeTests {
         #expect(!h.service.canGoNext)
 
         let outcome = await h.service.dislike()
-        await h.settle()
+        await h.finishSkip()
 
         #expect(outcome == .disliked)
         #expect(h.playingID == "a")
+        #expect(h.loadedIDs == ["a"])
         #expect(await h.rateCalls() == [.init(videoId: "a", status: .dislike)])
     }
 
@@ -436,11 +475,124 @@ struct MusicServiceLikeTests {
         _ = await h.until { h.service.likeStatus == .dislike }
 
         let outcome = await h.service.dislike()
-        await h.settle()
+        await h.finishSkip()
 
         #expect(outcome == .dislikeRemoved)
         #expect(h.playingID == "a")
+        #expect(h.skipSleep.requested.isEmpty)
         #expect(await h.rateCalls() == [.init(videoId: "a", status: .indifferent)])
+    }
+
+    @Test("A song that changed during the wait is not skipped: the listener already moved on")
+    func dislikeSkipDropsWhenTheSongChanged() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+        h.skipSleep.hold()
+
+        #expect(await h.service.dislike() == .disliked)
+        _ = await h.until { h.skipSleep.requested.count == 1 }
+        h.service.next()
+        await h.settle()
+        #expect(h.playingID == "b")
+        let loaded = h.loadedIDs
+
+        h.skipSleep.release()
+        await h.finishSkip()
+        await h.letLateWorkLand()
+
+        #expect(h.playingID == "b")
+        #expect(h.loadedIDs == loaded)
+    }
+
+    @Test("A dislike taken back during the wait is not followed by a skip")
+    func dislikeSkipDropsWhenTheDislikeIsTakenBack() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+        h.skipSleep.hold()
+
+        #expect(await h.service.dislike() == .disliked)
+        _ = await h.until { h.skipSleep.requested.count == 1 }
+        #expect(await h.service.dislike() == .dislikeRemoved)
+        let loaded = h.loadedIDs
+
+        h.skipSleep.release()
+        await h.finishSkip()
+        await h.letLateWorkLand()
+
+        #expect(h.playingID == "a")
+        #expect(h.loadedIDs == loaded)
+        #expect(h.service.likeStatus == .indifferent)
+    }
+
+    @Test("A dislike that fails and goes back during the wait is not followed by a skip")
+    func dislikeSkipDropsWhenTheCallFails() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.backend.setLikeStatus(videoId: "a", .like)
+        await h.startRadio(["a", "b", "c"])
+        _ = await h.until { h.service.likeStatus == .like }
+        await h.backend.setRateError(videoId: "a", MusicError.http(500))
+        h.skipSleep.hold()
+
+        #expect(await h.service.dislike() == .failed)
+        _ = await h.until { h.skipSleep.requested.count == 1 }
+        #expect(h.service.likeStatus == .like)
+        let loaded = h.loadedIDs
+
+        h.skipSleep.release()
+        await h.finishSkip()
+        await h.letLateWorkLand()
+
+        #expect(h.playingID == "a")
+        #expect(h.loadedIDs == loaded)
+        #expect(h.service.likeStatus == .like)
+    }
+
+    @Test("Signing out during the wait drops the skip")
+    func dislikeSkipDropsWhenSignedOut() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+        h.skipSleep.hold()
+
+        #expect(await h.service.dislike() == .disliked)
+        _ = await h.until { h.skipSleep.requested.count == 1 }
+        h.service.signOut()
+        let loaded = h.loadedIDs
+
+        h.skipSleep.release()
+        await h.finishSkip()
+        await h.letLateWorkLand()
+
+        #expect(h.playingID == nil)
+        #expect(h.loadedIDs == loaded)
+    }
+
+    @Test("A second skip replaces the pending one: the song moves on once")
+    func secondDislikeSkipReplacesTheFirst() async {
+        let h = await LikeServiceHarness.signedIn()
+        await h.startRadio(["a", "b", "c"])
+        h.skipSleep.hold()
+
+        #expect(await h.service.dislike() == .disliked)
+        let first = h.service.dislikeSkip
+        #expect(await h.service.dislike() == .dislikeRemoved)
+        #expect(await h.service.dislike() == .disliked)
+        let second = h.service.dislikeSkip
+        _ = await h.until { h.skipSleep.requested.count == 2 }
+
+        #expect(first != nil)
+        #expect(first != second)
+        #expect(first?.isCancelled == true)
+        #expect(second?.isCancelled == false)
+
+        h.skipSleep.release()
+        await first?.value
+        await h.finishSkip()
+        await h.letLateWorkLand()
+
+        #expect(h.playingID == "b")
+        #expect(h.loadedIDs.last == "b")
+        #expect(h.loadedIDs.filter { $0 == "b" }.count == 1)
+        #expect(!h.loadedIDs.contains("c"))
     }
 
     @Test("Dislike with nothing playing does nothing and says so")
@@ -511,21 +663,30 @@ struct MusicServiceLikeTests {
 
         #expect(await h.service.setLike(.dislike, of: h.song("c")) == .disliked)
         #expect(await h.service.setLike(.dislike, of: h.song("x")) == .disliked)
-        await h.settle()
+        await h.finishSkip()
 
+        #expect(h.skipSleep.requested.isEmpty)
         #expect(h.playingID == "a")
         #expect(h.loadedIDs == loaded)
         #expect(h.service.queue.tracks.map(\.videoId) == queued)
         #expect(await h.rateCalls() == [.init(videoId: "c", status: .dislike), .init(videoId: "x", status: .dislike)])
     }
 
-    @Test("Disliking the playing song skips it, as the shortcut does")
+    @Test("Disliking the playing song skips it after the same wait, as the shortcut does")
     func dislikeOfThePlayingSongSkips() async {
         let h = await LikeServiceHarness.signedIn()
         await h.startRadio(["a", "b", "c"])
+        h.skipSleep.hold()
 
         #expect(await h.service.setLike(.dislike, of: h.song("a")) == .disliked)
-        await h.settle()
+        _ = await h.until { h.skipSleep.requested.count == 1 }
+        await h.letLateWorkLand()
+
+        #expect(h.skipSleep.requested == [MusicRateBurst.Metrics.dislikeSkipDelay])
+        #expect(h.playingID == "a")
+
+        h.skipSleep.release()
+        await h.finishSkip()
 
         #expect(h.playingID == "b")
         #expect(await h.rateCalls() == [.init(videoId: "a", status: .dislike)])
@@ -537,9 +698,10 @@ struct MusicServiceLikeTests {
         await h.startAlone("a")
 
         #expect(await h.service.setLike(.dislike, of: h.song("a")) == .disliked)
-        await h.settle()
+        await h.finishSkip()
 
         #expect(h.playingID == "a")
+        #expect(h.loadedIDs == ["a"])
     }
 
     @Test("Taking back a dislike, and liking, the playing song do not skip")
@@ -551,8 +713,9 @@ struct MusicServiceLikeTests {
 
         #expect(await h.service.setLike(.indifferent, of: h.song("a")) == .dislikeRemoved)
         #expect(await h.service.setLike(.like, of: h.song("a")) == .liked)
-        await h.settle()
+        await h.finishSkip()
 
+        #expect(h.skipSleep.requested.isEmpty)
         #expect(h.playingID == "a")
     }
 
@@ -623,7 +786,7 @@ struct MusicServiceLikeTests {
         await h.startRadio(["a", "b", "c"])
 
         #expect(await h.service.dislike() == .disliked)
-        await h.settle()
+        await h.finishSkip()
 
         #expect(log.kinds == [.dislike])
         #expect(h.playingID == "b")

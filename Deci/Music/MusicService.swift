@@ -21,6 +21,8 @@ final class MusicService {
         _ session: [StoredCookie],
         _ completion: @escaping @MainActor ([StoredCookie]?) -> Void
     ) -> Void
+    /// Waits for `seconds`. A test replaces it, to run the wait before a disliked song is skipped at once or by hand.
+    typealias Sleep = @MainActor (TimeInterval) async -> Void
 
     private(set) var authState: AuthState = .unknown
     /// Whether plays (and so History) land on a brand channel; nil until the home page says.
@@ -135,6 +137,8 @@ final class MusicService {
     @ObservationIgnored private let artistGrace: Duration
     /// The wait before the first retry of a queue page that failed; each later retry waits twice as long.
     @ObservationIgnored private let queueRetryDelay: Duration
+    /// The wait before a disliked song is skipped.
+    @ObservationIgnored private let sleep: Sleep
     @ObservationIgnored private var queueRetryAttempts = 0
     /// When the listener last touched a control: the `lact` of every watchtime ping.
     @ObservationIgnored private var lastActivity: Date
@@ -170,6 +174,9 @@ final class MusicService {
     @ObservationIgnored private(set) var channelSwitchTask: Task<Void, Never>?
     @ObservationIgnored private(set) var accountTask: Task<Void, Never>?
     @ObservationIgnored private(set) var addAccountTask: Task<Void, Never>?
+    /// The wait before the song that was just disliked is skipped, and the skip that follows it; nil until a dislike has
+    /// scheduled one. A newer dislike replaces it. Read by the tests, which await it.
+    @ObservationIgnored private(set) var dislikeSkip: Task<Void, Never>?
     /// The radio or page fetch in flight (first radio page or a continuation); nil when none is running.
     @ObservationIgnored private(set) var radioTask: Task<Void, Never>? {
         didSet { noteQueueFilling() }
@@ -213,6 +220,7 @@ final class MusicService {
         shuffleSeed: UInt64? = nil,
         artistGrace: Duration = .milliseconds(1500),
         queueRetryDelay: Duration = .seconds(2),
+        sleep: @escaping Sleep = { seconds in try? await Task.sleep(for: .seconds(seconds)) },
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -231,6 +239,7 @@ final class MusicService {
         self.now = now
         self.artistGrace = artistGrace
         self.queueRetryDelay = queueRetryDelay
+        self.sleep = sleep
         self.listenerLevel = listenerLevel
         self.isShuffleOn = preferences.shuffle
         self.loopMode = preferences.loop
@@ -276,6 +285,7 @@ final class MusicService {
         channelSwitchTask?.cancel()
         accountTask?.cancel()
         addAccountTask?.cancel()
+        dislikeSkip?.cancel()
         radioTask?.cancel()
         queueRetryTask?.cancel()
         prefetchTask?.cancel()
@@ -1333,21 +1343,24 @@ final class MusicService {
         return await likes.toggleLike(videoId: track.videoId)
     }
 
-    /// Dislikes the song playing now and skips it as the dislike goes out, or takes the dislike back and plays on.
-    /// With no next song the dislike is still sent and the song keeps playing.
+    /// Dislikes the song playing now and skips it once the dislike animation has played (see `scheduleDislikeSkip`), or
+    /// takes the dislike back and plays on. With no next song the dislike is still sent and the song keeps playing.
     func dislike() async -> MusicActionOutcome {
         guard let track = player.nowPlaying else { return .nothingPlaying }
         guard authState == .signedIn else { return .signedOut }
-        return await likes.dislike(videoId: track.videoId) { [weak self] in self?.skipDislikedSong() }
+        return await likes.dislike(videoId: track.videoId) { [weak self] in
+            self?.scheduleDislikeSkip(of: track.videoId)
+        }
     }
 
     /// Makes any song `status`, as the song menus do: not only the one playing, and nothing need be playing. Disliking the
-    /// song that plays skips it, as the shortcut does; disliking any other song leaves the player and the queue alone.
+    /// song that plays skips it once the dislike animation has played, as the shortcut does; disliking any other song
+    /// leaves the player and the queue alone.
     func setLike(_ status: MusicLikeStatus, of track: MusicTrack) async -> MusicActionOutcome {
         guard authState == .signedIn else { return .signedOut }
         let isPlaying = track.videoId == player.nowPlaying?.videoId
         return await likes.set(status, videoId: track.videoId) { [weak self] in
-            if isPlaying { self?.skipDislikedSong() }
+            if isPlaying { self?.scheduleDislikeSkip(of: track.videoId) }
         }
     }
 
@@ -1375,10 +1388,20 @@ final class MusicService {
         if let kind { onRatingBurstCancel?(kind) }
     }
 
-    /// With no next song the song keeps playing.
-    private func skipDislikedSong() {
-        guard canGoNext else { return }
-        next()
+    /// Skips the song `videoId` that was just disliked, after `MusicRateBurst.Metrics.dislikeSkipDelay`: the dislike pop
+    /// plays on the song it rates and settles for a beat before the song changes. A newer dislike replaces a skip that is
+    /// still waiting. When the wait is over the skip happens only if all of these hold, and otherwise nothing happens:
+    /// the song is still playing (the listener may have pressed Next, or another song may have started), it is still
+    /// disliked (the dislike may have been taken back, been rolled back after a call that failed, or been forgotten by a
+    /// sign-out), and a next song can follow. With no next song the song keeps playing.
+    private func scheduleDislikeSkip(of videoId: String) {
+        dislikeSkip?.cancel()
+        dislikeSkip = Task { @MainActor [weak self, sleep] in
+            await sleep(MusicRateBurst.Metrics.dislikeSkipDelay)
+            guard !Task.isCancelled, let self else { return }
+            guard player.nowPlaying?.videoId == videoId, likes.status(of: videoId) == .dislike, canGoNext else { return }
+            next()
+        }
     }
 
     private func syncNowPlaying() {

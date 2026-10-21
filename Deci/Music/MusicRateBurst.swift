@@ -75,6 +75,13 @@ nonisolated enum MusicRateBurst {
         /// The Reduce Motion fade to the filled thumb, and to the outline thumb of a removal.
         static let reducedDuration = 0.15
 
+        /// The pause between the end of the dislike pop and the skip to the next song, so the dislike is seen settled on
+        /// the song it rates before that song goes.
+        static let dislikeSkipGap = 0.4
+        /// How long a disliked song keeps playing before it is skipped: the dislike pop has to finish, then a beat. The
+        /// skip waits for this long from the moment the dislike goes out, so the animation is seen on the song it rates.
+        static let dislikeSkipDelay = dislikeDuration + dislikeSkipGap
+
         /// A removal's outline thumb settles from `removalScaleFrom` to its own size over this long, with a quick ease.
         static let removalSettle = 0.2
         static let removalScaleFrom = 1.15

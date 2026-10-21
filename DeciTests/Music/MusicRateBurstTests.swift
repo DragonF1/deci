@@ -248,6 +248,15 @@ struct MusicRateBurstTimelineTests {
         #expect(Burst.pillShownDuration(of: .like, reduceMotion: true) == Burst.Metrics.reducedDuration + 0.7)
     }
 
+    // MARK: - The skip after a dislike
+
+    @Test("A disliked song is skipped once the dislike pop has finished and a beat of 0.4 s has passed")
+    func dislikeSkipDelay() {
+        #expect(Burst.Metrics.dislikeSkipGap == 0.4)
+        #expect(Burst.Metrics.dislikeSkipDelay == Burst.Metrics.dislikeDuration + Burst.Metrics.dislikeSkipGap)
+        #expect(Burst.Metrics.dislikeSkipDelay > Burst.Metrics.dislikeDuration)
+    }
+
     // MARK: - A removal
 
     private func removal(_ seconds: Double, _ kind: Burst.Kind = .like, reduceMotion: Bool = false) -> Burst.Frame {

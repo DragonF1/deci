@@ -15,11 +15,14 @@ private struct ShortcutActionsHarness {
     let host: MusicServiceHost
     let opener: FakePopupOpener
     let actions: MusicShortcutActions
+    /// The wait before a disliked song is skipped: instant, so the skip runs as soon as it is scheduled.
+    let skipSleep = DislikeSkipSleep()
 
     /// `loaded: false` is the app before the Music popup was ever opened: the host has no service yet.
     init(signedIn: Bool = true, loaded: Bool = true) {
         let backend = FakeMusicBackend(signedIn: signedIn)
         self.backend = backend
+        let skipSleep = self.skipSleep
         let service = MusicService(
             backend: backend,
             player: MusicPlayer(engine: engine),
@@ -31,6 +34,7 @@ private struct ShortcutActionsHarness {
             savePreferences: { _ in },
             shuffleSeed: 1,
             queueRetryDelay: .seconds(60),
+            sleep: { seconds in await skipSleep.sleep(seconds) },
             refreshOnCreate: false
         )
         self.service = service
@@ -185,13 +189,14 @@ struct MusicShortcutActionsTests {
         #expect(await h.rateCalls() == [.init(videoId: "a", status: .like), .init(videoId: "a", status: .indifferent)])
     }
 
-    @Test("Dislike rates the playing song, skips it, and reports it")
+    @Test("Dislike rates the playing song, skips it once the dislike animation has played, and reports it")
     func dislikePlaying() async {
         let h = ShortcutActionsHarness()
         await h.service.refreshAuth()
         await h.startRadio(["a", "b", "c"])
 
         let outcome = await h.actions.dislike()
+        await h.service.dislikeSkip?.value
         await h.settle()
 
         #expect(outcome == .disliked)

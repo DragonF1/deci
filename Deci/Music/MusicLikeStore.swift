@@ -124,7 +124,7 @@ final class MusicLikeStore {
     }
 
     /// Dislikes a song, or takes its dislike back when it is disliked. `onSent` runs as `set` runs it. It does not wait
-    /// for the song's state to be read, so the skip stays instant.
+    /// for the song's state to be read, so the skip is scheduled at once.
     func dislike(videoId: String, onSent: (@MainActor () -> Void)? = nil) async -> MusicActionOutcome {
         await set(statuses[videoId] == .dislike ? .indifferent : .dislike, videoId: videoId, onSent: onSent)
     }
@@ -132,7 +132,8 @@ final class MusicLikeStore {
     /// Makes a song `status`, whatever it was: sending the state it already has does no harm. This is the menus' Like,
     /// Remove like, Dislike and Remove dislike, and the one call the toggles above end in. `onSent` runs once when a
     /// dislike (not the removal of one) is on its way, right after the state shows it and before YouTube Music answers:
-    /// the service skips the song there. It never waits for the song's state to be read. A blank id sends nothing.
+    /// the service schedules the skip of the song there. It never waits for the song's state to be read. A blank id sends
+    /// nothing.
     ///
     /// When a call is already out for the song, the tap shows at once, is remembered as what the song should end as, and
     /// returns `.quiet`: the call that is out sends it when it is back and reports for both. A failed call goes back to
