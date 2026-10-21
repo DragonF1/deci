@@ -120,12 +120,14 @@ struct MusicPlayerColumn: View {
             .accessibilityElement(children: .combine)
         } else if let track {
             VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
-                    .musicText(MusicStyle.Typeface.playerTitle)
-                    .foregroundStyle(Color.white.opacity(0.97))
-                    .lineLimit(1)
-                    .help(track.title)
-                    .contextMenu { trackActions(track) }
+                MusicMarquee(isPlaying: player?.isPlaying ?? false) {
+                    Text(track.title)
+                        .musicText(MusicStyle.Typeface.playerTitle)
+                        .foregroundStyle(Color.white.opacity(0.97))
+                        .lineLimit(1)
+                }
+                .help(track.title)
+                .contextMenu { trackActions(track) }
                 if let error = player?.error {
                     Text(error)
                         .musicText(MusicStyle.Typeface.secondary)
