@@ -112,13 +112,15 @@ struct MusicSpectrumGeometryTests {
         #expect(MusicSpectrum.previewLineY(atY: 500, height: height) == height - 1)
     }
 
-    @Test("the rate strip's 18 pt makes the box 173 pt instead of 191, with the same 28 bars, as thick, and a tighter pitch")
+    @Test("the rate strip's 3 pt more under the times makes the box 188 pt instead of 191, with the same 28 bars, as thick")
     func shorterBoxForTheRateStrip() {
         // The column's 490 pt of content less the cover, the texts, the transport and the 10 pt gaps leaves the block
-        // 210 pt: the box, 6 pt, the 13 pt times row, and now 6 pt and the 12 pt strip. 191 before, 173 now.
+        // 210 pt: the box, 6 pt, the 13 pt times row, and now the 3 pt the times sit further from the transport. The
+        // strip itself is out of the layout. 191 before, 188 now.
         let before = 191.0
-        let after = before - Double(MusicPopupMetrics.rateStripReserve)
-        #expect(after == 173)
+        let m = MusicPopupMetrics.self
+        let after = before - Double(m.timesToTransport - m.playerColumnSpacing)
+        #expect(after == 188)
         #expect(MusicSpectrum.barThickness(height: before) == 3.5)
         #expect(MusicSpectrum.barThickness(height: after) == 3.5)
         for height in [before, after] {

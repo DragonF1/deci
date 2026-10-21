@@ -92,24 +92,26 @@ nonisolated enum MusicPopupMetrics {
     /// without that much room shows a shorter count.
     static let timesRowGap: CGFloat = 8
 
-    /// The gap between the spectrum, the times row and the strip under it.
+    /// The gap between the spectrum and the times row under it.
     static let spectrumBlockSpacing: CGFloat = 6
 
-    /// The strip of Like and Dislike between the times row and the transport: a 12 pt glyph in a box 12 wide and 12
-    /// high. With the gap above it the strip takes `rateStripReserve` from the spectrum, which is whatever the column
-    /// leaves.
+    /// The player column's gap between its blocks (the song, the spectrum and times, the transport, the view buttons).
+    static let playerColumnSpacing: CGFloat = 10
+
+    /// The space between the times row and the transport, which holds the strip of Like and Dislike. The spectrum takes
+    /// whatever the column leaves, so it ends this much (and its own 6 pt gap and the times) above the transport.
+    static let timesToTransport: CGFloat = 13
+
+    /// The strip of Like and Dislike: a 12 pt glyph in a box 12 wide and 12 high. It is out of the layout, behind the
+    /// transport, and runs `rateStripOverlap` into the transport's boxes. The times' digits then end 7 pt over the
+    /// icons and the icons 7 pt over Previous and Next, the same gap on both sides.
     static let rateGlyphSize: CGFloat = 12
     static let rateStripHeight: CGFloat = 12
-    static var rateStripReserve: CGFloat { spectrumBlockSpacing + rateStripHeight }
-
-    /// How far the strip is drawn under its place in the layout: down into the column's 10 pt gap to the transport, so
-    /// the icons sit just over Shuffle and Previous, Next and Loop rather than under the times. The spectrum and the
-    /// transport do not move, and the glyphs end where the transport's boxes start.
-    static let rateStripDrop: CGFloat = 10
+    static let rateStripOverlap: CGFloat = 3
 
     /// Each icon's hit area, 24 wide and 20 high, centred on its box. It reaches `rateReachX` and `rateReachY` past the
-    /// box, out of the layout; above the dropped strip is the 16 pt gap to the times row, and below it the reach runs
-    /// into the transport's boxes, which are drawn later and so keep their own clicks.
+    /// box, out of the layout; above the strip the reach ends where the times row does, and below it the reach runs
+    /// into the transport's boxes, which are in front and so keep their own clicks.
     static let rateHitWidth: CGFloat = 24
     static let rateHitHeight: CGFloat = 20
     static var rateReachX: CGFloat { (rateHitWidth - rateGlyphSize) / 2 }

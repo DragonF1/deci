@@ -30,14 +30,20 @@ struct MusicPlayerColumn: View {
 
     var body: some View {
         let state = state
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: MusicPopupMetrics.playerColumnSpacing) {
             kicker(state)
             cover(state)
             meta(state)
             // The spectrum takes whatever height is left, so the column is full top to bottom.
             spectrumBlock(state)
                 .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.bottom, MusicPopupMetrics.timesToTransport - MusicPopupMetrics.playerColumnSpacing)
             transport(state)
+                // Behind the transport, so its buttons keep their clicks where the icons' reach runs into them.
+                .background(alignment: .top) {
+                    rateStrip(state)
+                        .alignmentGuide(.top) { $0[.bottom] - MusicPopupMetrics.rateStripOverlap }
+                }
             viewButtons(state)
         }
         .padding(MusicPopupMetrics.playerColumnPadding)
@@ -165,15 +171,10 @@ struct MusicPlayerColumn: View {
         VStack(alignment: .leading, spacing: MusicPopupMetrics.spectrumBlockSpacing) {
             MusicSpectrumView(state: state, track: track, service: service, spectrum: spectrum)
             timesRow(state)
-            // The strip's height comes out of the spectrum's, which takes whatever the column leaves, so the transport
-            // and everything under it stay where they were. It is drawn lower than its place, in the gap above the
-            // transport.
-            rateStrip(state)
-                .offset(y: MusicPopupMetrics.rateStripDrop)
         }
     }
 
-    /// Like and Dislike for the song playing now, as the Now playing card has them, in the strip under the times. The
+    /// Like and Dislike for the song playing now, as the Now playing card has them, in the strip over the transport. The
     /// strip's space is kept even when there is nothing to rate. A call that goes through shows in the icons; one that
     /// does not shows in the popup's notice line. They fade and switch off with the transport.
     private func rateStrip(_ state: MusicPlayerColumnState) -> some View {
