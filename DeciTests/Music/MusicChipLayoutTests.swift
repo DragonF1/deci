@@ -120,35 +120,6 @@ struct MusicChipLayoutTests {
         #expect(!MusicChipLayout.scrolls(characterCount: 40, textWidth: .nan, windowWidth: 120))
     }
 
-    @Test("the status item is the pill plus its padding on both sides")
-    func itemLength() {
-        #expect(MusicChipLayout.itemLength(pillWidth: 100, itemPadding: 6) == 112)
-        #expect(MusicChipLayout.itemLength(pillWidth: 100, itemPadding: 0) == 100)
-    }
-
-    @Test("the item's padding is read from the icon's item: half of what the icon leaves over")
-    func measuredItemPadding() {
-        #expect(MusicChipLayout.measuredItemPadding(buttonWidth: 34, iconWidth: 22) == 6)
-        #expect(MusicChipLayout.measuredItemPadding(buttonWidth: 33, iconWidth: 22) == 5.5)
-        #expect(MusicChipLayout.measuredItemPadding(buttonWidth: 22, iconWidth: 22) == 0)
-    }
-
-    @Test(
-        "a measurement that makes no sense is not used",
-        arguments: [
-            (0.0, 22.0), (10.0, 22.0), (200.0, 22.0), (Double.nan, 22.0), (34.0, Double.nan), (Double.infinity, 22.0),
-        ]
-    )
-    func unusablePaddingMeasurement(buttonWidth: Double, iconWidth: Double) {
-        #expect(MusicChipLayout.measuredItemPadding(buttonWidth: buttonWidth, iconWidth: iconWidth) == nil)
-    }
-
-    @Test("the fallback padding is a sane, small number")
-    func defaultPadding() {
-        #expect(MusicChipLayout.defaultItemPadding > 0)
-        #expect(MusicChipLayout.defaultItemPadding <= MusicChipLayout.maxItemPadding)
-    }
-
     @Test("a paused song's cover and title are gone, a playing one's are at full strength")
     func contentAlpha() {
         #expect(MusicChipLayout.contentAlpha(isPlaying: true) == 1)

@@ -10,8 +10,6 @@ import QuartzCore
 final class MusicChipLengthAnimator: NSObject {
     private let item: NSStatusItem
     private let button: NSStatusBarButton
-    /// The room the item leaves on each side of the pill, in points.
-    private let itemPadding: Double
 
     private var link: CADisplayLink?
     private var fromWidth = 0.0
@@ -24,18 +22,18 @@ final class MusicChipLengthAnimator: NSObject {
     /// The pill width the item was last given, in points.
     private(set) var currentWidth = 0.0
 
-    init(item: NSStatusItem, button: NSStatusBarButton, itemPadding: Double) {
+    init(item: NSStatusItem, button: NSStatusBarButton) {
         self.item = item
         self.button = button
-        self.itemPadding = itemPadding
         super.init()
     }
 
-    /// Gives the item the length of a pill `width` points wide at once, ending any change under way.
+    /// Gives the item the length of a pill `width` points wide at once, ending any change under way. The item is
+    /// exactly as wide as the pill, so its highlight and hit area match the pill.
     func set(pillWidth width: Double) {
         cancel()
         currentWidth = width
-        item.length = MusicChipLayout.itemLength(pillWidth: width, itemPadding: itemPadding)
+        item.length = width
     }
 
     /// Moves the item's length to a pill `width` points wide over `duration` seconds, from where it stands now. No
@@ -81,7 +79,7 @@ final class MusicChipLengthAnimator: NSObject {
         }
         let width = MusicChipMotion.easedWidth(from: fromWidth, to: toWidth, elapsed: elapsed, duration: duration)
         currentWidth = width
-        item.length = MusicChipLayout.itemLength(pillWidth: width, itemPadding: itemPadding)
+        item.length = width
     }
 
     /// The last step, exact, and the link gone.
@@ -89,6 +87,6 @@ final class MusicChipLengthAnimator: NSObject {
         link?.invalidate()
         link = nil
         currentWidth = toWidth
-        item.length = MusicChipLayout.itemLength(pillWidth: toWidth, itemPadding: itemPadding)
+        item.length = toWidth
     }
 }

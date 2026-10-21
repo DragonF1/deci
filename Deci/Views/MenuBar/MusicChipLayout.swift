@@ -47,13 +47,6 @@ nonisolated enum MusicChipLayout {
     /// The title's left edge: after the inset, the cover and the gap.
     static let titleOriginX: Double = leadingInset + thumbnailSize + gap
 
-    /// The room the status item leaves on each side of the pill when its width is set explicitly, for a button whose
-    /// own padding could not be read.
-    static let defaultItemPadding: Double = 6
-
-    /// The widest side padding a measurement may give; anything above it is a misreading.
-    static let maxItemPadding: Double = 14
-
     /// What a title makes of the pill, measured by `measure` in the chip font. A width that cannot be measured counts
     /// as none. The window is measured on the first `maxCharacters` characters only, so a long title's tail does not
     /// widen it.
@@ -80,21 +73,6 @@ nonisolated enum MusicChipLayout {
     static func scrolls(characterCount: Int, textWidth: Double, windowWidth: Double) -> Bool {
         guard textWidth.isFinite, windowWidth.isFinite else { return false }
         return characterCount > maxCharacters && textWidth > windowWidth
-    }
-
-    /// The status item's length for a pill: the pill and the item's padding on both sides.
-    static func itemLength(pillWidth: Double, itemPadding: Double) -> Double {
-        pillWidth + itemPadding * 2
-    }
-
-    /// The padding each side of an item has, read from an item that holds only an icon: what the icon leaves over,
-    /// halved, to the half point. Nil when the reading makes no sense (a button not laid out yet, a width that is not a
-    /// number), so the caller keeps its fallback.
-    static func measuredItemPadding(buttonWidth: Double, iconWidth: Double) -> Double? {
-        guard buttonWidth.isFinite, iconWidth.isFinite else { return nil }
-        let padding = (buttonWidth - iconWidth).rounded() / 2
-        guard padding >= 0, padding <= maxItemPadding else { return nil }
-        return padding
     }
 
     /// The pill's width for a song: the title's while it plays, the small `pausedPillWidth` while it is paused.

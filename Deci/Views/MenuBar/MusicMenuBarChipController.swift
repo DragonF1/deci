@@ -32,8 +32,6 @@ final class MusicMenuBarChipController {
     }
     private var chipView: MusicChipView?
     private var lengthAnimator: MusicChipLengthAnimator?
-    /// What the item leaves on each side of an icon, read once from the button before the chip first takes it over.
-    private var measuredPadding: Double?
     private var reduceMotionObserver: NSObjectProtocol?
     /// What the hover card was last told about the chip being on offer, so a refresh that changes nothing says nothing.
     private var eligibleSent = false
@@ -204,8 +202,7 @@ final class MusicMenuBarChipController {
     /// Takes the button's icon off and puts the chip view there, with the item at the pill's length. The icon fades into
     /// the chip, as the swap of the button's picture did before.
     private func install(on button: NSStatusBarButton, item: NSStatusItem, pillWidth: Double) {
-        let padding = itemPadding(for: button)
-        let animator = MusicChipLengthAnimator(item: item, button: button, itemPadding: padding)
+        let animator = MusicChipLengthAnimator(item: item, button: button)
         lengthAnimator = animator
 
         fade(button)
@@ -236,20 +233,6 @@ final class MusicMenuBarChipController {
         button.image = iconImage
         // Nil makes the button read the icon's own description again ("Deci Music").
         button.setAccessibilityLabel(nil)
-    }
-
-    /// What the item leaves on each side of its icon. Read from the button while it still holds the icon, and kept once it
-    /// makes sense; the usual padding stands in until then.
-    private func itemPadding(for button: NSStatusBarButton) -> Double {
-        if let measuredPadding { return measuredPadding }
-        guard chipView == nil,
-              let padding = MusicChipLayout.measuredItemPadding(
-                  buttonWidth: Double(button.bounds.width),
-                  iconWidth: Double(iconImage.size.width)
-              )
-        else { return MusicChipLayout.defaultItemPadding }
-        measuredPadding = padding
-        return padding
     }
 
     private func fade(_ button: NSStatusBarButton) {
