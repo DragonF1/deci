@@ -8,7 +8,7 @@ import Observation
 @Observable
 final class MusicServiceHost {
     private(set) var service: MusicService?
-    /// What the Music popup shows over Home and Library, made with the service. Lives here, not in the tab's view:
+    /// What the Music popup shows over its tabs, made with the service. Lives here, not in the tab's view:
     /// the player is unmounted when the Music icon is hidden in Settings and built again when it is shown, and the
     /// view takes this one back, so an artist opened from the search results is still open (and Back still returns to the results).
     private(set) var navigation: MusicSearchNavigation?

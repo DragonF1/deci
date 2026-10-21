@@ -292,6 +292,11 @@ protocol MusicBackend: Sendable {
     func home() async throws -> MusicHomePage
     /// The shelves after `continuation` on Home.
     func moreHome(continuation: String) async throws -> MusicHomePage
+    /// The signed-in account's listening history (browse FEmusic_history): one shelf per day, newest first.
+    /// Paused or empty history is an empty page, not an error. Throws `.signedOut` when the session is gone.
+    func history() async throws -> MusicHomePage
+    /// The days after `continuation` in the history.
+    func moreHistory(continuation: String) async throws -> MusicHomePage
     /// First page of a library list. Throws `.signedOut` when YouTube says the session is gone.
     func library(_ section: MusicLibrarySection) async throws -> MusicCollectionList
     /// The page after `continuation` of a library list.

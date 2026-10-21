@@ -79,6 +79,14 @@ actor MusicBackendLive: MusicBackend {
         try await client.moreHome(continuation: continuation)
     }
 
+    func history() async throws -> MusicHomePage {
+        try await client.history()
+    }
+
+    func moreHistory(continuation: String) async throws -> MusicHomePage {
+        try await client.moreHistory(continuation: continuation)
+    }
+
     func library(_ section: MusicLibrarySection) async throws -> MusicCollectionList {
         try await client.library(section)
     }

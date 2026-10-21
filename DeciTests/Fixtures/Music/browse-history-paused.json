@@ -1,0 +1,44 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "contents": {
+  "singleColumnBrowseResultsRenderer": {
+   "tabs": [
+    {
+     "tabRenderer": {
+      "title": "History",
+      "selected": true,
+      "trackingParams": "FIXTURE",
+      "content": {
+       "sectionListRenderer": {
+        "contents": [
+         {
+          "musicNotifierShelfRenderer": {
+           "title": {
+            "runs": [
+             {
+              "text": "Watch history is paused"
+             }
+            ]
+           },
+           "text": {
+            "runs": [
+             {
+              "text": "Turn on watch history to see what you listen to here."
+             }
+            ]
+           },
+           "trackingParams": "FIXTURE"
+          }
+         }
+        ],
+        "trackingParams": "FIXTURE"
+       }
+      }
+     }
+    }
+   ]
+  }
+ }
+}

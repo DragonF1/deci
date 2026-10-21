@@ -1,0 +1,342 @@
+{
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "continuationContents": {
+  "sectionListContinuation": {
+   "contents": [
+    {
+     "musicShelfRenderer": {
+      "title": {
+       "runs": [
+        {
+         "text": "This week"
+        }
+       ]
+      },
+      "contents": [
+       {
+        "musicResponsiveListItemRenderer": {
+         "thumbnail": {
+          "musicThumbnailRenderer": {
+           "thumbnail": {
+            "thumbnails": [
+             {
+              "url": "https://lh3.googleusercontent.com/fixture-fixHist0005=w60-h60-l90-rj",
+              "width": 60,
+              "height": 60
+             },
+             {
+              "url": "https://lh3.googleusercontent.com/fixture-fixHist0005=w120-h120-l90-rj",
+              "width": 120,
+              "height": 120
+             }
+            ]
+           }
+          }
+         },
+         "flexColumns": [
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "Fixture Song Five",
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "fixHist0005",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          },
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "Fixture Artist A",
+               "navigationEndpoint": {
+                "browseEndpoint": {
+                 "browseId": "UCfixtureArtistA0000001",
+                 "browseEndpointContextSupportedConfigs": {
+                  "browseEndpointContextMusicConfig": {
+                   "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          },
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "Fixture Album One",
+               "navigationEndpoint": {
+                "browseEndpoint": {
+                 "browseId": "MPREbFixtureAlbumOne",
+                 "browseEndpointContextSupportedConfigs": {
+                  "browseEndpointContextMusicConfig": {
+                   "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          }
+         ],
+         "fixedColumns": [
+          {
+           "musicResponsiveListItemFixedColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "5:12"
+              }
+             ]
+            }
+           }
+          }
+         ],
+         "playlistItemData": {
+          "videoId": "fixHist0005"
+         }
+        }
+       },
+       {
+        "musicResponsiveListItemRenderer": {
+         "thumbnail": {
+          "musicThumbnailRenderer": {
+           "thumbnail": {
+            "thumbnails": [
+             {
+              "url": "https://lh3.googleusercontent.com/fixture-fixHist0006=w60-h60-l90-rj",
+              "width": 60,
+              "height": 60
+             },
+             {
+              "url": "https://lh3.googleusercontent.com/fixture-fixHist0006=w120-h120-l90-rj",
+              "width": 120,
+              "height": 120
+             }
+            ]
+           }
+          }
+         },
+         "flexColumns": [
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "Fixture Song Six",
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "fixHist0006",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          },
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "Fixture Artist B",
+               "navigationEndpoint": {
+                "browseEndpoint": {
+                 "browseId": "UCfixtureArtistB0000002",
+                 "browseEndpointContextSupportedConfigs": {
+                  "browseEndpointContextMusicConfig": {
+                   "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          },
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "Fixture Album Two",
+               "navigationEndpoint": {
+                "browseEndpoint": {
+                 "browseId": "MPREbFixtureAlbumTwo",
+                 "browseEndpointContextSupportedConfigs": {
+                  "browseEndpointContextMusicConfig": {
+                   "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          }
+         ],
+         "fixedColumns": [
+          {
+           "musicResponsiveListItemFixedColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "3:03"
+              }
+             ]
+            }
+           }
+          }
+         ],
+         "playlistItemData": {
+          "videoId": "fixHist0006"
+         }
+        }
+       }
+      ],
+      "trackingParams": "FIXTURE"
+     }
+    },
+    {
+     "musicShelfRenderer": {
+      "title": {
+       "runs": [
+        {
+         "text": "Last week"
+        }
+       ]
+      },
+      "contents": [
+       {
+        "musicResponsiveListItemRenderer": {
+         "thumbnail": {
+          "musicThumbnailRenderer": {
+           "thumbnail": {
+            "thumbnails": [
+             {
+              "url": "https://lh3.googleusercontent.com/fixture-fixHist0007=w60-h60-l90-rj",
+              "width": 60,
+              "height": 60
+             },
+             {
+              "url": "https://lh3.googleusercontent.com/fixture-fixHist0007=w120-h120-l90-rj",
+              "width": 120,
+              "height": 120
+             }
+            ]
+           }
+          }
+         },
+         "flexColumns": [
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "Fixture Song Seven",
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "fixHist0007",
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          },
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "Fixture Artist C",
+               "navigationEndpoint": {
+                "browseEndpoint": {
+                 "browseId": "UCfixtureArtistC0000003",
+                 "browseEndpointContextSupportedConfigs": {
+                  "browseEndpointContextMusicConfig": {
+                   "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                  }
+                 }
+                }
+               }
+              }
+             ]
+            }
+           }
+          },
+          {
+           "musicResponsiveListItemFlexColumnRenderer": {
+            "text": {
+             "runs": []
+            }
+           }
+          }
+         ],
+         "fixedColumns": [
+          {
+           "musicResponsiveListItemFixedColumnRenderer": {
+            "text": {
+             "runs": [
+              {
+               "text": "2:30"
+              }
+             ]
+            }
+           }
+          }
+         ],
+         "playlistItemData": {
+          "videoId": "fixHist0007"
+         }
+        }
+       }
+      ],
+      "trackingParams": "FIXTURE"
+     }
+    }
+   ],
+   "continuations": [
+    {
+     "nextContinuationData": {
+      "continuation": "FIXTURE_HISTORY_NEXT2%3D",
+      "clickTrackingParams": "FIXTURE"
+     }
+    }
+   ]
+  }
+ }
+}

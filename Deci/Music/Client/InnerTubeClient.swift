@@ -230,6 +230,7 @@ actor InnerTubeClient {
     // MARK: - Browse
 
     static let homeBrowseId = "FEmusic_home"
+    static let historyBrowseId = "FEmusic_history"
 
     static func browseId(for section: MusicLibrarySection) -> String {
         switch section {
@@ -252,6 +253,23 @@ actor InnerTubeClient {
         }
         let page = try InnerTubeParser.homeContinuationPage(from: data)
         Self.log.info("home continuation returned \(page.shelves.count) shelves")
+        return page
+    }
+
+    /// The history page has Home's shape (a section list of shelves), so it reads with Home's parser.
+    func history() async throws -> MusicHomePage {
+        let data = try await browse(browseId: Self.historyBrowseId)
+        let page = try InnerTubeParser.homePage(from: data)
+        Self.log.info("history returned \(page.shelves.count) shelves")
+        return page
+    }
+
+    func moreHistory(continuation: String) async throws -> MusicHomePage {
+        guard let data = try await browseContinuation(continuation, browseId: Self.historyBrowseId) else {
+            return MusicHomePage(shelves: [], continuation: nil)
+        }
+        let page = try InnerTubeParser.homeContinuationPage(from: data)
+        Self.log.info("history continuation returned \(page.shelves.count) shelves")
         return page
     }
 

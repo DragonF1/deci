@@ -1,10 +1,12 @@
 // Deci/Views/Music/MusicRightColumnHeader.swift
 import SwiftUI
 
-/// The right column's own header, 32 pt tall: the Home and Library tabs, and at the trailing edge Home's refresh (on
-/// Home's root only), the magnifier and the avatar. The magnifier opens the search field in their place: the tabs stay, the field fills the rest and the avatar
-/// goes while it is open. What the field searches depends on the screen (`MusicSearchScope`). The avatar opens the
-/// account card, which holds Settings; there is no gear.
+/// The right column's own header, 32 pt tall: the Home, Library and History tabs, and at the trailing edge Home's
+/// refresh (on Home's root only), the magnifier and the avatar. The magnifier opens the search field in their place:
+/// the tabs stay, the field fills the rest and the avatar goes while it is open. Where the three tabs would leave the
+/// field narrower than `MusicPopupMetrics.openFieldMinWidth`, only the active tab stays beside it. What the field
+/// searches depends on the screen (`MusicSearchScope`). The avatar opens the account card, which holds Settings; there
+/// is no gear.
 ///
 /// Signed out, the tabs dim and answer nothing, there is no magnifier, and the avatar is a placeholder that opens the
 /// card with Sign in and Settings. Lyrics and Up next wear their own headers (`MusicPanelHeaders`).
@@ -18,23 +20,20 @@ struct MusicRightColumnHeader: View {
     private var isSignedIn: Bool { service?.authState == .signedIn && navigation != nil }
 
     var body: some View {
-        let field = isSignedIn ? openField : nil
-        HStack(spacing: field == nil ? 0 : 12) {
-            HStack(spacing: 18) {
-                ForEach(MusicHeaderTab.allCases, id: \.self) { tab in
-                    MusicHeaderTabButton(
-                        tab: tab,
-                        isActive: navigation?.headerTab == tab,
-                        isEnabled: isSignedIn
-                    ) { navigation?.select(tab.browseTab) }
+        Group {
+            if let field = isSignedIn ? openField : nil {
+                // All three tabs beside the field while that leaves it its base width; where they do not, only the
+                // active tab stays, so no label is cut and the field keeps its room. The rest return when it closes.
+                ViewThatFits(in: .horizontal) {
+                    openRow(tabs: MusicHeaderTab.allCases, field: field, fieldMinWidth: MusicPopupMetrics.openFieldMinWidth)
+                    openRow(tabs: [navigation?.headerTab ?? .home], field: field, fieldMinWidth: nil)
                 }
-            }
-            .opacity(isSignedIn ? 1 : 0.35)
-            if let field {
-                field.frame(maxWidth: .infinity)
             } else {
-                Spacer(minLength: 8)
-                trailing
+                HStack(spacing: 0) {
+                    tabs(MusicHeaderTab.allCases)
+                    Spacer(minLength: 8)
+                    trailing
+                }
             }
         }
         .frame(height: MusicPopupMetrics.headerHeight)
@@ -42,6 +41,26 @@ struct MusicRightColumnHeader: View {
         .padding(.top, MusicPopupMetrics.rightPaddingTop)
         // A new song's accent glides into the active tab's underline.
         .animation(.easeInOut(duration: 0.4), value: accent)
+    }
+
+    private func openRow(tabs shown: [MusicHeaderTab], field: some View, fieldMinWidth: CGFloat?) -> some View {
+        HStack(spacing: 12) {
+            tabs(shown)
+            field.frame(minWidth: fieldMinWidth, idealWidth: fieldMinWidth, maxWidth: .infinity)
+        }
+    }
+
+    private func tabs(_ shown: [MusicHeaderTab]) -> some View {
+        HStack(spacing: 18) {
+            ForEach(shown, id: \.self) { tab in
+                MusicHeaderTabButton(
+                    tab: tab,
+                    isActive: navigation?.headerTab == tab,
+                    isEnabled: isSignedIn
+                ) { navigation?.select(tab.browseTab) }
+            }
+        }
+        .opacity(isSignedIn ? 1 : 0.35)
     }
 
     /// The field, while it is open on this screen.
@@ -75,7 +94,7 @@ struct MusicRightColumnHeader: View {
     }
 }
 
-/// Home or Library: the label, and under the active one a short underline in the accent. Inactive tabs keep the room.
+/// Home, Library or History: the label, and under the active one a short underline in the accent. Inactive tabs keep the room.
 private struct MusicHeaderTabButton: View {
     let tab: MusicHeaderTab
     let isActive: Bool

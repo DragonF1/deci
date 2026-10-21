@@ -41,7 +41,7 @@ final class MusicService {
     let player: MusicPlayer
     /// What plays next: the tapped track, then the radio's tracks as they arrive, or a page's tracks in page order.
     private(set) var queue = MusicQueue()
-    /// Home, Library and the pages opened from them.
+    /// Home, Library, History and the pages opened from them.
     let browse: MusicBrowseStore
     /// Synced lyrics of the playing track, for the lyrics panel.
     let lyrics: MusicLyricsStore
@@ -1438,7 +1438,7 @@ final class MusicService {
         lastError = Self.message(for: error)
     }
 
-    /// A Home, Library or page request found the session gone: the same sign-out as a dead search.
+    /// A Home, Library, History or page request found the session gone: the same sign-out as a dead search.
     private func browseSessionExpired() {
         handle(MusicError.signedOut)
     }

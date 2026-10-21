@@ -22,6 +22,7 @@ struct InnerTubeClientBrowseTests {
         FakeYouTube { config in
             config.browseBodies = [
                 "FEmusic_home": (try? MusicFixtures.data("browse-home.json")) ?? Data(),
+                "FEmusic_history": (try? MusicFixtures.data("browse-history.json")) ?? Data(),
                 "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i": (try? MusicFixtures.data("browse-playlist.json")) ?? Data(),
                 "FEmusic_liked_playlists": (try? MusicFixtures.data("browse-library-playlists.json")) ?? Data(),
                 "FEmusic_liked_albums": (try? MusicFixtures.data("browse-library-albums.json")) ?? Data(),
@@ -206,6 +207,113 @@ struct InnerTubeClientBrowseTests {
         #expect(try await client.moreLibrary(.albums, continuation: "q:") == MusicCollectionList(items: [], continuation: nil))
         #expect(try await client.moreTracks(browseId: "VLx", continuation: "\n") == MusicQueuePage(tracks: [], continuation: nil))
         #expect(browseRequests(fake).isEmpty)
+    }
+
+    // MARK: - History
+
+    @Test("history posts the FEmusic_history browse id with the auth headers and parses the day shelves")
+    func historyRequestShape() async throws {
+        let fake = youtube()
+        let page = try await makeClient(fake).history()
+        #expect(page.shelves.map(\.title) == ["Today", "Yesterday"])
+        #expect(page.continuation == "q:FIXTURE_HISTORY_NEXT%3D")
+
+        let request = try onlyRequest(fake)
+        #expect(request.method == "POST")
+        #expect(request.url.absoluteString == "https://music.youtube.com/youtubei/v1/browse?prettyPrint=false")
+        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH 1800000000_") == true)
+        #expect(request.headers["X-Goog-AuthUser"] == "0")
+        let body = FakeYouTube.jsonBody(request)
+        #expect(body["browseId"] as? String == "FEmusic_history")
+        #expect(body["continuation"] == nil)
+        let context = (body["context"] as? [String: Any])?["client"] as? [String: Any]
+        #expect(context?["clientName"] as? String == "WEB_REMIX")
+    }
+
+    @Test("The history browse id is the one ytmusicapi uses")
+    func historyBrowseId() {
+        #expect(InnerTubeClient.historyBrowseId == "FEmusic_history")
+    }
+
+    @Test("moreHistory sends an old-style token as ctoken and continuation next to the history browse id")
+    func historyOldStyleContinuation() async throws {
+        let fake = youtube { $0.browseContinuationBody = (try? MusicFixtures.data("browse-history-continuation.json")) ?? Data() }
+        let page = try await makeClient(fake).moreHistory(continuation: "q:FIXTURE_HISTORY_NEXT%3D")
+        #expect(page.shelves.map(\.title) == ["This week", "Last week"])
+        #expect(page.continuation == "q:FIXTURE_HISTORY_NEXT2%3D")
+
+        let request = try onlyRequest(fake)
+        let query = queryItems(request)
+        #expect(query["ctoken"] == "FIXTURE_HISTORY_NEXT=")
+        #expect(query["continuation"] == "FIXTURE_HISTORY_NEXT=")
+        #expect(request.url.absoluteString.hasSuffix("&ctoken=FIXTURE_HISTORY_NEXT%3D&continuation=FIXTURE_HISTORY_NEXT%3D"))
+        let body = FakeYouTube.jsonBody(request)
+        #expect(body["browseId"] as? String == "FEmusic_history")
+        #expect(body["continuation"] == nil)
+    }
+
+    @Test("moreHistory sends a new-style token alone in the body")
+    func historyNewStyleContinuation() async throws {
+        let fake = youtube { $0.browseContinuationBody = (try? MusicFixtures.data("browse-home-continuation-new.json")) ?? Data() }
+        _ = try await makeClient(fake).moreHistory(continuation: "NEWTOKEN")
+        let request = try onlyRequest(fake)
+        let body = FakeYouTube.jsonBody(request)
+        #expect(body["continuation"] as? String == "NEWTOKEN")
+        #expect(body["browseId"] == nil)
+        #expect(queryItems(request)["ctoken"] == nil)
+    }
+
+    @Test("A blank history continuation makes no request and returns an empty page")
+    func historyBlankContinuation() async throws {
+        let fake = youtube()
+        let client = makeClient(fake)
+        #expect(try await client.moreHistory(continuation: " ") == MusicHomePage(shelves: [], continuation: nil))
+        #expect(try await client.moreHistory(continuation: "q:") == MusicHomePage(shelves: [], continuation: nil))
+        #expect(browseRequests(fake).isEmpty)
+    }
+
+    @Test("Paused history comes back as an empty page, not an error")
+    func historyPaused() async throws {
+        let fake = youtube { $0.browseBodies["FEmusic_history"] = (try? MusicFixtures.data("browse-history-paused.json")) ?? Data() }
+        let page = try await makeClient(fake).history()
+        #expect(page == MusicHomePage(shelves: [], continuation: nil))
+    }
+
+    @Test("History: signed out fails with signedOut and touches no network; 401 is signed out, other statuses carry their code")
+    func historyErrors() async {
+        let signedOutFake = youtube()
+        let signedOut = makeClient(signedOutFake, store: MemorySecretStore())
+        await #expect(throws: MusicError.signedOut) { try await signedOut.history() }
+        await #expect(throws: MusicError.signedOut) { try await signedOut.moreHistory(continuation: "q:a") }
+        #expect(signedOutFake.requests.isEmpty)
+
+        let expired = makeClient(youtube { $0.browseStatus = 401 })
+        await #expect(throws: MusicError.signedOut) { try await expired.history() }
+        await #expect(throws: MusicError.signedOut) { try await expired.moreHistory(continuation: "q:a") }
+
+        for status in [400, 403, 429, 500, 503] {
+            let client = makeClient(youtube { $0.browseStatus = status })
+            await #expect(throws: MusicError.http(status)) { try await client.history() }
+        }
+    }
+
+    @Test("A history response that is not a browse page is a parse error")
+    func historyUnexpectedResponse() async {
+        let client = makeClient(youtube {
+            $0.browseBodies = [:]
+            $0.browseDefaultBody = Data("<html>captcha</html>".utf8)
+        })
+        await #expect(throws: MusicError.self) { try await client.history() }
+    }
+
+    @Test("History calls keep the cookie values out of the request URL")
+    func historyUrlHoldsNoCookies() async throws {
+        let fake = youtube { $0.browseContinuationBody = (try? MusicFixtures.data("browse-history-continuation.json")) ?? Data() }
+        _ = try await makeClient(fake).moreHistory(continuation: "q:abc")
+        let url = try onlyRequest(fake).url.absoluteString
+        for cookie in MusicTestJar.signedInCookies() {
+            #expect(!url.contains(cookie.value))
+        }
     }
 
     // MARK: - Signed out and errors

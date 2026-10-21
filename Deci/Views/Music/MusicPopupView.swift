@@ -2,8 +2,8 @@
 import SwiftUI
 
 /// The popup of the Music menu bar item: a split pane on a near black card. The player column on the left is always
-/// there; the right column has its own header (Home and Library, the magnifier, the avatar, or the Lyrics and Up next
-/// headers) and under it browse, Lyrics or Up next. It is dark whatever the Mixer wears.
+/// there; the right column has its own header (Home, Library and History, the magnifier, the avatar, or the Lyrics and
+/// Up next headers) and under it browse, Lyrics or Up next. It is dark whatever the Mixer wears.
 ///
 /// The view stays mounted while the popup is hidden, so it learns about opening and closing from the
 /// key window notifications of its own window, found by title (the Mixer popup is a window of the same

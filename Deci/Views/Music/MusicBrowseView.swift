@@ -1,9 +1,9 @@
 // Deci/Views/Music/MusicBrowseView.swift
 import SwiftUI
 
-/// Home or Library, or the page on top of `browse.path`. The root stays alive under an open page so going back lands
-/// where the list was scrolled to. While the header's YouTube Music field has words in it, the results cover all of that
-/// in place; the screen under them keeps its place and comes back when the field is cleared.
+/// Home, Library or History, or the page on top of `browse.path`. The root stays alive under an open page so going back
+/// lands where the list was scrolled to. While the header's YouTube Music field has words in it, the results cover all
+/// of that in place; the screen under them keeps its place and comes back when the field is cleared.
 struct MusicBrowseView: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
@@ -51,6 +51,8 @@ struct MusicBrowseView: View {
             MusicHomeView(service: service)
         case .library:
             MusicLibraryView(service: service, navigation: navigation)
+        case .history:
+            MusicHistoryView(service: service)
         }
     }
 }

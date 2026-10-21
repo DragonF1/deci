@@ -52,6 +52,14 @@ struct MusicPopupMetricsTests {
         #expect(MusicPopupMetrics.rightPaddingBottom == 14)
     }
 
+    @Test("the open search field keeps its 154 pt base width, and the compact column has it to spare beside one tab")
+    func openFieldWidth() {
+        #expect(MusicPopupMetrics.openFieldMinWidth == 154)
+        // One tab (60 pt at most) and the 12 pt gap leave the compact content at least that for the field.
+        let content = MusicPopupMetrics.rightColumnContentWidth(popupWidth: MenuBarPopupSize.compact.dimensions.width)
+        #expect(content - 60 - 12 >= MusicPopupMetrics.openFieldMinWidth)
+    }
+
     @Test("the account card hangs 6 pt under the avatar and ends where it does")
     func accountCardPlacement() {
         // The avatar is centred in the header: 9 + (32 + 22) / 2 = 36 is its bottom edge, and the card sits 6 below it.

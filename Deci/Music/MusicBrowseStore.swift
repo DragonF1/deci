@@ -5,7 +5,7 @@ import os
 
 private let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicBrowse")
 
-/// Home, Library and the pages opened from them, for the Music tab. `MusicService` owns one
+/// Home, Library, History and the pages opened from them, for the Music tab. `MusicService` owns one
 /// (`service.browse`). The state lives here, not in the views, because the popover panel hides
 /// whenever it loses focus.
 @MainActor
@@ -14,6 +14,7 @@ final class MusicBrowseStore {
     enum Tab: Hashable, CaseIterable {
         case home
         case library
+        case history
     }
 
     enum Load<Value: Equatable>: Equatable {
@@ -46,11 +47,19 @@ final class MusicBrowseStore {
         "from the community", "mixed for you", "mixes for you", "long listens", "live performances",
     ]
 
+    /// The signed-in account's listening history: one shelf per day, newest first. Kept apart from Home's state.
+    private(set) var history: Load<[MusicShelf]> = .idle
+    private(set) var isLoadingMoreHistory = false
+    /// History has more days to load.
+    private(set) var canLoadMoreHistory = false
+    /// `refreshHistory` is asking for the list again while the old one stays on screen.
+    private(set) var isRefreshingHistory = false
+
     private(set) var library: [MusicLibrarySection: Load<[MusicCollection]>] = [:]
     private(set) var loadingMoreLibrary: Set<MusicLibrarySection> = []
     private(set) var libraryHasMore: Set<MusicLibrarySection> = []
 
-    /// Pages opened from Home or Library, the one on screen last. Empty shows the tab's root.
+    /// Pages opened from Home, Library or History, the one on screen last. Empty shows the tab's root.
     private(set) var path: [MusicCollection] = []
     private(set) var pages: [String: Load<MusicBrowsePage>] = [:]
     private(set) var loadingMoreTracks: Set<String> = []
@@ -75,6 +84,10 @@ final class MusicBrowseStore {
     @ObservationIgnored private var homeToken: String?
     /// The token from before a refresh, put back when the refresh fails so scrolling still loads more.
     @ObservationIgnored private var tokenBeforeRefresh: String?
+    @ObservationIgnored private var historyRun: Int?
+    @ObservationIgnored private var historyToken: String?
+    /// The token from before a history refresh, put back when the refresh fails so scrolling still loads more.
+    @ObservationIgnored private var historyTokenBeforeRefresh: String?
     @ObservationIgnored private var libraryRuns: [MusicLibrarySection: Int] = [:]
     @ObservationIgnored private var libraryTokens: [MusicLibrarySection: String] = [:]
     @ObservationIgnored private var pageRuns: [String: Int] = [:]
@@ -214,12 +227,133 @@ final class MusicBrowseStore {
 
     /// Drops shelves already on screen and the hidden ones.
     private static func uniqueShelves(_ shelves: [MusicShelf], after existing: [MusicShelf]) -> [MusicShelf] {
+        newShelves(shelves.filter { !isHiddenHomeShelf($0) }, after: existing)
+    }
+
+    /// Drops shelves already on screen, and repeats within `shelves`.
+    private static func newShelves(_ shelves: [MusicShelf], after existing: [MusicShelf]) -> [MusicShelf] {
         var seen = Set(existing.map(\.id))
-        return shelves.filter { !isHiddenHomeShelf($0) && seen.insert($0.id).inserted }
+        return shelves.filter { seen.insert($0.id).inserted }
     }
 
     static func isHiddenHomeShelf(_ shelf: MusicShelf) -> Bool {
         hiddenHomeShelfTitles.contains(shelf.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    // MARK: - History
+
+    /// Loads History when it has not loaded yet or the last try failed.
+    func loadHistoryIfNeeded() {
+        switch history {
+        case .idle, .failed: reloadHistory()
+        case .loading, .loaded: break
+        }
+    }
+
+    /// Loads History again from the top.
+    func reloadHistory() {
+        let run = newRun()
+        historyRun = run
+        historyToken = nil
+        history = .loading
+        isLoadingMoreHistory = false
+        canLoadMoreHistory = false
+        isRefreshingHistory = false
+        launchHistory(run: run)
+    }
+
+    /// For when the tab is opened: asks for History again while the list stays up, so a song played since shows
+    /// at the top. A failure keeps the old list. Loads from the top when nothing is up yet, and does nothing
+    /// while the first load is still coming.
+    func refreshHistory() {
+        switch history {
+        case .idle, .failed:
+            return reloadHistory()
+        case .loading:
+            return
+        case .loaded:
+            guard !isRefreshingHistory else { return }
+        }
+        let run = newRun()
+        historyRun = run
+        historyTokenBeforeRefresh = historyToken
+        historyToken = nil
+        tasks["history+"]?.cancel()
+        isLoadingMoreHistory = false
+        canLoadMoreHistory = false
+        isRefreshingHistory = true
+        launchHistory(run: run)
+    }
+
+    private func launchHistory(run: Int) {
+        launch("history") { [weak self, backend] in
+            do {
+                let page = try await backend.history()
+                self?.landHistory(page, run: run)
+            } catch {
+                self?.failHistory(error, run: run)
+            }
+        }
+    }
+
+    /// Loads the next days when the list scrolls to its end.
+    func loadMoreHistory() {
+        guard case .loaded = history, let run = historyRun, let token = historyToken, !isLoadingMoreHistory else { return }
+        isLoadingMoreHistory = true
+        launch("history+") { [weak self, backend] in
+            do {
+                let page = try await backend.moreHistory(continuation: token)
+                self?.landMoreHistory(page, run: run, token: token)
+            } catch {
+                self?.failMoreHistory(error, run: run)
+            }
+        }
+    }
+
+    private func landHistory(_ page: MusicHomePage, run: Int) {
+        guard historyRun == run else { return }
+        isRefreshingHistory = false
+        historyTokenBeforeRefresh = nil
+        let shelves = Self.newShelves(page.shelves, after: [])
+        history = .loaded(shelves)
+        historyToken = page.continuation
+        canLoadMoreHistory = page.continuation != nil
+        // A page with no days but a next page leaves nothing to scroll to the end of, so ask for it here.
+        if shelves.isEmpty { loadMoreHistory() }
+    }
+
+    private func failHistory(_ error: any Error, run: Int) {
+        guard historyRun == run else { return }
+        if isRefreshingHistory {
+            isRefreshingHistory = false
+            historyToken = historyTokenBeforeRefresh
+            historyTokenBeforeRefresh = nil
+            canLoadMoreHistory = historyToken != nil
+            logger.info("history refresh failed: \(MusicService.logDescription(of: error), privacy: .public)")
+        } else {
+            history = .failed(describe(error))
+        }
+        expireIfSignedOut(error)
+    }
+
+    private func landMoreHistory(_ page: MusicHomePage, run: Int, token: String) {
+        guard historyRun == run, case .loaded(let shelves) = history else { return }
+        isLoadingMoreHistory = false
+        let added = Self.newShelves(page.shelves, after: shelves)
+        history = .loaded(shelves + added)
+        // The same token again would ask for the same page forever.
+        historyToken = page.continuation == token ? nil : page.continuation
+        canLoadMoreHistory = historyToken != nil
+        // Nothing new to show (all seen): the end of the list was already reached, so go on from here.
+        if added.isEmpty { loadMoreHistory() }
+    }
+
+    /// A failed extra page leaves the days as they are; scrolling to the end tries again.
+    private func failMoreHistory(_ error: any Error, run: Int) {
+        guard historyRun == run else { return }
+        isLoadingMoreHistory = false
+        logger.info("more history failed: \(MusicService.logDescription(of: error), privacy: .public)")
+        expireIfSignedOut(error)
     }
 
     // MARK: - Library
@@ -549,6 +683,8 @@ final class MusicBrowseStore {
         tasks.removeAll()
         homeRun = nil
         homeToken = nil
+        historyRun = nil
+        historyToken = nil
         libraryRuns.removeAll()
         libraryTokens.removeAll()
         pageRuns.removeAll()
@@ -557,6 +693,11 @@ final class MusicBrowseStore {
         canLoadMoreHome = false
         isRefreshingHome = false
         tokenBeforeRefresh = nil
+        history = .idle
+        isLoadingMoreHistory = false
+        canLoadMoreHistory = false
+        isRefreshingHistory = false
+        historyTokenBeforeRefresh = nil
         library.removeAll()
         loadingMoreLibrary.removeAll()
         libraryHasMore.removeAll()

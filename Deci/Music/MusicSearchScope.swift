@@ -55,7 +55,10 @@ nonisolated enum MusicSearchScope: Equatable {
                 case .artist: return .global
                 }
             }
-            return tab == .library ? .library : .global
+            switch tab {
+            case .library: return .library
+            case .home, .history: return .global
+            }
         }
     }
 }

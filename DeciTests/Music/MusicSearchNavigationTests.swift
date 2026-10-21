@@ -975,6 +975,104 @@ struct MusicSearchNavigationShellTests {
 
     // MARK: - The header
 
+    @Test("the header highlights History for History and the pages opened from it")
+    func headerTabHistory() {
+        let h = NavHarness()
+        h.nav.select(.history)
+        #expect(h.service.browse.tab == .history)
+        #expect(h.nav.headerTab == .history)
+        h.openPage("PLfromHistory")
+        #expect(h.nav.headerTab == .history)
+        h.nav.openField()
+        #expect(h.nav.headerTab == .history)
+
+        h.nav.select(.home)
+        #expect(h.nav.headerTab == .home)
+    }
+
+    @Test("a History pick closes the pages, the panels and a leftover query, like the other tabs")
+    func selectHistory() async {
+        let h = NavHarness()
+        h.playSomething()
+        h.loadLyricsTrack()
+        h.nav.select(.library)
+        h.openPage("PL1")
+        h.nav.toggleQueue()
+        h.nav.select(.history)
+        #expect(h.path.isEmpty)
+        #expect(h.nav.queueForced == false)
+        #expect(h.service.browse.tab == .history)
+        #expect(h.nav.rightColumn == .browse)
+        #expect(h.nav.isBrowsing)
+
+        await h.search("alpha")
+        #expect(h.nav.showsResults)
+        h.nav.select(.history)
+        #expect(h.service.query.isEmpty)
+        #expect(h.nav.showsResults == false)
+    }
+
+    @Test("History asks again, once, when it is opened from another tab; picking it while on it does not")
+    func selectHistoryAsksAgain() async {
+        let h = NavHarness()
+        await h.backend.setHistory(shelves: [MusicShelf(title: "Today", items: [.track(MusicSamples.track("h1"))])])
+
+        // The first open loads it.
+        h.nav.select(.history)
+        let loaded = await eventually {
+            if case .loaded = h.service.browse.history, !h.service.browse.isRefreshingHistory { true } else { false }
+        }
+        #expect(loaded)
+        #expect(await h.backend.historyCallCount == 1)
+
+        // Already on History: nothing is asked.
+        h.nav.select(.history)
+        #expect(h.service.browse.isRefreshingHistory == false)
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await h.backend.historyCallCount == 1)
+
+        // Leaving it asks nothing either.
+        h.nav.select(.library)
+        h.nav.select(.home)
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(await h.backend.historyCallCount == 1)
+
+        // Back from another tab: one more request, the old list staying up while it comes.
+        h.nav.select(.history)
+        #expect(h.service.browse.isRefreshingHistory)
+        if case .loaded(let shelves) = h.service.browse.history {
+            #expect(shelves.map(\.title) == ["Today"])
+        } else {
+            Issue.record("the old list stays up while History is asked for again")
+        }
+        let refreshed = await eventually { !h.service.browse.isRefreshingHistory }
+        #expect(refreshed)
+        #expect(await h.backend.historyCallCount == 2)
+    }
+
+    @Test("Only Home's root offers the refresh button: not History, not a page opened from History")
+    func historyHasNoHomeRefresh() {
+        let h = NavHarness()
+        #expect(h.nav.showsHomeRefresh)
+        h.nav.select(.history)
+        #expect(h.nav.showsHomeRefresh == false)
+        h.openPage("PLfromHistory")
+        #expect(h.nav.showsHomeRefresh == false)
+    }
+
+    @Test("the field on History searches YouTube Music: Return sends it, nothing filters the loaded days")
+    func historyFieldIsGlobal() {
+        let h = NavHarness()
+        h.nav.select(.history)
+        #expect(h.nav.scope == .global)
+        #expect(h.nav.isFieldOpen == false)
+        h.nav.openField()
+        #expect(h.nav.isFieldOpen)
+        // Switching tab folds the field away.
+        h.nav.select(.home)
+        #expect(h.nav.isFieldOpen == false)
+    }
+
     @Test("the header highlights Library for Library and its pages, and Home for everything else")
     func headerTabHighlight() {
         let h = NavHarness()

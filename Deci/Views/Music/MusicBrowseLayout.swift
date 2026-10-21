@@ -2,7 +2,7 @@
 import CoreGraphics
 import Foundation
 
-// The measures and small rules of Home, Library and the detail pages in the right column, kept apart from the views so
+// The measures and small rules of the tabs and the detail pages in the right column, kept apart from the views so
 // they are tested without drawing anything.
 
 /// Where things sit in the right column's browse screens. Every screen lays its own content under the 32 pt header, and
@@ -122,6 +122,7 @@ nonisolated enum MusicPageBackLabel {
         switch tab {
         case .home: return "Home"
         case .library: return "Library"
+        case .history: return "History"
         }
     }
 }

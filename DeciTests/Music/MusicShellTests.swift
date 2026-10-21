@@ -78,22 +78,31 @@ struct MusicRightColumnTests {
 
 @Suite("MusicHeaderTab")
 struct MusicHeaderTabTests {
-    @Test("the header has two tabs, Home then Library, and no Search")
+    @Test("the header has three tabs, Home, Library, then History, and no Search")
     func order() {
-        #expect(MusicHeaderTab.allCases == [.home, .library])
-        #expect(MusicHeaderTab.allCases.map(\.title) == ["Home", "Library"])
+        #expect(MusicHeaderTab.allCases == [.home, .library, .history])
+        #expect(MusicHeaderTab.allCases.map(\.title) == ["Home", "Library", "History"])
     }
 
     @Test("the tab on screen is the one highlighted")
     func plainTabs() {
         #expect(MusicHeaderTab.resolve(tab: .home) == .home)
         #expect(MusicHeaderTab.resolve(tab: .library) == .library)
+        #expect(MusicHeaderTab.resolve(tab: .history) == .history)
     }
 
     @Test("a header tab maps to the browse tab it opens")
     func browseTab() {
         #expect(MusicHeaderTab.home.browseTab == .home)
         #expect(MusicHeaderTab.library.browseTab == .library)
+        #expect(MusicHeaderTab.history.browseTab == .history)
+    }
+
+    @Test("every header tab round-trips through its browse tab")
+    func roundTrip() {
+        for tab in MusicHeaderTab.allCases {
+            #expect(MusicHeaderTab.resolve(tab: tab.browseTab) == tab)
+        }
     }
 }
 

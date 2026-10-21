@@ -4,7 +4,9 @@
 // (visitor data scrubbed, rows trimmed). The library fixtures and the new-style home continuation are
 // built by hand from the renderer shapes ytmusicapi documents, because the library needs a signed-in session.
 // The "signedin", "empty" and Liked music fixtures copy the renderer structure of real signed-in responses,
-// with made-up titles and ids: nothing in them comes from a real library.
+// with made-up titles and ids: nothing in them comes from a real library. The three History fixtures
+// (browse-history*.json) are hand built the same way from the shapes ytmusicapi's get_history reads; no real
+// FEmusic_history response was captured.
 
 import Foundation
 import Testing
@@ -244,6 +246,101 @@ struct InnerTubeParserBrowseTests {
         let tiles = (0..<5_000).map { tile(title: "Album \($0)", endpoint: browseEndpoint("MPREb\($0)", pageType: "MUSIC_PAGE_TYPE_ALBUM")) }
         let page = try InnerTubeParser.homePage(from: homeData(tiles: tiles))
         #expect(page.shelves.first?.items.count == 5_000)
+    }
+
+    // MARK: - History
+
+    @Test("Hand-built history: day shelves in order, a repeat inside a day shows once, a greyed-out row is dropped")
+    func historyFromFixture() throws {
+        let page = try InnerTubeParser.homePage(from: fixture("browse-history.json"))
+        #expect(page.shelves.map(\.title) == ["Today", "Yesterday"])
+
+        let today = tracks(in: try shelf("Today", in: page.shelves))
+        #expect(today.map(\.videoId) == ["fixHist0001", "fixHist0002"])
+        #expect(today.first?.title == "Fixture Song One")
+        #expect(today.first?.artist == "Fixture Artist A")
+        #expect(today.first?.album == "Fixture Album One")
+        #expect(today.first?.albumBrowseId == "MPREbFixtureAlbumOne")
+        #expect(today.first?.artistLinks.map(\.browseId) == ["UCfixtureArtistA0000001"])
+        #expect(today.first?.durationSeconds == 201)
+        #expect(today.allSatisfy { $0.thumbnailURL != nil })
+
+        // The same song may sit on two days: each day keeps its own row. A video has no album.
+        let yesterday = tracks(in: try shelf("Yesterday", in: page.shelves))
+        #expect(yesterday.map(\.videoId) == ["fixHist0002", "fixHist0003"])
+        #expect(yesterday.last?.album == nil)
+    }
+
+    @Test("Hand-built history: the first page hands on an old-style q: token")
+    func historyContinuationToken() throws {
+        let page = try InnerTubeParser.homePage(from: fixture("browse-history.json"))
+        #expect(page.continuation == "q:FIXTURE_HISTORY_NEXT%3D")
+        #expect(InnerTubeParser.decodeContinuation(try #require(page.continuation))?.style == .query)
+    }
+
+    @Test("Hand-built history continuation: further day shelves and the next token")
+    func historyContinuationPage() throws {
+        let page = try InnerTubeParser.homeContinuationPage(from: fixture("browse-history-continuation.json"))
+        #expect(page.shelves.map(\.title) == ["This week", "Last week"])
+        #expect(tracks(in: page.shelves[0]).map(\.videoId) == ["fixHist0005", "fixHist0006"])
+        #expect(tracks(in: page.shelves[1]).map(\.videoId) == ["fixHist0007"])
+        #expect(page.continuation == "q:FIXTURE_HISTORY_NEXT2%3D")
+    }
+
+    @Test("Paused or empty history (a notifier shelf) is an empty list with no token, not an error")
+    func historyPausedIsEmpty() throws {
+        let page = try InnerTubeParser.homePage(from: fixture("browse-history-paused.json"))
+        #expect(page.shelves.isEmpty)
+        #expect(page.continuation == nil)
+    }
+
+    @Test("A history response with no section list at all is still a parse error")
+    func historyWithoutSectionList() {
+        #expect(throws: MusicError.self) { try InnerTubeParser.homePage(from: Data("{}".utf8)) }
+    }
+
+    @Test("History shelves of one day that hold only unplayable rows vanish instead of showing an empty header")
+    func historyShelfOfOnlyGreyedRows() throws {
+        let page = try InnerTubeParser.homePage(from: historyData(shelves: [
+            ("Today", [historyRow(id: "gone1", greyed: true), historyRow(id: "gone2", greyed: true)]),
+            ("Yesterday", [historyRow(id: "kept1")]),
+        ]))
+        #expect(page.shelves.map(\.title) == ["Yesterday"])
+    }
+
+    @Test("History titles with emoji, accents and quotes survive")
+    func historyUnicodeTitles() throws {
+        let page = try InnerTubeParser.homePage(from: historyData(shelves: [
+            ("Earlier this month", [historyRow(id: "uni1", title: "夜に駆ける 🎵 \\\"live\\\"")]),
+        ]))
+        #expect(tracks(in: page.shelves[0]).first?.title == "夜に駆ける 🎵 \"live\"")
+    }
+
+    @Test("A history of thousands of rows parses completely")
+    func historyLargePage() throws {
+        let rows = (0..<5_000).map { historyRow(id: "big\($0)") }
+        let page = try InnerTubeParser.homePage(from: historyData(shelves: [("Earlier", rows)]))
+        #expect(page.shelves.first?.items.count == 5_000)
+    }
+
+    /// One history response made of `shelves` (title and raw row JSON).
+    private func historyData(shelves: [(String, [String])]) -> Data {
+        let bodies = shelves.map { title, rows in
+            #"{"musicShelfRenderer":{"title":{"runs":[{"text":"\#(title)"}]},"contents":[\#(rows.joined(separator: ","))]}}"#
+        }
+        let json = """
+        {"contents":{"singleColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":[\(bodies.joined(separator: ","))]}}}}]}}}
+        """
+        return Data(json.utf8)
+    }
+
+    private func historyRow(id: String, title: String = "Song", greyed: Bool = false) -> String {
+        let policy = greyed ? #","musicItemRendererDisplayPolicy":"MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT""# : ""
+        return """
+        {"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":"\(id)"},\
+        "flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"\(title)","navigationEndpoint":{"watchEndpoint":{"videoId":"\(id)"}}}]}}},\
+        {"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Artist"}]}}}]\(policy)}}
+        """
     }
 
     // MARK: - Playlist pages

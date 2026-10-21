@@ -9,11 +9,19 @@ import Testing
 @MainActor
 @Suite("MusicSearchScope")
 struct MusicSearchScopeTests {
-    @Test("Home searches YouTube Music, and so does an artist page, from either tab")
+    @Test("Home searches YouTube Music, and so does an artist page, from any tab")
     func global() {
         #expect(MusicSearchScope.resolve(column: .browse, tab: .home, page: nil) == .global)
         #expect(MusicSearchScope.resolve(column: .browse, tab: .home, page: .artist) == .global)
         #expect(MusicSearchScope.resolve(column: .browse, tab: .library, page: .artist) == .global)
+        #expect(MusicSearchScope.resolve(column: .browse, tab: .history, page: .artist) == .global)
+    }
+
+    @Test("History searches YouTube Music, not the loaded days")
+    func history() {
+        #expect(MusicSearchScope.resolve(column: .browse, tab: .history, page: nil) == .global)
+        #expect(MusicSearchScope.resolve(column: .queue, tab: .history, page: nil) == .queue)
+        #expect(MusicSearchScope.resolve(column: .lyrics, tab: .history, page: nil) == .none)
     }
 
     @Test("Library filters what is loaded, whichever segment it shows")
@@ -23,7 +31,7 @@ struct MusicSearchScopeTests {
 
     @Test("a playlist page and Liked music filter their songs, an album its tracks, whichever tab opened them")
     func pages() {
-        for tab in [MusicBrowseStore.Tab.home, .library] {
+        for tab in [MusicBrowseStore.Tab.home, .library, .history] {
             #expect(MusicSearchScope.resolve(column: .browse, tab: tab, page: .playlist) == .playlist)
             #expect(MusicSearchScope.resolve(column: .browse, tab: tab, page: .liked) == .playlist)
             #expect(MusicSearchScope.resolve(column: .browse, tab: tab, page: .album) == .album)

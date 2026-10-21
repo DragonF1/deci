@@ -1,7 +1,7 @@
 // Deci/Views/Music/MusicShellLayout.swift
 import SwiftUI
 
-/// What fills the right column. Browse is Home, Library and the pages opened from them (search results sit over it);
+/// What fills the right column. Browse is the tabs and the pages opened from them (search results sit over it);
 /// Lyrics and Up next each take the column in place of it. The save to playlist menu floats over the popup instead.
 nonisolated enum MusicRightColumn: Equatable {
     case browse
@@ -15,7 +15,7 @@ nonisolated enum MusicRightColumn: Equatable {
     }
 
     /// Which header the column wears. Lyrics and Up next have their own, with a Browse pill that goes back; browse wears
-    /// Home, Library, the magnifier and the avatar.
+    /// Home, Library, History, the magnifier and the avatar.
     enum Header: Equatable {
         case browse
         case lyrics
@@ -39,16 +39,18 @@ nonisolated enum MusicRightColumn: Equatable {
     }
 }
 
-/// The two tabs of the right column's header. Search is not one: the magnifier opens a field in the header, and the
-/// tab it was opened on stays highlighted.
+/// The three tabs of the right column's header: Home, Library and History. Search is not one: the magnifier opens a
+/// field in the header, and the tab it was opened on stays highlighted.
 nonisolated enum MusicHeaderTab: CaseIterable, Equatable {
     case home
     case library
+    case history
 
     var title: String {
         switch self {
         case .home: "Home"
         case .library: "Library"
+        case .history: "History"
         }
     }
 
@@ -57,14 +59,16 @@ nonisolated enum MusicHeaderTab: CaseIterable, Equatable {
         switch self {
         case .home: .home
         case .library: .library
+        case .history: .history
         }
     }
 
-    /// The tab to highlight: Library and the pages opened from it are Library; everything else is Home.
+    /// The tab to highlight: each browse tab and the pages opened from it is its own header tab.
     static func resolve(tab: MusicBrowseStore.Tab) -> MusicHeaderTab {
         switch tab {
         case .home: .home
         case .library: .library
+        case .history: .history
         }
     }
 }
@@ -100,6 +104,10 @@ nonisolated enum MusicPopupMetrics {
 
     /// The avatar in the header.
     static let avatarSize: CGFloat = 22
+
+    /// The least the open search field is wide before inactive tabs make room for it: its width beside the Home and
+    /// Library tabs in the compact popup, when there were two tabs.
+    static let openFieldMinWidth: CGFloat = 154
 
     /// The gap between the avatar and the account card under it.
     static let accountCardGap: CGFloat = 6

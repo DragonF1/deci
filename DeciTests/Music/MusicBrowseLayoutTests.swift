@@ -153,12 +153,14 @@ struct MusicPageBackLabelTests {
     func tab() {
         #expect(MusicPageBackLabel.resolve(previousTitle: nil, tab: .home) == "Home")
         #expect(MusicPageBackLabel.resolve(previousTitle: nil, tab: .library) == "Library")
+        #expect(MusicPageBackLabel.resolve(previousTitle: nil, tab: .history) == "History")
     }
 
     @Test("a blank title counts as none")
     func blank() {
         #expect(MusicPageBackLabel.resolve(previousTitle: "", tab: .library) == "Library")
         #expect(MusicPageBackLabel.resolve(previousTitle: "   ", tab: .home) == "Home")
+        #expect(MusicPageBackLabel.resolve(previousTitle: " ", tab: .history) == "History")
     }
 }
 

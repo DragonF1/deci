@@ -164,6 +164,7 @@ struct MusicBackendLiveTests {
         let youtube = FakeYouTube { config in
             config.browseBodies = [
                 "FEmusic_home": (try? MusicFixtures.data("browse-home.json")) ?? Data(),
+                "FEmusic_history": (try? MusicFixtures.data("browse-history.json")) ?? Data(),
                 "FEmusic_liked_playlists": (try? MusicFixtures.data("browse-library-playlists.json")) ?? Data(),
                 "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i": (try? MusicFixtures.data("browse-playlist.json")) ?? Data(),
             ]
@@ -213,6 +214,39 @@ struct MusicBackendLiveTests {
         #expect(bodies.count == 3)
         #expect(bodies.compactMap { $0["continuation"] as? String } == ["FIXTURE_TOKEN", "FIXTURE_HOME", "FIXTURE_LIBRARY"])
         #expect(bodies.allSatisfy { $0["browseId"] == nil })
+    }
+
+    @Test("history and moreHistory forward to the client: the history browse id, then the continuation token")
+    func historyForwards() async throws {
+        let harness = makeBrowseHarness { $0.browseContinuationBody = (try? MusicFixtures.data("browse-history-continuation.json")) ?? Data() }
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+
+        let first = try await harness.backend.history()
+        #expect(first.shelves.map(\.title) == ["Today", "Yesterday"])
+        #expect(first.continuation == "q:FIXTURE_HISTORY_NEXT%3D")
+
+        let more = try await harness.backend.moreHistory(continuation: "q:FIXTURE_HISTORY_NEXT%3D")
+        #expect(more.shelves.map(\.title) == ["This week", "Last week"])
+
+        let bodies = harness.youtube.requests(path: "/youtubei/v1/browse").map { FakeYouTube.jsonBody($0) }
+        #expect(bodies.compactMap { $0["browseId"] as? String } == ["FEmusic_history", "FEmusic_history"])
+    }
+
+    @Test("History calls while signed out fail before any network request; errors map like the rest of browse")
+    func historyErrors() async {
+        let signedOut = makeBrowseHarness(signedIn: false)
+        defer { try? FileManager.default.removeItem(at: signedOut.directory) }
+        await #expect(throws: MusicError.signedOut) { _ = try await signedOut.backend.history() }
+        await #expect(throws: MusicError.signedOut) { _ = try await signedOut.backend.moreHistory(continuation: "t") }
+        #expect(signedOut.youtube.requests.isEmpty)
+
+        let harness = makeBrowseHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update { $0.browseStatus = 401 }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.history() }
+        harness.youtube.update { $0.browseStatus = 503 }
+        await #expect(throws: MusicError.http(503)) { _ = try await harness.backend.history() }
+        await #expect(throws: MusicError.http(503)) { _ = try await harness.backend.moreHistory(continuation: "t") }
     }
 
     @Test("Browse calls while signed out fail before any network request")

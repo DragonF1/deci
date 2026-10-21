@@ -52,11 +52,11 @@ struct MusicSearchAnchor: Equatable {
     let pageId: String?
 }
 
-/// What the Music popup's right column shows (Home and Library, search results, Up next, Lyrics, the add-to-playlist
-/// picker), and the one way every artist, album name or tile opens its page, and every "..." menu action runs. It lives
-/// here, not in the view, so the rules can be tested. One instance belongs to each `MusicService` (`MusicServiceHost`
-/// makes it): the Music popup unmounts the player's view when the icon is hidden and builds it again, and the view takes
-/// this one back, so what was open is still open.
+/// What the Music popup's right column shows (Home, Library and History, search results, Up next, Lyrics, the
+/// add-to-playlist picker), and the one way every artist, album name or tile opens its page, and every "..." menu
+/// action runs. It lives here, not in the view, so the rules can be tested. One instance belongs to each
+/// `MusicService` (`MusicServiceHost` makes it): the Music popup unmounts the player's view when the icon is hidden and
+/// builds it again, and the view takes this one back, so what was open is still open.
 @MainActor
 @Observable
 final class MusicSearchNavigation {
@@ -113,7 +113,7 @@ final class MusicSearchNavigation {
     }
 
     /// Search results show while there is a query and a search for it is running, has results, or came back
-    /// empty, unless an artist opened from them is on screen. Otherwise Home, Library or an open page shows.
+    /// empty, unless an artist opened from them is on screen. Otherwise the tab or an open page shows.
     /// This says nothing about Up next or Lyrics, which sit on top of whichever of the two is under them.
     var showsResults: Bool {
         guard !trimmedQuery.isEmpty, !isHidingResults else { return false }
@@ -139,7 +139,7 @@ final class MusicSearchNavigation {
         MusicRightColumn.resolve(showsLyrics: showsLyrics, showsQueue: showsQueue)
     }
 
-    /// The header tab to highlight: Library for Library and the pages opened from it, Home for everything else.
+    /// The header tab to highlight: the tab on screen, whether its root or a page opened from it.
     var headerTab: MusicHeaderTab {
         MusicHeaderTab.resolve(tab: service.browse.tab)
     }
@@ -373,13 +373,16 @@ final class MusicSearchNavigation {
     // MARK: - Opening pages
 
     /// A tab of the header: leaves the panels and any page, and goes to the tab's root. A field open on the screen it
-    /// leaves folds away, its words with it.
+    /// leaves folds away, its words with it. History is what was played, so coming to it from another tab asks for it
+    /// again while the old list stays up; picking it while on it does not.
     func select(_ tab: MusicBrowseStore.Tab) {
+        let previous = service.browse.tab
         closePanels()
         resetFields()
         hidesResults = false
         service.browse.tab = tab
         service.browse.popToRoot()
+        if tab == .history, previous != .history { service.browse.refreshHistory() }
     }
 
     /// Escape: closes the topmost thing over the browse screens and says whether there was one. The save menu first, then

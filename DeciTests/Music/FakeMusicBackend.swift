@@ -88,6 +88,12 @@ actor FakeMusicBackend: MusicBackend {
     private var moreHomePages: [String: MusicHomePage] = [:]
     private var moreHomeErrors: [String: any Error] = [:]
     private var moreHomeGates: [String: MusicTestGate] = [:]
+    private var historyPage = MusicHomePage(shelves: [], continuation: nil)
+    private var historyError: (any Error)?
+    private var historyGate: MusicTestGate?
+    private var moreHistoryPages: [String: MusicHomePage] = [:]
+    private var moreHistoryErrors: [String: any Error] = [:]
+    private var moreHistoryGates: [String: MusicTestGate] = [:]
     private var libraryLists: [MusicLibrarySection: MusicCollectionList] = [:]
     private var libraryErrors: [MusicLibrarySection: any Error] = [:]
     private var libraryGates: [MusicLibrarySection: MusicTestGate] = [:]
@@ -112,6 +118,8 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var moreRadioCalls: [MoreRadioCall] = []
     private(set) var homeCallCount = 0
     private(set) var moreHomeCalls: [String] = []
+    private(set) var historyCallCount = 0
+    private(set) var moreHistoryCalls: [String] = []
     private(set) var libraryCalls: [MusicLibrarySection] = []
     private(set) var moreLibraryCalls: [MoreLibraryCall] = []
     private(set) var pageCalls: [String] = []
@@ -205,6 +213,17 @@ actor FakeMusicBackend: MusicBackend {
     func setMoreHomeError(continuation: String, _ error: (any Error)?) { moreHomeErrors[continuation] = error }
     func setMoreHomeGate(continuation: String, _ gate: MusicTestGate?) { moreHomeGates[continuation] = gate }
 
+    func setHistory(shelves: [MusicShelf], continuation: String? = nil) {
+        historyPage = MusicHomePage(shelves: shelves, continuation: continuation)
+    }
+    func setHistoryError(_ error: (any Error)?) { historyError = error }
+    func setHistoryGate(_ gate: MusicTestGate?) { historyGate = gate }
+    func setMoreHistory(continuation: String, shelves: [MusicShelf], next: String? = nil) {
+        moreHistoryPages[continuation] = MusicHomePage(shelves: shelves, continuation: next)
+    }
+    func setMoreHistoryError(continuation: String, _ error: (any Error)?) { moreHistoryErrors[continuation] = error }
+    func setMoreHistoryGate(continuation: String, _ gate: MusicTestGate?) { moreHistoryGates[continuation] = gate }
+
     func setLibrary(_ section: MusicLibrarySection, items: [MusicCollection], continuation: String? = nil) {
         libraryLists[section] = MusicCollectionList(items: items, continuation: continuation)
     }
@@ -289,6 +308,23 @@ actor FakeMusicBackend: MusicBackend {
         moreHomeCalls.append(continuation)
         let gate = moreHomeGates[continuation], error = moreHomeErrors[continuation]
         let page = moreHomePages[continuation] ?? MusicHomePage(shelves: [], continuation: nil)
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return page
+    }
+
+    func history() async throws -> MusicHomePage {
+        historyCallCount += 1
+        let gate = historyGate, error = historyError, page = historyPage
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return page
+    }
+
+    func moreHistory(continuation: String) async throws -> MusicHomePage {
+        moreHistoryCalls.append(continuation)
+        let gate = moreHistoryGates[continuation], error = moreHistoryErrors[continuation]
+        let page = moreHistoryPages[continuation] ?? MusicHomePage(shelves: [], continuation: nil)
         if let gate { await gate.wait() }
         if let error { throw error }
         return page
