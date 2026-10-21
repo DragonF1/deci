@@ -91,26 +91,27 @@ nonisolated enum MusicQuickPicks {
 
 /// What a page's sort chip and Liked music's small sort say.
 nonisolated struct MusicSortChip: Equatable {
-    /// "Sort: Title", and "Sort: Default order" at rest.
+    /// "Sort: Title", and "Sort: Date added" on a playlist the user made at rest.
     let label: String
-    /// An arrow once a key is picked, to tell which way it runs; nil at rest.
+    /// An arrow for a key with a direction, to tell which way it runs; nil for Playlist order, which has none.
     let directionSymbol: String?
 
     static func resolve(_ sort: MusicPlaylistSort) -> MusicSortChip {
         MusicSortChip(
             label: "Sort: " + sort.field.label,
-            directionSymbol: sort.isDefault ? nil : (sort.ascending ? "arrow.up" : "arrow.down")
+            directionSymbol: sort.isPlaylistOrder ? nil : (sort.ascending ? "arrow.up" : "arrow.down")
         )
     }
 
-    /// The small sort of Liked music: YouTube lists it newest first, so the order at rest reads "Recently liked".
+    /// The small sort of Liked music: YouTube lists it newest first, so Date added with the newest first, where it
+    /// rests, reads "Recently liked".
     static func likedLabel(_ sort: MusicPlaylistSort) -> String {
-        sort.isDefault ? "Recently liked" : sort.field.label
+        sort.field == .dateAdded && !sort.ascending ? "Recently liked" : sort.field.label
     }
 
-    /// The mark in the sort menu next to the picked key: a check at rest, else the direction.
+    /// The mark in the sort menu next to the picked key: a check for Playlist order, else the direction.
     static func menuSymbol(for sort: MusicPlaylistSort) -> String {
-        sort.isDefault ? "checkmark" : (sort.ascending ? "arrow.up" : "arrow.down")
+        sort.isPlaylistOrder ? "checkmark" : (sort.ascending ? "arrow.up" : "arrow.down")
     }
 }
 

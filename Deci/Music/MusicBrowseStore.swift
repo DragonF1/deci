@@ -65,7 +65,7 @@ final class MusicBrowseStore {
     private(set) var loadingMoreTracks: Set<String> = []
     /// Playlists whose sort is loading every remaining page of songs first.
     private(set) var loadingAllTracks: Set<String> = []
-    /// The sort picked for each playlist this session. A playlist missing here is in its default order.
+    /// The sort picked for each playlist this session. A playlist missing here is at rest, where `sort(for:)` says.
     private(set) var sorts: [String: MusicPlaylistSort] = [:]
 
     /// A sort loads songs up to this many and sorts the first this-many songs of the playlist. A shuffled queue
@@ -485,7 +485,7 @@ final class MusicBrowseStore {
     private func landPage(_ page: MusicBrowsePage, browseId: String, run: Int) {
         guard pageRuns[browseId] == run else { return }
         pages[browseId] = .loaded(page)
-        loadAllTracksIfSorted(browseId)
+        loadAllTracksIfReordering(browseId)
         onPageLoaded?(page, path.last { $0.browseId == browseId })
     }
 
@@ -550,19 +550,49 @@ final class MusicBrowseStore {
         browseId.hasPrefix("VL")
     }
 
-    /// The sort picked for this playlist; Default order until one is picked.
-    func sort(for browseId: String) -> MusicPlaylistSort {
-        sorts[browseId] ?? .default
+    /// The sort of a playlist that has none picked: Date added with the newest song first on a playlist the user made
+    /// and on Liked music, else Playlist order. Whether a playlist is the user's is told by its page, so one that has
+    /// not landed yet rests on Playlist order, except Liked music, which is known by its browse id.
+    private func restingSort(for browseId: String) -> MusicPlaylistSort {
+        guard Self.canSort(browseId) else { return .playlistOrder }
+        if listsNewestFirst(browseId) { return .dateAddedNewestFirst }
+        if case .loaded(let page)? = pages[browseId], page.isEditable { return .dateAddedNewestFirst }
+        return .playlistOrder
     }
 
-    /// Picks a sort option for a playlist: a new option sorts ascending, the same one again flips the direction.
-    /// A sort first loads every remaining page of songs (up to `sortTrackCap`), and the list keeps its order until then.
+    /// Whether YouTube lists the playlist with its newest song first. Liked music is the one that does; every other
+    /// playlist adds a new song at its end.
+    private func listsNewestFirst(_ browseId: String) -> Bool {
+        browseId == Self.likedMusic.browseId
+    }
+
+    /// The sort of this playlist: the one picked, else where it rests.
+    func sort(for browseId: String) -> MusicPlaylistSort {
+        sorts[browseId] ?? restingSort(for: browseId)
+    }
+
+    /// Whether the sort puts the songs in another order than YouTube lists them. Only then do all the songs have to be
+    /// loaded before the list shows them in order; a playlist in YouTube's order, Liked music at rest among them,
+    /// shows its songs as they come.
+    func needsReorder(_ browseId: String) -> Bool {
+        sort(for: browseId).reorders(newestFirst: listsNewestFirst(browseId))
+    }
+
+    /// Whether the list has to wait: the sort reorders the songs and the rest of them are still loading, so showing
+    /// the songs loaded so far would show an order that changes as the pages land.
+    func isOrderPending(_ browseId: String) -> Bool {
+        loadingAllTracks.contains(browseId) && needsReorder(browseId)
+    }
+
+    /// Picks a sort option for a playlist: a new option sorts ascending (Date added, newest first), the same one
+    /// again flips the direction, and Playlist order is stored as a pick too, so a playlist that rests on Date added
+    /// stays in YouTube's order once the user asks for it. A sort that reorders first loads every remaining page of
+    /// songs (up to `sortTrackCap`), and the list waits for them.
     func pickSort(_ field: MusicSortField, for browseId: String) {
         guard Self.canSort(browseId) else { return }
-        let picked = sort(for: browseId).picking(field)
-        sorts[browseId] = picked.isDefault ? nil : picked
+        sorts[browseId] = sort(for: browseId).picking(field)
         sortedPages[browseId] = nil
-        loadAllTracksIfSorted(browseId)
+        loadAllTracksIfReordering(browseId)
     }
 
     /// The page as the list shows it and as Play queues it: in the playlist's sort once all its songs are here
@@ -570,14 +600,14 @@ final class MusicBrowseStore {
     func displayedPage(_ browseId: String) -> MusicBrowsePage? {
         guard case .loaded(let page)? = pages[browseId] else { return nil }
         let sort = sort(for: browseId)
-        guard !sort.isDefault, !loadingAllTracks.contains(browseId) else { return page }
+        guard needsReorder(browseId), !loadingAllTracks.contains(browseId) else { return page }
         if let cached = sortedPages[browseId], cached.sort == sort { return cached.page }
         let sorted = MusicBrowsePage(
             browseId: page.browseId,
             title: page.title,
             subtitle: page.subtitle,
             thumbnailURL: page.thumbnailURL,
-            tracks: sort.sorted(Array(page.tracks.prefix(Self.sortTrackCap))),
+            tracks: sort.sorted(Array(page.tracks.prefix(Self.sortTrackCap)), newestFirst: listsNewestFirst(browseId)),
             continuation: nil,
             shelves: page.shelves,
             isEditable: page.isEditable
@@ -587,18 +617,19 @@ final class MusicBrowseStore {
     }
 
     /// How many songs a sort covers when that is only the start of a longer playlist: the loading stopped at the cap,
-    /// or gave up on pages that went nowhere. Nil when the sort covers every song, when there is no sort, and while
-    /// the songs are still loading.
+    /// or gave up on pages that went nowhere. Nil when the sort covers every song, when the songs stay in YouTube's
+    /// order, and while the songs are still loading.
     func sortedSongLimit(_ browseId: String) -> Int? {
-        guard !sort(for: browseId).isDefault, !loadingAllTracks.contains(browseId),
+        guard needsReorder(browseId), !loadingAllTracks.contains(browseId),
               case .loaded(let page)? = pages[browseId] else { return nil }
         guard page.continuation != nil || page.tracks.count > Self.sortTrackCap else { return nil }
         return min(page.tracks.count, Self.sortTrackCap)
     }
 
-    /// Starts loading what is left of a sorted playlist, unless it is all here already or loading has started.
-    private func loadAllTracksIfSorted(_ browseId: String) {
-        guard !sort(for: browseId).isDefault, case .loaded(let page)? = pages[browseId], let run = pageRuns[browseId],
+    /// Starts loading what is left of a playlist whose sort reorders its songs, unless it is all here already or
+    /// loading has started.
+    private func loadAllTracksIfReordering(_ browseId: String) {
+        guard needsReorder(browseId), case .loaded(let page)? = pages[browseId], let run = pageRuns[browseId],
               page.continuation != nil, page.tracks.count < Self.sortTrackCap,
               !loadingAllTracks.contains(browseId) else { return }
         loadingAllTracks.insert(browseId)
@@ -607,15 +638,16 @@ final class MusicBrowseStore {
         }
     }
 
-    /// Fetches page after page while the playlist is sorted and has more, up to the cap. A page that is already
-    /// loading for the list footer is waited for, not asked for twice. A failure goes back to the default order.
+    /// Fetches page after page while the playlist's sort reorders its songs and it has more, up to the cap. A page that
+    /// is already loading for the list footer is waited for, not asked for twice. A failure goes back to Playlist
+    /// order, picked rather than at rest, so the playlist does not start the load again.
     /// Three more ways end it with what is loaded, so a chain that never ends cannot keep the sort loading: pages
     /// that bring no new song several times in a row, a continuation that comes round again, and a ceiling on pages.
     private func loadRemainingTracks(_ browseId: String, run: Int) async {
         var seenTokens = Set<String>()
         var emptyPagesInARow = 0
         var pagesAsked = 0
-        while pageRuns[browseId] == run, !sort(for: browseId).isDefault,
+        while pageRuns[browseId] == run, needsReorder(browseId),
               case .loaded(let page)? = pages[browseId], let token = page.continuation,
               page.tracks.count < Self.sortTrackCap {
             if loadingMoreTracks.contains(browseId) {
@@ -638,7 +670,7 @@ final class MusicBrowseStore {
             } catch {
                 guard pageRuns[browseId] == run else { return }
                 logger.info("sort load failed: \(MusicService.logDescription(of: error), privacy: .public)")
-                sorts[browseId] = nil
+                sorts[browseId] = .playlistOrder
                 sortedPages[browseId] = nil
                 loadingAllTracks.remove(browseId)
                 expireIfSignedOut(error)
@@ -646,6 +678,13 @@ final class MusicBrowseStore {
             }
         }
         guard pageRuns[browseId] == run else { return }
+        // A playlist at rest on Date added that stopped short would show its oldest songs as its newest: it goes back
+        // to Playlist order, where the footer still reaches every song.
+        if sorts[browseId] == nil, case .loaded(let page)? = pages[browseId],
+           page.continuation != nil || page.tracks.count > Self.sortTrackCap {
+            sorts[browseId] = .playlistOrder
+            sortedPages[browseId] = nil
+        }
         loadingAllTracks.remove(browseId)
     }
 

@@ -49,6 +49,10 @@ struct MusicBrowseStoreRemoveTests {
     @Test("Removing a row takes out that row only and keeps the page's own fields")
     func removesOneRow() async {
         let h = RemoveHarness()
+        // A playlist the user made loads the rest of its songs the moment it lands, so the gate holds that load and
+        // the page keeps the continuation the test looks for.
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPLfixtureMine", continuation: "more", gate)
         await h.open(tracks: [row("a", set: "s1"), row("b", set: "s2"), row("c", set: "s3")], continuation: "more")
         let before = h.page()
 
@@ -60,6 +64,7 @@ struct MusicBrowseStoreRemoveTests {
         #expect(after?.continuation == "more")
         #expect(after?.isEditable == true)
         #expect(after?.browseId == "VLPLfixtureMine")
+        await gate.open()
     }
 
     @Test("The same song twice is two rows, and only the named row goes")

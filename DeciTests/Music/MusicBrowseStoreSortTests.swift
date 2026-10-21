@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicBrowseStoreSortTests.swift
-// Sorting a playlist page: the choice is remembered per playlist for the session, a sort first loads every
-// remaining page of songs (up to a cap), and the page the list shows and Play queues is the sorted one.
+// Sorting a playlist page: the choice is remembered per playlist for the session, a sort that reorders first loads
+// every remaining page of songs (up to a cap), and the page the list shows and Play queues is the sorted one. A
+// playlist the user made, and Liked music, rest on Date added newest first; any other playlist rests on its own order.
 
 import Foundation
 import Testing
@@ -30,12 +31,14 @@ private struct SortHarness {
         try? await Task.sleep(for: .milliseconds(40))
     }
 
-    /// A playlist of three songs over three pages: "a" first, then "b" and "c", then "d".
-    func openLongPlaylist(_ browseId: String = "VLPL1") async {
+    /// A playlist of four songs over three pages: "a" first, then "b" and "c", then "d". `isEditable` makes it one the
+    /// user made.
+    func openLongPlaylist(_ browseId: String = "VLPL1", isEditable: Bool = false) async {
         await backend.setPage(MusicSamples.page(
             browseId,
             tracks: [MusicSamples.track("a", title: "Delta", seconds: 100)],
-            continuation: "t1"
+            continuation: "t1",
+            isEditable: isEditable
         ))
         await backend.setMoreTracks(
             browseId: browseId, continuation: "t1",
@@ -58,6 +61,11 @@ private struct SortHarness {
     func shownIds(_ browseId: String) -> [String]? {
         store.displayedPage(browseId)?.tracks.map(\.videoId)
     }
+
+    /// Waits until the loading is over and the page shows `count` songs.
+    func settled(_ browseId: String, count: Int) async -> Bool {
+        await until { store.loadingAllTracks.isEmpty && shownIds(browseId)?.count == count }
+    }
 }
 
 @MainActor
@@ -72,13 +80,17 @@ struct MusicBrowseStoreSortTests {
         #expect(MusicBrowseStore.canSort("") == false)
     }
 
-    @Test("a playlist starts in its default order and shows the page as loaded")
-    func startsDefault() async {
+    @Test("a playlist the user did not make rests on Playlist order, shows the page as loaded and loads nothing extra")
+    func startsInPlaylistOrder() async {
         let h = SortHarness()
         await h.openLongPlaylist()
-        #expect(h.store.sort(for: "VLPL1") == .default)
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
+        #expect(!h.store.needsReorder("VLPL1"))
+        #expect(!h.store.isOrderPending("VLPL1"))
         #expect(h.store.displayedPage("VLPL1") == h.loadedPage("VLPL1"))
         #expect(h.store.loadingAllTracks.isEmpty)
+        #expect(h.store.sortedSongLimit("VLPL1") == nil)
+        await h.letLateWorkLand()
         #expect(await h.backend.moreTracksCalls.isEmpty)
     }
 
@@ -162,15 +174,15 @@ struct MusicBrowseStoreSortTests {
         #expect(await h.backend.moreTracksCalls.count == 2)
     }
 
-    @Test("Default order puts the page order back and keeps the songs that were loaded")
-    func backToDefault() async {
+    @Test("Playlist order puts the page order back and keeps the songs that were loaded")
+    func backToPlaylistOrder() async {
         let h = SortHarness()
         await h.openLongPlaylist()
         h.store.pickSort(.title, for: "VLPL1")
         #expect(await h.until { h.store.loadingAllTracks.isEmpty && h.shownIds("VLPL1")?.count == 4 })
 
-        h.store.pickSort(.defaultOrder, for: "VLPL1")
-        #expect(h.store.sort(for: "VLPL1") == .default)
+        h.store.pickSort(.playlistOrder, for: "VLPL1")
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
         #expect(h.shownIds("VLPL1") == ["a", "b", "c", "d"])
     }
 
@@ -192,8 +204,8 @@ struct MusicBrowseStoreSortTests {
         #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2"])
     }
 
-    @Test("picking Default order while the songs load stops after the page in flight and keeps the page order")
-    func defaultWhileLoading() async {
+    @Test("picking Playlist order while the songs load stops after the page in flight and keeps the page order")
+    func playlistOrderWhileLoading() async {
         let h = SortHarness()
         await h.openLongPlaylist()
         let gate = MusicTestGate()
@@ -201,13 +213,13 @@ struct MusicBrowseStoreSortTests {
 
         h.store.pickSort(.title, for: "VLPL1")
         #expect(await h.until { await h.backend.moreTracksCalls.count == 1 })
-        h.store.pickSort(.defaultOrder, for: "VLPL1")
+        h.store.pickSort(.playlistOrder, for: "VLPL1")
         await gate.open()
 
         #expect(await h.until { h.store.loadingAllTracks.isEmpty })
         await h.letLateWorkLand()
         #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1"])
-        #expect(h.store.sort(for: "VLPL1") == .default)
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
         #expect(h.shownIds("VLPL1") == ["a", "b", "c"])
     }
 
@@ -220,7 +232,7 @@ struct MusicBrowseStoreSortTests {
         #expect(await h.until { h.loadedPage("VLPL2") != nil })
 
         h.store.pickSort(.title, for: "VLPL1")
-        #expect(h.store.sort(for: "VLPL2") == .default)
+        #expect(h.store.sort(for: "VLPL2") == .playlistOrder)
         #expect(h.shownIds("VLPL2") == ["x", "z"])
         #expect(h.store.sort(for: "VLPL1").field == .title)
     }
@@ -285,6 +297,48 @@ struct MusicBrowseStoreSortTests {
         #expect(h.store.sortedSongLimit("VLBIG") == MusicBrowseStore.sortTrackCap)
     }
 
+    @Test("a playlist the user made that stops at the cap goes back to Playlist order, so its newest songs stay reachable")
+    func ownedCapFallsBackToPlaylistOrder() async {
+        let h = SortHarness()
+        let first = (0..<700).map { MusicSamples.track("p\($0)", title: "T\($0)") }
+        await h.backend.setPage(MusicSamples.page("VLBIG", tracks: first, continuation: "t1", isEditable: true))
+        for (index, token) in ["t1", "t2", "t3", "t4"].enumerated() {
+            let page = (0..<700).map { MusicSamples.track("q\(index)_\($0)", title: "U\($0)") }
+            await h.backend.setMoreTracks(browseId: "VLBIG", continuation: token, tracks: page, next: "t\(index + 2)")
+        }
+        h.store.open(MusicSamples.collection("VLBIG"))
+        #expect(await h.until { h.loadedPage("VLBIG") != nil && h.store.loadingAllTracks.isEmpty })
+
+        #expect(h.store.sort(for: "VLBIG") == .playlistOrder)
+        #expect(!h.store.needsReorder("VLBIG"))
+        #expect(!h.store.isOrderPending("VLBIG"))
+        let shown = h.store.displayedPage("VLBIG")
+        #expect(shown?.tracks.first?.videoId == "p0")
+        #expect(shown?.continuation != nil)
+        #expect(h.store.sortedSongLimit("VLBIG") == nil)
+    }
+
+    @Test("Date added picked on a playlist the user made keeps its sort at the cap, with the limit note")
+    func ownedPickedDateAddedKeepsSortAtCap() async {
+        let h = SortHarness()
+        let first = (0..<700).map { MusicSamples.track("p\($0)", title: "T\($0)") }
+        await h.backend.setPage(MusicSamples.page("VLBIG", tracks: first, continuation: "t1", isEditable: true))
+        for (index, token) in ["t1", "t2", "t3", "t4"].enumerated() {
+            let page = (0..<700).map { MusicSamples.track("q\(index)_\($0)", title: "U\($0)") }
+            await h.backend.setMoreTracks(browseId: "VLBIG", continuation: token, tracks: page, next: "t\(index + 2)")
+        }
+        h.store.open(MusicSamples.collection("VLBIG"))
+        #expect(await h.until { h.loadedPage("VLBIG") != nil && h.store.loadingAllTracks.isEmpty })
+
+        // Back at Playlist order after the cap; Date added picked twice is newest first again, as the user asked.
+        h.store.pickSort(.dateAdded, for: "VLBIG")
+        if h.store.sort(for: "VLBIG") != .dateAddedNewestFirst { h.store.pickSort(.dateAdded, for: "VLBIG") }
+        #expect(h.store.sort(for: "VLBIG") == .dateAddedNewestFirst)
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        #expect(h.store.sort(for: "VLBIG") == .dateAddedNewestFirst)
+        #expect(h.store.sortedSongLimit("VLBIG") == MusicBrowseStore.sortTrackCap)
+    }
+
     @Test("the cap is 2000 songs")
     func capValue() {
         #expect(MusicBrowseStore.sortTrackCap == 2000)
@@ -306,7 +360,7 @@ struct MusicBrowseStoreSortTests {
         #expect(h.store.sortedSongLimit("VLBIG") == MusicBrowseStore.sortTrackCap)
     }
 
-    @Test("a failed page ends the sort: the songs so far stay in page order and the sort goes back to default")
+    @Test("a failed page ends the sort: the songs so far stay in page order and the sort goes back to Playlist order")
     func failure() async {
         let h = SortHarness()
         await h.openLongPlaylist()
@@ -314,7 +368,7 @@ struct MusicBrowseStoreSortTests {
 
         h.store.pickSort(.title, for: "VLPL1")
         #expect(await h.until { h.store.loadingAllTracks.isEmpty })
-        #expect(h.store.sort(for: "VLPL1") == .default)
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
         #expect(h.shownIds("VLPL1") == ["a", "b", "c"])
         #expect(h.store.displayedPage("VLPL1")?.continuation == "t2")
 
@@ -383,7 +437,7 @@ struct MusicBrowseStoreSortTests {
         #expect(await h.until { h.loadedPage("MPREb_x") != nil })
 
         h.store.pickSort(.title, for: "MPREb_x")
-        #expect(h.store.sort(for: "MPREb_x") == .default)
+        #expect(h.store.sort(for: "MPREb_x") == .playlistOrder)
         #expect(h.shownIds("MPREb_x") == ["a", "b"])
     }
 
@@ -409,7 +463,7 @@ struct MusicBrowseStoreSortTests {
         #expect(await h.until { h.store.loadingAllTracks.isEmpty })
 
         h.store.reset()
-        #expect(h.store.sort(for: "VLPL1") == .default)
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
         #expect(h.store.loadingAllTracks.isEmpty)
     }
 
@@ -546,7 +600,7 @@ struct MusicBrowseStoreSortTests {
 
     // MARK: - The "first N songs" note
 
-    @Test("with no sort picked there is no limit note, and none while the songs are still loading")
+    @Test("with the playlist in its own order there is no limit note, and none while a sort is still loading the songs")
     func noLimitWithoutSortOrWhileLoading() async {
         let h = SortHarness()
         await h.openLongPlaylist()
@@ -566,8 +620,8 @@ struct MusicBrowseStoreSortTests {
         #expect(MusicSortNote.limitText(1) == "First song")
     }
 
-    @Test("going back to the default order drops the limit note")
-    func defaultOrderDropsTheLimit() async {
+    @Test("going back to Playlist order drops the limit note")
+    func playlistOrderDropsTheLimit() async {
         let h = SortHarness()
         let first = (0..<700).map { MusicSamples.track("p\($0)", title: "T\(1000 - $0)") }
         await h.backend.setPage(MusicSamples.page("VLBIG", tracks: first, continuation: "t1"))
@@ -581,7 +635,463 @@ struct MusicBrowseStoreSortTests {
         #expect(await h.until { h.store.loadingAllTracks.isEmpty })
         #expect(h.store.sortedSongLimit("VLBIG") == MusicBrowseStore.sortTrackCap)
 
-        h.store.pickSort(.defaultOrder, for: "VLBIG")
+        h.store.pickSort(.playlistOrder, for: "VLBIG")
         #expect(h.store.sortedSongLimit("VLBIG") == nil)
+    }
+
+    // MARK: - Date added at rest
+
+    @Test("a playlist the user made lands on Date added newest first, loads the rest and shows the whole list reversed")
+    func ownedPlaylistRestsOnDateAdded() async {
+        let h = SortHarness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
+        await h.openLongPlaylist(isEditable: true)
+
+        #expect(h.store.sort(for: "VLPL1") == .dateAddedNewestFirst)
+        #expect(h.store.needsReorder("VLPL1"))
+        // The load starts the moment the page lands, with nobody having picked anything.
+        #expect(h.store.loadingAllTracks == ["VLPL1"])
+        #expect(h.store.isOrderPending("VLPL1"))
+        #expect(h.store.sorts["VLPL1"] == nil)
+
+        await gate.open()
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(h.shownIds("VLPL1") == ["d", "c", "b", "a"])
+        #expect(h.store.displayedPage("VLPL1")?.continuation == nil)
+        #expect(!h.store.isOrderPending("VLPL1"))
+        #expect(h.store.sortedSongLimit("VLPL1") == nil)
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2"])
+        // The stored page stays in YouTube's order.
+        #expect(h.loadedPage("VLPL1")?.tracks.map(\.videoId) == ["a", "b", "c", "d"])
+    }
+
+    @Test("a short playlist the user made shows reversed at once and fetches nothing")
+    func ownedShortPlaylistReversesAtOnce() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page(
+            "VLPL1", tracks: [MusicSamples.track("a"), MusicSamples.track("b"), MusicSamples.track("c")], isEditable: true
+        ))
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+
+        #expect(h.store.needsReorder("VLPL1"))
+        #expect(h.store.loadingAllTracks.isEmpty)
+        #expect(!h.store.isOrderPending("VLPL1"))
+        #expect(h.shownIds("VLPL1") == ["c", "b", "a"])
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+    }
+
+    @Test("an empty playlist the user made has nothing to reorder and nothing to load")
+    func ownedEmptyPlaylist() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page("VLPL1", isEditable: true))
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+        #expect(h.shownIds("VLPL1") == [])
+        #expect(h.store.loadingAllTracks.isEmpty)
+    }
+
+    @Test("the page the list shows and Play queues stays in YouTube's order while the rest is loading, and the list waits")
+    func ownedPlaylistPendingWhileLoading() async {
+        let h = SortHarness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
+        await h.openLongPlaylist(isEditable: true)
+
+        #expect(h.store.isOrderPending("VLPL1"))
+        #expect(h.shownIds("VLPL1") == ["a"])
+        #expect(h.store.displayedPage("VLPL1")?.continuation == "t1")
+        await gate.open()
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(!h.store.isOrderPending("VLPL1"))
+    }
+
+    @Test("a playlist in its own order is not pending, and a picked sort is pending until its songs are in")
+    func pendingOnlyWhileReordering() async {
+        let h = SortHarness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
+        await h.openLongPlaylist()
+        #expect(!h.store.isOrderPending("VLPL1"))
+
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(h.store.isOrderPending("VLPL1"))
+        await gate.open()
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(!h.store.isOrderPending("VLPL1"))
+    }
+
+    @Test("picking Playlist order while the songs load ends the wait at once, before the page in flight lands")
+    func playlistOrderEndsThePendingWait() async {
+        let h = SortHarness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
+        await h.openLongPlaylist(isEditable: true)
+        #expect(h.store.isOrderPending("VLPL1"))
+        #expect(await h.until { await h.backend.moreTracksCalls.count == 1 })
+
+        h.store.pickSort(.playlistOrder, for: "VLPL1")
+        #expect(!h.store.isOrderPending("VLPL1"))
+        await gate.open()
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1"])
+        #expect(h.shownIds("VLPL1") == ["a", "b", "c"])
+    }
+
+    @Test("a playlist the user made is not touched by a playlist that is not theirs, and the other way round")
+    func restIsPerPlaylist() async {
+        let h = SortHarness()
+        await h.openLongPlaylist("VLPLmine", isEditable: true)
+        await h.openLongPlaylist("VLPLtheirs")
+        #expect(await h.settled("VLPLmine", count: 4))
+
+        #expect(h.store.sort(for: "VLPLmine") == .dateAddedNewestFirst)
+        #expect(h.store.sort(for: "VLPLtheirs") == .playlistOrder)
+        #expect(h.shownIds("VLPLmine") == ["d", "c", "b", "a"])
+        #expect(h.shownIds("VLPLtheirs") == ["a"])
+        #expect(await h.backend.moreTracksCalls.allSatisfy { $0.browseId == "VLPLmine" })
+    }
+
+    @Test("before a page has loaded only Liked music is known to rest on Date added")
+    func restBeforeLanding() {
+        let h = SortHarness()
+        #expect(h.store.sort(for: "VLLM") == .dateAddedNewestFirst)
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
+        #expect(h.store.sort(for: "MPREb_x") == .playlistOrder)
+        #expect(h.store.sort(for: "") == .playlistOrder)
+    }
+
+    @Test("an album never rests on Date added, whatever the page says")
+    func albumsKeepTheirOrder() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page(
+            "MPREb_x", tracks: [MusicSamples.track("a"), MusicSamples.track("b")], isEditable: true
+        ))
+        h.store.open(MusicSamples.collection("MPREb_x", kind: .album))
+        #expect(await h.until { h.loadedPage("MPREb_x") != nil })
+        #expect(h.store.sort(for: "MPREb_x") == .playlistOrder)
+        #expect(h.shownIds("MPREb_x") == ["a", "b"])
+    }
+
+    // MARK: - Liked music
+
+    /// Liked music as YouTube lists it: the newest like first. Like a real one, it is not marked editable.
+    private func openLiked(_ h: SortHarness, continuation: String? = "t1") async {
+        await h.backend.setPage(MusicSamples.page(
+            "VLLM", tracks: [MusicSamples.track("n1", title: "Newest")], continuation: continuation, title: "Liked music"
+        ))
+        await h.backend.setMoreTracks(
+            browseId: "VLLM", continuation: "t1",
+            tracks: [MusicSamples.track("n2", title: "Middle"), MusicSamples.track("n3", title: "Older")], next: "t2"
+        )
+        await h.backend.setMoreTracks(
+            browseId: "VLLM", continuation: "t2",
+            tracks: [MusicSamples.track("n4", title: "Oldest")], next: nil
+        )
+        h.store.open(MusicBrowseStore.likedMusic)
+        _ = await h.until { h.loadedPage("VLLM") != nil }
+    }
+
+    @Test("Liked music rests on Date added newest first and shows YouTube's order with nothing extra loaded")
+    func likedRestsInstantly() async {
+        let h = SortHarness()
+        await openLiked(h)
+
+        #expect(h.store.sort(for: "VLLM") == .dateAddedNewestFirst)
+        #expect(!h.store.needsReorder("VLLM"))
+        #expect(!h.store.isOrderPending("VLLM"))
+        #expect(h.store.loadingAllTracks.isEmpty)
+        #expect(h.shownIds("VLLM") == ["n1"])
+        #expect(h.store.displayedPage("VLLM") == h.loadedPage("VLLM"))
+        #expect(h.store.displayedPage("VLLM")?.continuation == "t1")
+        #expect(h.store.sortedSongLimit("VLLM") == nil)
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+    }
+
+    @Test("Liked music still pages in on scroll at rest")
+    func likedStillPagesOnScroll() async {
+        let h = SortHarness()
+        await openLiked(h)
+        h.store.loadMoreTracks("VLLM")
+        #expect(await h.until { h.shownIds("VLLM") == ["n1", "n2", "n3"] })
+    }
+
+    @Test("Date added on Liked music flips to oldest first: it loads everything and reverses YouTube's order")
+    func likedOldestFirst() async {
+        let h = SortHarness()
+        await openLiked(h)
+
+        h.store.pickSort(.dateAdded, for: "VLLM")
+        #expect(h.store.sort(for: "VLLM") == MusicPlaylistSort(field: .dateAdded, ascending: true))
+        #expect(h.store.needsReorder("VLLM"))
+        #expect(await h.settled("VLLM", count: 4))
+        #expect(h.shownIds("VLLM") == ["n4", "n3", "n2", "n1"])
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2"])
+
+        // And back to newest first: YouTube's order, with nothing to reorder or load again.
+        h.store.pickSort(.dateAdded, for: "VLLM")
+        #expect(h.store.sort(for: "VLLM") == .dateAddedNewestFirst)
+        #expect(!h.store.needsReorder("VLLM"))
+        #expect(h.shownIds("VLLM") == ["n1", "n2", "n3", "n4"])
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.count == 2)
+    }
+
+    @Test("Playlist order on Liked music is YouTube's order too, and needs no reorder")
+    func likedPlaylistOrder() async {
+        let h = SortHarness()
+        await openLiked(h)
+        h.store.pickSort(.playlistOrder, for: "VLLM")
+        #expect(h.store.sort(for: "VLLM") == .playlistOrder)
+        #expect(!h.store.needsReorder("VLLM"))
+        #expect(h.shownIds("VLLM") == ["n1"])
+        #expect(h.store.loadingAllTracks.isEmpty)
+    }
+
+    @Test("a title sort on Liked music loads everything first, as on any playlist")
+    func likedByTitle() async {
+        let h = SortHarness()
+        await openLiked(h)
+        h.store.pickSort(.title, for: "VLLM")
+        #expect(h.store.isOrderPending("VLLM"))
+        #expect(await h.settled("VLLM", count: 4))
+        #expect(h.shownIds("VLLM") == ["n2", "n1", "n3", "n4"])
+    }
+
+    @Test("a failed load on Liked music falls back to Playlist order, which is YouTube's order, and does not loop")
+    func likedFailure() async {
+        let h = SortHarness()
+        await openLiked(h)
+        await h.backend.setMoreTracksError(browseId: "VLLM", continuation: "t2", MusicError.http(500))
+        h.store.pickSort(.dateAdded, for: "VLLM")
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        await h.letLateWorkLand()
+        #expect(h.store.sort(for: "VLLM") == .playlistOrder)
+        #expect(h.shownIds("VLLM") == ["n1", "n2", "n3"])
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2"])
+    }
+
+    // MARK: - Picking on top of the rest
+
+    @Test("Date added on a playlist the user made flips the rest to oldest first, which is YouTube's order")
+    func ownedDateAddedFlips() async {
+        let h = SortHarness()
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.settled("VLPL1", count: 4))
+
+        h.store.pickSort(.dateAdded, for: "VLPL1")
+        #expect(h.store.sort(for: "VLPL1") == MusicPlaylistSort(field: .dateAdded, ascending: true))
+        #expect(!h.store.needsReorder("VLPL1"))
+        #expect(h.shownIds("VLPL1") == ["a", "b", "c", "d"])
+
+        h.store.pickSort(.dateAdded, for: "VLPL1")
+        #expect(h.store.sort(for: "VLPL1") == .dateAddedNewestFirst)
+        #expect(h.shownIds("VLPL1") == ["d", "c", "b", "a"])
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.count == 2)
+    }
+
+    @Test("Date added on a playlist that is not the user's starts newest first and loads everything")
+    func notOwnedDateAdded() async {
+        let h = SortHarness()
+        await h.openLongPlaylist()
+        h.store.pickSort(.dateAdded, for: "VLPL1")
+        #expect(h.store.sort(for: "VLPL1") == .dateAddedNewestFirst)
+        #expect(h.store.isOrderPending("VLPL1"))
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(h.shownIds("VLPL1") == ["d", "c", "b", "a"])
+
+        h.store.pickSort(.dateAdded, for: "VLPL1")
+        #expect(h.shownIds("VLPL1") == ["a", "b", "c", "d"])
+    }
+
+    @Test("picking Playlist order on a playlist the user made shows YouTube's order and stores it as picked")
+    func ownedPlaylistOrderPicked() async {
+        let h = SortHarness()
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(h.shownIds("VLPL1") == ["d", "c", "b", "a"])
+
+        h.store.pickSort(.playlistOrder, for: "VLPL1")
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
+        #expect(h.store.sorts["VLPL1"] == .playlistOrder)
+        #expect(!h.store.needsReorder("VLPL1"))
+        #expect(h.shownIds("VLPL1") == ["a", "b", "c", "d"])
+    }
+
+    @Test("Playlist order picked on a playlist the user made survives closing and reopening it, and loads nothing")
+    func ownedPlaylistOrderSurvivesReopen() async {
+        let h = SortHarness()
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.settled("VLPL1", count: 4))
+        h.store.pickSort(.playlistOrder, for: "VLPL1")
+        let callsBefore = await h.backend.moreTracksCalls.count
+
+        h.store.back()
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+        await h.letLateWorkLand()
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
+        #expect(h.store.loadingAllTracks.isEmpty)
+        #expect(h.shownIds("VLPL1") == ["a"])
+        #expect(await h.backend.moreTracksCalls.count == callsBefore)
+    }
+
+    @Test("a closed and reopened playlist the user made rests on Date added again and loads everything again")
+    func ownedReopenLoadsAgain() async {
+        let h = SortHarness()
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.settled("VLPL1", count: 4))
+        h.store.back()
+        #expect(h.store.displayedPage("VLPL1") == nil)
+
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(h.shownIds("VLPL1") == ["d", "c", "b", "a"])
+        #expect(await h.backend.moreTracksCalls.count == 4)
+    }
+
+    @Test("a reload of a playlist the user made loads all of its songs again and lands reversed")
+    func ownedReload() async {
+        let h = SortHarness()
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.settled("VLPL1", count: 4))
+
+        h.store.reloadPage("VLPL1")
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(h.shownIds("VLPL1") == ["d", "c", "b", "a"])
+    }
+
+    @Test("reset forgets a picked Playlist order, so the playlist rests on Date added again")
+    func resetRestoresTheRest() async {
+        let h = SortHarness()
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.settled("VLPL1", count: 4))
+        h.store.pickSort(.playlistOrder, for: "VLPL1")
+        h.store.reset()
+        #expect(h.store.sorts.isEmpty)
+
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(h.store.sort(for: "VLPL1") == .dateAddedNewestFirst)
+        #expect(h.shownIds("VLPL1") == ["d", "c", "b", "a"])
+    }
+
+    // MARK: - Failure at rest
+
+    @Test("a failed page at rest falls back to Playlist order, shows what loaded in YouTube's order and does not loop")
+    func ownedFailureFallsBack() async {
+        let h = SortHarness()
+        await h.backend.setMoreTracksError(browseId: "VLPL1", continuation: "t2", MusicError.http(500))
+        await h.openLongPlaylist(isEditable: true)
+
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        await h.letLateWorkLand()
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
+        #expect(h.store.sorts["VLPL1"] == .playlistOrder)
+        #expect(!h.store.needsReorder("VLPL1"))
+        #expect(!h.store.isOrderPending("VLPL1"))
+        #expect(h.shownIds("VLPL1") == ["a", "b", "c"])
+        #expect(h.store.displayedPage("VLPL1")?.continuation == "t2")
+        // Each page was asked for once: the fallback does not start the load again.
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2"])
+
+        // Picking Date added again retries from where it stopped.
+        await h.backend.setMoreTracksError(browseId: "VLPL1", continuation: "t2", nil)
+        h.store.pickSort(.dateAdded, for: "VLPL1")
+        #expect(h.store.sort(for: "VLPL1") == .dateAddedNewestFirst)
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(h.shownIds("VLPL1") == ["d", "c", "b", "a"])
+    }
+
+    @Test("a failed first page at rest leaves the page in YouTube's order and the footer free to load more")
+    func ownedFirstPageFailure() async {
+        let h = SortHarness()
+        await h.backend.setMoreTracksError(browseId: "VLPL1", continuation: "t1", MusicError.http(500))
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
+        #expect(h.shownIds("VLPL1") == ["a"])
+
+        await h.backend.setMoreTracksError(browseId: "VLPL1", continuation: "t1", nil)
+        h.store.loadMoreTracks("VLPL1")
+        #expect(await h.until { h.shownIds("VLPL1") == ["a", "b", "c"] })
+    }
+
+    // MARK: - Guards at rest
+
+    @Test("the page footer does not load more while a playlist the user made is loading everything at rest")
+    func ownedFooterBlocked() async {
+        let h = SortHarness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
+        await h.openLongPlaylist(isEditable: true)
+
+        h.store.loadMoreTracks("VLPL1")
+        #expect(h.store.loadingMoreTracks.isEmpty)
+        await gate.open()
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1", "t2"])
+    }
+
+    @Test("pages that arrive after a reload are dropped, and the reloaded playlist loads itself at rest")
+    func ownedStaleLoad() async {
+        let h = SortHarness()
+        let slow = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", slow)
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.until { await h.backend.moreTracksCalls.count == 1 })
+
+        await h.backend.setPage(MusicSamples.page(
+            "VLPL1", tracks: [MusicSamples.track("fresh", title: "Fresh")], isEditable: true
+        ))
+        h.store.reloadPage("VLPL1")
+        #expect(await h.until { h.loadedPage("VLPL1")?.tracks.map(\.videoId) == ["fresh"] })
+
+        await slow.open()
+        await h.letLateWorkLand()
+        #expect(h.loadedPage("VLPL1")?.tracks.map(\.videoId) == ["fresh"])
+        #expect(h.store.loadingAllTracks.isEmpty)
+        #expect(h.shownIds("VLPL1") == ["fresh"])
+    }
+
+    @Test("a reset while a playlist the user made is loading at rest clears the loading state")
+    func ownedResetWhileLoading() async {
+        let h = SortHarness()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t1", gate)
+        await h.openLongPlaylist(isEditable: true)
+        #expect(await h.until { await h.backend.moreTracksCalls.count == 1 })
+
+        h.store.reset()
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(h.store.loadingAllTracks.isEmpty)
+        #expect(!h.store.isOrderPending("VLPL1"))
+        #expect(h.store.displayedPage("VLPL1") == nil)
+    }
+
+    @Test("removing a song from a playlist the user made updates the reversed list")
+    func ownedRemoval() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page(
+            "VLPL1",
+            tracks: [
+                MusicSamples.track("a", setVideoId: "s1"),
+                MusicSamples.track("b", setVideoId: "s2"),
+                MusicSamples.track("c", setVideoId: "s3")
+            ],
+            isEditable: true
+        ))
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+        #expect(h.shownIds("VLPL1") == ["c", "b", "a"])
+
+        #expect(h.store.removeTrack(setVideoId: "s2", from: "VLPL1"))
+        #expect(h.shownIds("VLPL1") == ["c", "a"])
     }
 }

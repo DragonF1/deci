@@ -167,8 +167,8 @@ private struct MusicSortMenuItems: View {
     }
 }
 
-/// A playlist's sort chip, on the right of its "SONGS" kicker: "Sort: Default order", or the picked key with an arrow
-/// that tells the direction.
+/// A playlist's sort chip, on the right of its "SONGS" kicker: the sort and, for a key with a direction, an arrow that
+/// tells it, like "Sort: Date added" with a down arrow for a playlist at rest, or "Sort: Playlist order" with none.
 struct MusicSortChipView: View {
     let sort: MusicPlaylistSort
     let onPick: (MusicSortField) -> Void
@@ -230,7 +230,7 @@ struct MusicLikedSortView: View {
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .fixedSize()
-        .accessibilityLabel(sort.isDefault ? "Sort" : "Sort: \(sort.field.label), \(sort.ascending ? "ascending" : "descending")")
+        .accessibilityLabel(sort.isPlaylistOrder ? "Sort" : "Sort: \(sort.field.label), \(sort.ascending ? "ascending" : "descending")")
     }
 }
 

@@ -120,12 +120,23 @@ struct MusicQuickPicksTests {
 struct MusicSortChipTests {
     private let title = MusicPlaylistSort(field: .title, ascending: true)
     private let duration = MusicPlaylistSort(field: .duration, ascending: false)
+    private let oldestFirst = MusicPlaylistSort(field: .dateAdded, ascending: true)
 
-    @Test("the chip says Default order at rest, with no arrow")
+    @Test("the chip says Playlist order for a playlist that is not the user's at rest, with no arrow")
     func atRest() {
-        let chip = MusicSortChip.resolve(.default)
-        #expect(chip.label == "Sort: Default order")
+        let chip = MusicSortChip.resolve(.playlistOrder)
+        #expect(chip.label == "Sort: Playlist order")
         #expect(chip.directionSymbol == nil)
+    }
+
+    @Test("the chip of a playlist the user made at rest says Date added with the arrow down")
+    func ownedAtRest() {
+        #expect(MusicSortChip.resolve(.dateAddedNewestFirst) == MusicSortChip(label: "Sort: Date added", directionSymbol: "arrow.down"))
+    }
+
+    @Test("Date added oldest first reads the same with the arrow up")
+    func dateAddedOldestFirst() {
+        #expect(MusicSortChip.resolve(oldestFirst) == MusicSortChip(label: "Sort: Date added", directionSymbol: "arrow.up"))
     }
 
     @Test("a picked key is named, with an arrow that tells the direction")
@@ -134,18 +145,30 @@ struct MusicSortChipTests {
         #expect(MusicSortChip.resolve(duration) == MusicSortChip(label: "Sort: Duration", directionSymbol: "arrow.down"))
     }
 
-    @Test("Liked music says Recently liked at rest, since YouTube lists it newest first, else the key")
+    @Test("Liked music says Recently liked at rest, which is Date added newest first, else the key")
     func liked() {
-        #expect(MusicSortChip.likedLabel(.default) == "Recently liked")
+        #expect(MusicSortChip.likedLabel(.dateAddedNewestFirst) == "Recently liked")
         #expect(MusicSortChip.likedLabel(title) == "Title")
         #expect(MusicSortChip.likedLabel(duration) == "Duration")
     }
 
-    @Test("the menu marks the picked key with a check at rest and with its direction after")
+    @Test("Liked music names Date added oldest first by the key and Playlist order by its own name")
+    func likedPicked() {
+        #expect(MusicSortChip.likedLabel(oldestFirst) == "Date added")
+        #expect(MusicSortChip.likedLabel(.playlistOrder) == "Playlist order")
+    }
+
+    @Test("the menu marks Playlist order with a check and the other keys with their direction")
     func menuSymbol() {
-        #expect(MusicSortChip.menuSymbol(for: .default) == "checkmark")
+        #expect(MusicSortChip.menuSymbol(for: .playlistOrder) == "checkmark")
         #expect(MusicSortChip.menuSymbol(for: title) == "arrow.up")
         #expect(MusicSortChip.menuSymbol(for: duration) == "arrow.down")
+    }
+
+    @Test("the menu marks Date added with the arrow of its direction, never a check")
+    func menuSymbolDateAdded() {
+        #expect(MusicSortChip.menuSymbol(for: .dateAddedNewestFirst) == "arrow.down")
+        #expect(MusicSortChip.menuSymbol(for: oldestFirst) == "arrow.up")
     }
 }
 

@@ -1,6 +1,7 @@
 // DeciTests/Music/MusicPlaylistSortTests.swift
-// Sorting a playlist's songs: the options, picking one twice to flip it, stable and case- and
-// diacritic-insensitive order, and songs without a value for the sorted field going last.
+// Sorting a playlist's songs: the options, picking one twice to flip it, Date added reading the playlist position in
+// either direction, stable and case- and diacritic-insensitive order, and songs without a value for the sorted field
+// going last.
 
 import Foundation
 import Testing
@@ -26,22 +27,29 @@ struct MusicPlaylistSortTests {
 
     // MARK: - Choosing
 
-    @Test("the options are Default order, Title, Artist, Album and Duration, in that order")
+    @Test("the options are Date added, Playlist order, Title, Artist, Album and Duration, in that order")
     func options() {
-        #expect(MusicSortField.allCases == [.defaultOrder, .title, .artist, .album, .duration])
-        #expect(MusicSortField.allCases.map(\.label) == ["Default order", "Title", "Artist", "Album", "Duration"])
+        #expect(MusicSortField.allCases == [.dateAdded, .playlistOrder, .title, .artist, .album, .duration])
+        #expect(MusicSortField.allCases.map(\.label) == ["Date added", "Playlist order", "Title", "Artist", "Album", "Duration"])
     }
 
-    @Test("a playlist starts in its default order")
-    func startsDefault() {
-        #expect(MusicPlaylistSort.default.field == .defaultOrder)
-        #expect(MusicPlaylistSort.default.isDefault)
-        #expect(MusicPlaylistSort().isDefault)
+    @Test("Playlist order is the order YouTube lists, and a bare sort is that order")
+    func playlistOrderConstant() {
+        #expect(MusicPlaylistSort.playlistOrder.field == .playlistOrder)
+        #expect(MusicPlaylistSort.playlistOrder.isPlaylistOrder)
+        #expect(MusicPlaylistSort().isPlaylistOrder)
+        #expect(MusicPlaylistSort() == .playlistOrder)
+    }
+
+    @Test("the newest-first Date added sort is Date added running descending, and is not Playlist order")
+    func dateAddedConstant() {
+        #expect(MusicPlaylistSort.dateAddedNewestFirst == MusicPlaylistSort(field: .dateAdded, ascending: false))
+        #expect(!MusicPlaylistSort.dateAddedNewestFirst.isPlaylistOrder)
     }
 
     @Test("picking a new option sorts ascending and picking the same one again flips the direction")
     func picking() {
-        var sort = MusicPlaylistSort.default
+        var sort = MusicPlaylistSort.playlistOrder
         sort = sort.picking(.title)
         #expect(sort == MusicPlaylistSort(field: .title, ascending: true))
         sort = sort.picking(.title)
@@ -56,20 +64,142 @@ struct MusicPlaylistSortTests {
         #expect(sort == MusicPlaylistSort(field: .artist, ascending: true))
     }
 
-    @Test("default order has no direction: picking it again stays put, and it always resets to ascending")
-    func pickingDefault() {
-        let sort = MusicPlaylistSort(field: .duration, ascending: false).picking(.defaultOrder)
-        #expect(sort == .default)
-        #expect(sort.picking(.defaultOrder) == .default)
+    @Test("Date added starts newest first, unlike the other options, and picking it again flips it")
+    func pickingDateAdded() {
+        var sort = MusicPlaylistSort.playlistOrder.picking(.dateAdded)
+        #expect(sort == MusicPlaylistSort(field: .dateAdded, ascending: false))
+        sort = sort.picking(.dateAdded)
+        #expect(sort == MusicPlaylistSort(field: .dateAdded, ascending: true))
+        sort = sort.picking(.dateAdded)
+        #expect(sort == MusicPlaylistSort(field: .dateAdded, ascending: false))
+    }
+
+    @Test("Date added starts newest first from any other option, whichever way that one ran")
+    func pickingDateAddedFromElsewhere() {
+        #expect(MusicPlaylistSort(field: .title, ascending: true).picking(.dateAdded) == .dateAddedNewestFirst)
+        #expect(MusicPlaylistSort(field: .duration, ascending: false).picking(.dateAdded) == .dateAddedNewestFirst)
+    }
+
+    @Test("an option picked after Date added starts ascending")
+    func pickingAfterDateAdded() {
+        #expect(MusicPlaylistSort.dateAddedNewestFirst.picking(.title) == MusicPlaylistSort(field: .title, ascending: true))
+    }
+
+    @Test("Playlist order has no direction: picking it gives the explicit playlist order from anywhere, and again stays put")
+    func pickingPlaylistOrder() {
+        let sort = MusicPlaylistSort(field: .duration, ascending: false).picking(.playlistOrder)
+        #expect(sort == .playlistOrder)
+        #expect(sort.picking(.playlistOrder) == .playlistOrder)
+        #expect(MusicPlaylistSort.dateAddedNewestFirst.picking(.playlistOrder) == .playlistOrder)
+        #expect(MusicPlaylistSort.dateAddedNewestFirst.picking(.playlistOrder) != .dateAddedNewestFirst)
+    }
+
+    // MARK: - Needing a reorder
+
+    @Test("Playlist order never reorders, whichever way the source runs")
+    func playlistOrderNeverReorders() {
+        #expect(!MusicPlaylistSort.playlistOrder.reorders(newestFirst: false))
+        #expect(!MusicPlaylistSort.playlistOrder.reorders(newestFirst: true))
+    }
+
+    @Test("Date added newest first reorders a list that runs oldest first and leaves one that runs newest first")
+    func dateAddedDescendingReorders() {
+        #expect(MusicPlaylistSort.dateAddedNewestFirst.reorders(newestFirst: false))
+        #expect(!MusicPlaylistSort.dateAddedNewestFirst.reorders(newestFirst: true))
+    }
+
+    @Test("Date added oldest first is the other way round")
+    func dateAddedAscendingReorders() {
+        let oldestFirst = MusicPlaylistSort(field: .dateAdded, ascending: true)
+        #expect(!oldestFirst.reorders(newestFirst: false))
+        #expect(oldestFirst.reorders(newestFirst: true))
+    }
+
+    @Test("every other option reorders whichever way the source runs")
+    func fieldsAlwaysReorder() {
+        for field in [MusicSortField.title, .artist, .album, .duration] {
+            for ascending in [true, false] {
+                let sort = MusicPlaylistSort(field: field, ascending: ascending)
+                #expect(sort.reorders(newestFirst: false))
+                #expect(sort.reorders(newestFirst: true))
+            }
+        }
     }
 
     // MARK: - Ordering
 
-    @Test("default order returns the songs untouched, even when the direction says descending")
-    func defaultOrder() {
+    @Test("Playlist order returns the songs untouched, even when the direction says descending")
+    func playlistOrder() {
         let list = [track("a", title: "Zed"), track("b", title: "Alpha"), track("c", title: "Mid")]
-        #expect(sorted(.defaultOrder, list) == ["a", "b", "c"])
-        #expect(sorted(.defaultOrder, ascending: false, list) == ["a", "b", "c"])
+        #expect(sorted(.playlistOrder, list) == ["a", "b", "c"])
+        #expect(sorted(.playlistOrder, ascending: false, list) == ["a", "b", "c"])
+    }
+
+    @Test("Date added newest first reverses a playlist that lists the oldest first")
+    func dateAddedDescendingReverses() {
+        let list = [track("a"), track("b"), track("c"), track("d")]
+        #expect(sorted(.dateAdded, ascending: false, list) == ["d", "c", "b", "a"])
+    }
+
+    @Test("Date added oldest first keeps a playlist that lists the oldest first")
+    func dateAddedAscendingKeeps() {
+        let list = [track("a"), track("b"), track("c"), track("d")]
+        #expect(sorted(.dateAdded, ascending: true, list) == ["a", "b", "c", "d"])
+    }
+
+    @Test("a list that already runs newest first (Liked music) keeps its order for newest first and reverses for oldest first")
+    func dateAddedOnNewestFirstSource() {
+        let list = [track("a"), track("b"), track("c"), track("d")]
+        let newest = MusicPlaylistSort(field: .dateAdded, ascending: false).sorted(list, newestFirst: true)
+        let oldest = MusicPlaylistSort(field: .dateAdded, ascending: true).sorted(list, newestFirst: true)
+        #expect(ids(newest) == ["a", "b", "c", "d"])
+        #expect(ids(oldest) == ["d", "c", "b", "a"])
+    }
+
+    @Test("the newest-first flag changes nothing for the other options, including Playlist order")
+    func newestFirstFlagIgnoredByOtherFields() {
+        let list = [track("a", title: "Charlie"), track("b", title: "Alpha"), track("c", title: "Bravo")]
+        for field in [MusicSortField.playlistOrder, .title, .artist, .album, .duration] {
+            let sort = MusicPlaylistSort(field: field, ascending: false)
+            #expect(sort.sorted(list, newestFirst: true) == sort.sorted(list, newestFirst: false))
+        }
+    }
+
+    @Test("Date added reads the position only: titles, lengths and missing values do not move a song")
+    func dateAddedIgnoresEverythingButPosition() {
+        let list = [
+            track("a", title: "Zed", seconds: nil),
+            track("b", title: "Alpha", seconds: 10),
+            track("c", title: "", artist: "", seconds: 999),
+            track("d", title: "Mid", album: "X", seconds: 5)
+        ]
+        #expect(sorted(.dateAdded, ascending: false, list) == ["d", "c", "b", "a"])
+        #expect(sorted(.dateAdded, ascending: true, list) == ["a", "b", "c", "d"])
+    }
+
+    @Test("Date added keeps a song that is in the playlist twice in both places")
+    func dateAddedKeepsRepeats() {
+        let list = [track("a"), track("b"), track("a")]
+        #expect(sorted(.dateAdded, ascending: false, list) == ["a", "b", "a"])
+        let list2 = [track("a"), track("b"), track("c"), track("a")]
+        #expect(sorted(.dateAdded, ascending: false, list2) == ["a", "c", "b", "a"])
+    }
+
+    @Test("Date added on an empty list and on a single song comes back as it is, either direction")
+    func dateAddedTiny() {
+        #expect(sorted(.dateAdded, ascending: false, []).isEmpty)
+        #expect(sorted(.dateAdded, ascending: false, [track("a")]) == ["a"])
+        #expect(MusicPlaylistSort.dateAddedNewestFirst.sorted([], newestFirst: true).isEmpty)
+    }
+
+    @Test("Date added reverses ten thousand songs exactly")
+    func dateAddedLarge() {
+        let list = (0..<10_000).map { track("id\($0)") }
+        let result = MusicPlaylistSort.dateAddedNewestFirst.sorted(list)
+        #expect(result.count == 10_000)
+        #expect(result.first?.videoId == "id9999")
+        #expect(result.last?.videoId == "id0")
+        #expect(ids(result) == ids(list).reversed())
     }
 
     @Test("title sorts A to Z and Z to A")

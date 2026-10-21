@@ -104,7 +104,9 @@ struct MusicPageView: View {
     @ViewBuilder
     private func actions(page: MusicBrowsePage) -> some View {
         let items = menuItems(page: page)
-        let pills = MusicPagePills.pills(kind: kind, hasTracks: !page.tracks.isEmpty, hasMenuItems: !items.isEmpty)
+        // Play and Shuffle wait while the list does: the songs loaded so far are not in the order the list will have.
+        let hasTracks = !page.tracks.isEmpty && !browse.isOrderPending(page.browseId)
+        let pills = MusicPagePills.pills(kind: kind, hasTracks: hasTracks, hasMenuItems: !items.isEmpty)
         if !pills.isEmpty {
             HStack(spacing: MusicBrowseLayout.actionsGap) {
                 ForEach(pills, id: \.self) { pill in
@@ -153,15 +155,15 @@ struct MusicPageView: View {
 
     // MARK: - Lists
 
-    /// The bar over a playlist's or Liked music's songs: "SONGS" and the sort, and under a sorted list the note about
-    /// what the sort has or has not reached. Albums have none, nor does an artist.
+    /// The bar over a playlist's or Liked music's songs: "SONGS" and the sort, and under it the note about what the
+    /// sort is waiting for or has not reached. Albums have none, nor does an artist.
     @ViewBuilder
     private func listBar(page: MusicBrowsePage) -> some View {
         if kind == .playlist || kind == .liked {
             let canSort = MusicBrowseStore.canSort(page.browseId)
             let sort = browse.sort(for: page.browseId)
             let note = MusicSortNote.resolve(
-                isLoadingAll: browse.loadingAllTracks.contains(page.browseId),
+                isLoadingAll: browse.isOrderPending(page.browseId),
                 sortLimit: browse.sortedSongLimit(page.browseId)
             )
             HStack(spacing: 0) {
@@ -180,7 +182,7 @@ struct MusicPageView: View {
             .padding(.top, MusicBrowseLayout.pageGap)
             .padding(.bottom, MusicBrowseLayout.listBarGap)
 
-            if canSort, !sort.isDefault, note != .none {
+            if canSort, note != .none {
                 MusicSortNoteView(note: note)
                     .frame(maxWidth: .infinity)
                     .padding(.bottom, MusicBrowseLayout.listBarGap)
@@ -190,10 +192,13 @@ struct MusicPageView: View {
         }
     }
 
-    /// The songs of an album, a playlist or Liked music, with the footer that loads more of a long one.
+    /// The songs of an album, a playlist or Liked music, with the footer that loads more of a long one. A list whose
+    /// order waits for the rest of its songs shows none yet, only the note under the bar.
     @ViewBuilder
     private func tracks(of page: MusicBrowsePage) -> some View {
-        if page.tracks.isEmpty, page.shelves.isEmpty {
+        if browse.isOrderPending(page.browseId) {
+            EmptyView()
+        } else if page.tracks.isEmpty, page.shelves.isEmpty {
             MusicStateCard(message: "No songs here yet.", minHeight: 56)
         } else if !page.tracks.isEmpty {
             // The page the songs sit on decides whether they can leave the playlist or go to this album.
@@ -237,9 +242,21 @@ struct MusicPageView: View {
 
     /// The songs the field's words leave: the count line over them, then the matches with their own numbers and the
     /// words tinted. Of a long list only the loaded part is searched, and the count says so. Nothing matching shows the
-    /// block that offers YouTube Music.
+    /// block that offers YouTube Music. A list whose order waits for the rest of its songs shows the same note as the
+    /// bar does, in place of the matches.
     @ViewBuilder
     private func filteredTracks(of page: MusicBrowsePage) -> some View {
+        if browse.isOrderPending(page.browseId) {
+            MusicSortNoteView(note: .loadingAll)
+                .frame(maxWidth: .infinity)
+                .padding(.top, MusicBrowseLayout.pageGap)
+        } else {
+            matchedTracks(of: page)
+        }
+    }
+
+    @ViewBuilder
+    private func matchedTracks(of page: MusicBrowsePage) -> some View {
         let matches = MusicLocalSearch.indices(of: page.tracks, terms: terms)
         let isPartial = page.continuation != nil || isLoadingMore(page)
         VStack(spacing: 0) {
