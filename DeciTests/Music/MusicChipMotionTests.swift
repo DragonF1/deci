@@ -58,6 +58,17 @@ struct MusicChipMotionTests {
         #expect(MusicChipMotion.marqueeOffset(elapsed: .nan, textWidth: 100) == 0)
     }
 
+    @Test("a marquee with no rest folds time into one loop, so the tenth loop scrolls as the first does")
+    func marqueeLoopElapsedFolds() {
+        let loop = 1.5 + 124.0 / 25
+        #expect(abs(MusicChipMotion.marqueeLoopElapsed(10 * loop + 3.5, textWidth: 100) - 3.5) < 0.001)
+        #expect(abs(MusicChipMotion.marqueeOffset(
+            elapsed: MusicChipMotion.marqueeLoopElapsed(10 * loop + 3.5, textWidth: 100), textWidth: 100
+        ) + 50) < 0.001)
+        #expect(MusicChipMotion.marqueeLoopElapsed(-2, textWidth: 100) == 0)
+        #expect(MusicChipMotion.marqueeLoopElapsed(.infinity, textWidth: 100) == 0)
+    }
+
     @Test("Reduce Motion makes the width change at once, otherwise it takes 0.35 s")
     func widthDuration() {
         #expect(MusicChipMotion.widthChangeDuration(reduceMotion: false) == 0.35)

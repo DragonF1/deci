@@ -1,10 +1,11 @@
 // Deci/Views/Music/MusicMarquee.swift
 import SwiftUI
 
-/// A line that scrolls when it is wider than its room, as the menu bar chip's title does: it holds at its start, then
-/// scrolls left until a second copy stands where the first began, runs a few loops and rests (MusicChipMotion has the
-/// timing). It runs only while the song plays and Reduce Motion is off; otherwise a line that does not fit is cut off
-/// as before. Anything inside, buttons included, keeps working while it moves.
+/// A line that scrolls when it is wider than its room, with the menu bar chip's hold, speed and gap: it holds at its
+/// start, then scrolls left until a second copy stands where the first began, and again. Unlike the chip it does not
+/// rest between runs: it is only drawn while the window is open, when the user is looking at it. It runs only while
+/// the song plays and Reduce Motion is off; otherwise a line that does not fit is cut off as before. Anything inside,
+/// buttons included, keeps working while it moves.
 struct MusicMarquee<Content: View>: View {
     let isPlaying: Bool
     @ViewBuilder let content: Content
@@ -12,31 +13,38 @@ struct MusicMarquee<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var textWidth: CGFloat = 0
     @State private var roomWidth: CGFloat = 0
-    /// When the run in progress started; nil while the marquee rests between runs.
+    /// When the marquee started; nil while it is off.
     @State private var runStart: Date?
 
     private var scrolls: Bool { textWidth > roomWidth + 0.5 }
 
     var body: some View {
         let runs = MusicChipMotion.runsMarquee(scrolls: scrolls, isPlaying: isPlaying, reduceMotion: reduceMotion)
+        // minWidth 0 keeps both branches at the room's width: without it the frame grows to a wider line, the line
+        // spills out of its column and the room reads as wide as the line.
         Group {
             if runs {
                 TimelineView(.animation(paused: runStart == nil)) { context in
                     let offset = runStart.map {
-                        MusicChipMotion.marqueeOffset(elapsed: context.date.timeIntervalSince($0), textWidth: textWidth)
+                        MusicChipMotion.marqueeOffset(
+                            elapsed: MusicChipMotion.marqueeLoopElapsed(
+                                context.date.timeIntervalSince($0), textWidth: textWidth
+                            ),
+                            textWidth: textWidth
+                        )
                     } ?? 0
                     HStack(spacing: MusicChipMotion.marqueeGap) {
                         content.fixedSize()
                         content.fixedSize().accessibilityHidden(true)
                     }
                     .offset(x: offset)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                     .clipped()
                     .mask { edgeFade(leading: offset < 0) }
                 }
             } else {
                 content
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
         }
         .background {
@@ -46,15 +54,7 @@ struct MusicMarquee<Content: View>: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { roomWidth = $0 }
         .task(id: runs ? textWidth : -1) {
-            runStart = nil
-            guard runs else { return }
-            let run = MusicChipMotion.marqueeRunDuration(textWidth: textWidth)
-            while !Task.isCancelled {
-                runStart = .now
-                try? await Task.sleep(for: .seconds(run))
-                runStart = nil
-                try? await Task.sleep(for: .seconds(MusicChipMotion.marqueeRest))
-            }
+            runStart = runs ? .now : nil
         }
     }
 
