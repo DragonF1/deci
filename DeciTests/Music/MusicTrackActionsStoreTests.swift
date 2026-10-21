@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicTrackActionsStoreTests.swift
 // The state behind the song actions: the save to playlist menu (load, save, already in, errors, late answers),
-// saving a whole album or playlist through the same menu, removing a row from a playlist page, the short notice
-// line, and a session that ends.
+// saving a whole album or playlist through the same menu, which playlists already hold it (read locally, because
+// YouTube Music sends no such flag), removing a row from a playlist page, the short notice line, and a session that ends.
 
 import Foundation
 import Testing
@@ -89,6 +89,34 @@ private struct ActionsHarness {
 
     func pageIds(_ id: String = "VLPLfixtureMine") -> [String] {
         if case .loaded(let page) = browse.pageState(id) { page.tracks.map(\.videoId) } else { [] }
+    }
+
+    /// The playlists whose row is ticked in the open picker.
+    var ticked: Set<String> {
+        Set(options?.filter(\.containsVideo).map(\.playlistId) ?? [])
+    }
+
+    /// A playlist's first page as the membership pass reads it: its songs by video id, and the token of the page behind it.
+    func setPlaylistSongs(_ playlistId: String, _ ids: [String], continuation: String? = nil) async {
+        let tracks = ids.map { MusicSamples.track($0) }
+        await backend.setPage(MusicSamples.page("VL" + playlistId, tracks: tracks, continuation: continuation))
+    }
+
+    /// A playlist of `pages` pages with two songs each, reached through the tokens "c1", "c2" and so on. `songOnPage`
+    /// (1 is the first page) also holds "vid-1". The last page has no token.
+    func setLongPlaylist(_ playlistId: String, pages: Int, songOnPage: Int? = nil) async {
+        let browseId = "VL" + playlistId
+        for page in 1...pages {
+            var ids = ["\(playlistId)-\(page)a", "\(playlistId)-\(page)b"]
+            if page == songOnPage { ids.append("vid-1") }
+            let tracks = ids.map { MusicSamples.track($0) }
+            let next = page < pages ? "c\(page)" : nil
+            if page == 1 {
+                await backend.setPage(MusicSamples.page(browseId, tracks: tracks, continuation: next))
+            } else {
+                await backend.setMoreTracks(browseId: browseId, continuation: "c\(page - 1)", tracks: tracks, next: next)
+            }
+        }
     }
 }
 
@@ -611,6 +639,400 @@ struct MusicTrackActionsStoreTests {
         await again.letLateWorkLand()
         #expect(again.store.notice == nil)
         #expect(again.store.picker == nil)
+    }
+
+    // MARK: - Which playlists already hold it
+
+    @Test("A playlist that holds the song on its first page gets its row ticked, and one without it stays unticked")
+    func membershipTicksFirstPage() async {
+        let h = ActionsHarness()
+        await h.setPlaylistSongs("PLone", ["x", "vid-1", "y"])
+        await h.setPlaylistSongs("PLtwo", ["x", "y"])
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone"), MusicSamples.playlistOption("PLtwo")])
+
+        #expect(await h.until { h.ticked == ["PLone"] })
+        #expect(await h.until { await h.backend.pageCalls.count == 2 })
+        await h.letLateWorkLand()
+        #expect(h.ticked == ["PLone"])
+        #expect(await h.backend.pageCalls.sorted() == ["VLPLone", "VLPLtwo"])
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+        #expect(h.store.notice == nil)
+        #expect(h.options?.map(\.playlistId) == ["PLone", "PLtwo"])
+    }
+
+    @Test("A song that is only on a later page ticks the row, and paging stops as soon as it is found")
+    func membershipFindsSongOnLaterPage() async {
+        let h = ActionsHarness()
+        await h.setPlaylistSongs("PLone", ["a", "b"], continuation: "c1")
+        await h.backend.setMoreTracks(browseId: "VLPLone", continuation: "c1", tracks: MusicSamples.tracks("c", "vid-1"), next: "c2")
+        await h.backend.setMoreTracks(browseId: "VLPLone", continuation: "c2", tracks: MusicSamples.tracks("d"))
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone")])
+
+        #expect(await h.until { h.ticked == ["PLone"] })
+        await h.letLateWorkLand()
+        #expect(await h.backend.pageCalls == ["VLPLone"])
+        #expect(await h.backend.moreTracksCalls == [FakeMusicBackend.MoreTracksCall(browseId: "VLPLone", continuation: "c1")])
+    }
+
+    @Test("A playlist is read to its end when the song is not in it, and stays unticked")
+    func membershipReadsToTheEnd() async {
+        let h = ActionsHarness()
+        await h.setPlaylistSongs("PLone", ["a"], continuation: "c1")
+        await h.backend.setMoreTracks(browseId: "VLPLone", continuation: "c1", tracks: MusicSamples.tracks("b"), next: "c2")
+        await h.backend.setMoreTracks(browseId: "VLPLone", continuation: "c2", tracks: MusicSamples.tracks("c"))
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone")])
+
+        #expect(await h.until { await h.backend.moreTracksCalls.count == 2 })
+        await h.letLateWorkLand()
+        #expect(h.ticked.isEmpty)
+        #expect(h.options?.count == 1)
+    }
+
+    @Test("A row ticked by the pass says Already in on the next click and sends nothing")
+    func membershipTickMakesChooseSayAlreadyIn() async {
+        let h = ActionsHarness()
+        await h.setPlaylistSongs("PLone", ["vid-1"])
+        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
+        await h.openPicker(options: [road])
+        #expect(await h.until { h.ticked == ["PLone"] })
+
+        h.store.choose(road)
+        #expect(h.store.notice?.text == "Already in Road Trip")
+        #expect(h.store.notice?.isError == false)
+        await h.letLateWorkLand()
+        #expect(await h.backend.addToPlaylistCalls.isEmpty)
+    }
+
+    @Test("Saving a whole album ticks the playlists that hold every one of its songs, and not one that holds only some")
+    func membershipCollection() async {
+        let h = ActionsHarness()
+        // The album's songs are on two pages, and the full playlist holds them across two pages as well.
+        await h.setPlaylistSongs("OLAK5uy_tile", ["s1", "s2"], continuation: "sc")
+        await h.backend.setMoreTracks(browseId: "VLOLAK5uy_tile", continuation: "sc", tracks: MusicSamples.tracks("s3"))
+        await h.setPlaylistSongs("PLfull", ["x", "s3", "s1"], continuation: "fc")
+        await h.backend.setMoreTracks(browseId: "VLPLfull", continuation: "fc", tracks: MusicSamples.tracks("s2"))
+        await h.setPlaylistSongs("PLpartial", ["s1", "s2"])
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [
+            MusicSamples.playlistOption("PLfull"), MusicSamples.playlistOption("PLpartial"),
+        ])
+
+        #expect(await h.until { h.ticked == ["PLfull"] })
+        #expect(await h.until { await h.backend.pageCalls.count == 3 })
+        await h.letLateWorkLand()
+        #expect(h.ticked == ["PLfull"])
+        #expect(await h.backend.pageCalls.first == "VLOLAK5uy_tile")
+        #expect(await h.backend.pageCalls.sorted() == ["VLOLAK5uy_tile", "VLPLfull", "VLPLpartial"])
+    }
+
+    @Test("A playlist tile is read by its playlist id with the VL, and a playlist that holds all of it is ticked")
+    func membershipPlaylistTile() async {
+        let h = ActionsHarness()
+        await h.setPlaylistSongs("PLtile", ["s1", "s2"])
+        await h.setPlaylistSongs("PLone", ["s2", "s1", "z"])
+        await h.openCollectionPicker(for: h.playlistTile, sourceId: "PLtile", options: [MusicSamples.playlistOption("PLone")])
+        #expect(await h.until { h.ticked == ["PLone"] })
+        #expect(await h.backend.pageCalls.first == "VLPLtile")
+    }
+
+    @Test("When the source of a whole album cannot be read nothing is ticked, no playlist is read, and no notice shows")
+    func membershipSourceFailure() async {
+        let h = ActionsHarness()
+        await h.setPlaylistSongs("PLone", ["s1"])
+        await h.backend.setPageError("VLOLAK5uy_tile", MusicError.http(500))
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [MusicSamples.playlistOption("PLone")])
+
+        #expect(await h.until { await h.backend.pageCalls.count == 1 })
+        await h.letLateWorkLand()
+        #expect(h.ticked.isEmpty)
+        #expect(await h.backend.pageCalls == ["VLOLAK5uy_tile"])
+        #expect(h.store.notice == nil)
+        #expect(h.probe.expired == 0)
+        #expect(h.store.picker != nil)
+    }
+
+    @Test("A source that comes back empty ticks nothing: no playlist holds all of no songs")
+    func membershipEmptySource() async {
+        let h = ActionsHarness()
+        await h.setPlaylistSongs("PLone", ["s1"])
+        // Nothing is scripted for the album's page, so it answers with no songs.
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [MusicSamples.playlistOption("PLone")])
+
+        #expect(await h.until { await h.backend.pageCalls.count == 1 })
+        await h.letLateWorkLand()
+        #expect(h.ticked.isEmpty)
+        #expect(await h.backend.pageCalls == ["VLOLAK5uy_tile"])
+        #expect(h.store.notice == nil)
+    }
+
+    @Test("A source longer than the page limit is not trusted: ticking against part of it would be wrong")
+    func membershipSourceTooLong() async {
+        let h = ActionsHarness()
+        await h.setLongPlaylist("OLAK5uy_tile", pages: MusicTrackActionsStore.membershipPageLimit + 5)
+        // This playlist holds every song of the pages that were read, but the album goes on past them.
+        let readSongs = (1...MusicTrackActionsStore.membershipPageLimit).flatMap { ["OLAK5uy_tile-\($0)a", "OLAK5uy_tile-\($0)b"] }
+        await h.setPlaylistSongs("PLone", readSongs)
+        await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [MusicSamples.playlistOption("PLone")])
+
+        #expect(await h.until { await h.backend.moreTracksCalls.count == MusicTrackActionsStore.membershipPageLimit - 1 })
+        await h.letLateWorkLand()
+        #expect(h.ticked.isEmpty)
+        #expect(await h.backend.pageCalls == ["VLOLAK5uy_tile"])
+    }
+
+    @Test("A playlist whose pages fail stays unticked with no notice, and the others are still read and ticked")
+    func membershipFailureIsolated() async {
+        let errors: [any Error] = [MusicError.http(500), MusicError.signedOut, MusicError.parse("x"), URLError(.notConnectedToInternet)]
+        for error in errors {
+            let h = ActionsHarness()
+            await h.setPlaylistSongs("PLone", ["vid-1"])
+            await h.setPlaylistSongs("PLtwo", ["vid-1"])
+            await h.setPlaylistSongs("PLthree", ["vid-1"])
+            await h.backend.setPageError("VLPLtwo", error)
+            await h.openPicker(options: [
+                MusicSamples.playlistOption("PLone"), MusicSamples.playlistOption("PLtwo"), MusicSamples.playlistOption("PLthree"),
+            ])
+
+            #expect(await h.until { h.ticked == ["PLone", "PLthree"] }, "\(error)")
+            await h.letLateWorkLand()
+            #expect(h.ticked == ["PLone", "PLthree"], "\(error)")
+            #expect(await h.backend.pageCalls.count == 3, "\(error)")
+            #expect(h.store.notice == nil, "\(error)")
+            #expect(h.probe.expired == 0, "\(error)")
+            #expect(h.store.picker != nil)
+        }
+    }
+
+    @Test("A later page that fails leaves the row unticked even if the song was on the pages after it")
+    func membershipContinuationFailure() async {
+        let h = ActionsHarness()
+        await h.setPlaylistSongs("PLone", ["a"], continuation: "c1")
+        await h.backend.setMoreTracksError(browseId: "VLPLone", continuation: "c1", MusicError.http(503))
+        await h.setPlaylistSongs("PLtwo", ["vid-1"])
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone"), MusicSamples.playlistOption("PLtwo")])
+
+        #expect(await h.until { h.ticked == ["PLtwo"] })
+        #expect(await h.until { await h.backend.moreTracksCalls.count == 1 })
+        await h.letLateWorkLand()
+        #expect(h.ticked == ["PLtwo"])
+        #expect(h.store.notice == nil)
+    }
+
+    @Test("An option YouTube already flagged is not read, and a list with nothing left to read makes no call at all")
+    func membershipSkipsFlagged() async {
+        let h = ActionsHarness()
+        await h.openPicker(options: [MusicSamples.playlistOption("PLtwo", contains: true)])
+        await h.letLateWorkLand()
+        #expect(await h.backend.pageCalls.isEmpty)
+        #expect(h.ticked == ["PLtwo"])
+
+        await h.setPlaylistSongs("PLone", ["vid-1"])
+        await h.openPicker(options: [MusicSamples.playlistOption("PLtwo", contains: true), MusicSamples.playlistOption("PLone")])
+        #expect(await h.until { h.ticked == ["PLone", "PLtwo"] })
+        await h.letLateWorkLand()
+        #expect(await h.backend.pageCalls == ["VLPLone"])
+
+        let album = ActionsHarness()
+        await album.openCollectionPicker(
+            for: album.albumTile, sourceId: "OLAK5uy_tile", options: [MusicSamples.playlistOption("PLtwo", contains: true)])
+        await album.letLateWorkLand()
+        #expect(await album.backend.pageCalls.isEmpty)
+    }
+
+    @Test("Closing the picker before a page comes back drops the answer and reads nothing more")
+    func membershipDroppedOnClose() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        await h.backend.setPageGate("VLPLone", gate)
+        await h.setPlaylistSongs("PLone", ["a"], continuation: "c1")
+        await h.backend.setMoreTracks(browseId: "VLPLone", continuation: "c1", tracks: MusicSamples.tracks("vid-1"))
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone")])
+        #expect(await h.until { await h.backend.pageCalls.count == 1 })
+
+        h.store.closePicker()
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(h.store.picker == nil)
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+        #expect(h.store.notice == nil)
+    }
+
+    @Test("Opening the picker for another song before a page comes back never ticks a row in the new picker")
+    func membershipDroppedForAnotherSong() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        await h.backend.setPageGate("VLPLone", gate)
+        await h.setPlaylistSongs("PLone", ["vid-1"])
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone")])
+        #expect(await h.until { await h.backend.pageCalls.count == 1 })
+
+        let other = MusicSamples.track("vid-2", title: "Other")
+        await h.openPicker(for: other, options: [MusicSamples.playlistOption("PLone")])
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(h.store.picker?.track == other)
+        #expect(h.ticked.isEmpty)
+        #expect(h.options?.map(\.playlistId) == ["PLone"])
+    }
+
+    @Test("A late answer for a song whose picker was closed ticks nothing when the same song is opened again and is not in it")
+    func membershipDroppedOnReopen() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        await h.backend.setPageGate("VLPLone", gate)
+        await h.setPlaylistSongs("PLone", ["vid-1"])
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone")])
+        #expect(await h.until { await h.backend.pageCalls.count == 1 })
+        h.store.closePicker()
+
+        // The playlist has lost the song by the time the picker is opened again.
+        await h.setPlaylistSongs("PLone", ["other"])
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone")])
+        #expect(await h.until { await h.backend.pageCalls.count == 2 })
+        await gate.open()
+        await h.letLateWorkLand()
+        // Both reads were held at the gate; the first one carried the old page and must not tick the new picker.
+        #expect(h.ticked.isEmpty)
+    }
+
+    @Test("A reset drops a pass that is still out")
+    func membershipDroppedOnReset() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        await h.backend.setPageGate("VLPLone", gate)
+        await h.setPlaylistSongs("PLone", ["vid-1"])
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone")])
+        #expect(await h.until { await h.backend.pageCalls.count == 1 })
+
+        h.store.reset()
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(h.store.picker == nil)
+        #expect(h.store.notice == nil)
+    }
+
+    @Test("A playlist is read for at most the page limit, the first page counting as page one")
+    func membershipPageLimit() async {
+        #expect(MusicTrackActionsStore.membershipPageLimit == 20)
+        let h = ActionsHarness()
+        await h.setLongPlaylist("PLlong", pages: 30)
+        await h.openPicker(options: [MusicSamples.playlistOption("PLlong")])
+
+        #expect(await h.until { await h.backend.moreTracksCalls.count == MusicTrackActionsStore.membershipPageLimit - 1 })
+        await h.letLateWorkLand()
+        let calls = await h.backend.moreTracksCalls
+        #expect(calls.count == 19)
+        #expect(calls.last == FakeMusicBackend.MoreTracksCall(browseId: "VLPLlong", continuation: "c19"))
+        #expect(await h.backend.pageCalls == ["VLPLlong"])
+        #expect(h.ticked.isEmpty)
+    }
+
+    @Test("A song on the last page the limit allows ticks the row; one a page further is not looked for")
+    func membershipPageLimitBoundary() async {
+        let h = ActionsHarness()
+        await h.setLongPlaylist("PLlast", pages: 30, songOnPage: 20)
+        await h.setLongPlaylist("PLpast", pages: 30, songOnPage: 21)
+        await h.openPicker(options: [MusicSamples.playlistOption("PLlast"), MusicSamples.playlistOption("PLpast")])
+
+        #expect(await h.until { h.ticked == ["PLlast"] })
+        #expect(await h.until { await h.backend.moreTracksCalls.filter { $0.browseId == "VLPLpast" }.count == 19 })
+        await h.letLateWorkLand()
+        let calls = await h.backend.moreTracksCalls
+        #expect(calls.filter { $0.browseId == "VLPLpast" }.count == 19)
+        #expect(!calls.contains(FakeMusicBackend.MoreTracksCall(browseId: "VLPLpast", continuation: "c20")))
+        #expect(calls.filter { $0.browseId == "VLPLlast" }.count == 19)
+        #expect(h.ticked == ["PLlast"])
+    }
+
+    @Test("At most four playlists are read at once, and the next one starts as soon as one is done")
+    func membershipFourAtOnce() async {
+        let h = ActionsHarness()
+        let ids = (0..<6).map { "PL\($0)" }
+        var gates: [MusicTestGate] = []
+        for id in ids {
+            let gate = MusicTestGate()
+            gates.append(gate)
+            await h.backend.setPageGate("VL" + id, gate)
+        }
+        await h.openPicker(options: ids.map { MusicSamples.playlistOption($0) })
+
+        #expect(await h.until { await h.backend.pageCalls.count == 4 })
+        await h.letLateWorkLand()
+        #expect(await h.backend.pageCalls.count == 4)
+
+        await gates[0].open()
+        #expect(await h.until { await h.backend.pageCalls.count == 5 })
+        await h.letLateWorkLand()
+        #expect(await h.backend.pageCalls.count == 5)
+
+        for gate in gates { await gate.open() }
+        #expect(await h.until { await h.backend.pageCalls.count == 6 })
+        #expect(await h.backend.pageCalls.sorted() == ids.map { "VL" + $0 })
+    }
+
+    @Test("Rows tick one by one as their own playlists are read, not all together at the end")
+    func membershipTicksOneByOne() async {
+        let h = ActionsHarness()
+        let gates = [MusicTestGate(), MusicTestGate()]
+        await h.setPlaylistSongs("PLone", ["vid-1"])
+        await h.setPlaylistSongs("PLtwo", ["vid-1"])
+        await h.backend.setPageGate("VLPLone", gates[0])
+        await h.backend.setPageGate("VLPLtwo", gates[1])
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone"), MusicSamples.playlistOption("PLtwo")])
+        #expect(await h.until { await h.backend.pageCalls.count == 2 })
+        #expect(h.ticked.isEmpty)
+
+        await gates[1].open()
+        #expect(await h.until { h.ticked == ["PLtwo"] })
+        await h.letLateWorkLand()
+        #expect(h.ticked == ["PLtwo"])
+        await gates[0].open()
+        #expect(await h.until { h.ticked == ["PLone", "PLtwo"] })
+    }
+
+    @Test("A row a save ticked while its playlist was being read stays ticked, whatever the read finds")
+    func membershipNeverUnticks() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        await h.backend.setPageGate("VLPLone", gate)
+        let road = MusicSamples.playlistOption("PLone", title: "Road Trip")
+        await h.openPicker(options: [road])
+        #expect(await h.until { await h.backend.pageCalls.count == 1 })
+
+        h.store.choose(road)
+        #expect(await h.until { h.store.notice?.text == "Saved to Road Trip" })
+        #expect(h.ticked == ["PLone"])
+        // The playlist's page does not list the song (the read began before the save), and the row must keep its tick.
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(h.ticked == ["PLone"])
+    }
+
+    @Test("A playlist a save ticked before its turn came is not read")
+    func membershipSkipsRowTickedBySave() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        let ids = (0..<5).map { "PL\($0)" }
+        for id in ids.prefix(4) { await h.backend.setPageGate("VL" + id, gate) }
+        await h.openPicker(options: ids.map { MusicSamples.playlistOption($0, title: "Name \($0)") })
+        #expect(await h.until { await h.backend.pageCalls.count == 4 })
+
+        h.store.choose(MusicSamples.playlistOption("PL4", title: "Name PL4"))
+        #expect(await h.until { h.store.notice?.text == "Saved to Name PL4" })
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(await h.backend.pageCalls.sorted() == ["VLPL0", "VLPL1", "VLPL2", "VLPL3"])
+        #expect(h.ticked == ["PL4"])
+    }
+
+    @Test("A long list of playlists is read through whole, and a song in a few of them ticks only those")
+    func membershipLargeList() async {
+        let h = ActionsHarness()
+        let many = (0..<300).map { "PL\($0)" }
+        for id in [many[3], many[150], many[299]] { await h.setPlaylistSongs(id, ["vid-1"]) }
+        await h.openPicker(options: many.map { MusicSamples.playlistOption($0) })
+
+        #expect(await h.until { h.ticked == ["PL3", "PL150", "PL299"] })
+        #expect(await h.until { await h.backend.pageCalls.count == 300 })
     }
 
     // MARK: - Remove from playlist

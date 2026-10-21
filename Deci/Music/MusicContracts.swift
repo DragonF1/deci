@@ -314,10 +314,11 @@ protocol MusicBackend: Sendable {
     func page(browseId: String) async throws -> MusicBrowsePage
     /// The tracks after `continuation` on a playlist page.
     func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage
-    /// The playlists the user can add `videoId` to, each marked when it already holds the song.
+    /// The playlists the user can add `videoId` to. YouTube Music does not send a flag for the ones that already hold the
+    /// song, so the options come back unmarked unless YouTube flags them; `MusicTrackActionsStore` checks membership itself.
     func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption]
     /// The playlists the user can add a whole playlist or album to (`sourcePlaylistId`, a leading "VL" is ignored).
-    /// Each is marked when it already holds all of it.
+    /// Likewise unmarked unless YouTube flags them: the store works out which already hold all of it.
     func addToPlaylistOptions(sourcePlaylistId: String) async throws -> [MusicPlaylistOption]
     /// Adds `videoId` to the playlist (a leading "VL" is ignored). Throws `.rejected` when YouTube does not say it worked.
     func addToPlaylist(videoId: String, playlistId: String) async throws

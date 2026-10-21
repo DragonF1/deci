@@ -313,7 +313,9 @@ actor InnerTubeClient {
 
     // MARK: - Song actions
 
-    /// The playlists the user can add `videoId` to, each marked when it already holds the song. Only the count is logged.
+    /// The playlists the user can add `videoId` to. YouTube Music does not send a flag for the ones that already hold the
+    /// song, so the options come back unmarked unless YouTube flags them, and the store checks membership itself. Only the
+    /// count is logged.
     func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption] {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         let id = videoId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -325,8 +327,9 @@ actor InnerTubeClient {
         return options
     }
 
-    /// The playlists the user can add a whole playlist or album to, each marked when it already holds all of it. The
-    /// source goes without the "VL" a browse id carries. Only the count is logged.
+    /// The playlists the user can add a whole playlist or album to. Unmarked unless YouTube flags them, as for a song: the
+    /// store works out which already hold all of it. The source goes without the "VL" a browse id carries. Only the count
+    /// is logged.
     func addToPlaylistOptions(sourcePlaylistId: String) async throws -> [MusicPlaylistOption] {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         let id = Self.plainPlaylistId(sourcePlaylistId)
