@@ -59,7 +59,7 @@ struct ShortcutsTab: View {
 
     private func description(for chord: VolumeStepChord) -> String {
         switch chord {
-        case .plain: "Per press of the volume keys. Also used by app hotkeys and arrow keys in the popup."
+        case .plain: "Per press of the volume keys. Also used by the arrow keys in the popup."
         case .command: "Step while holding Command."
         case .commandShift: "Step while holding Command and Shift."
         }
@@ -129,9 +129,9 @@ struct ShortcutsTab: View {
     private func description(for action: ShortcutAction) -> String {
         switch action {
         case .togglePopup: "Show or hide the menu bar popup"
-        case .targetAppVolumeUp: "Raise volume for the app playing audio"
-        case .targetAppVolumeDown: "Lower volume for the app playing audio"
-        case .targetAppMuteToggle: "Mute or unmute the app playing audio"
+        case .saveSongToPlaylist: "Save the playing song to a playlist"
+        case .likeSong: "Like the playing song, or remove the like"
+        case .dislikeSong: "Dislike the playing song and skip it"
         }
     }
 }

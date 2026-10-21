@@ -379,6 +379,38 @@ actor InnerTubeClient {
         guard succeeded else { throw MusicError.rejected }
     }
 
+    // MARK: - Likes
+
+    /// The like state of one song, from the like button in the overlay of a `next` call for it alone. Nil when the answer
+    /// has no like button for the song. Only whether a state came back is logged, never an id.
+    func likeStatus(videoId: String) async throws -> MusicLikeStatus? {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let id = videoId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return nil }
+        let session = try await sessionOrFallback()
+        let data = try await post("next", session: session, body: ["videoId": id, "isAudioOnly": true])
+        let status = try InnerTubeParser.likeStatus(from: data, videoId: id)
+        Self.log.info("like status known \(status != nil, privacy: .public)")
+        return status
+    }
+
+    /// Likes, dislikes or takes back the rating of one song. YouTube answers a 2xx with an empty object, so success is
+    /// the status alone. Only the kind of rating is logged, never an id.
+    func rate(videoId: String, status: MusicLikeStatus) async throws {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let id = videoId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { throw MusicError.parse("rating has no video id") }
+        let endpoint: String
+        switch status {
+        case .like: endpoint = "like/like"
+        case .dislike: endpoint = "like/dislike"
+        case .indifferent: endpoint = "like/removelike"
+        }
+        let session = try await sessionOrFallback()
+        _ = try await post(endpoint, session: session, body: ["target": ["videoId": id]])
+        Self.log.info("rated a song with \(endpoint, privacy: .public)")
+    }
+
     /// A playlist id as the edit calls take it: trimmed, without the "VL" a browse id carries.
     private static func plainPlaylistId(_ playlistId: String) -> String {
         var id = playlistId.trimmingCharacters(in: .whitespacesAndNewlines)

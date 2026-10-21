@@ -1,29 +1,11 @@
-// FineTune/Shortcuts/ShortcutsRegistry.swift
+// Deci/Shortcuts/ShortcutsRegistry.swift
 import AppKit
 import Foundation
 import KeyboardShortcuts
 import os
 
-@MainActor
-protocol AudioEngineDispatching: AnyObject {
-    var apps: [AudioApp] { get }
-    func setVolume(for app: AudioApp, to volume: Float)
-    func setMute(for app: AudioApp, to muted: Bool)
-    func toggleMute(for app: AudioApp)
-    func currentVolume(for app: AudioApp) -> Float
-    func isMuted(for app: AudioApp) -> Bool
-    func isAudibleNow(bundleID: String) -> Bool
-}
-
-@MainActor
-protocol PerAppHUDPresenting: AnyObject {
-    func showPerAppVolumeHUD(app: AudioApp, sliderFraction: Double)
-    func showPerAppMuteHUD(app: AudioApp, isMuted: Bool)
-    func showPerAppNotControlledHUD(displayName: String?, bundleID: String?, icon: NSImage?)
-}
-
 /// Bridges `KeyboardShortcuts` (Carbon-backed global hotkey library, MIT) to
-/// FineTune's settings layer.
+/// Deci's settings layer.
 ///
 /// Responsibilities:
 ///   1. Load: on `start()`, push every persisted shortcut from `AppSettings`
@@ -49,29 +31,19 @@ final class ShortcutsRegistry {
 
     private let settings: SettingsManager
     private let popupController: any MenuBarPopupControlling
-    private let resolver: any TargetAppResolving
-    private let audioEngine: any AudioEngineDispatching
-    private let hud: any PerAppHUDPresenting
+    private let music: any MusicShortcutActing
+    private let hud: any MessageHUDPresenting
     private var didStart = false
-
-    /// Software-emulated key-repeat timing. Carbon hot keys don't auto-repeat,
-    /// so holding the chord runs this loop. Values match macOS keyboard defaults.
-    private static let repeatInitialDelay: Duration = .milliseconds(450)
-    private static let repeatInterval: Duration = .milliseconds(60)
-
-    private var repeatTasks: [ShortcutAction: Task<Void, Never>] = [:]
 
     init(
         settings: SettingsManager,
         popupController: any MenuBarPopupControlling,
-        resolver: any TargetAppResolving,
-        audioEngine: any AudioEngineDispatching,
-        hud: any PerAppHUDPresenting
+        music: any MusicShortcutActing,
+        hud: any MessageHUDPresenting
     ) {
         self.settings = settings
         self.popupController = popupController
-        self.resolver = resolver
-        self.audioEngine = audioEngine
+        self.music = music
         self.hud = hud
     }
 
@@ -83,91 +55,36 @@ final class ShortcutsRegistry {
 
     /// Routes a fired action to its handler. Exposed `internal` so tests can
     /// drive it directly without faking a global key event.
-    func dispatch(_ action: ShortcutAction) {
+    ///
+    /// Like and Dislike wait on YouTube Music, so they run in a task that shows the
+    /// HUD once the answer is in; that task is returned for tests to wait on. The
+    /// other actions finish before this returns.
+    @discardableResult
+    func dispatch(_ action: ShortcutAction) -> Task<Void, Never>? {
         switch action {
         case .togglePopup:
             popupController.toggle()
-        case .targetAppVolumeUp:
-            adjustTargetVolume(direction: +1)
-        case .targetAppVolumeDown:
-            adjustTargetVolume(direction: -1)
-        case .targetAppMuteToggle:
-            toggleTargetMute()
-        }
-    }
-
-    // MARK: - Per-app dispatch
-
-    private func adjustTargetVolume(direction: Int) {
-        guard let app = resolveTargetAudioApp() else { return }
-        let sliderDelta = settings.appSettings.sliderDelta(for: .plain) * Double(direction)
-
-        let currentGain = audioEngine.currentVolume(for: app)
-        let currentSlider = VolumeMapping.gainToSlider(currentGain)
-        let nextSlider = max(0.0, min(1.0, currentSlider + sliderDelta))
-        let nextGain = VolumeMapping.sliderToGain(nextSlider)
-
-        let currentMute = audioEngine.isMuted(for: app)
-        let willBeSilent = nextSlider <= 0.001
-
-        if direction > 0 {
-            if currentMute {
-                audioEngine.setMute(for: app, to: false)
-            }
-        } else {
-            if currentMute && !willBeSilent {
-                audioEngine.setMute(for: app, to: false)
-            } else if !currentMute && willBeSilent {
-                audioEngine.setMute(for: app, to: true)
-            }
-        }
-        audioEngine.setVolume(for: app, to: nextGain)
-        hud.showPerAppVolumeHUD(app: app, sliderFraction: nextSlider)
-    }
-
-    private func toggleTargetMute() {
-        guard let app = resolveTargetAudioApp() else { return }
-        audioEngine.toggleMute(for: app)
-        hud.showPerAppMuteHUD(app: app, isMuted: audioEngine.isMuted(for: app))
-    }
-
-    private func startRepeating(action: ShortcutAction) {
-        guard action.supportsRepeat else { return }
-        repeatTasks[action]?.cancel()
-        repeatTasks[action] = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.repeatInitialDelay)
-            while !Task.isCancelled {
+        case .saveSongToPlaylist:
+            show(music.saveToPlaylist())
+        case .likeSong:
+            return Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.dispatch(action)
-                try? await Task.sleep(for: Self.repeatInterval)
+                self.show(await self.music.toggleLike())
+            }
+        case .dislikeSong:
+            return Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.show(await self.music.dislike())
             }
         }
-    }
-
-    private func stopRepeating(action: ShortcutAction) {
-        repeatTasks[action]?.cancel()
-        repeatTasks[action] = nil
-    }
-
-    private func resolveTargetAudioApp() -> AudioApp? {
-        let candidates = audioEngine.apps
-            .compactMap { $0.bundleID }
-            .filter { audioEngine.isAudibleNow(bundleID: $0) }
-
-        guard let bundleID = resolver.resolveTargetBundleID(audibleCandidates: candidates) else {
-            hud.showPerAppNotControlledHUD(displayName: nil, bundleID: nil, icon: nil)
-            return nil
-        }
-        if let app = audioEngine.apps.first(where: { $0.bundleID == bundleID }) {
-            return app
-        }
-        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
-        hud.showPerAppNotControlledHUD(
-            displayName: running?.localizedName,
-            bundleID: bundleID,
-            icon: running?.icon
-        )
         return nil
+    }
+
+    // MARK: - Music dispatch
+
+    private func show(_ outcome: MusicActionOutcome) {
+        guard let message = outcome.hudMessage else { return }
+        hud.showMessage(message)
     }
 
     /// Idempotent. Subsequent calls are no-ops. Safe to call from a SwiftUI
@@ -185,10 +102,6 @@ final class ShortcutsRegistry {
 
             KeyboardShortcuts.onKeyDown(for: actionName) { [weak self] in
                 self?.dispatch(action)
-                self?.startRepeating(action: action)
-            }
-            KeyboardShortcuts.onKeyUp(for: actionName) { [weak self] in
-                self?.stopRepeating(action: action)
             }
         }
 
@@ -226,12 +139,11 @@ final class ShortcutsRegistry {
     private func stableID(for action: ShortcutAction) -> String {
         switch action {
         case .togglePopup: "toggle-popup"
-        case .targetAppVolumeUp: "frontmost-app-volume-up"
-        case .targetAppVolumeDown: "frontmost-app-volume-down"
-        case .targetAppMuteToggle: "frontmost-app-mute-toggle"
+        case .saveSongToPlaylist: "music-save-to-playlist"
+        case .likeSong: "music-like"
+        case .dislikeSong: "music-dislike"
         }
     }
 }
 
-extension AudioEngine: AudioEngineDispatching {}
-extension HUDWindowController: PerAppHUDPresenting {}
+extension HUDWindowController: MessageHUDPresenting {}

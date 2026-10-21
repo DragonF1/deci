@@ -1527,8 +1527,8 @@ struct MenuBarPopupView: View {
         }
     }
 
-    /// Mirrors `ShortcutsRegistry.adjustTargetVolume`'s mute-edge semantics for
-    /// both active and pinned-inactive app rows.
+    /// Steps an app row's volume with the mute edges of a media key: up unmutes a muted app, down unmutes it while the
+    /// new level is audible, and down to silence mutes an unmuted one. Used for both active and pinned-inactive app rows.
     private func applyAppVolumeStep(
         currentGain: Float,
         currentMute: Bool,

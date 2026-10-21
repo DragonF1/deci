@@ -41,11 +41,17 @@ final class MusicMenuBarChipController {
     private var coverTask: Task<Void, Never>?
     private var coverURL: URL?
 
-    init(settings: SettingsManager, musicHost: MusicServiceHost, iconImage: NSImage) {
+    init(
+        settings: SettingsManager,
+        musicHost: MusicServiceHost,
+        iconImage: NSImage,
+        hud: any MessageHUDPresenting,
+        popupOpener: any MusicPopupOpening = MusicPopupOpener()
+    ) {
         self.settings = settings
         self.musicHost = musicHost
         self.iconImage = iconImage
-        self.hoverCard = MusicHoverCardController(musicHost: musicHost)
+        self.hoverCard = MusicHoverCardController(musicHost: musicHost, hud: hud, popupOpener: popupOpener)
     }
 
     /// Begins following the setting and the player. Idempotent, and safe before the status item exists.

@@ -70,7 +70,6 @@ struct DeciApp: App {
     @State private var iconCoordinator: MenuBarIconCoordinator
     @State private var menuBarPopupController: MenuBarPopupController
     @State private var shortcutsRegistry: ShortcutsRegistry
-    @State private var resolver: TargetAppResolver
     @State private var musicHost: MusicServiceHost
     @State private var musicChip: MusicMenuBarChipController
     @StateObject private var updateManager = UpdateManager()
@@ -182,6 +181,9 @@ struct DeciApp: App {
         #else
         let settings = SettingsManager()
         #endif
+        // The App Volume Up, App Volume Down and App Mute hotkeys are gone: clear what they left in settings.json and
+        // in KeyboardShortcuts' own defaults, before the registry reads either.
+        ShortcutMigration.dropRemovedShortcuts(from: settings)
         let profileManager = AutoEQProfileManager()
         let permission = AudioRecordingPermission()
         let engine = AudioEngine(permission: permission, settingsManager: settings, autoEQProfileManager: profileManager)
@@ -305,20 +307,6 @@ struct DeciApp: App {
         // to a SwiftUI `.task` on the popup content so the FluidMenuBarExtra
         // status item has been materialized before any hotkey can fire.
         let popupController = MenuBarPopupController()
-        let resolver = TargetAppResolver(
-            ownBundleID: Bundle.main.bundleIdentifier ?? "com.abraham.Deci"
-        )
-        resolver.start()
-        let registry = ShortcutsRegistry(
-            settings: settings,
-            popupController: popupController,
-            resolver: resolver,
-            audioEngine: engine,
-            hud: hud
-        )
-        _menuBarPopupController = State(initialValue: popupController)
-        _shortcutsRegistry = State(initialValue: registry)
-        _resolver = State(initialValue: resolver)
         // The music player row (shown as Deci) plays inside Deci, where the process taps never reach: the engine tells this model about
         // the global audio switches and device events instead, and the model shapes the player's own audio.
         let mixer = MusicMixerState(settings: settings, environment: EngineMusicEnvironment(engine: engine))
@@ -327,6 +315,16 @@ struct DeciApp: App {
         // Only this boolean reaches Chrome: while Deci plays, the extension stops auto-clicking "Switch".
         music.onNativePlayingChange = { ChromeExtensionManager.shared.setNativeMusicPlaying($0) }
         _musicHost = State(initialValue: music)
+        // One opener for the Music popup: the Save hotkey and the hover card's buttons open it the same way.
+        let musicPopupOpener = MusicPopupOpener()
+        let registry = ShortcutsRegistry(
+            settings: settings,
+            popupController: popupController,
+            music: MusicShortcutActions(musicHost: music, popupOpener: musicPopupOpener),
+            hud: hud
+        )
+        _menuBarPopupController = State(initialValue: popupController)
+        _shortcutsRegistry = State(initialValue: registry)
         // The icon follows the setting from here, not from the views: the scenes' own change handlers only
         // run while their views are live.
         settings.onShowMusicInMenuBarChange = { [popupService, music] shown in
@@ -334,7 +332,13 @@ struct DeciApp: App {
         }
         // The Now playing chip style puts the song on the Music item's button and a hover card under it. Started once
         // the scene has built the item, like the icon coordinator.
-        let chip = MusicMenuBarChipController(settings: settings, musicHost: music, iconImage: launchMusicIconImage)
+        let chip = MusicMenuBarChipController(
+            settings: settings,
+            musicHost: music,
+            iconImage: launchMusicIconImage,
+            hud: hud,
+            popupOpener: musicPopupOpener
+        )
         _musicChip = State(initialValue: chip)
         DispatchQueue.main.async { [chip] in chip.start() }
 

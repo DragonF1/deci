@@ -126,4 +126,12 @@ actor MusicBackendLive: MusicBackend {
     func reportHistory(_ ping: HistoryPing) async throws -> Int {
         try await client.reportHistory(ping)
     }
+
+    func likeStatus(videoId: String) async throws -> MusicLikeStatus? {
+        try await client.likeStatus(videoId: videoId)
+    }
+
+    func rate(videoId: String, status: MusicLikeStatus) async throws {
+        try await client.rate(videoId: videoId, status: status)
+    }
 }

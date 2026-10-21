@@ -27,6 +27,14 @@ struct MusicTrack: Sendable, Hashable, Identifiable {
     var id: String { videoId }
 }
 
+/// Whether the signed-in user likes a song, as YouTube Music keeps it. Liking and disliking are exclusive; `indifferent`
+/// is neither.
+enum MusicLikeStatus: Sendable, Equatable {
+    case like
+    case dislike
+    case indifferent
+}
+
 /// One playlist the user can add a song to, from the "Save to playlist" picker.
 struct MusicPlaylistOption: Sendable, Hashable, Identifiable {
     /// The playlist id without the "VL" a browse id carries.
@@ -330,6 +338,12 @@ protocol MusicBackend: Sendable {
     /// Sends one history ping and returns the HTTP status YouTube answered with (200 or 204 when
     /// it took the ping). Throws on any other status, when signed out, or when the URL is not YouTube's.
     func reportHistory(_ ping: HistoryPing) async throws -> Int
+    /// The signed-in user's like state of one song, or nil when YouTube sends no like button for it. Throws `.signedOut`
+    /// when signed out or the session is gone.
+    func likeStatus(videoId: String) async throws -> MusicLikeStatus?
+    /// Sets the like state of one song: `.like` and `.dislike` rate it, `.indifferent` takes the rating back. A 2xx answer
+    /// is success. Throws `.signedOut` when signed out or the session is gone, `.http` for any other failed status.
+    func rate(videoId: String, status: MusicLikeStatus) async throws
 }
 
 /// Client playback nonce: 16 chars from A-Za-z0-9-_, one per playback session.

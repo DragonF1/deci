@@ -205,3 +205,86 @@ struct HUDWindowControllerTimerTests {
         #expect(hud.showDidUpdatePanel == true)
     }
 }
+
+// MARK: - Message HUD
+
+@Suite("HUDWindowController: message HUD")
+@MainActor
+struct HUDWindowControllerMessageTests {
+    private let message = HUDMessage(symbol: "hand.thumbsup.fill", text: "Liked")
+
+    private func makeController(popupVisible: Bool = false, fullscreen: Bool = false) -> HUDWindowController {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let settings = SettingsManager(directory: tempDir)
+        let popup = PopupVisibilityService()
+        popup.isVisible = popupVisible
+        let hud = HUDWindowController(settingsManager: settings, mediaKeyStatus: MediaKeyStatus(), popupVisibility: popup)
+        // Far off every screen, so the panel these tests order front is never seen.
+        hud.frameProvider = { NSRect(x: -40_000, y: -40_000, width: 1440, height: 877) }
+        hud.fullscreenOverride = fullscreen
+        hud.hideDelayOverride = .milliseconds(20)
+        return hud
+    }
+
+    @Test("A message updates the panel and counts as an attempt")
+    func showsAMessage() {
+        let hud = makeController()
+        defer { hud.shutdown() }
+
+        hud.showMessage(message)
+
+        #expect(hud.showCallCount == 1)
+        #expect(hud.showDidUpdatePanel == true)
+    }
+
+    @Test("While the popup is visible the message is skipped, as the volume HUD is")
+    func popupGuardSkipsTheMessage() {
+        let hud = makeController(popupVisible: true)
+        defer { hud.shutdown() }
+
+        hud.showMessage(message)
+
+        #expect(hud.showCallCount == 1)
+        #expect(hud.showDidUpdatePanel == false)
+    }
+
+    @Test("A fullscreen app does not hide a message the user asked for with a hotkey")
+    func fullscreenDoesNotSkipTheMessage() {
+        let hud = makeController(fullscreen: true)
+        defer { hud.shutdown() }
+
+        hud.showMessage(message)
+
+        #expect(hud.showDidUpdatePanel == true)
+    }
+
+    @Test("A fullscreen app still skips the volume HUD")
+    func fullscreenStillSkipsTheVolumeHud() {
+        let hud = makeController(fullscreen: true)
+        defer { hud.shutdown() }
+
+        hud.show(sliderFraction: 0.5, mute: false, deviceName: "")
+
+        #expect(hud.showDidUpdatePanel == false)
+    }
+
+    @Test("Two messages in a row are both shown, the second replacing the first")
+    func twoMessages() {
+        let hud = makeController()
+        defer { hud.shutdown() }
+
+        hud.showMessage(message)
+        hud.showMessage(HUDMessage(symbol: "hand.thumbsdown.fill", text: "Disliked"))
+
+        #expect(hud.showCallCount == 2)
+        #expect(hud.showDidUpdatePanel == true)
+    }
+
+    @Test("The message HUD uses the same hide delay as the volume HUD")
+    func sameTiming() {
+        let hud = makeController()
+        hud.hideDelayOverride = nil
+        #expect(hud.hideDelay(for: .tahoe) == .milliseconds(1100))
+    }
+}

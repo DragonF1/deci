@@ -9,13 +9,14 @@ import SwiftUI
 ///
 /// `onOpenPlayer` hides the card and opens the full Music popover, for the lyrics and save buttons: the lyrics and the
 /// playlist picker live in the popover's right column. A click on the chip opens the popover too, so the card has no
-/// button of its own for it.
+/// button of its own for it. `onRated` hears what Like and Dislike came to, so a call that failed can be told.
 struct MusicNowPlayingCard: View {
     let musicHost: MusicServiceHost
     let onOpenPlayer: () -> Void
+    let onRated: (MusicActionOutcome) -> Void
 
     var body: some View {
-        MusicNowPlayingCardContent(musicHost: musicHost, onOpenPlayer: onOpenPlayer)
+        MusicNowPlayingCardContent(musicHost: musicHost, onOpenPlayer: onOpenPlayer, onRated: onRated)
             .frame(width: MusicHoverCardMetrics.width, height: MusicHoverCardMetrics.height)
             .musicAccentScope(track: musicHost.service?.player.nowPlaying)
             .environment(\.appearancePreference, .dark)
@@ -26,6 +27,7 @@ struct MusicNowPlayingCard: View {
 private struct MusicNowPlayingCardContent: View {
     let musicHost: MusicServiceHost
     let onOpenPlayer: () -> Void
+    let onRated: (MusicActionOutcome) -> Void
 
     @Environment(\.musicAccent) private var accent
     /// The cover's small picture, from the tint store's single fetch of it.
@@ -52,7 +54,7 @@ private struct MusicNowPlayingCardContent: View {
         let player = service.player
         let duration = player.duration > 0 ? player.duration : TimeInterval(track.durationSeconds ?? 0)
         return VStack(spacing: 0) {
-            titleRow(track)
+            titleRow(track, service: service)
                 .frame(height: Metrics.titleRowHeight)
                 .padding(.top, Metrics.topInset)
             Spacer().frame(height: Metrics.afterTitleRow)
@@ -126,19 +128,29 @@ private struct MusicNowPlayingCardContent: View {
 
     // MARK: - Rows
 
-    private func titleRow(_ track: MusicTrack) -> some View {
+    private func titleRow(_ track: MusicTrack, service: MusicService) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: "music.note")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.white.opacity(0.85))
-                .accessibilityHidden(true)
-            // One run of text so it truncates as one line: the title in white, the artist after it in white 0.6.
-            Text("\(Text(track.title).fontWeight(.semibold).foregroundStyle(Color.white)) \(Text(track.artist).foregroundStyle(Color.white.opacity(0.6)))")
-                .font(.system(size: 13))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            HStack(spacing: 6) {
+                Image(systemName: "music.note")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .accessibilityHidden(true)
+                // One run of text so it truncates as one line: the title in white, the artist after it in white 0.6.
+                Text("\(Text(track.title).fontWeight(.semibold).foregroundStyle(Color.white)) \(Text(track.artist).foregroundStyle(Color.white.opacity(0.6)))")
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity)
+            // Like and Dislike rate the song and leave the card as it is: neither opens the popover.
+            if service.canRate {
+                MusicRateButtons(
+                    status: service.likeStatus,
+                    onDislike: { Task { onRated(await service.dislike()) } },
+                    onLike: { Task { onRated(await service.toggleLike()) } }
+                )
+            }
         }
-        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Controls

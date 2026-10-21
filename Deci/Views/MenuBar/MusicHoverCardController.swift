@@ -9,7 +9,10 @@ import SwiftUI
 @MainActor
 final class MusicHoverCardController {
     private let musicHost: MusicServiceHost
-    private let popupController = MenuBarPopupController(accessibilityTitle: MenuBarItemID.music.title)
+    /// Opens the full Music popover; the Save hotkey opens it through the same one.
+    private let popupOpener: any MusicPopupOpening
+    /// Tells a Like or Dislike that did not go through, the way the hotkeys tell it.
+    private let hud: any MessageHUDPresenting
 
     private var hover = MusicCardHover()
     private var showTask: Task<Void, Never>?
@@ -29,8 +32,14 @@ final class MusicHoverCardController {
     /// Watches for a Space change, only while the card is up: it can swallow the mouseExited that would let the card go.
     private var spaceObserver: NSObjectProtocol?
 
-    init(musicHost: MusicServiceHost) {
+    init(
+        musicHost: MusicServiceHost,
+        hud: any MessageHUDPresenting,
+        popupOpener: any MusicPopupOpening = MusicPopupOpener()
+    ) {
         self.musicHost = musicHost
+        self.hud = hud
+        self.popupOpener = popupOpener
         buttonTarget.onEnter = { [weak self] in self?.send(.chipEntered) }
         buttonTarget.onExit = { [weak self] in self?.send(.chipExited) }
     }
@@ -193,14 +202,13 @@ final class MusicHoverCardController {
     }
 
     private var isPopupOnScreen: Bool {
-        MenuBarStatusItems.popupWindow(for: .music)?.isVisible == true
+        popupOpener.isOnScreen
     }
 
     /// The save button: the card goes, and the full popover opens as a click on the item opens it.
     private func openPlayer() {
         send(.clicked)
-        guard !isPopupOnScreen else { return }
-        popupController.toggle(activatingApp: false)
+        popupOpener.open()
     }
 
     // MARK: - The panel
@@ -268,7 +276,11 @@ final class MusicHoverCardController {
 
     private func makeContent() -> NSView {
         let hosting = FirstMouseHostingView(
-            rootView: MusicNowPlayingCard(musicHost: musicHost, onOpenPlayer: { [weak self] in self?.openPlayer() })
+            rootView: MusicNowPlayingCard(
+                musicHost: musicHost,
+                onOpenPlayer: { [weak self] in self?.openPlayer() },
+                onRated: { [weak self] in self?.hud.showIfFailed($0) }
+            )
         )
         // The card never changes size: the panel is sized once, so the hosting view must not ask for another.
         hosting.sizingOptions = []

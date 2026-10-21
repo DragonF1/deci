@@ -66,6 +66,11 @@ actor FakeMusicBackend: MusicBackend {
         let playlistId: String
     }
 
+    nonisolated struct RateCall: Hashable, Sendable {
+        let videoId: String
+        let status: MusicLikeStatus
+    }
+
     private var signedIn: Bool
     private var signInError: (any Error)?
     private var searchResults: [String: [Deci.MusicTrack]] = [:]
@@ -121,6 +126,11 @@ actor FakeMusicBackend: MusicBackend {
     private var addToPlaylistGate: MusicTestGate?
     private var removeFromPlaylistError: (any Error)?
     private var removeFromPlaylistGate: MusicTestGate?
+    private var likeStatuses: [String: MusicLikeStatus] = [:]
+    private var likeStatusErrors: [String: any Error] = [:]
+    private var likeStatusGates: [String: MusicTestGate] = [:]
+    private var rateErrors: [String: any Error] = [:]
+    private var rateGates: [String: MusicTestGate] = [:]
 
     private(set) var radioSeeds: [String] = []
     private(set) var moreRadioCalls: [MoreRadioCall] = []
@@ -137,6 +147,8 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var addToPlaylistCalls: [AddToPlaylistCall] = []
     private(set) var addPlaylistCalls: [AddPlaylistCall] = []
     private(set) var removeFromPlaylistCalls: [RemoveFromPlaylistCall] = []
+    private(set) var likeStatusCalls: [String] = []
+    private(set) var rateCalls: [RateCall] = []
     private(set) var searchedQueries: [String] = []
     private(set) var searchedArtistQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
@@ -275,6 +287,14 @@ actor FakeMusicBackend: MusicBackend {
     func setAddToPlaylistGate(_ gate: MusicTestGate?) { addToPlaylistGate = gate }
     func setRemoveFromPlaylistError(_ error: (any Error)?) { removeFromPlaylistError = error }
     func setRemoveFromPlaylistGate(_ gate: MusicTestGate?) { removeFromPlaylistGate = gate }
+
+    // Likes. The like state is scripted per video (an unscripted video has none: nil), and a successful rate call changes
+    // it, as YouTube would. An error or a gate holds for that video only, after the call was recorded; nil removes it.
+    func setLikeStatus(videoId: String, _ status: MusicLikeStatus?) { likeStatuses[videoId] = status }
+    func setLikeStatusError(videoId: String, _ error: (any Error)?) { likeStatusErrors[videoId] = error }
+    func setLikeStatusGate(videoId: String, _ gate: MusicTestGate?) { likeStatusGates[videoId] = gate }
+    func setRateError(videoId: String, _ error: (any Error)?) { rateErrors[videoId] = error }
+    func setRateGate(videoId: String, _ gate: MusicTestGate?) { rateGates[videoId] = gate }
 
     // MARK: MusicBackend
 
@@ -420,6 +440,23 @@ actor FakeMusicBackend: MusicBackend {
         let gate = removeFromPlaylistGate, error = removeFromPlaylistError
         if let gate { await gate.wait() }
         if let error { throw error }
+    }
+
+    // Like the browse calls, the like state answered is the one scripted when the call was made, even if a gate holds it.
+    func likeStatus(videoId: String) async throws -> MusicLikeStatus? {
+        likeStatusCalls.append(videoId)
+        let gate = likeStatusGates[videoId], error = likeStatusErrors[videoId], status = likeStatuses[videoId]
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return status
+    }
+
+    func rate(videoId: String, status: MusicLikeStatus) async throws {
+        rateCalls.append(RateCall(videoId: videoId, status: status))
+        let gate = rateGates[videoId], error = rateErrors[videoId]
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        likeStatuses[videoId] = status
     }
 
     func search(_ query: String) async throws -> [Deci.MusicTrack] {

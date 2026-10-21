@@ -14,7 +14,7 @@ Control the volume of every app independently, boost quiet ones up to 4x, route 
 - **Scroll-Wheel Volume** — Hover any slider in the popup, HUD, or EQ panel and scroll to adjust
 
 ### ⌨️ Keyboard & Media Keys
-- **Global Volume Hotkeys** — Bind custom keys for App Volume Up / Down / Mute
+- **Music Hotkeys**: Bind global keys to save the playing song to a playlist, like it, or dislike it (dislike also skips)
 - **Toggle Popup from Anywhere** — Global shortcut to toggle the menu bar extra
 - **Configurable Step Size**: F11 / F12 step the volume 10% per press, 5% with ⌘ held, 1% with ⌘⇧ held; each step is editable in Settings (1% to 50%)
 - **Keyboard Navigation** — Arrow keys to navigate rows and adjust levels, M to mute, Esc to close

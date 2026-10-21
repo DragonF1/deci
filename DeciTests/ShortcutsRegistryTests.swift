@@ -1,4 +1,4 @@
-// FineTuneTests/ShortcutsRegistryTests.swift
+// DeciTests/ShortcutsRegistryTests.swift
 import Testing
 import Foundation
 import AppKit
@@ -13,206 +13,140 @@ struct ShortcutsRegistryTests {
     @Test("dispatch(.togglePopup) calls popupController.toggle() exactly once")
     func dispatchTogglePopup() {
         let recorder = RecordingPopupController()
-        let registry = makeRegistry(popupController: recorder)
+        let music = FakeMusicShortcuts()
+        let registry = makeRegistry(popupController: recorder, music: music)
 
         registry.dispatch(.togglePopup)
 
         #expect(recorder.toggleCount == 1)
+        #expect(music.calls.isEmpty)
     }
 
-    @Test("dispatch(.targetAppVolumeUp) raises volume on the matched app")
-    func dispatchFrontmostVolumeUpHappyPath() {
-        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
-        let resolver = StubTargetResolver(target: "com.test.app")
-        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.5)
-        let hud = RecordingHUDController()
-        let registry = makeRegistry(
-            resolver: resolver,
-            audioEngine: engine,
-            hud: hud
-        )
+    @Test("Save song to playlist goes to the music side once, and the other two actions stay out of it")
+    func dispatchSaveCalls() {
+        let recorder = RecordingPopupController()
+        let music = FakeMusicShortcuts()
+        let registry = makeRegistry(popupController: recorder, music: music)
 
-        registry.dispatch(.targetAppVolumeUp)
+        registry.dispatch(.saveSongToPlaylist)
 
-        let nextSlider = sqrt(0.5) + 0.10
-        let expected = Float(nextSlider * nextSlider)
-        #expect(engine.setVolumeCalls.count == 1)
-        #expect(engine.setVolumeCalls.first?.app.bundleID == "com.test.app")
-        #expect(abs((engine.setVolumeCalls.first?.volume ?? 0) - expected) < 1e-5)
-        #expect(hud.successCalls == 1)
-        #expect(hud.failureCalls == 0)
+        #expect(music.calls == [.save])
+        #expect(recorder.toggleCount == 0)
     }
 
-    @Test("App hotkeys step by the plain percent, not the Command or Command+Shift ones")
-    func dispatchUsesPlainStep() {
-        let settings = makeIsolatedSettings()
-        var app = settings.appSettings
-        app.volumeStepPercent = 20
-        app.volumeStepCommandPercent = 3
-        app.volumeStepCommandShiftPercent = 2
-        settings.appSettings = app
-        let engine = RecordingAudioEngine(apps: [makeAudioApp(id: 1, bundleID: "com.test.app")], initialVolume: 0.5)
-        let registry = makeRegistry(
-            settings: settings,
-            resolver: StubTargetResolver(target: "com.test.app"),
-            audioEngine: engine,
-            hud: RecordingHUDController()
-        )
+    @Test("Save song to playlist shows what came back, and nothing when the save menu opened", arguments: MusicActionOutcome.allCases)
+    func dispatchSaveShowsOutcome(outcome: MusicActionOutcome) {
+        let music = FakeMusicShortcuts()
+        music.outcome = outcome
+        let hud = RecordingMessageHUD()
+        let registry = makeRegistry(music: music, hud: hud)
 
-        registry.dispatch(.targetAppVolumeUp)
-        registry.dispatch(.targetAppVolumeDown)
+        registry.dispatch(.saveSongToPlaylist)
 
-        // Up moves the slider by 0.20 from 0.5's slider position; down then undoes exactly that step.
-        let up = Float(pow(sqrt(0.5) + 0.20, 2))
-        #expect(engine.setVolumeCalls.count == 2)
-        #expect(abs((engine.setVolumeCalls.first?.volume ?? 0) - up) < 1e-5)
-        #expect(abs((engine.setVolumeCalls.last?.volume ?? 0) - 0.5) < 1e-4)
+        #expect(hud.messages == [outcome.hudMessage].compactMap { $0 })
     }
 
-    @Test("dispatch(.targetAppVolumeDown) clamps at 0")
-    func dispatchFrontmostVolumeDownClampsAtZero() {
-        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
-        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.0)
-        let registry = makeRegistry(
-            resolver: StubTargetResolver(target: "com.test.app"),
-            audioEngine: engine,
-            hud: RecordingHUDController()
-        )
+    @Test("Like song goes to the music side once and shows what came back", arguments: MusicActionOutcome.allCases)
+    func dispatchLike(outcome: MusicActionOutcome) async {
+        let music = FakeMusicShortcuts()
+        music.outcome = outcome
+        let hud = RecordingMessageHUD()
+        let registry = makeRegistry(music: music, hud: hud)
 
-        registry.dispatch(.targetAppVolumeDown)
+        await registry.dispatch(.likeSong)?.value
 
-        #expect(engine.setVolumeCalls.first?.volume == 0.0)
+        #expect(music.calls == [.like])
+        #expect(hud.messages == [outcome.hudMessage].compactMap { $0 })
     }
 
-    @Test("dispatch(.targetAppMuteToggle) calls toggleMute and reports new mute state")
-    func dispatchFrontmostMuteHappyPath() {
-        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
-        let engine = RecordingAudioEngine(apps: [app], initialMuted: false)
-        let hud = RecordingHUDController()
-        let registry = makeRegistry(
-            resolver: StubTargetResolver(target: "com.test.app"),
-            audioEngine: engine,
-            hud: hud
-        )
+    @Test("Dislike song goes to the music side once and shows what came back", arguments: MusicActionOutcome.allCases)
+    func dispatchDislike(outcome: MusicActionOutcome) async {
+        let music = FakeMusicShortcuts()
+        music.outcome = outcome
+        let hud = RecordingMessageHUD()
+        let registry = makeRegistry(music: music, hud: hud)
 
-        registry.dispatch(.targetAppMuteToggle)
+        await registry.dispatch(.dislikeSong)?.value
 
-        #expect(engine.toggleMuteCalls.count == 1)
-        #expect(hud.successCalls == 1)
+        #expect(music.calls == [.dislike])
+        #expect(hud.messages == [outcome.hudMessage].compactMap { $0 })
     }
 
-    @Test("dispatch falls through to failure HUD when resolver returns nil")
-    func dispatchNoTarget() {
-        let engine = RecordingAudioEngine(apps: [])
-        let hud = RecordingHUDController()
-        let registry = makeRegistry(
-            resolver: StubTargetResolver(target: nil),
-            audioEngine: engine,
-            hud: hud
-        )
+    @Test("The HUD for Like waits for YouTube Music's answer, and the key press does not")
+    func likeHudWaitsForTheAnswer() async {
+        let music = FakeMusicShortcuts()
+        music.outcome = .liked
+        let gate = MusicTestGate()
+        music.gate = gate
+        let hud = RecordingMessageHUD()
+        let registry = makeRegistry(music: music, hud: hud)
 
-        registry.dispatch(.targetAppVolumeUp)
+        let task = registry.dispatch(.likeSong)
+        for _ in 0..<20 { await Task.yield() }
 
-        #expect(engine.setVolumeCalls.isEmpty)
-        #expect(hud.failureCalls == 1)
+        #expect(music.calls == [.like])
+        #expect(hud.messages.isEmpty)
+
+        await gate.open()
+        await task?.value
+
+        #expect(hud.messages == [HUDMessage(symbol: "hand.thumbsup.fill", text: "Liked")])
     }
 
-    @Test("dispatch(.targetAppVolumeUp) unmutes a muted app (media-key parity)")
-    func dispatchVolumeUpUnmutesMutedApp() {
-        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
-        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.5, initialMuted: true)
-        let registry = makeRegistry(
-            resolver: StubTargetResolver(target: "com.test.app"),
-            audioEngine: engine,
-            hud: RecordingHUDController()
-        )
+    @Test("A second press while the first is out is a second call to the music side, which answers it quietly")
+    func repeatedPressesReachTheMusicSide() async {
+        let music = FakeMusicShortcuts()
+        music.outcome = .quiet
+        let hud = RecordingMessageHUD()
+        let registry = makeRegistry(music: music, hud: hud)
 
-        registry.dispatch(.targetAppVolumeUp)
+        await registry.dispatch(.dislikeSong)?.value
+        await registry.dispatch(.dislikeSong)?.value
 
-        #expect(engine.setMuteCalls.count == 1)
-        #expect(engine.setMuteCalls.first?.mute == false)
+        #expect(music.calls == [.dislike, .dislike])
+        #expect(hud.messages.isEmpty)
     }
 
-    @Test("dispatch(.targetAppVolumeDown) auto-mutes an unmuted app when volume hits zero")
-    func dispatchVolumeDownAutoMutesAtZero() {
-        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
-        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.001, initialMuted: false)
-        let registry = makeRegistry(
-            resolver: StubTargetResolver(target: "com.test.app"),
-            audioEngine: engine,
-            hud: RecordingHUDController()
-        )
+    // MARK: - actions
 
-        registry.dispatch(.targetAppVolumeDown)
-
-        #expect(engine.setMuteCalls.count == 1)
-        #expect(engine.setMuteCalls.first?.mute == true)
+    @Test("The actions are the popup toggle and the three music ones, in that order")
+    func actionList() {
+        #expect(ShortcutAction.allCases == [.togglePopup, .saveSongToPlaylist, .likeSong, .dislikeSong])
     }
 
-    @Test("dispatch(.targetAppVolumeDown) unmutes a muted app when next volume is still audible")
-    func dispatchVolumeDownUnmutesMutedButAudibleApp() {
-        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
-        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.5, initialMuted: true)
-        let registry = makeRegistry(
-            resolver: StubTargetResolver(target: "com.test.app"),
-            audioEngine: engine,
-            hud: RecordingHUDController()
-        )
-
-        registry.dispatch(.targetAppVolumeDown)
-
-        #expect(engine.setMuteCalls.count == 1)
-        #expect(engine.setMuteCalls.first?.mute == false)
+    @Test("The raw values are the persistence keys in settings.json, and the removed ones are not actions any more")
+    func rawValues() {
+        #expect(ShortcutAction.togglePopup.rawValue == "togglePopup")
+        #expect(ShortcutAction.saveSongToPlaylist.rawValue == "musicSaveToPlaylist")
+        #expect(ShortcutAction.likeSong.rawValue == "musicLike")
+        #expect(ShortcutAction.dislikeSong.rawValue == "musicDislike")
+        for removed in ["frontmostAppVolumeUp", "frontmostAppVolumeDown", "frontmostAppMuteToggle"] {
+            #expect(ShortcutAction(rawValue: removed) == nil)
+        }
     }
 
-    @Test("dispatch(.targetAppVolumeUp) on already-unmuted app does not call setMute")
-    func dispatchVolumeUpNoMuteTransitionIfAlreadyUnmuted() {
-        let app = makeAudioApp(id: 1, bundleID: "com.test.app")
-        let engine = RecordingAudioEngine(apps: [app], initialVolume: 0.5, initialMuted: false)
-        let registry = makeRegistry(
-            resolver: StubTargetResolver(target: "com.test.app"),
-            audioEngine: engine,
-            hud: RecordingHUDController()
-        )
-
-        registry.dispatch(.targetAppVolumeUp)
-
-        #expect(engine.setMuteCalls.isEmpty)
+    @Test("The names shown in Settings")
+    func displayNames() {
+        #expect(ShortcutAction.saveSongToPlaylist.displayName == "Save Song to Playlist")
+        #expect(ShortcutAction.likeSong.displayName == "Like Song")
+        #expect(ShortcutAction.dislikeSong.displayName == "Dislike Song")
     }
 
-    @Test("dispatch falls through to failure HUD when no matching AudioApp exists")
-    func dispatchNoMatchingApp() {
-        let engine = RecordingAudioEngine(apps: [])
-        let hud = RecordingHUDController()
-        let registry = makeRegistry(
-            resolver: StubTargetResolver(target: "com.test.notap"),
-            audioEngine: engine,
-            hud: hud
-        )
-
-        registry.dispatch(.targetAppVolumeDown)
-
-        #expect(engine.setVolumeCalls.isEmpty)
-        #expect(hud.failureCalls == 1)
-    }
-
-    // MARK: - name
-
-    @Test("supportsRepeat is true only for volume up/down")
-    func supportsRepeatFlag() {
-        #expect(ShortcutAction.targetAppVolumeUp.supportsRepeat == true)
-        #expect(ShortcutAction.targetAppVolumeDown.supportsRepeat == true)
-        #expect(ShortcutAction.targetAppMuteToggle.supportsRepeat == false)
-        #expect(ShortcutAction.togglePopup.supportsRepeat == false)
-    }
-
-    @Test("name(for: .togglePopup) is the stable persistence identifier")
+    @Test("name(for:) is the stable KeyboardShortcuts identifier of each action")
     func nameStable() {
         let registry = makeRegistry()
         #expect(registry.name(for: .togglePopup).rawValue == "toggle-popup")
-        #expect(registry.name(for: .targetAppVolumeUp).rawValue == "frontmost-app-volume-up")
-        #expect(registry.name(for: .targetAppVolumeDown).rawValue == "frontmost-app-volume-down")
-        #expect(registry.name(for: .targetAppMuteToggle).rawValue == "frontmost-app-mute-toggle")
+        #expect(registry.name(for: .saveSongToPlaylist).rawValue == "music-save-to-playlist")
+        #expect(registry.name(for: .likeSong).rawValue == "music-like")
+        #expect(registry.name(for: .dislikeSong).rawValue == "music-dislike")
+    }
+
+    @Test("The new actions start with no chord bound")
+    func noDefaultBindings() {
+        let registry = makeRegistry()
+        for action in ShortcutAction.allCases {
+            #expect(registry.name(for: action).defaultShortcut == nil)
+        }
     }
 
     // MARK: - start: load path
@@ -233,6 +167,31 @@ struct ShortcutsRegistryTests {
         #expect(resolved?.carbonModifiers == stored.keyboardShortcut.carbonModifiers)
 
         KeyboardShortcuts.setShortcut(nil, for: registry.name(for: .togglePopup))
+    }
+
+    @Test("start() loads a stored chord for each of the music actions")
+    func startLoadsMusicShortcuts() {
+        let settings = makeIsolatedSettings()
+        let chords: [ShortcutAction: ShortcutCodable] = [
+            .saveSongToPlaylist: ShortcutCodable(keyCode: 3, modifiers: 0x12_0000),
+            .likeSong: ShortcutCodable(keyCode: 4, modifiers: 0x12_0000),
+            .dislikeSong: ShortcutCodable(keyCode: 5, modifiers: 0x12_0000)
+        ]
+        var app = settings.appSettings
+        for (action, chord) in chords { app.customShortcuts[action.rawValue] = chord }
+        settings.appSettings = app
+
+        let registry = makeRegistry(settings: settings)
+        registry.start()
+        defer {
+            for action in chords.keys { KeyboardShortcuts.setShortcut(nil, for: registry.name(for: action)) }
+        }
+
+        for (action, chord) in chords {
+            let resolved = KeyboardShortcuts.getShortcut(for: registry.name(for: action))
+            #expect(resolved?.carbonKeyCode == chord.keyCode)
+            #expect(resolved?.carbonModifiers == chord.keyboardShortcut.carbonModifiers)
+        }
     }
 
     @Test("start() is idempotent")
@@ -269,6 +228,17 @@ struct ShortcutsRegistryTests {
         #expect(stored?.modifiers == UInt(newShortcut.carbonModifiers))
     }
 
+    @Test("recordCallback stores a music action's chord under its own key")
+    func recordCallbackWritesMusicAction() {
+        let settings = makeIsolatedSettings()
+        let registry = makeRegistry(settings: settings)
+
+        registry.recordCallback(for: .likeSong)(KeyboardShortcuts.Shortcut(carbonKeyCode: 12, carbonModifiers: 0x12_0000))
+
+        #expect(settings.appSettings.customShortcuts["musicLike"]?.keyCode == 12)
+        #expect(settings.appSettings.customShortcuts.count == 1)
+    }
+
     @Test("recordCallback clears the entry when given nil")
     func recordCallbackClearsOnNil() {
         let settings = makeIsolatedSettings()
@@ -288,32 +258,90 @@ struct ShortcutsRegistryTests {
     private func makeRegistry(
         settings: SettingsManager? = nil,
         popupController: (any MenuBarPopupControlling)? = nil,
-        resolver: (any TargetAppResolving)? = nil,
-        audioEngine: (any AudioEngineDispatching)? = nil,
-        hud: (any PerAppHUDPresenting)? = nil
+        music: (any MusicShortcutActing)? = nil,
+        hud: (any MessageHUDPresenting)? = nil
     ) -> ShortcutsRegistry {
         ShortcutsRegistry(
             settings: settings ?? makeIsolatedSettings(),
             popupController: popupController ?? RecordingPopupController(),
-            resolver: resolver ?? StubTargetResolver(target: nil),
-            audioEngine: audioEngine ?? RecordingAudioEngine(apps: []),
-            hud: hud ?? RecordingHUDController()
+            music: music ?? FakeMusicShortcuts(),
+            hud: hud ?? RecordingMessageHUD()
         )
     }
 
     private func makeIsolatedSettings() -> SettingsManager {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("FineTuneTests-\(UUID().uuidString)")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("DeciTests-\(UUID().uuidString)")
         return SettingsManager(directory: dir)
     }
+}
 
-    private func makeAudioApp(id: pid_t, bundleID: String?) -> AudioApp {
-        AudioApp(
-            id: id,
-            processObjectIDs: [],
-            name: "Test \(id)",
-            icon: NSImage(systemSymbolName: "speaker", accessibilityDescription: nil) ?? NSImage(),
-            bundleID: bundleID
+// MARK: - Music action HUD messages
+
+@Suite("Music action HUD messages")
+struct MusicActionHUDMessageTests {
+    @Test("Each outcome has its own symbol and short line")
+    func words() {
+        #expect(MusicActionOutcome.liked.hudMessage == HUDMessage(symbol: "hand.thumbsup.fill", text: "Liked"))
+        #expect(MusicActionOutcome.likeRemoved.hudMessage == HUDMessage(symbol: "hand.thumbsup", text: "Like removed"))
+        #expect(MusicActionOutcome.disliked.hudMessage == HUDMessage(symbol: "hand.thumbsdown.fill", text: "Disliked"))
+        #expect(
+            MusicActionOutcome.dislikeRemoved.hudMessage == HUDMessage(symbol: "hand.thumbsdown", text: "Dislike removed")
         )
+        #expect(MusicActionOutcome.nothingPlaying.hudMessage == HUDMessage(symbol: "music.note", text: "Nothing is playing"))
+        #expect(
+            MusicActionOutcome.signedOut.hudMessage
+                == HUDMessage(symbol: "person.crop.circle.badge.exclamationmark", text: "Sign in to YouTube Music")
+        )
+        #expect(
+            MusicActionOutcome.failed.hudMessage
+                == HUDMessage(symbol: "exclamationmark.triangle", text: "Couldn't reach YouTube Music")
+        )
+        #expect(
+            MusicActionOutcome.musicHidden.hudMessage
+                == HUDMessage(symbol: "menubar.rectangle", text: "Show Music in the menu bar")
+        )
+    }
+
+    @Test("A quiet outcome shows nothing")
+    func quietIsSilent() {
+        #expect(MusicActionOutcome.quiet.hudMessage == nil)
+    }
+
+    @Test("Every symbol exists, and every line fits the HUD's one row without an em-dash")
+    func symbolsAndLength() {
+        for outcome in MusicActionOutcome.allCases where outcome != .quiet {
+            let message = outcome.hudMessage
+            #expect(message != nil)
+            #expect(NSImage(systemSymbolName: message?.symbol ?? "", accessibilityDescription: nil) != nil)
+            #expect((message?.text.count ?? 99) <= 30)
+            #expect(message?.text.contains("\u{2014}") == false)
+        }
+    }
+}
+
+// MARK: - The hover card's rating buttons
+
+@MainActor
+@Suite("Hover card rating failures")
+struct MusicRateFailureHUDTests {
+    @Test("A rating that failed or found the session gone is shown as the hotkey shows it")
+    func failuresAreShown() {
+        let hud = RecordingMessageHUD()
+
+        hud.showIfFailed(.failed)
+        hud.showIfFailed(.signedOut)
+
+        #expect(hud.messages == [MusicActionOutcome.failed.hudMessage, MusicActionOutcome.signedOut.hudMessage].compactMap { $0 })
+        #expect(hud.messages.count == 2)
+    }
+
+    @Test("A rating that went through stays silent, since the button already shows it", arguments: [
+        MusicActionOutcome.liked, .likeRemoved, .disliked, .dislikeRemoved, .quiet,
+    ])
+    func successesAreSilent(outcome: MusicActionOutcome) {
+        let hud = RecordingMessageHUD()
+        hud.showIfFailed(outcome)
+        #expect(hud.messages.isEmpty)
     }
 }
 
@@ -325,58 +353,36 @@ final class RecordingPopupController: MenuBarPopupControlling {
     func toggle() { toggleCount += 1 }
 }
 
+/// Stands in for the music side of the shortcuts: records which action reached it and answers with `outcome`.
 @MainActor
-final class StubTargetResolver: TargetAppResolving {
-    var target: String?
-    init(target: String?) { self.target = target }
-    func resolveTargetBundleID(audibleCandidates: [String]) -> String? { target }
+final class FakeMusicShortcuts: MusicShortcutActing {
+    enum Call: Equatable { case save, like, dislike }
+
+    private(set) var calls: [Call] = []
+    var outcome: MusicActionOutcome = .quiet
+    /// When set, Like and Dislike wait here before they answer.
+    var gate: MusicTestGate?
+
+    func saveToPlaylist() -> MusicActionOutcome {
+        calls.append(.save)
+        return outcome
+    }
+
+    func toggleLike() async -> MusicActionOutcome {
+        calls.append(.like)
+        await gate?.wait()
+        return outcome
+    }
+
+    func dislike() async -> MusicActionOutcome {
+        calls.append(.dislike)
+        await gate?.wait()
+        return outcome
+    }
 }
 
 @MainActor
-final class RecordingAudioEngine: AudioEngineDispatching {
-    var apps: [AudioApp]
-    var audibleBundleIDs: Set<String> = []
-    private var volume: Float
-    private var muted: Bool
-    var setVolumeCalls: [(app: AudioApp, volume: Float)] = []
-    var toggleMuteCalls: [AudioApp] = []
-
-    init(apps: [AudioApp], initialVolume: Float = 0.5, initialMuted: Bool = false) {
-        self.apps = apps
-        self.volume = initialVolume
-        self.muted = initialMuted
-    }
-
-    func setVolume(for app: AudioApp, to volume: Float) {
-        self.volume = volume
-        setVolumeCalls.append((app, volume))
-    }
-
-    func setMute(for app: AudioApp, to mute: Bool) {
-        muted = mute
-        setMuteCalls.append((app, mute))
-    }
-
-    func toggleMute(for app: AudioApp) {
-        muted.toggle()
-        toggleMuteCalls.append(app)
-    }
-
-    func currentVolume(for app: AudioApp) -> Float { volume }
-    func isMuted(for app: AudioApp) -> Bool { muted }
-    func isAudibleNow(bundleID: String) -> Bool { audibleBundleIDs.contains(bundleID) }
-
-    var setMuteCalls: [(app: AudioApp, mute: Bool)] = []
-}
-
-@MainActor
-final class RecordingHUDController: PerAppHUDPresenting {
-    var successCalls = 0
-    var failureCalls = 0
-
-    func showPerAppVolumeHUD(app: AudioApp, sliderFraction: Double) { successCalls += 1 }
-    func showPerAppMuteHUD(app: AudioApp, isMuted: Bool) { successCalls += 1 }
-    func showPerAppNotControlledHUD(displayName: String?, bundleID: String?, icon: NSImage?) {
-        failureCalls += 1
-    }
+final class RecordingMessageHUD: MessageHUDPresenting {
+    private(set) var messages: [HUDMessage] = []
+    func showMessage(_ message: HUDMessage) { messages.append(message) }
 }

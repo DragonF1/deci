@@ -347,6 +347,10 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var editPlaylistBody = Data(#"{"status":"STATUS_SUCCEEDED","playlistEditResults":[]}"#.utf8)
         var editPlaylistStatus = 200
         var editPlaylistHeaders: [String: String] = [:]
+        /// The rate calls (like, dislike and removelike share one answer): a 2xx is success, the body is ignored.
+        var rateBody = Data("{}".utf8)
+        var rateStatus = 200
+        var rateHeaders: [String: String] = [:]
         var playerBody = (try? MusicFixtures.data("player-ok.json")) ?? Data()
         var playerStatus = 200
         var playerHeaders: [String: String] = [:]
@@ -415,6 +419,10 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
             return HTTPResponse(statusCode: config.addToPlaylistStatus, headers: config.addToPlaylistHeaders, data: config.addToPlaylistBody)
         case ("music.youtube.com", "/youtubei/v1/browse/edit_playlist"):
             return HTTPResponse(statusCode: config.editPlaylistStatus, headers: config.editPlaylistHeaders, data: config.editPlaylistBody)
+        case ("music.youtube.com", "/youtubei/v1/like/like"),
+             ("music.youtube.com", "/youtubei/v1/like/dislike"),
+             ("music.youtube.com", "/youtubei/v1/like/removelike"):
+            return HTTPResponse(statusCode: config.rateStatus, headers: config.rateHeaders, data: config.rateBody)
         case ("music.youtube.com", "/youtubei/v1/player"):
             return HTTPResponse(statusCode: config.playerStatus, headers: config.playerHeaders, data: config.playerBody)
         case ("music.youtube.com", _) where url.path.hasSuffix("/base.js"):

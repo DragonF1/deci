@@ -47,6 +47,8 @@ final class MusicService {
     let lyrics: MusicLyricsStore
     /// The song actions (save to playlist, remove from playlist) and their notice line.
     let trackActions: MusicTrackActionsStore
+    /// The like state of the songs played this session, for the Like and Dislike buttons and shortcuts.
+    let likes: MusicLikeStore
     /// The artists, playlists, albums and songs pinned to the top of Home. Remembered across launches, and kept
     /// through sign-out and account switches: they belong to the app, not to an account.
     let pinnedItems: MusicPinnedItems
@@ -207,6 +209,7 @@ final class MusicService {
         let browse = MusicBrowseStore(backend: backend)
         self.browse = browse
         self.trackActions = MusicTrackActionsStore(backend: backend, browse: browse)
+        self.likes = MusicLikeStore(backend: backend)
         self.lyrics = lyrics
         self.pinnedItems = MusicPinnedItems(items: pinnedItems, save: savePinnedItems)
         self.player = player
@@ -242,6 +245,7 @@ final class MusicService {
         nowPlaying.onCommand = { [weak self] command in self?.handleRemote(command) }
         browse.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         trackActions.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
+        likes.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         browse.onPageLoaded = { [weak self] page, opener in self?.pageLoaded(page, opener: opener) }
         if refreshOnCreate {
             Task { [weak self] in await self?.refreshAuth() }
@@ -270,7 +274,14 @@ final class MusicService {
         let signedIn = await backend.isSignedIn()
         guard authState != .signingIn else { return }
         authState = signedIn ? .signedIn : .signedOut
-        if signedIn { refreshIdentity() }
+        if signedIn { didSignIn() }
+    }
+
+    /// A sign-in is in place: the account's details are read, and so is the state of a song that was already playing,
+    /// which was skipped while signed out.
+    private func didSignIn() {
+        refreshIdentity()
+        loadLikeStatus()
     }
 
     func signIn() {
@@ -294,7 +305,7 @@ final class MusicService {
             do {
                 try await self.backend.signIn(with: cookies)
                 self.authState = .signedIn
-                self.refreshIdentity()
+                self.didSignIn()
             } catch {
                 logger.error("sign-in failed: \(Self.logDescription(of: error), privacy: .public)")
                 self.authState = .signedOut
@@ -325,6 +336,7 @@ final class MusicService {
         browse.reset()
         lyrics.reset()
         trackActions.reset()
+        likes.reset()
         signOutTask = Task { [backend] in await backend.signOut() }
     }
 
@@ -423,6 +435,7 @@ final class MusicService {
         browse.reset()
         lyrics.reset()
         trackActions.reset()
+        likes.reset()
         clearAccount()
         refreshIdentity()
     }
@@ -487,6 +500,9 @@ final class MusicService {
                 // Home and the library belong to the channel: what is loaded is the old one's.
                 self.browse.reset()
                 self.trackActions.reset()
+                // The other channel has its own likes: the song playing is read again.
+                self.likes.reset()
+                self.loadLikeStatus()
                 // The card shows the channel that was picked, not the one that was left.
                 self.clearAccount()
                 self.refreshAccount()
@@ -1263,7 +1279,45 @@ final class MusicService {
         // The lyrics follow the loaded track. Its length is the stream's exact one once that has loaded.
         lyrics.trackChanged(player.nowPlaying, duration: player.duration)
         lyrics.observePlayback(position: player.currentTime, isPlaying: player.isPlaying)
+        loadLikeStatus()
         syncNowPlaying()
+    }
+
+    // MARK: - Likes
+
+    /// The like buttons are on offer: signed in, with a song loaded in the player.
+    var canRate: Bool {
+        authState == .signedIn && player.nowPlaying != nil
+    }
+
+    /// Whether the song playing now is liked, disliked or neither; nil while that is not known (not read yet, or it could not be).
+    var likeStatus: MusicLikeStatus? {
+        guard let track = player.nowPlaying else { return nil }
+        return likes.status(of: track.videoId)
+    }
+
+    /// Reads the state of the song playing now, once per song (`MusicLikeStore.load` remembers what it has asked).
+    private func loadLikeStatus() {
+        guard authState == .signedIn, let track = player.nowPlaying else { return }
+        likes.load(videoId: track.videoId)
+    }
+
+    /// Likes the song playing now, or takes its like back. The state shows at once; the result is what the call came to.
+    func toggleLike() async -> MusicActionOutcome {
+        guard let track = player.nowPlaying else { return .nothingPlaying }
+        guard authState == .signedIn else { return .signedOut }
+        return await likes.toggleLike(videoId: track.videoId)
+    }
+
+    /// Dislikes the song playing now and skips it as the dislike goes out, or takes the dislike back and plays on.
+    /// With no next song the dislike is still sent and the song keeps playing.
+    func dislike() async -> MusicActionOutcome {
+        guard let track = player.nowPlaying else { return .nothingPlaying }
+        guard authState == .signedIn else { return .signedOut }
+        return await likes.dislike(videoId: track.videoId) { [weak self] in
+            guard let self, self.canGoNext else { return }
+            self.next()
+        }
     }
 
     private func syncNowPlaying() {
@@ -1430,6 +1484,7 @@ final class MusicService {
             session = nil
             browse.reset()
             trackActions.reset()
+            likes.reset()
             clearAccount()
             signOutTask = Task { [backend] in await backend.signOut() }
             return
