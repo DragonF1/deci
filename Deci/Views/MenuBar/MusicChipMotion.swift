@@ -165,6 +165,15 @@ nonisolated enum MusicChipMotion {
         marqueeRunDuration(textWidth: textWidth) + marqueeRest
     }
 
+    /// Where the text stands `elapsed` seconds into a run, for a marquee drawn frame by frame: at the start for each
+    /// loop's hold, then scrolling left by the loop's distance; at the start again once the run is over.
+    static func marqueeOffset(elapsed: Double, textWidth: Double) -> Double {
+        let loop = marqueeHold + marqueeScrollDuration(textWidth: textWidth)
+        guard elapsed.isFinite, elapsed > 0, elapsed < Double(marqueeLoops) * loop else { return 0 }
+        let scrolled = elapsed.truncatingRemainder(dividingBy: loop) - marqueeHold
+        return scrolled <= 0 ? 0 : -scrolled * marqueeSpeed
+    }
+
     /// How long a pause takes to ease the text from where it stands back to the start: longer the further it has
     /// scrolled, always between 0.3 and 0.9 s.
     static func marqueeReturnDuration(offset: Double) -> Double {

@@ -44,6 +44,20 @@ struct MusicChipMotionTests {
         #expect(MusicChipMotion.marqueeRest == 25)
     }
 
+    @Test("a marquee drawn frame by frame holds, scrolls a loop's distance, holds again and stands still after its run")
+    func marqueeOffsetOverARun() {
+        // 100 pt of text: 124 pt a loop, 4.96 s of scroll after the 1.5 s hold.
+        let loop = 1.5 + 124.0 / 25
+        #expect(MusicChipMotion.marqueeOffset(elapsed: 1, textWidth: 100) == 0)
+        #expect(abs(MusicChipMotion.marqueeOffset(elapsed: 3.5, textWidth: 100) + 50) < 0.001)
+        #expect(abs(MusicChipMotion.marqueeOffset(elapsed: loop - 0.0001, textWidth: 100) + 124) < 0.01)
+        #expect(MusicChipMotion.marqueeOffset(elapsed: loop + 0.5, textWidth: 100) == 0)
+        #expect(abs(MusicChipMotion.marqueeOffset(elapsed: 2 * loop + 2.5, textWidth: 100) + 25) < 0.001)
+        #expect(MusicChipMotion.marqueeOffset(elapsed: 3 * loop + 2.5, textWidth: 100) == 0)
+        #expect(MusicChipMotion.marqueeOffset(elapsed: -1, textWidth: 100) == 0)
+        #expect(MusicChipMotion.marqueeOffset(elapsed: .nan, textWidth: 100) == 0)
+    }
+
     @Test("Reduce Motion makes the width change at once, otherwise it takes 0.35 s")
     func widthDuration() {
         #expect(MusicChipMotion.widthChangeDuration(reduceMotion: false) == 0.35)

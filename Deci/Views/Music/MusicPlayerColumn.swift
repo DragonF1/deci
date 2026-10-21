@@ -132,12 +132,14 @@ struct MusicPlayerColumn: View {
                         .foregroundStyle(Color.white.opacity(0.60))
                         .lineLimit(1)
                 } else {
-                    MusicArtistLine(
-                        artist: track.artist,
-                        links: track.artistLinks,
-                        font: MusicStyle.Typeface.secondary.font,
-                        color: Color.white.opacity(0.60)
-                    )
+                    MusicMarquee(isPlaying: player?.isPlaying ?? false) {
+                        MusicArtistLine(
+                            artist: track.artist,
+                            links: track.artistLinks,
+                            font: MusicStyle.Typeface.secondary.font,
+                            color: Color.white.opacity(0.60)
+                        )
+                    }
                 }
             }
             .frame(width: width, height: 32, alignment: .topLeading)
