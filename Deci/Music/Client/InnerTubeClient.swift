@@ -35,6 +35,9 @@ actor InnerTubeClient {
     private let transport: HTTPTransport
     private let persister: MusicJarPersister
     private let now: @Sendable () -> Date
+    /// The device's time zone, read for every request. YouTube cuts History into days ("Today", "Yesterday") in the
+    /// zone the client context names; without one the days end at UTC midnight.
+    private let timeZone: @Sendable () -> TimeZone
 
     /// Loaded from the secret store on first use, so constructing the client never touches the Keychain.
     private var jar: MusicCookieJar?
@@ -48,11 +51,13 @@ actor InnerTubeClient {
         transport: HTTPTransport,
         secretStore: MusicSecretStore,
         now: @escaping @Sendable () -> Date = { Date() },
-        scheduler: MusicWriteScheduler = DispatchWriteScheduler()
+        scheduler: MusicWriteScheduler = DispatchWriteScheduler(),
+        timeZone: @escaping @Sendable () -> TimeZone = { TimeZone.current }
     ) {
         self.transport = transport
         self.persister = MusicJarPersister(store: secretStore, now: now, scheduler: scheduler)
         self.now = now
+        self.timeZone = timeZone
     }
 
     // MARK: - Sign-in state
@@ -455,12 +460,18 @@ actor InnerTubeClient {
         return try await transport.send(HTTPRequest(url: url, method: "POST", headers: headers, body: data))
     }
 
+    /// The `context.client` of every call, the fields music.youtube.com's own client sends. The zone and its offset
+    /// (minutes east of UTC, as at this moment so daylight saving counts) are what put a song played this evening
+    /// under "Today" in History instead of "Yesterday".
     private func clientContext(_ session: InnerTubeSession) -> [String: Any] {
+        let zone = timeZone()
         var client: [String: Any] = [
             "clientName": "WEB_REMIX",
             "clientVersion": session.clientVersion,
             "hl": "en",
             "gl": "US",
+            "timeZone": zone.identifier,
+            "utcOffsetMinutes": zone.secondsFromGMT(for: now()) / 60,
         ]
         if let visitorData = session.visitorData { client["visitorData"] = visitorData }
         return client

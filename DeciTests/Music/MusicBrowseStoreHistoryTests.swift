@@ -584,4 +584,59 @@ struct MusicHistoryDaysTests {
         #expect(MusicHistoryView.days(in: []).isEmpty)
         #expect(MusicHistoryView.days(in: [MusicShelf(title: "Today", items: [])]).isEmpty)
     }
+
+    // MARK: - The row cap
+
+    private func day(_ count: Int, title: String = "Today") -> MusicHistoryView.Day {
+        MusicHistoryView.Day(title: title, tracks: (0..<count).map { MusicSamples.track("t\($0 + 1)") })
+    }
+
+    @Test("A day of 14 shows its first 10 rows, and all 14 once it is opened")
+    func capsLongDay() {
+        let day = day(14)
+        #expect(day.visibleTracks(expanded: false).map(\.videoId) == (1...10).map { "t\($0)" })
+        #expect(day.visibleTracks(expanded: true).map(\.videoId) == (1...14).map { "t\($0)" })
+    }
+
+    @Test("The link is offered only past the cap: 1, 9 and 10 rows show everything with no link, 11 has one")
+    func linkOnlyAboveCap() {
+        for count in [1, 9, 10] {
+            let day = day(count)
+            #expect(!day.offersMore, "count \(count)")
+            #expect(day.visibleTracks(expanded: false).count == count, "count \(count)")
+            #expect(day.visibleTracks(expanded: true).count == count, "count \(count)")
+            #expect(day.linkTitle(expanded: false) == nil, "count \(count)")
+            #expect(day.linkTitle(expanded: true) == nil, "count \(count)")
+        }
+        let eleven = day(11)
+        #expect(eleven.offersMore)
+        #expect(eleven.visibleTracks(expanded: false).count == 10)
+        #expect(eleven.visibleTracks(expanded: true).count == 11)
+        #expect(eleven.linkTitle(expanded: false) != nil)
+    }
+
+    @Test("A day with no songs shows nothing and offers nothing")
+    func emptyDay() {
+        let empty = MusicHistoryView.Day(title: "Today", tracks: [])
+        #expect(empty.visibleTracks(expanded: false).isEmpty)
+        #expect(empty.visibleTracks(expanded: true).isEmpty)
+        #expect(!empty.offersMore)
+        #expect(empty.linkTitle(expanded: false) == nil)
+    }
+
+    @Test("The link uses the words of Home's Quick picks: See all, then Show less once the day is open")
+    func linkWords() {
+        let long = day(14)
+        #expect(long.linkTitle(expanded: false) == "See all")
+        #expect(long.linkTitle(expanded: true) == "Show less")
+        #expect(long.linkTitle(expanded: false) == MusicQuickPicks.linkTitle(expanded: false))
+        #expect(long.linkTitle(expanded: true) == MusicQuickPicks.linkTitle(expanded: true))
+    }
+
+    @Test("A day's open state is keyed by its place in the list and its title")
+    func expansionKeys() {
+        #expect(MusicHistoryView.expansionKey(index: 0, title: "Today") == MusicHistoryView.expansionKey(index: 0, title: "Today"))
+        #expect(MusicHistoryView.expansionKey(index: 0, title: "Today") != MusicHistoryView.expansionKey(index: 1, title: "Today"))
+        #expect(MusicHistoryView.expansionKey(index: 0, title: "Today") != MusicHistoryView.expansionKey(index: 0, title: "Yesterday"))
+    }
 }

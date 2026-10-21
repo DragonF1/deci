@@ -74,6 +74,14 @@ struct MusicBrowseLayoutTests {
     }
 }
 
+@Suite("MusicBrowseLayout history")
+struct MusicBrowseLayoutHistoryTests {
+    @Test("a History day shows ten rows before the rest sits behind See all")
+    func dayRowCap() {
+        #expect(MusicBrowseLayout.historyDayRowCap == 10)
+    }
+}
+
 @Suite("MusicQuickPicks")
 struct MusicQuickPicksTests {
     @Test("the list shows five rows, and twenty once it is opened")

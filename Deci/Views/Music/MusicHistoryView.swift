@@ -8,6 +8,10 @@ import SwiftUI
 struct MusicHistoryView: View {
     let service: MusicService
 
+    /// The days (by place in the list and title) that "See all" has opened past their first rows. Kept while the tab
+    /// stays up; a reload that brings different days leaves their keys behind.
+    @State private var expandedDays: Set<String> = []
+
     private var browse: MusicBrowseStore { service.browse }
 
     var body: some View {
@@ -39,10 +43,16 @@ struct MusicHistoryView: View {
                 emptyState
             } else {
                 ForEach(Array(listed.enumerated()), id: \.offset) { index, day in
-                    MusicHistoryDaySection(day: day, service: service)
-                        .onAppear {
-                            if index == listed.count - 1 { loadMore() }
-                        }
+                    let key = Self.expansionKey(index: index, title: day.title)
+                    MusicHistoryDaySection(
+                        day: day,
+                        service: service,
+                        isExpanded: expandedDays.contains(key),
+                        toggle: { toggleDay(key) }
+                    )
+                    .onAppear {
+                        if index == listed.count - 1 { loadMore() }
+                    }
                 }
                 if browse.canLoadMoreHistory || browse.isLoadingMoreHistory {
                     MusicLoadMoreFooter(isLoading: browse.isLoadingMoreHistory) { loadMore() }
@@ -69,7 +79,23 @@ struct MusicHistoryView: View {
     struct Day: Equatable {
         let title: String
         let tracks: [MusicTrack]
+
+        /// Whether the day has rows past the cap, so its header offers "See all".
+        var offersMore: Bool { tracks.count > MusicBrowseLayout.historyDayRowCap }
+
+        /// The rows on show: the first ones up to the cap, or every row once the day is opened.
+        func visibleTracks(expanded: Bool) -> [MusicTrack] {
+            expanded ? tracks : Array(tracks.prefix(MusicBrowseLayout.historyDayRowCap))
+        }
+
+        /// The link in the day's header: the words of Home's Quick picks, and none when the day fits the cap.
+        func linkTitle(expanded: Bool) -> String? {
+            offersMore ? MusicQuickPicks.linkTitle(expanded: expanded) : nil
+        }
     }
+
+    /// What keeps a day open: its place in the list and its title.
+    static func expansionKey(index: Int, title: String) -> String { "\(index)|\(title)" }
 
     /// The days that have songs to show; History lists songs only.
     static func days(in shelves: [MusicShelf]) -> [Day] {
@@ -82,25 +108,41 @@ struct MusicHistoryView: View {
         }
     }
 
+    private func toggleDay(_ key: String) {
+        if expandedDays.contains(key) {
+            expandedDays.remove(key)
+        } else {
+            expandedDays.insert(key)
+        }
+    }
+
     private func loadMore() {
         guard browse.canLoadMoreHistory, !browse.isLoadingMoreHistory else { return }
         browse.loadMoreHistory()
     }
 }
 
-/// One day of History: its title over the songs played, as hairline separated rows.
+/// One day of History: its title over the songs played, as hairline separated rows. The first ten show; a longer day
+/// has "See all" in its header, as Home's Quick picks does, which opens it in place, and "Show less" to close it.
 struct MusicHistoryDaySection: View {
     let day: MusicHistoryView.Day
     let service: MusicService
+    var isExpanded = false
+    var toggle: () -> Void = {}
 
     private var nowPlayingId: String? { service.player.nowPlaying?.videoId }
 
     var body: some View {
+        let linkTitle = day.linkTitle(expanded: isExpanded)
         VStack(alignment: .leading, spacing: MusicBrowseLayout.listTitleGap) {
-            MusicSectionHeader(title: day.title)
-            // Lazy, so a day with hundreds of plays builds only the rows on screen.
+            MusicSectionHeader(
+                title: day.title,
+                linkTitle: linkTitle,
+                linkAction: linkTitle == nil ? nil : toggle
+            )
+            // Lazy, so an opened day with hundreds of plays builds only the rows on screen.
             LazyVStack(spacing: 0) {
-                ForEach(Array(day.tracks.enumerated()), id: \.offset) { position, track in
+                ForEach(Array(day.visibleTracks(expanded: isExpanded).enumerated()), id: \.offset) { position, track in
                     MusicSongRow(
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,

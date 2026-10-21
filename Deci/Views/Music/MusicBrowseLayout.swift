@@ -17,6 +17,9 @@ nonisolated enum MusicBrowseLayout {
     /// The gap between two Home sections.
     static let homeSectionGap: CGFloat = 14
 
+    /// How many rows a History day shows before the rest sits behind its "See all". A day of this many or fewer has no link.
+    static let historyDayRowCap = 10
+
     /// The gap between a section's title and its rows, and its tiles. An artist's Top songs sit closer.
     static let listTitleGap: CGFloat = 4
     static let tileTitleGap: CGFloat = 8
