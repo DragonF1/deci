@@ -1,8 +1,9 @@
 // Deci/Views/MenuBar/MusicChipBurster.swift
 // The like animation inside the menu bar pill. The chip view is layer-hosting and so can hold no subviews, so the thumb
 // and its sparks are drawn by a SwiftUI view laid over it on the status item's button. While it plays, the cover (or a
-// paused pill's play glyph) fades away under it, the filled thumb holds for a moment after the animation, and the cover
-// comes back. The sparks are drawn within the height of the item and the view takes no clicks.
+// paused pill's play glyph) fades away under it, the thumb holds for a moment after the animation (filled after a like or
+// a dislike, the outline after one is taken back), and the cover comes back. The sparks are drawn within the height of the
+// item and the view takes no clicks.
 
 import AppKit
 import Observation
@@ -18,6 +19,10 @@ final class MusicChipBurstModel {
     var isShown = false
     /// How far right of the pill's middle the thumb stands.
     var slotOffset: Double = 0
+    /// Whether a removal's thumb comes in from nothing; false when it replaces a thumb that is showing.
+    var fadesIn = true
+    /// Draws this instant of the event instead of following the clock. Only a render sets it.
+    var pinnedElapsed: TimeInterval?
 }
 
 /// The thumb and its sparks, in the middle of the item, moved to the cover's slot.
@@ -31,7 +36,10 @@ struct MusicChipBurstOverlay: View {
                     event: event,
                     glyphSize: MusicChipLayout.burstGlyphSize,
                     restingOpacity: 1,
-                    sparkReach: MusicChipLayout.burstReach
+                    sparkReach: MusicChipLayout.burstReach,
+                    pinnedElapsed: model.pinnedElapsed,
+                    inkOffset: MusicChipLayout.burstInkNudge,
+                    fadesIn: model.fadesIn
                 )
                 .offset(x: model.slotOffset)
                 // Whole from the first frame, so the collapse and the pop are seen; it fades only on the way out.
@@ -53,8 +61,9 @@ final class MusicChipBurstHost: NSHostingView<MusicChipBurstOverlay> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// Plays the like animation in the pill: puts the overlay over the chip, lets the cover give way, holds the filled thumb,
-/// and gives everything back. One burst at a time; a newer one restarts the sequence.
+/// Plays the like animation in the pill: puts the overlay over the chip, lets the cover give way, holds the thumb (filled
+/// for a burst, the outline for a rating taken back), and gives everything back. One at a time; a newer one restarts the
+/// sequence.
 @MainActor
 final class MusicChipBurster {
     /// Waits for `seconds`. A test replaces it, to run the sequence at once.
@@ -83,8 +92,9 @@ final class MusicChipBurster {
         self.sleep = sleep
     }
 
-    /// Shows `event` with its thumb `slotOffset` points right of the pill's middle. A burst that is already showing is
-    /// replaced: the cover stays away and the way back is the new burst's.
+    /// Shows `event` with its thumb `slotOffset` points right of the pill's middle. A burst or a removal that is already
+    /// showing is replaced: the cover stays away, a removal's thumb does not fade in again over the one that was there,
+    /// and the way back is the new one's.
     func play(_ event: MusicRateBurstCenter.Event, slotOffset: Double) {
         sequence?.cancel()
         if host == nil {
@@ -96,11 +106,12 @@ final class MusicChipBurster {
             self.host = host
         }
         model.slotOffset = slotOffset
+        model.fadesIn = !model.isShown
         model.event = event
         model.isShown = true
         chipView.setBurstShown(true, duration: MusicRateBurst.Metrics.pillCoverOut)
 
-        let shown = MusicRateBurst.pillShownDuration(of: event.kind, reduceMotion: event.reduceMotion)
+        let shown = MusicRateBurst.pillShownDuration(of: event.kind, reduceMotion: event.reduceMotion, isRemoval: event.isRemoval)
         sequence = Task { @MainActor [weak self, sleep] in
             await sleep(shown)
             guard !Task.isCancelled, let self else { return }
@@ -111,9 +122,9 @@ final class MusicChipBurster {
         }
     }
 
-    /// Cuts a showing burst of `kind` short, for the rating that turned it on being taken back: the hold is dropped, the
-    /// thumb fades out and the cover fades in at once, and the view comes off when the fade is over. A burst of the other
-    /// kind, one already fading and no burst at all are left alone.
+    /// Cuts a showing burst or removal of `kind` short, for the rating that turned it on being taken back, or the removal
+    /// of it failing: the hold is dropped, the thumb fades out and the cover fades in at once, and the view comes off when
+    /// the fade is over. One of the other kind, one already fading and nothing showing are left alone.
     func cancel(_ kind: MusicRateBurst.Kind) {
         guard host != nil, model.isShown, model.event?.kind == kind else { return }
         sequence?.cancel()

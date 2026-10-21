@@ -50,6 +50,17 @@ nonisolated enum MusicChipLayout {
     /// The thumb of the like animation, which takes the cover's place: a point under the cover's 12, so the filled thumb
     /// sits well inside the 18 pt pill.
     static let burstGlyphSize: Double = 11
+    /// How far the overlay moves the thumb so its ink, not its box, is centred on the cover's middle: the symbol's ink
+    /// stands low and right of its box. Measured offscreen on the pixels of the held thumb (MusicChipBurstCenteringTests).
+    /// At 2x, where a status item snaps to half a point, the filled thumb of a burst stood 0.30 to 0.34 pt low and 0.48 to
+    /// 0.50 pt right of the cover's middle, and the outline thumb of a removal 0.48 to 0.50 low and 0.15 right, a like and
+    /// a dislike alike; with the nudge every one is within 0.20 pt. At 1x, where everything snaps to whole points, the
+    /// burst stood 1.28 to 1.36 pt low and the removal 0.95 to 1.00; now 0.28 to 0.36 and 0.05, which is as close as a
+    /// whole-point step leaves the filled thumb. The values sit mid-band between two snaps, so a small change in the
+    /// symbol's metrics does not tip one. The overlay moves the ink by it; the box and the sparks stay centred.
+    static let burstInkNudgeX: Double = -0.15
+    static let burstInkNudgeY: Double = -0.65
+    static let burstInkNudge = CGSize(width: burstInkNudgeX, height: burstInkNudgeY)
     /// The menu bar item the pill stands in is this high, and the pill is centred in it. The animation's sparks may reach
     /// half of it from the thumb's middle, so they are never cut off.
     static let statusItemHeight: Double = 22

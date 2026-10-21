@@ -1,7 +1,8 @@
 // Deci/Views/Music/MusicRateBurstView.swift
 // Draws the like animation (MusicRateBurst) for one burst: the thumb that collapses and pops back filled, and the ring of
-// sparks around it. One view serves the popup's Like and Dislike buttons and the menu bar pill; they differ only in the
-// size of the thumb and in how far the sparks may reach. The sparks are painted over the thumb's box and past it, out of
+// sparks around it, or, for a rating taken back, the outline thumb that fades in and settles. One view serves the popup's
+// Like and Dislike buttons and the menu bar pill; they differ only in the size of the thumb and in how far the sparks may
+// reach. The sparks are painted over the thumb's box and past it, out of
 // the layout, so they never move a neighbour and take no clicks.
 
 import SwiftUI
@@ -12,8 +13,8 @@ private enum MusicRateBurstPalette {
     static let dot = Color(red: 1, green: 0.306, blue: 0.525)
 }
 
-/// The burst for `event`, following the clock from the event's start. After the animation it is a still, filled thumb,
-/// and the clock stops. A `pinnedElapsed` draws one instant instead, for a render.
+/// The burst for `event`, following the clock from the event's start. After the animation it is a still thumb, filled for a
+/// burst and the outline for a removal, and the clock stops. A `pinnedElapsed` draws one instant instead, for a render.
 struct MusicRateBurstView: View {
     let event: MusicRateBurstCenter.Event
     /// The side of the thumb's box.
@@ -23,6 +24,12 @@ struct MusicRateBurstView: View {
     /// How far from the thumb's middle the sparks may reach; `.infinity` for no limit.
     let sparkReach: CGFloat
     var pinnedElapsed: TimeInterval?
+    /// How far the thumb's ink is moved inside its box, in points, to centre it where the surface draws it low or to one
+    /// side. The sparks stay on the box's middle.
+    var inkOffset: CGSize = .zero
+    /// Whether a removal's thumb comes in from nothing. False when it comes onto a thumb that is already showing, which
+    /// would otherwise vanish and return.
+    var fadesIn = true
 
     var body: some View {
         if let pinnedElapsed {
@@ -34,13 +41,21 @@ struct MusicRateBurstView: View {
         }
     }
 
+    /// The frame drawn `elapsed` seconds into the event.
+    func drawnFrame(at elapsed: TimeInterval) -> MusicRateBurst.Frame {
+        var frame = MusicRateBurst.frame(at: elapsed, kind: event.kind, reduceMotion: event.reduceMotion, isRemoval: event.isRemoval)
+        if !fadesIn { frame.opacity = 1 }
+        return frame
+    }
+
     private func frameView(at elapsed: TimeInterval) -> some View {
         MusicRateBurstFrameView(
             kind: event.kind,
-            frame: MusicRateBurst.frame(at: elapsed, kind: event.kind, reduceMotion: event.reduceMotion),
+            frame: drawnFrame(at: elapsed),
             glyphSize: glyphSize,
             restingOpacity: restingOpacity,
-            sparkReach: sparkReach
+            sparkReach: sparkReach,
+            inkOffset: inkOffset
         )
     }
 }
@@ -53,6 +68,8 @@ struct MusicRateBurstFrameView: View {
     let glyphSize: CGFloat
     let restingOpacity: Double
     let sparkReach: CGFloat
+    /// Moves the thumb's ink inside the box, with the scale and the tilt; the box and the sparks stay where they are.
+    var inkOffset: CGSize = .zero
 
     /// The ring has eight dashes, and eight dots between them.
     private static let dashCount = 8
@@ -64,6 +81,8 @@ struct MusicRateBurstFrameView: View {
             thumb(filled: true)
                 .opacity(frame.fill)
         }
+        .opacity(frame.opacity)
+        .offset(inkOffset)
         .scaleEffect(frame.scale)
         .rotationEffect(.degrees(frame.rotation))
         .frame(width: glyphSize, height: glyphSize)

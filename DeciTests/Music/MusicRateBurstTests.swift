@@ -248,6 +248,122 @@ struct MusicRateBurstTimelineTests {
         #expect(Burst.pillShownDuration(of: .like, reduceMotion: true) == Burst.Metrics.reducedDuration + 0.7)
     }
 
+    // MARK: - A removal
+
+    private func removal(_ seconds: Double, _ kind: Burst.Kind = .like, reduceMotion: Bool = false) -> Burst.Frame {
+        Burst.frame(at: seconds, kind: kind, reduceMotion: reduceMotion, isRemoval: true)
+    }
+
+    @Test("A removal begins as the outline thumb, a little oversized and not yet drawn, with no sparks and no tilt")
+    func removalStart() {
+        let start = removal(0)
+        #expect(start.scale == Burst.Metrics.removalScaleFrom)
+        #expect(start.scale > 1)
+        #expect(start.scale <= 1.2)
+        #expect(start.fill == 0)
+        #expect(start.opacity == 0)
+        #expect(start.rotation == 0)
+        #expect(start.sparks == nil)
+    }
+
+    @Test("It is drawn in full as the cover is gone, and in no hurry before that: never over a picture at full strength")
+    func removalFadesInWithTheCover() {
+        #expect(removal(Burst.Metrics.pillCoverOut).opacity == 1)
+        let halfway = removal(Burst.Metrics.pillCoverOut / 2).opacity
+        #expect(halfway > 0)
+        #expect(halfway < 1)
+        var previous = 0.0
+        for seconds in stride(from: 0.0, through: 0.3, by: 0.005) {
+            let opacity = removal(seconds).opacity
+            #expect(opacity >= previous)
+            previous = opacity
+        }
+        #expect(removal(5).opacity == 1)
+    }
+
+    @Test("It settles from 1.15 to full size with a quick ease, only ever shrinking, and rests there")
+    func removalSettles() {
+        let settle = Burst.Metrics.removalSettle
+        #expect(settle > 0)
+        #expect(settle <= 0.3)
+        #expect(removal(settle).scale == 1)
+        #expect(removal(5).scale == 1)
+        let early = removal(settle / 4).scale
+        let late = removal(settle * 3 / 4).scale
+        #expect(early < Burst.Metrics.removalScaleFrom)
+        #expect(early > late)
+        #expect(late > 1)
+        // A quick ease: most of the way is made in the first half.
+        #expect(removal(settle / 2).scale < 1 + (Burst.Metrics.removalScaleFrom - 1) / 2)
+        var previous = Burst.Metrics.removalScaleFrom
+        for seconds in stride(from: 0.0, through: 0.4, by: 0.005) {
+            let scale = removal(seconds).scale
+            #expect(scale <= previous)
+            previous = scale
+        }
+    }
+
+    @Test("A removal is always the outline thumb, never tilts and never throws sparks, for either kind")
+    func removalIsPlain() {
+        for kind in [Burst.Kind.like, .dislike] {
+            for seconds in stride(from: 0.0, through: 1.2, by: 0.01) {
+                let frame = removal(seconds, kind)
+                #expect(frame.fill == 0)
+                #expect(frame.rotation == 0)
+                #expect(frame.sparks == nil)
+                #expect(frame == removal(seconds, .like))
+            }
+        }
+    }
+
+    @Test("With Reduce Motion a removal does not move: the outline thumb only fades in")
+    func removalReduceMotion() {
+        for seconds in stride(from: 0.0, through: 1.0, by: 0.01) {
+            let frame = removal(seconds, reduceMotion: true)
+            #expect(frame.scale == 1)
+            #expect(frame.fill == 0)
+            #expect(frame.rotation == 0)
+            #expect(frame.sparks == nil)
+        }
+        #expect(removal(0, reduceMotion: true).opacity == 0)
+        let halfway = removal(Burst.Metrics.reducedDuration / 2, reduceMotion: true).opacity
+        #expect(halfway > 0)
+        #expect(halfway < 1)
+        #expect(removal(Burst.Metrics.reducedDuration, reduceMotion: true).opacity == 1)
+    }
+
+    @Test("A removal's time before the start, or one that is not a number, is the start")
+    func removalOddClocks() {
+        #expect(removal(-3) == removal(0))
+        #expect(removal(.nan) == removal(0))
+        #expect(removal(-.infinity) == removal(0))
+        #expect(removal(.infinity) == removal(10))
+    }
+
+    @Test("A removal runs for its settle, a Reduce Motion one for the short fade, and the pill keeps either for the same hold")
+    func removalLengths() {
+        #expect(Burst.duration(of: .like, reduceMotion: false, isRemoval: true) == Burst.Metrics.removalSettle)
+        #expect(Burst.duration(of: .dislike, reduceMotion: false, isRemoval: true) == Burst.Metrics.removalSettle)
+        #expect(Burst.duration(of: .like, reduceMotion: true, isRemoval: true) == Burst.Metrics.reducedDuration)
+        #expect(Burst.pillShownDuration(of: .like, reduceMotion: false, isRemoval: true) == Burst.Metrics.removalSettle + 0.7)
+        #expect(Burst.pillShownDuration(of: .dislike, reduceMotion: true, isRemoval: true) == Burst.Metrics.reducedDuration + 0.7)
+        // The fade-in is over before the settle is, so the animation's length is the settle's.
+        #expect(Burst.Metrics.pillCoverOut <= Burst.Metrics.removalSettle)
+        // What a burst plays for is as it was.
+        #expect(Burst.duration(of: .like, reduceMotion: false) == 0.85)
+        #expect(Burst.pillShownDuration(of: .like, reduceMotion: false) == 0.85 + 0.7)
+    }
+
+    @Test("A burst's frames are fully drawn, whatever the time: only a removal fades in")
+    func burstFramesAreOpaque() {
+        for seconds in stride(from: 0.0, through: 1.0, by: 0.01) {
+            for kind in [Burst.Kind.like, .dislike] {
+                #expect(frame(seconds, kind).opacity == 1)
+                #expect(frame(seconds, kind, reduceMotion: true).opacity == 1)
+            }
+        }
+    }
+
     // MARK: - Fitting the sparks
 
     @Test("Sparks are scaled down until the whole burst fits the room it is given, and never scaled up")
@@ -439,5 +555,136 @@ struct MusicRateBurstCenterTests {
         #expect(center.stripEvent == second)
         probe.timers[1].work()
         #expect(center.stripEvent == nil)
+    }
+
+    // MARK: - A rating taken back
+
+    @Test("With the popup closed a like taken back is shown in the pill as a removal, and the strip stays as it is")
+    func removalClosedPlaysInThePill() throws {
+        let (center, probe) = makeCenter(isOpen: false)
+        center.playRemoval(of: .like)
+        #expect(center.stripEvent == nil)
+        let event = try #require(probe.pillEvents.first)
+        #expect(probe.pillEvents.count == 1)
+        #expect(event.isRemoval)
+        #expect(event.kind == .like)
+        #expect(event.surface == .pill)
+        #expect(event.startedAt == start)
+        #expect(!event.reduceMotion)
+        // Showing it cuts nothing short: the pill's own replacing does that.
+        #expect(probe.pillCancels.isEmpty)
+    }
+
+    @Test("A dislike taken back is shown the same way, as a dislike removal")
+    func removalOfADislike() {
+        let (center, probe) = makeCenter(isOpen: false)
+        center.playRemoval(of: .dislike)
+        #expect(probe.pillEvents.map(\.kind) == [.dislike])
+        #expect(probe.pillEvents.map(\.isRemoval) == [true])
+    }
+
+    @Test("A burst is not a removal")
+    func burstIsNotARemoval() throws {
+        let (center, probe) = makeCenter(isOpen: false)
+        center.play(.like)
+        #expect(try #require(probe.pillEvents.first).isRemoval == false)
+        let (open, _) = makeCenter(isOpen: true)
+        open.play(.like)
+        #expect(open.stripEvent?.isRemoval == false)
+    }
+
+    @Test("With the popup open a removal draws nothing on the strip and cuts the strip's burst short, as before")
+    func removalOpenCutsTheStripShort() {
+        let (center, probe) = makeCenter(isOpen: true)
+        center.play(.like)
+
+        center.playRemoval(of: .like)
+
+        #expect(center.stripEvent == nil)
+        #expect(probe.pillEvents.isEmpty)
+        // The pill is told to cut a burst short that began while the popup was closed.
+        #expect(probe.pillCancels == [.like])
+    }
+
+    @Test("With the popup open a removal leaves the strip's burst of the other kind alone")
+    func removalOpenKeepsTheOtherKind() throws {
+        let (center, probe) = makeCenter(isOpen: true)
+        center.play(.dislike)
+        let event = try #require(center.stripEvent)
+
+        center.playRemoval(of: .like)
+
+        #expect(center.stripEvent == event)
+        #expect(probe.pillEvents.isEmpty)
+    }
+
+    @Test("A removal shown while the popup is not open clears a leftover strip burst of its kind, and keeps the other kind's")
+    func removalClosedClearsALeftoverStripBurst() throws {
+        let (center, probe) = makeCenter(isOpen: true)
+        center.play(.like)
+        center.isPopupOpen = { false }
+
+        center.playRemoval(of: .like)
+
+        #expect(center.stripEvent == nil)
+        #expect(probe.pillEvents.map(\.isRemoval) == [true])
+
+        center.isPopupOpen = { true }
+        center.play(.dislike)
+        let event = try #require(center.stripEvent)
+        center.isPopupOpen = { false }
+        center.playRemoval(of: .like)
+        #expect(center.stripEvent == event)
+    }
+
+    @Test("A removal replaces a burst that shows in the pill, and a burst replaces a removal: each is a new event")
+    func removalAndBurstReplaceEachOther() {
+        let (center, probe) = makeCenter(isOpen: false)
+        center.play(.like)
+        center.playRemoval(of: .like)
+        center.play(.like)
+        center.playRemoval(of: .like)
+
+        #expect(probe.pillEvents.map(\.isRemoval) == [false, true, false, true])
+        #expect(Set(probe.pillEvents.map(\.id)).count == 4)
+        #expect(probe.pillEvents.map(\.id) == probe.pillEvents.map(\.id).sorted())
+        #expect(probe.pillCancels.isEmpty)
+    }
+
+    @Test("Reduce Motion is read when the removal starts and rides with the event; a removal's length is its own")
+    func removalReduceMotionAndLength() throws {
+        let (calm, calmProbe) = makeCenter(isOpen: false)
+        calm.playRemoval(of: .like)
+        let plain = try #require(calmProbe.pillEvents.first)
+        #expect(plain.duration == MusicRateBurst.Metrics.removalSettle)
+
+        let (reduced, reducedProbe) = makeCenter(isOpen: false, reduceMotion: true)
+        reduced.playRemoval(of: .dislike)
+        let still = try #require(reducedProbe.pillEvents.first)
+        #expect(still.reduceMotion)
+        #expect(still.duration == MusicRateBurst.Metrics.reducedDuration)
+    }
+
+    @Test("A removal in the pill needs no timer of the center's, and with nobody to show it is dropped")
+    func removalSchedulesNothing() {
+        let (center, probe) = makeCenter(isOpen: false)
+        center.playRemoval(of: .like)
+        #expect(probe.timers.isEmpty)
+
+        center.onPill = nil
+        center.playRemoval(of: .dislike)
+        #expect(center.stripEvent == nil)
+        #expect(probe.timers.isEmpty)
+    }
+
+    @Test("A removal with the popup open and nothing showing is harmless, and a later burst plays whole")
+    func removalWithNothingShowing() throws {
+        let (center, probe) = makeCenter(isOpen: true)
+        center.playRemoval(of: .like)
+        #expect(center.stripEvent == nil)
+        center.play(.like)
+        let event = try #require(center.stripEvent)
+        #expect(event.surface == .strip)
+        #expect(probe.timers.count == 1)
     }
 }

@@ -39,13 +39,19 @@ struct MusicChipBurstTests {
         return view
     }
 
-    private func event(_ kind: MusicRateBurst.Kind = .like, reduceMotion: Bool = false) -> MusicRateBurstCenter.Event {
+    private func event(
+        _ kind: MusicRateBurst.Kind = .like,
+        reduceMotion: Bool = false,
+        isRemoval: Bool = false,
+        id: Int = 1
+    ) -> MusicRateBurstCenter.Event {
         MusicRateBurstCenter.Event(
-            id: 1,
+            id: id,
             kind: kind,
             surface: .pill,
             reduceMotion: reduceMotion,
-            startedAt: Date(timeIntervalSince1970: 1_000)
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            isRemoval: isRemoval
         )
     }
 
@@ -61,6 +67,16 @@ struct MusicChipBurstTests {
         // Scaled to that reach, the whole burst fits the item's height.
         let fit = MusicRateBurst.sparkScale(glyphSize: MusicChipLayout.burstGlyphSize, reach: MusicChipLayout.burstReach)
         #expect(fit * MusicChipLayout.burstGlyphSize * MusicRateBurst.sparkExtent * 2 <= MusicChipLayout.statusItemHeight + 0.0001)
+    }
+
+    @Test("The thumb's ink nudge is a small correction, up and to the left, that the overlay passes on to the view")
+    func inkNudge() {
+        // The symbol is drawn low and to the right of its box in the overlay; the nudge moves it back, by points.
+        #expect(MusicChipLayout.burstInkNudgeY < 0)
+        #expect(MusicChipLayout.burstInkNudgeX < 0)
+        #expect(abs(MusicChipLayout.burstInkNudgeY) < 2)
+        #expect(abs(MusicChipLayout.burstInkNudgeX) < 1)
+        #expect(MusicChipLayout.burstInkNudge == CGSize(width: MusicChipLayout.burstInkNudgeX, height: MusicChipLayout.burstInkNudgeY))
     }
 
     @Test("While a song plays the thumb stands where the cover stands: the cover's middle, measured from the pill's middle")
@@ -407,6 +423,228 @@ struct MusicChipBurstTests {
         await rig.burster.sequence?.value
         #expect(rig.hosts.isEmpty)
         #expect(rig.view.coverOpacity == 1)
+    }
+
+    // MARK: - A rating taken back
+
+    @Test("The overlay's model starts empty: no event, nothing shown, the clock running, and a first thumb that fades in")
+    func modelStartsEmpty() {
+        let model = MusicChipBurstModel()
+        #expect(model.event == nil)
+        #expect(!model.isShown)
+        #expect(model.pinnedElapsed == nil)
+        #expect(model.fadesIn)
+        #expect(model.slotOffset == 0)
+    }
+
+    @Test("A burster never pins the clock: only a render does")
+    func bursterLeavesTheClockRunning() {
+        let rig = Rig(view: makeView())
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: -41)
+        #expect(rig.burster.model.pinnedElapsed == nil)
+        rig.burster.play(event(.like, id: 2), slotOffset: -41)
+        #expect(rig.burster.model.pinnedElapsed == nil)
+    }
+
+    @Test("A removal puts the same view over the pill, hides the cover, and shows the outline thumb at the slot")
+    func removalStartsLikeABurst() throws {
+        let rig = Rig(view: makeView())
+
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: -41)
+
+        let host = try #require(rig.hosts.first)
+        #expect(rig.hosts.count == 1)
+        #expect(rig.container.subviews.last === host)
+        #expect(host.frame == rig.container.bounds)
+        #expect(host.hitTest(NSPoint(x: 20, y: 12)) == nil)
+        #expect(rig.view.coverOpacity == 0)
+        #expect(rig.burster.model.event == event(.like, isRemoval: true))
+        #expect(rig.burster.model.isShown)
+        #expect(rig.burster.model.slotOffset == -41)
+        #expect(rig.burster.isPlaying)
+    }
+
+    @Test("A removal comes in with the cover going out; a thumb that is already there is not faded in again")
+    func fadesInOnlyOverAnEmptySlot() async {
+        let rig = Rig(view: makeView())
+        #expect(rig.burster.model.fadesIn)
+
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: -41)
+        #expect(rig.burster.model.fadesIn)
+
+        rig.burster.play(event(.like, isRemoval: true, id: 2), slotOffset: -41)
+        #expect(!rig.burster.model.fadesIn)
+
+        await rig.burster.sequence?.value
+        // Once it is all over the next one comes into an empty slot again.
+        rig.burster.play(event(.dislike, isRemoval: true, id: 3), slotOffset: -41)
+        #expect(rig.burster.model.fadesIn)
+    }
+
+    @Test("After its settle and the hold the thumb goes and the cover comes back, and the view is taken off")
+    func removalSequenceEnds() async {
+        let rig = Rig(view: makeView())
+
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: -41)
+        await rig.burster.sequence?.value
+
+        #expect(rig.log.delays.count == 2)
+        #expect(rig.log.delays.first == MusicRateBurst.pillShownDuration(of: .like, reduceMotion: false, isRemoval: true))
+        #expect(rig.log.delays.first == MusicRateBurst.Metrics.removalSettle + MusicRateBurst.Metrics.pillHold)
+        #expect(rig.log.delays.last == MusicRateBurst.Metrics.pillFade)
+        #expect(rig.view.coverOpacity == 1)
+        #expect(rig.hosts.isEmpty)
+        #expect(rig.burster.model.event == nil)
+        #expect(!rig.burster.model.isShown)
+        #expect(!rig.burster.isPlaying)
+    }
+
+    @Test("A dislike removal holds the same, and a Reduce Motion one for the short fade and the hold")
+    func removalSequenceLengths() async {
+        let dislike = Rig(view: makeView())
+        dislike.burster.play(event(.dislike, isRemoval: true), slotOffset: 0)
+        await dislike.burster.sequence?.value
+        #expect(dislike.log.delays.first == MusicRateBurst.Metrics.removalSettle + 0.7)
+
+        let reduced = Rig(view: makeView())
+        reduced.burster.play(event(.like, reduceMotion: true, isRemoval: true), slotOffset: 0)
+        await reduced.burster.sequence?.value
+        #expect(reduced.log.delays.first == MusicRateBurst.Metrics.reducedDuration + 0.7)
+    }
+
+    @Test("A removal replaces a burst that shows: one view, the cover stays away, the thumb does not fade in again, one way back")
+    func removalReplacesABurst() async {
+        let rig = Rig(view: makeView())
+        rig.burster.play(event(.like), slotOffset: -41)
+
+        rig.burster.play(event(.like, isRemoval: true, id: 2), slotOffset: -41)
+
+        #expect(rig.hosts.count == 1)
+        #expect(rig.view.coverOpacity == 0)
+        #expect(rig.burster.model.event == event(.like, isRemoval: true, id: 2))
+        #expect(rig.burster.model.isShown)
+        #expect(!rig.burster.model.fadesIn)
+
+        await rig.burster.sequence?.value
+        // The burst's own hold was dropped: the removal's hold restarted and ran to the end.
+        #expect(rig.log.delays.contains(MusicRateBurst.pillShownDuration(of: .like, reduceMotion: false, isRemoval: true)))
+        #expect(rig.log.delays.last == MusicRateBurst.Metrics.pillFade)
+        #expect(rig.view.coverOpacity == 1)
+        #expect(rig.hosts.isEmpty)
+        #expect(!rig.burster.model.isShown)
+        #expect(rig.burster.model.event == nil)
+    }
+
+    @Test("A burst replaces a removal that shows, and plays whole with the cover away until its own end")
+    func burstReplacesARemoval() async {
+        let rig = Rig(view: makeView())
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: -41)
+
+        rig.burster.play(event(.like, id: 2), slotOffset: -41)
+
+        #expect(rig.hosts.count == 1)
+        #expect(rig.view.coverOpacity == 0)
+        #expect(rig.burster.model.event == event(.like, id: 2))
+        #expect(rig.burster.model.isShown)
+        #expect(!rig.burster.model.fadesIn)
+
+        await rig.burster.sequence?.value
+        #expect(rig.log.delays.contains(MusicRateBurst.pillShownDuration(of: .like, reduceMotion: false)))
+        #expect(rig.log.delays.last == MusicRateBurst.Metrics.pillFade)
+        #expect(rig.view.coverOpacity == 1)
+        #expect(rig.hosts.isEmpty)
+    }
+
+    @Test("A removal that comes while the thumb is already fading out brings it in again, with the cover away")
+    func removalDuringTheHandBack() async {
+        let rig = Rig(view: makeView())
+        rig.burster.play(event(.like), slotOffset: -41)
+        rig.burster.cancel(.like)
+        #expect(!rig.burster.model.isShown)
+
+        rig.burster.play(event(.like, isRemoval: true, id: 2), slotOffset: -41)
+
+        #expect(rig.burster.model.isShown)
+        #expect(rig.burster.model.fadesIn)
+        #expect(rig.view.coverOpacity == 0)
+        await rig.burster.sequence?.value
+        #expect(rig.view.coverOpacity == 1)
+        #expect(rig.hosts.isEmpty)
+    }
+
+    @Test("Cancelling the kind of a showing removal hands the cover back at once, and takes the view off after one fade")
+    func cancelCutsARemovalShort() async {
+        let rig = Rig(view: makeView())
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: -41)
+
+        rig.burster.cancel(.like)
+
+        #expect(!rig.burster.model.isShown)
+        #expect(rig.view.coverOpacity == 1)
+        #expect(rig.burster.isPlaying)
+        await rig.burster.sequence?.value
+        #expect(rig.hosts.isEmpty)
+        #expect(rig.burster.model.event == nil)
+        #expect(rig.view.coverOpacity == 1)
+        #expect(rig.log.delays.filter { $0 == MusicRateBurst.Metrics.pillFade }.count == 1)
+    }
+
+    @Test("Cancelling the other kind leaves a showing removal alone, and it runs on to its own end")
+    func cancelOfAnotherKindKeepsARemoval() async {
+        let rig = Rig(view: makeView())
+        rig.burster.play(event(.dislike, isRemoval: true), slotOffset: -41)
+
+        rig.burster.cancel(.like)
+
+        #expect(rig.burster.model.isShown)
+        #expect(rig.view.coverOpacity == 0)
+        await rig.burster.sequence?.value
+        #expect(rig.log.delays == [
+            MusicRateBurst.pillShownDuration(of: .dislike, reduceMotion: false, isRemoval: true),
+            MusicRateBurst.Metrics.pillFade,
+        ])
+        #expect(rig.hosts.isEmpty)
+        #expect(rig.view.coverOpacity == 1)
+    }
+
+    @Test("Stopping during a removal takes the view off and gives the cover back at once, and nothing runs on")
+    func stopRestoresDuringARemoval() async {
+        let rig = Rig(view: makeView())
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: -41)
+
+        rig.burster.stop()
+
+        #expect(rig.hosts.isEmpty)
+        #expect(rig.view.coverOpacity == 1)
+        #expect(!rig.burster.isPlaying)
+        #expect(rig.burster.model.event == nil)
+        #expect(!rig.burster.model.isShown)
+        await rig.burster.sequence?.value
+        #expect(rig.view.coverOpacity == 1)
+        // The next one starts clean.
+        rig.burster.play(event(.like, isRemoval: true, id: 2), slotOffset: -41)
+        #expect(rig.hosts.count == 1)
+        #expect(rig.burster.model.fadesIn)
+    }
+
+    @Test("A paused pill shows the removal in the middle and gives the glyph back after")
+    func removalOnAPausedPill() async {
+        let rig = Rig(view: makeView(isPlaying: false))
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: 0)
+        #expect(rig.view.playGlyphOpacity == 0)
+
+        await rig.burster.sequence?.value
+
+        #expect(rig.view.playGlyphOpacity == 1)
+        #expect(rig.view.coverOpacity == 1)
+    }
+
+    @Test("The slot follows the pill under a showing removal as it does under a burst")
+    func slotFollowsThePillUnderARemoval() {
+        let rig = Rig(view: makeView())
+        rig.burster.play(event(.like, isRemoval: true), slotOffset: -41)
+        rig.burster.moveSlot(to: -20, duration: 0)
+        #expect(rig.burster.model.slotOffset == -20)
     }
 
     @Test("The slot follows the pill when its width changes under a thumb that is showing")

@@ -76,8 +76,12 @@ final class MusicService {
     /// Told when a tap turns Like or Dislike on for the song playing now, as its state flips and before YouTube Music
     /// answers. A song that is not playing, and the removal of a rating, are not told. The like animation plays on it.
     @ObservationIgnored var onRatingBurst: (@MainActor (MusicRateBurst.Kind) -> Void)?
-    /// Told, with the kind, when a tap takes the playing song's Like or Dislike away and no burst replaces it, so a burst
-    /// of that kind still playing is cut short. A song that is not playing is not told.
+    /// Told, with the kind, when a tap takes the playing song's Like or Dislike away and no burst replaces it, as its
+    /// state flips. The pill shows the removal, which also replaces a burst of that kind still playing. A song that is not
+    /// playing is not told.
+    @ObservationIgnored var onRatingRemoval: (@MainActor (MusicRateBurst.Kind) -> Void)?
+    /// Told, with the kind, when a rating YouTube Music did not take goes back, so a burst or removal of that kind still
+    /// showing is cut short. A song that is not playing is not told.
     @ObservationIgnored var onRatingBurstCancel: (@MainActor (MusicRateBurst.Kind) -> Void)?
 
     /// One playback session: one CPN, one listening-time count, one playback ping and, when the stream has a
@@ -1349,21 +1353,26 @@ final class MusicService {
 
     /// The like animation plays for the song on screen: a rating of any other song (from a row's menu) shows only in its
     /// own state. The store tells this before a dislike skips, so the song is still the one that was rated. A Like or
-    /// Dislike taken back cuts its burst short, so the thumb does not show a rating the song no longer has.
+    /// Dislike taken back asks for its removal, which also replaces the burst, so the thumb does not show a rating the
+    /// song no longer has.
     private func ratingShown(videoId: String, status: MusicLikeStatus, previous: MusicLikeStatus?) {
         guard videoId == player.nowPlaying?.videoId else { return }
         if let kind = MusicRateBurst.kind(from: previous, to: status) {
             onRatingBurst?(kind)
         } else if let kind = MusicRateBurst.kindTakenBack(from: previous, to: status) {
-            onRatingBurstCancel?(kind)
+            onRatingRemoval?(kind)
         }
     }
 
     /// A rating YouTube Music did not take cuts its animation short as the song goes back, so the thumb does not stay
-    /// filled for a rating the song never got.
+    /// filled for a rating the song never got. When it was a Like or Dislike taken back that did not go through, the
+    /// rating is back and the removal is cut short in the same way.
     private func ratingRolledBack(videoId: String, shown: MusicLikeStatus?) {
-        guard videoId == player.nowPlaying?.videoId, let shown, let kind = MusicRateBurst.kind(from: nil, to: shown) else { return }
-        onRatingBurstCancel?(kind)
+        guard videoId == player.nowPlaying?.videoId, let shown else { return }
+        let kind = shown == .indifferent
+            ? MusicRateBurst.kindTakenBack(from: likes.status(of: videoId), to: .indifferent)
+            : MusicRateBurst.kind(from: nil, to: shown)
+        if let kind { onRatingBurstCancel?(kind) }
     }
 
     /// With no next song the song keeps playing.

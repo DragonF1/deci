@@ -586,10 +586,11 @@ struct MusicServiceLikeTests {
 
     // MARK: - The like animation
 
-    /// The bursts the service asked for, and the ones it asked to cut short, each in order.
+    /// The bursts the service asked for, the removals it asked to show and the bursts it asked to cut short, each in order.
     @MainActor
     private final class BurstLog {
         var kinds: [MusicRateBurst.Kind] = []
+        var removed: [MusicRateBurst.Kind] = []
         var cancelled: [MusicRateBurst.Kind] = []
     }
 
@@ -693,6 +694,7 @@ struct MusicServiceLikeTests {
         let h = await LikeServiceHarness.signedIn()
         let log = BurstLog()
         h.service.onRatingBurst = { log.kinds.append($0) }
+        h.service.onRatingRemoval = { log.removed.append($0) }
         h.service.onRatingBurstCancel = { log.cancelled.append($0) }
         await h.startAlone("a")
         await h.backend.setRateError(videoId: "a", MusicError.http(500))
@@ -700,37 +702,101 @@ struct MusicServiceLikeTests {
         #expect(await h.service.toggleLike() == .failed)
 
         #expect(log.kinds == [.like])
+        #expect(log.removed.isEmpty)
         #expect(log.cancelled == [.like])
         #expect(h.service.likeStatus == nil)
     }
 
-    @Test("Taking a like or a dislike of the playing song back asks to cut that burst short, once, and plays no burst")
-    func removalCutsTheBurstShort() async {
+    @Test("A like or a dislike taken back that fails shows its removal, then cuts it short as the rating comes back, once")
+    func failedRemovalCutsTheRemovalShort() async {
         let h = await LikeServiceHarness.signedIn()
         let log = BurstLog()
         h.service.onRatingBurst = { log.kinds.append($0) }
+        h.service.onRatingRemoval = { log.removed.append($0) }
+        h.service.onRatingBurstCancel = { log.cancelled.append($0) }
+        await h.backend.setLikeStatus(videoId: "a", .like)
+        await h.startAlone("a")
+        _ = await h.until { h.service.likeStatus == .like }
+        await h.backend.setRateError(videoId: "a", MusicError.http(500))
+
+        #expect(await h.service.toggleLike() == .failed)
+
+        #expect(log.removed == [.like])
+        #expect(log.cancelled == [.like])
+        // Nothing is played again for the rating that came back.
+        #expect(log.kinds.isEmpty)
+        #expect(h.service.likeStatus == .like)
+
+        await h.backend.setRateError(videoId: "a", nil)
+        await h.backend.setLikeStatus(videoId: "a", .dislike)
+        #expect(await h.service.setLike(.dislike, of: h.song("a")) == .disliked)
+        await h.backend.setRateError(videoId: "a", MusicError.http(500))
+        log.kinds.removeAll()
+        log.removed.removeAll()
+        log.cancelled.removeAll()
+
+        #expect(await h.service.setLike(.indifferent, of: h.song("a")) == .failed)
+
+        #expect(log.removed == [.dislike])
+        #expect(log.cancelled == [.dislike])
+        #expect(log.kinds.isEmpty)
+        #expect(h.service.likeStatus == .dislike)
+    }
+
+    @Test("Taking a like or a dislike of the playing song back asks for the removal, once, and plays no burst")
+    func removalAsksForTheRemoval() async {
+        let h = await LikeServiceHarness.signedIn()
+        let log = BurstLog()
+        h.service.onRatingBurst = { log.kinds.append($0) }
+        h.service.onRatingRemoval = { log.removed.append($0) }
         h.service.onRatingBurstCancel = { log.cancelled.append($0) }
         await h.backend.setLikeStatus(videoId: "a", .like)
         await h.startAlone("a")
         _ = await h.until { h.service.likeStatus == .like }
 
         #expect(await h.service.toggleLike() == .likeRemoved)
-        #expect(log.cancelled == [.like])
+        #expect(log.removed == [.like])
         #expect(log.kinds.isEmpty)
+        // The removal itself takes the showing burst's place, so nothing is cut short separately.
+        #expect(log.cancelled.isEmpty)
 
         #expect(await h.service.setLike(.dislike, of: h.song("a")) == .disliked)
         log.kinds.removeAll()
-        log.cancelled.removeAll()
+        log.removed.removeAll()
         #expect(await h.service.setLike(.indifferent, of: h.song("a")) == .dislikeRemoved)
-        #expect(log.cancelled == [.dislike])
+        #expect(log.removed == [.dislike])
         #expect(log.kinds.isEmpty)
+        #expect(log.cancelled.isEmpty)
     }
 
-    @Test("A like taken back while its call is still out cuts the burst short as the state flips back")
+    @Test("The removal is asked for as the state flips, before YouTube answers, and not again when the call returns")
+    func removalIsAskedForBeforeYouTubeAnswers() async {
+        let h = await LikeServiceHarness.signedIn()
+        let log = BurstLog()
+        h.service.onRatingRemoval = { log.removed.append($0) }
+        await h.backend.setLikeStatus(videoId: "a", .like)
+        await h.startAlone("a")
+        _ = await h.until { h.service.likeStatus == .like }
+        let gate = MusicTestGate()
+        await h.backend.setRateGate(videoId: "a", gate)
+
+        let service = h.service
+        let task = Task { await service.toggleLike() }
+        _ = await h.until { log.removed.count == 1 }
+
+        #expect(log.removed == [.like])
+        #expect(h.service.likeStatus == .indifferent)
+        await gate.open()
+        #expect(await task.value == .likeRemoved)
+        #expect(log.removed == [.like])
+    }
+
+    @Test("A like taken back while its call is still out asks for the removal as the state flips back, which replaces the burst")
     func unlikeWhileTheLikeIsOut() async {
         let h = await LikeServiceHarness.signedIn()
         let log = BurstLog()
         h.service.onRatingBurst = { log.kinds.append($0) }
+        h.service.onRatingRemoval = { log.removed.append($0) }
         h.service.onRatingBurstCancel = { log.cancelled.append($0) }
         await h.startAlone("a")
         let gate = MusicTestGate()
@@ -742,19 +808,22 @@ struct MusicServiceLikeTests {
         #expect(await service.toggleLike() == .quiet)
 
         #expect(log.kinds == [.like])
-        #expect(log.cancelled == [.like])
+        #expect(log.removed == [.like])
+        #expect(log.cancelled.isEmpty)
         #expect(h.service.likeStatus == .indifferent)
         await gate.open()
         _ = await task.value
         #expect(log.kinds == [.like])
-        #expect(log.cancelled == [.like])
+        #expect(log.removed == [.like])
+        #expect(log.cancelled.isEmpty)
     }
 
-    @Test("Switching a like to a dislike asks for the dislike burst, which replaces the like one, and cuts nothing short")
+    @Test("Switching a like to a dislike asks for the dislike burst, which replaces the like one, and for no removal or cut")
     func switchingCutsNothingShort() async {
         let h = await LikeServiceHarness.signedIn()
         let log = BurstLog()
         h.service.onRatingBurst = { log.kinds.append($0) }
+        h.service.onRatingRemoval = { log.removed.append($0) }
         h.service.onRatingBurstCancel = { log.cancelled.append($0) }
         await h.backend.setLikeStatus(videoId: "a", .like)
         await h.startAlone("a")
@@ -763,14 +832,16 @@ struct MusicServiceLikeTests {
         #expect(await h.service.setLike(.dislike, of: h.song("a")) == .disliked)
 
         #expect(log.kinds == [.dislike])
+        #expect(log.removed.isEmpty)
         #expect(log.cancelled.isEmpty)
     }
 
-    @Test("A rating that takes nothing away cuts nothing short: a first like, a song with no rating, a rating sent again")
+    @Test("A rating that takes nothing away shows no removal and cuts nothing short: a first like, a song with no rating, a repeat")
     func nothingTakenAwayCutsNothingShort() async {
         let h = await LikeServiceHarness.signedIn()
         let log = BurstLog()
         h.service.onRatingBurst = { log.kinds.append($0) }
+        h.service.onRatingRemoval = { log.removed.append($0) }
         h.service.onRatingBurstCancel = { log.cancelled.append($0) }
         await h.startAlone("a")
 
@@ -779,14 +850,16 @@ struct MusicServiceLikeTests {
         #expect(await h.service.setLike(.like, of: h.song("a")) == .liked)
 
         #expect(log.kinds == [.like])
+        #expect(log.removed.isEmpty)
         #expect(log.cancelled.isEmpty)
     }
 
-    @Test("Taking a rating back from a song that is not playing cuts nothing short and plays nothing")
+    @Test("Taking a rating back from a song that is not playing shows no removal, cuts nothing short and plays nothing")
     func removalOfAnotherSongsRating() async {
         let h = await LikeServiceHarness.signedIn()
         let log = BurstLog()
         h.service.onRatingBurst = { log.kinds.append($0) }
+        h.service.onRatingRemoval = { log.removed.append($0) }
         h.service.onRatingBurstCancel = { log.cancelled.append($0) }
         await h.startRadio(["a", "b", "c"])
 
@@ -796,6 +869,7 @@ struct MusicServiceLikeTests {
         #expect(await h.service.setLike(.indifferent, of: h.song("x")) == .dislikeRemoved)
 
         #expect(log.kinds.isEmpty)
+        #expect(log.removed.isEmpty)
         #expect(log.cancelled.isEmpty)
     }
 

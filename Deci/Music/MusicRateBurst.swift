@@ -4,6 +4,8 @@
 // blob, pops back filled and a little too big with a ring of red dashes and pink dots around it, the sparks move out and
 // shrink to dots as the thumb settles, the dots fade, and the thumb tilts once and rights itself. A dislike shares the
 // collapse and the pop and has no sparks and no tilt. With Reduce Motion nothing moves: the icon only fades to filled.
+// Taking a like or a dislike back has a plain animation of its own, shown in the menu bar pill only: the outline thumb
+// fades in as the cover goes and settles from a little too big, with no sparks and no tilt.
 // Pure values, so the timeline is unit tested; MusicRateBurstView draws it, on the popup's strip and in the menu bar pill.
 
 import Foundation
@@ -31,6 +33,8 @@ nonisolated enum MusicRateBurst {
         var rotation: Double
         /// The ring of sparks; nil while there is none.
         var sparks: Sparks?
+        /// How strongly the thumb is drawn, 0 to 1. A burst is whole from its first frame; a removal fades in.
+        var opacity: Double = 1
     }
 
     /// The ring: eight dashes on the compass points and eight dots between them.
@@ -68,8 +72,12 @@ nonisolated enum MusicRateBurst {
         /// When a like, a dislike and a Reduce Motion burst are over.
         static let likeDuration = 0.85
         static let dislikeDuration = 0.33
-        /// The Reduce Motion fade to the filled thumb.
+        /// The Reduce Motion fade to the filled thumb, and to the outline thumb of a removal.
         static let reducedDuration = 0.15
+
+        /// A removal's outline thumb settles from `removalScaleFrom` to its own size over this long, with a quick ease.
+        static let removalSettle = 0.2
+        static let removalScaleFrom = 1.15
 
         /// The pill keeps the filled thumb this long after the animation, then gives the cover back.
         static let pillHold = 0.7
@@ -89,8 +97,8 @@ nonisolated enum MusicRateBurst {
 
     // MARK: - What plays, and where
 
-    /// The burst a change of a song's rating plays: Like or Dislike turning on. Taking a rating back, or sending the one
-    /// the song already has, plays nothing.
+    /// The burst a change of a song's rating plays: Like or Dislike turning on. Taking a rating back plays no burst (the
+    /// pill shows a removal for it, see `kindTakenBack`), and neither does sending the one the song already has.
     static func kind(from previous: MusicLikeStatus?, to status: MusicLikeStatus) -> Kind? {
         guard status != previous else { return nil }
         switch status {
@@ -100,9 +108,9 @@ nonisolated enum MusicRateBurst {
         }
     }
 
-    /// The burst a change of a song's rating cuts short: the Like or Dislike that was taken away, so the thumb does not
-    /// stay filled for a rating the song no longer has. Nil when nothing was taken away, and when the other button turned
-    /// on in its place: that burst replaces this one.
+    /// The Like or Dislike a change of a song's rating takes away: the pill shows its removal, and the burst of that kind
+    /// still playing is replaced by it, so the thumb does not stay filled for a rating the song no longer has. Nil when
+    /// nothing was taken away, and when the other button turned on in its place: that burst replaces this one.
     static func kindTakenBack(from previous: MusicLikeStatus?, to status: MusicLikeStatus) -> Kind? {
         guard status == .indifferent else { return nil }
         switch previous {
@@ -123,15 +131,17 @@ nonisolated enum MusicRateBurst {
         kind == .like
     }
 
-    /// How long the animation runs; after that its last frame is the settled, filled thumb.
-    static func duration(of kind: Kind, reduceMotion: Bool) -> TimeInterval {
+    /// How long the animation runs; after that its last frame is the settled thumb: filled for a burst, the outline for a
+    /// removal, which is the same length for a like and a dislike.
+    static func duration(of kind: Kind, reduceMotion: Bool, isRemoval: Bool = false) -> TimeInterval {
         if reduceMotion { return Metrics.reducedDuration }
+        if isRemoval { return Metrics.removalSettle }
         return kind == .like ? Metrics.likeDuration : Metrics.dislikeDuration
     }
 
     /// How long the pill shows the thumb: the animation and the hold after it.
-    static func pillShownDuration(of kind: Kind, reduceMotion: Bool) -> TimeInterval {
-        duration(of: kind, reduceMotion: reduceMotion) + Metrics.pillHold
+    static func pillShownDuration(of kind: Kind, reduceMotion: Bool, isRemoval: Bool = false) -> TimeInterval {
+        duration(of: kind, reduceMotion: reduceMotion, isRemoval: isRemoval) + Metrics.pillHold
     }
 
     /// How much the sparks are scaled so that the whole burst fits `reach` points from the thumb's middle: the menu bar
@@ -144,9 +154,10 @@ nonisolated enum MusicRateBurst {
     // MARK: - The timeline
 
     /// The thumb and its sparks `elapsed` seconds after the tap. A time before the start, or one that is not a number,
-    /// is the start; a time after the end is the settled thumb.
-    static func frame(at elapsed: TimeInterval, kind: Kind, reduceMotion: Bool) -> Frame {
+    /// is the start; a time after the end is the settled thumb. A removal is the same for a like and a dislike.
+    static func frame(at elapsed: TimeInterval, kind: Kind, reduceMotion: Bool, isRemoval: Bool = false) -> Frame {
         let time = elapsed.isNaN ? 0 : max(0, elapsed)
+        if isRemoval { return removalFrame(at: time, reduceMotion: reduceMotion) }
         if reduceMotion {
             return Frame(scale: 1, fill: ramp(time, over: Metrics.reducedDuration), rotation: 0, sparks: nil)
         }
@@ -168,6 +179,26 @@ nonisolated enum MusicRateBurst {
         return Frame(scale: scale, fill: fill, rotation: rotation, sparks: sparks)
     }
 
+    /// A like or a dislike taken back: the outline thumb fades in over the time the cover takes to go, so it is never
+    /// drawn over a picture, and settles from a little too big to its own size with a quick ease. With Reduce Motion it
+    /// only fades in.
+    private static func removalFrame(at time: Double, reduceMotion: Bool) -> Frame {
+        if reduceMotion {
+            return Frame(scale: 1, fill: 0, rotation: 0, sparks: nil, opacity: ramp(time, over: Metrics.reducedDuration))
+        }
+        let opacity = smoothstep(ramp(time, over: Metrics.pillCoverOut))
+        let scale: Double
+        if time >= Metrics.removalSettle {
+            scale = 1
+        } else {
+            let remaining = 1 - time / Metrics.removalSettle
+            // Ease out: most of the way is made at first.
+            let progress = 1 - remaining * remaining
+            scale = Metrics.removalScaleFrom + (1 - Metrics.removalScaleFrom) * progress
+        }
+        return Frame(scale: scale, fill: 0, rotation: 0, sparks: nil, opacity: opacity)
+    }
+
     /// 0 at the start, 1 from `length` seconds on, in a straight line between.
     private static func ramp(_ time: Double, over length: Double) -> Double {
         min(1, time / length)
@@ -182,9 +213,13 @@ nonisolated enum MusicRateBurst {
         for index in 1..<keys.count where time <= keys[index].time {
             let from = keys[index - 1], to = keys[index]
             let progress = (time - from.time) / (to.time - from.time)
-            let eased = progress * progress * (3 - 2 * progress)
-            return from.value + (to.value - from.value) * eased
+            return from.value + (to.value - from.value) * smoothstep(progress)
         }
         return last.value
+    }
+
+    /// 0 to 1 along a gentle S: slow at both ends.
+    private static func smoothstep(_ progress: Double) -> Double {
+        progress * progress * (3 - 2 * progress)
     }
 }

@@ -108,6 +108,7 @@ final class MusicServiceHost {
         service.onNativePlayingChange = { [weak self] playing in self?.onNativePlayingChange?(playing) }
         service.lyrics.setPopupVisible(isPopupVisible)
         service.onRatingBurst = { [weak self] kind in self?.burst.play(kind) }
+        service.onRatingRemoval = { [weak self] kind in self?.burst.playRemoval(of: kind) }
         service.onRatingBurstCancel = { [weak self] kind in self?.burst.cancel(kind) }
         self.service = service
         let navigation = MusicSearchNavigation(service: service)

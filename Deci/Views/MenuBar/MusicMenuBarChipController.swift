@@ -6,7 +6,7 @@
 // song, a pause or a play makes it grow or shrink on the pill's own curve (MusicChipLengthAnimator), the pill and its
 // content animate by Core Animation (MusicChipView), a title longer than the max scrolls, and a paused song is only the
 // cover's colour with a play glyph. A Like or Dislike of the playing song while the popup is not open plays the like
-// animation in the pill, in the cover's place (MusicChipBurster).
+// animation in the pill, in the cover's place, and taking one back shows the outline thumb there (MusicChipBurster).
 
 import AppKit
 import Observation
@@ -61,9 +61,11 @@ final class MusicMenuBarChipController {
     func start() {
         guard !started else { return }
         started = true
-        // A rating of the playing song while the popup is not open is shown in the pill, in the cover's place.
+        // A rating of the playing song while the popup is not open, or one taken back, is shown in the pill, in the cover's
+        // place.
         musicHost.burst.onPill = { [weak self] event in self?.playBurst(event) }
-        // A rating taken back while its burst shows in the pill cuts the burst short.
+        // A rating that does not go through while its burst or removal shows in the pill cuts it short, and so does a
+        // rating taken back with the popup open.
         musicHost.burst.onPillCancel = { [weak self] kind in self?.burster?.cancel(kind) }
         scheduleTracking()
         refreshWhenButtonExists(retriesLeft: 20)
