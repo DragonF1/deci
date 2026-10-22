@@ -269,11 +269,11 @@ struct MusicQueueModesTests {
 
     // MARK: - The radio that follows
 
-    @Test("a page with three tracks or fewer left and no page to load offers its last track as the radio seed")
+    @Test("a page with no page left to load offers its last track as the radio seed, however many songs are left")
     func pageRefillSeed() {
         #expect(makePageQueue(["a", "b", "c"], tap: "c").refillSeed == "c")
         #expect(makePageQueue(["a", "b", "c", "d", "e"], tap: "b").refillSeed == "e")
-        #expect(makePageQueue(["a", "b", "c", "d", "e", "f"], tap: "b").refillSeed == nil)
+        #expect(makePageQueue(["a", "b", "c", "d", "e", "f"], tap: "b").refillSeed == "f")
         #expect(makePageQueue(["a", "b", "c"], tap: "c", continuation: "t1").refillSeed == nil)
         #expect(MusicQueue().refillSeed == nil)
     }

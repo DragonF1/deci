@@ -256,16 +256,14 @@ struct MusicServiceAutomixTests {
 
     @Test("a song added to the queue is not the song the automix is asked after")
     func queuedSongIsNotTheSeed() async {
-        let h = AutomixServiceHarness()
+        let h = AutomixServiceHarness(preferences: MusicPlaybackPreferences(autoplay: false))
         await h.setAutomix(after: "f")
         await h.start(h.page(["a", "b", "c", "d", "e", "f"]), tap: "a")
         #expect(await h.backend.autoplayCalls.isEmpty)
 
         h.service.addToQueue(MusicSamples.track("z", title: "Song z"))
-        for _ in 0..<3 {
-            h.service.next()
-            await h.settle()
-        }
+        h.service.setAutoplay(true)
+        await h.settle()
 
         #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "z"])
         #expect(await h.backend.autoplayCalls == [h.call("f", "PL1")])
@@ -309,6 +307,294 @@ struct MusicServiceAutomixTests {
         let staged = await h.eventually { h.stagedIDs == AutomixServiceHarness.radio }
         #expect(staged)
         #expect(await h.backend.autoplayCalls == [h.call("b", "PL1"), h.call("b", "PL1")])
+    }
+
+    // MARK: - Staged as soon as the page is loaded
+
+    private static let letters = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]
+
+    @Test("a twelve-song playlist stages the automix as soon as it plays, so Up next lists AUTOPLAY under the playlist at once")
+    func stagesAtOnce() async {
+        let h = AutomixServiceHarness()
+        await h.setAutomix(after: "l")
+        await h.start(h.page(Self.letters))
+
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(h.service.queue.current?.videoId == "a")
+        #expect(h.service.queue.upcomingCount == 11)
+        #expect(h.queuedIDs == Self.letters)
+        #expect(h.stagedIDs == AutomixServiceHarness.radio)
+        let listing = h.listing
+        #expect(listing.upcoming.map(\.videoId) == Array(Self.letters.dropFirst()) + AutomixServiceHarness.radio)
+        #expect(listing.autoplayStart == 11)
+        #expect(listing.queuedCount == 11)
+
+        // Playing on does not ask again.
+        for _ in 0..<3 {
+            h.service.next()
+            await h.settle()
+        }
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+        #expect(h.stagedIDs == AutomixServiceHarness.radio)
+    }
+
+    @Test("a long playlist hands over to the staged automix when its last song ends, without a second ask")
+    func longPlaylistHandsOver() async {
+        let h = AutomixServiceHarness()
+        await h.setAutomix(after: "l")
+        await h.start(h.page(Self.letters), tap: "e")
+        #expect(h.service.queue.upcomingCount == 7)
+        #expect(h.stagedIDs == AutomixServiceHarness.radio)
+
+        for _ in 0..<8 {
+            h.service.next()
+            await h.settle()
+        }
+
+        #expect(h.service.queue.current?.videoId == "r1")
+        #expect(h.service.queue.source == .radio(seedVideoId: "l"))
+        #expect(h.queuedIDs == Self.letters + AutomixServiceHarness.radio)
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+    }
+
+    @Test("turning Autoplay on in the middle of a long playlist stages the automix at once, and turning it off hides it again")
+    func autoplayOffThenOn() async {
+        let h = AutomixServiceHarness(preferences: MusicPlaybackPreferences(autoplay: false))
+        await h.setAutomix(after: "l")
+        await h.start(h.page(Self.letters), tap: "d")
+        #expect(await h.backend.autoplayCalls.isEmpty)
+        #expect(h.stagedIDs.isEmpty)
+        #expect(h.listing.autoplayStart == nil)
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+        #expect(h.stagedIDs == AutomixServiceHarness.radio)
+        #expect(h.listing.upcoming.map(\.videoId) == Array(Self.letters.dropFirst(4)) + AutomixServiceHarness.radio)
+        #expect(h.listing.autoplayStart == 8)
+
+        h.service.setAutoplay(false)
+        #expect(h.listing.upcoming.map(\.videoId) == Array(Self.letters.dropFirst(4)))
+        #expect(h.listing.autoplayStart == nil)
+        #expect(h.service.canGoNext)
+
+        h.service.setAutoplay(true)
+        await h.settle()
+        #expect(h.listing.autoplayStart == 8)
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")], "the staged songs are still there: nothing is asked again")
+    }
+
+    @Test("Loop playlist stages nothing in a long playlist, and turning it off stages the automix at once")
+    func loopPlaylistThenOff() async {
+        let h = AutomixServiceHarness(preferences: MusicPlaybackPreferences(loop: .playlist))
+        await h.setAutomix(after: "l")
+        await h.start(h.page(Self.letters))
+        #expect(await h.backend.autoplayCalls.isEmpty)
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(h.stagedIDs.isEmpty)
+        #expect(h.listing.autoplayStart == nil)
+
+        h.service.setLoopMode(.off)
+        await h.settle()
+
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+        #expect(h.stagedIDs == AutomixServiceHarness.radio)
+        #expect(h.listing.autoplayStart == 11)
+
+        // Loop playlist again: the staged songs stay where they are, hidden, and nothing more is asked.
+        h.service.setLoopMode(.playlist)
+        #expect(h.listing.autoplayStart == nil)
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+    }
+
+    @Test("a long playlist with pages of its own stages the automix only after its last page has loaded")
+    func pagedPlaylistStagesAfterTheLastPage() async {
+        let h = AutomixServiceHarness()
+        let gate = MusicTestGate()
+        let letters = Self.letters
+        await h.backend.setMoreTracks(
+            browseId: "VLPL1", continuation: "t1", tracks: MusicSamples.tracks("e", "f", "g", "h"), next: "t2"
+        )
+        await h.backend.setMoreTracks(
+            browseId: "VLPL1", continuation: "t2", tracks: MusicSamples.tracks("i", "j", "k", "l"), next: nil
+        )
+        await h.backend.setMoreTracksGate(browseId: "VLPL1", continuation: "t2", gate)
+        await h.setAutomix(after: "l")
+        let first = MusicSamples.page("VLPL1", tracks: MusicSamples.tracks("a", "b", "c", "d"), continuation: "t1")
+        h.service.play(MusicSamples.track("a", title: "Song a"), in: first)
+        await h.service.playTask?.value
+        let held = await h.eventually { await h.backend.moreTracksCalls.count == 2 }
+        #expect(held)
+
+        // Eight songs are loaded, the last page is on its way: the automix of the page is not asked yet.
+        #expect(h.queuedIDs == Array(letters.prefix(8)))
+        #expect(h.service.queue.continuation == "t2")
+        #expect(await h.backend.autoplayCalls.isEmpty)
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(h.stagedIDs.isEmpty)
+
+        await gate.open()
+        await h.settle()
+
+        #expect(h.queuedIDs == letters)
+        #expect(h.service.queue.continuation == nil)
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+        #expect(h.stagedIDs == AutomixServiceHarness.radio)
+    }
+
+    @Test("a mix page still waits for its last songs: nothing is asked of the automix, the radio or the mix at the start")
+    func mixPageStillWaits() async {
+        let h = AutomixServiceHarness()
+        await h.backend.setMix(afterVideoId: "l", tracks: MusicSamples.tracks("l", "m1", "m2"))
+        await h.start(h.page(Self.letters, browseId: "VLRDTMAK5uy_mix"))
+
+        #expect(h.service.queue.mixPlaylistId == "RDTMAK5uy_mix")
+        #expect(await h.backend.autoplayCalls.isEmpty)
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(await h.backend.mixCalls.isEmpty)
+
+        h.service.jump(to: MusicSamples.track("h", title: "Song h"))
+        await h.settle()
+        #expect(await h.backend.mixCalls.isEmpty, "four songs left: still above the threshold")
+
+        h.service.jump(to: MusicSamples.track("i", title: "Song i"))
+        await h.settle()
+        #expect(await h.backend.mixCalls == [FakeMusicBackend.MixCall(playlistId: "RDTMAK5uy_mix", afterVideoId: "l")])
+        #expect(h.queuedIDs == Self.letters + ["m1", "m2"])
+        #expect(h.stagedIDs.isEmpty)
+        #expect(await h.backend.autoplayCalls.isEmpty)
+    }
+
+    @Test("a tapped song's radio queue still waits for the threshold: a long radio asks nothing more until it runs out")
+    func radioQueueStillWaits() async {
+        let h = AutomixServiceHarness()
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a") + Self.letters.dropFirst().map { MusicSamples.track($0) })
+        h.service.play(MusicSamples.track("a", title: "Song a"))
+        await h.settle()
+
+        #expect(h.queuedIDs == Self.letters)
+        #expect(await h.backend.radioSeeds == ["a"])
+        #expect(await h.backend.autoplayCalls.isEmpty)
+    }
+
+    @Test("a shuffled playlist stages the automix at once, after the page's last song and not the last song of the mix")
+    func shuffledSeedAtOnce() async {
+        let h = AutomixServiceHarness(preferences: MusicPlaybackPreferences(shuffle: true))
+        await h.setAutomix(after: "l")
+        await h.start(h.page(Self.letters), tap: "a")
+
+        #expect(h.queuedIDs.first == "a")
+        #expect(h.queuedIDs.last != "l", "the mix must not end where the page does, or this test shows nothing")
+        #expect(h.service.queue.upcomingCount == 11)
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+        #expect(h.stagedIDs == AutomixServiceHarness.radio)
+        #expect(h.listing.autoplayStart == 11)
+    }
+
+    // MARK: - A refused staging cannot walk through the playlist
+
+    /// The ways the page's automix can come back without a taker, each scripted for every song of the playlist.
+    private enum Refusal: CaseIterable {
+        case automixRefused, radioRefused, emptyAnswer
+
+        func script(_ h: AutomixServiceHarness, for ids: [String]) async {
+            for id in ids {
+                switch self {
+                case .automixRefused: await h.backend.setAutomixError(afterVideoId: id, MusicError.http(404))
+                case .radioRefused: await h.backend.setRadioError(seed: id, MusicError.http(404))
+                case .emptyAnswer: await h.backend.setAutomix(afterVideoId: id, tracks: [])
+                }
+            }
+        }
+    }
+
+    @Test("a refused or empty automix is asked after the last three songs at most, not after every song of the playlist")
+    func refusalIsBounded() async {
+        for refusal in Refusal.allCases {
+            let h = AutomixServiceHarness()
+            await refusal.script(h, for: Self.letters)
+            await h.start(h.page(Self.letters))
+
+            #expect(await h.backend.autoplayCalls == [h.call("l", "PL1"), h.call("k", "PL1"), h.call("j", "PL1")], "\(refusal)")
+            #expect(h.stagedIDs.isEmpty, "\(refusal)")
+            #expect(h.service.isFillingQueue == false, "\(refusal)")
+            #expect(h.service.queueRetryTask == nil, "\(refusal)")
+
+            // Songs with more than three left behind them ask nothing: a, b, c, d, e, f, g and h.
+            for _ in 0..<7 {
+                h.service.next()
+                await h.settle()
+            }
+            #expect(h.service.queue.upcomingCount == 4, "\(refusal)")
+            #expect(await h.backend.autoplayCalls.count == 3, "\(refusal)")
+
+            // Then it carries on as it always did near the end, and still never twice for the same song.
+            for _ in 0..<4 {
+                h.service.next()
+                await h.settle()
+            }
+            let calls = await h.backend.autoplayCalls
+            #expect(calls.count == Set(calls).count, "\(refusal)")
+            #expect(calls.count <= Self.letters.count, "\(refusal)")
+            #expect(h.stagedIDs.isEmpty, "\(refusal)")
+        }
+    }
+
+    @Test("a long playlist whose automix is refused asks a bounded number of times however many songs it has")
+    func refusalOnALongPlaylist() async {
+        let h = AutomixServiceHarness()
+        let ids = (0..<60).map { "s\($0)" }
+        await Refusal.automixRefused.script(h, for: ids)
+        await h.start(h.page(ids))
+        #expect(await h.backend.autoplayCalls.count == 3)
+
+        for _ in 0..<50 {
+            h.service.next()
+            await h.settle()
+        }
+
+        // 50 songs have played; the page still has nine to go, so only the first three asks have been made.
+        #expect(h.service.queue.upcomingCount == 9)
+        #expect(await h.backend.autoplayCalls.count == 3)
+    }
+
+    @Test("a network failure asks the same song again at each track change, never the songs before it")
+    func transientFailureDoesNotWalkBack() async {
+        let h = AutomixServiceHarness()
+        await h.backend.setAutomixError(afterVideoId: "l", URLError(.notConnectedToInternet))
+        await h.start(h.page(Self.letters))
+        #expect(await h.backend.autoplayCalls == [h.call("l", "PL1")])
+        #expect(h.service.queueRetryTask != nil, "a retry of the same ask waits")
+
+        for _ in 0..<3 {
+            h.service.next()
+            await h.settle()
+        }
+
+        let calls = await h.backend.autoplayCalls
+        #expect(calls == Array(repeating: h.call("l", "PL1"), count: 4))
+        #expect(h.stagedIDs.isEmpty)
+    }
+
+    @Test("taking every staged song out stages the automix of the song before it again, three songs' worth in all and no more")
+    func removingStagedSongsRestagesAtMostThrice() async {
+        let h = AutomixServiceHarness()
+        await h.setAutomix(after: "l", ["r1", "r2"])
+        await h.setAutomix(after: "k", ["q1", "q2"])
+        await h.setAutomix(after: "j", ["p1", "p2"])
+        await h.start(h.page(Self.letters))
+        #expect(h.stagedIDs == ["r1", "r2"])
+
+        for id in ["r1", "r2", "q1", "q2", "p1", "p2"] {
+            h.service.removeFromQueue(MusicSamples.track(id))
+            await h.settle()
+        }
+
+        let calls = await h.backend.autoplayCalls
+        #expect(calls == [h.call("l", "PL1"), h.call("k", "PL1"), h.call("j", "PL1")])
+        #expect(h.stagedIDs.isEmpty)
     }
 
     // MARK: - When no radio is wanted

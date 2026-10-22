@@ -2,15 +2,21 @@
 import Foundation
 
 /// The play order for the Music tab: the tapped track first, then radio pages as they arrive,
-/// or a playlist or album page in its own order, loaded in full. Near the end of a page the automix of its playlist
-/// (the radio of its last track when it has none) is staged in `autoplay` and joins the queue when the page runs out.
-/// A mix page is the exception: its mix is asked after the page's last song and what it answers joins the queue itself,
+/// or a playlist or album page in its own order, loaded in full. Once a page has loaded in full the automix of its
+/// playlist (the radio of its last track when it has none) is staged in `autoplay` and joins the queue when the page
+/// runs out.
+/// A mix page is the exception: its mix is asked near the page's last song and what it answers joins the queue itself,
 /// page after page while the mix has a continuation (`mixPlaylistId`, `mixHasMore`).
 /// A plain value; `MusicService` decides when to fetch and what to play.
 struct MusicQueue: Equatable {
     /// Fetch the next radio page, or ask for a radio to follow, when this many tracks, or fewer, are left after the
     /// current one.
     static let refillThreshold = 3
+
+    /// A fully loaded playlist or album asks for its radio at once, whatever the number of songs left, but only for this
+    /// many songs (answered, empty or turned down). After that it waits for `refillThreshold` again, so a radio that keeps
+    /// answering nothing is not asked for every song of the playlist.
+    static let eagerAskLimit = 3
 
     /// A page keeps loading pages until it holds this many tracks, so Up next and the shuffle cover the playlist.
     /// The playlist sort loads up to the same number.
@@ -87,15 +93,22 @@ struct MusicQueue: Equatable {
         return askedSeeds.isEmpty
     }
 
-    /// The track whose radio should be asked for next: the last one not asked yet. Nil unless the queue is running out
-    /// with no later page to load, or when a page already has its radio staged. A page hands over to the radio of its
-    /// last own song in the page's order, which a shuffle does not change; a radio that has run out carries on from the
-    /// radio of its last track.
+    /// The track whose radio should be asked for next: the last one not asked yet. Nil while a later page is still to
+    /// load, or when a page already has its radio staged. A playlist or album page that has loaded in full gives its seed
+    /// at once, whatever the number of songs left, so its recommendations are staged from the start; it does so for
+    /// `eagerAskLimit` songs only, and after that it waits for `refillThreshold` like the rest. A mix page, a tapped-song
+    /// radio and a radio that has run out wait for `refillThreshold`. A page hands over to the radio of its last own song
+    /// in the page's order, which a shuffle does not change; a radio that has run out carries on from the radio of its
+    /// last track.
     var refillSeed: String? {
-        guard !isEmpty, continuation == nil, upcomingCount <= Self.refillThreshold else { return nil }
+        guard !isEmpty, continuation == nil else { return nil }
         if case .page = source {
             if !autoplay.isEmpty { return nil }
+            let eager = mixPlaylistId == nil && askedSeeds.count < Self.eagerAskLimit
+            guard eager || upcomingCount <= Self.refillThreshold else { return nil }
             if let seed = lastPageSong { return seed }
+        } else if upcomingCount > Self.refillThreshold {
+            return nil
         }
         return tracks.last { !askedSeeds.contains($0.videoId) }?.videoId
     }

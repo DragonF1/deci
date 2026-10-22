@@ -1165,9 +1165,13 @@ final class MusicService {
     private func topUpQueue(emptyPages: Int = 0) {
         guard radioTask == nil, emptyPages < Self.maxEmptyPages else { return }
         // A queue running out with nothing left to page asks for a radio: the first radio of a tapped song with
-        // Autoplay (Loop playlist or not), then with Autoplay and Loop playlist off the radio of the last track. A page
-        // stages it while its last tracks play, so it shows in Up next and the hand-over is gapless; a radio that has
-        // run out carries on from a new seed. A radio that could not be reached is asked for again by the next top-up.
+        // Autoplay (Loop playlist or not), then with Autoplay and Loop playlist off the radio of the last track. A
+        // playlist or album page stages it as soon as it has loaded in full, whatever the number of songs left, so
+        // Up next shows the recommendations from the start and the hand-over is gapless; it asks for at most
+        // `MusicQueue.eagerAskLimit` songs that way, so a radio that answers nothing is not asked for every song. A mix
+        // page, a tapped-song radio and a radio that has run out ask when `MusicQueue.refillThreshold` songs are left;
+        // a radio that has run out carries on from a new seed. A radio that could not be reached is asked for again by
+        // the next top-up.
         // A mix page is the exception: its mix is the playlist, so it is asked for its songs whatever Autoplay and Loop
         // playlist say, and what it answers joins the queue itself (see `fetchQueuePage`).
         if let seed = queue.refillSeed, queue.mixHasMore || (queue.awaitsFirstRadioPage && isAutoplayOn) || playsAutoplay {

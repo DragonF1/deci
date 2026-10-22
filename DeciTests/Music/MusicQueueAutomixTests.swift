@@ -122,12 +122,14 @@ struct MusicQueueAutomixTests {
 
     // MARK: - The song it asks after
 
-    @Test("a page near its end seeds the automix with its last song, as it always did")
+    @Test("a fully loaded page seeds the automix with its last song, whatever the number of songs still to play")
     func lastSongInPageOrder() {
         #expect(makePage(["a", "b", "c"], tap: "c").refillSeed == "c")
         #expect(makePage(["a", "b", "c", "d", "e"], tap: "b").refillSeed == "e")
-        #expect(makePage(["a", "b", "c", "d", "e", "f"], tap: "b").refillSeed == nil)
-        #expect(makePage(["a", "b", "c"], tap: "c", continuation: "t1").refillSeed == nil)
+        #expect(makePage(["a", "b", "c", "d", "e", "f"], tap: "b").refillSeed == "f")
+        #expect(makePage(tap: "a").refillSeed == "l")
+        #expect(makePage(tap: "d").refillSeed == "l")
+        #expect(makePage(["a"], tap: "a").refillSeed == "a")
     }
 
     @Test("a shuffled page seeds with the last song of the page's own order, not the last of the mix")
@@ -135,6 +137,15 @@ struct MusicQueueAutomixTests {
         let queue = atEnd(shuffled(makePage(tap: "a")))
         #expect(queue.tracks.last?.videoId != "l", "the mix must not end where the page does, or this test shows nothing")
         #expect(queue.refillSeed == "l")
+    }
+
+    @Test("a shuffled page seeds with the page's last song from the start, with the whole mix still to play")
+    func shuffledSeedAtOnce() {
+        let queue = shuffled(makePage(tap: "a"))
+        #expect(queue.upcomingCount == 11)
+        #expect(queue.tracks.last?.videoId != "l", "the mix must not end where the page does, or this test shows nothing")
+        #expect(queue.refillSeed == "l")
+        #expect(shuffled(makePage(tap: "d"), mixingEarlier: true).refillSeed == "l")
     }
 
     @Test("the natural seed is the same for every shuffle and for the shuffled and unshuffled queue")
@@ -226,9 +237,118 @@ struct MusicQueueAutomixTests {
         #expect(radio.refillSeed == "b")
     }
 
-    @Test("the seed is nothing while there are more songs than the threshold, shuffled or not")
-    func notYet() {
-        #expect(makePage(tap: "a").refillSeed == nil)
-        #expect(shuffled(makePage(tap: "a")).refillSeed == nil)
+    // MARK: - When it asks
+
+    @Test("a page that still has pages of its own to load offers no seed, however few songs are left, until it is fully loaded")
+    func pagingPageWaits() {
+        var queue = atEnd(makePage(["a", "b", "c"], continuation: "t1"))
+        #expect(queue.upcomingCount == 0)
+        #expect(queue.refillSeed == nil)
+        #expect(makePage(tap: "a", continuation: "t1").refillSeed == nil)
+
+        queue.append([song("d"), song("e"), song("f"), song("g"), song("h")], continuation: nil)
+        #expect(queue.upcomingCount == 5)
+        #expect(queue.refillSeed == "h", "the last page landed: the seed is there with five songs still to play")
+    }
+
+    @Test("a page that stopped paging is fully loaded: ending its continuation makes the seed available")
+    func clearedContinuation() {
+        var queue = makePage(tap: "a", continuation: "t1")
+        queue.clearContinuation()
+        #expect(queue.refillSeed == "l")
+    }
+
+    @Test("a mix page keeps the refill threshold: no seed until three songs or fewer are left")
+    func mixPageWaits() {
+        var queue = MusicQueue()
+        queue.start(
+            page: MusicQueueAutomixTests.letters.map { song($0) },
+            playing: song("a"),
+            browseId: "VLRDTMAK5uy_mix",
+            continuation: nil,
+            mixPlaylistId: "RDTMAK5uy_mix"
+        )
+        #expect(queue.upcomingCount == 11)
+        #expect(queue.refillSeed == nil)
+        queue.jump(to: "h")
+        #expect(queue.upcomingCount == 4)
+        #expect(queue.refillSeed == nil)
+        queue.jump(to: "i")
+        #expect(queue.upcomingCount == 3)
+        #expect(queue.refillSeed == "l")
+
+        queue.jump(to: "a")
+        queue.forgetMix()
+        #expect(queue.refillSeed == "l", "a mix that was forgotten leaves a plain playlist, which seeds at once")
+    }
+
+    @Test("a radio queue keeps the refill threshold too: it seeds with its last track only when it runs out")
+    func radioWaits() {
+        var queue = MusicQueue()
+        queue.start(with: song("a"))
+        queue.append(MusicQueueAutomixTests.letters.dropFirst().map { song($0) }, continuation: nil)
+        #expect(queue.upcomingCount == 11)
+        #expect(queue.refillSeed == nil)
+        queue.jump(to: "i")
+        #expect(queue.refillSeed == "l")
+
+        var lone = MusicQueue()
+        lone.start(with: song("a"))
+        #expect(lone.refillSeed == "a")
+
+        var handedOver = makePage(tap: "a")
+        handedOver.stageAutoplay(MusicQueueAutomixTests.letters.map { song("r\($0)") }, continuation: nil, seed: "l")
+        handedOver.jump(to: "ra")
+        #expect(handedOver.source == .radio(seedVideoId: "l"))
+        #expect(handedOver.upcomingCount == 11)
+        #expect(handedOver.refillSeed == nil, "a radio that took over from a page waits for the threshold again")
+        handedOver.jump(to: "rj")
+        #expect(handedOver.refillSeed == "rl")
+    }
+
+    @Test("a page with its radio staged offers no seed from the start either")
+    func stagedFromTheStart() {
+        var queue = makePage(tap: "a")
+        queue.stageAutoplay([song("r1")], continuation: nil, seed: "l")
+        #expect(queue.upcomingCount == 11)
+        #expect(queue.refillSeed == nil)
+        queue = atEnd(queue)
+        #expect(queue.refillSeed == nil)
+    }
+
+    @Test("a page whose radio was turned down or came back empty walks back at most three seeds at once, then waits for the threshold")
+    func eagerAsksAreBounded() {
+        #expect(MusicQueue.eagerAskLimit == 3)
+        var queue = makePage(tap: "a")
+        #expect(queue.refillSeed == "l")
+        queue.noteAsked("l")
+        #expect(queue.refillSeed == "k")
+        // An answer with nothing new counts as an ask, like a refusal.
+        queue.stageAutoplay([song("a")], continuation: nil, seed: "k")
+        #expect(queue.autoplay.isEmpty)
+        #expect(queue.refillSeed == "j")
+        queue.noteAsked("j")
+        #expect(queue.upcomingCount == 11)
+        #expect(queue.refillSeed == nil, "three seeds asked: the songs before them are not walked through")
+
+        queue.jump(to: "g")
+        #expect(queue.upcomingCount == 5)
+        #expect(queue.refillSeed == nil)
+        queue.jump(to: "i")
+        #expect(queue.upcomingCount == 3)
+        #expect(queue.refillSeed == "i", "near the end it carries on from the song before the asked ones, as before")
+        queue.noteAsked("i")
+        #expect(queue.refillSeed == "h")
+    }
+
+    @Test("every seed of a page is asked at most once, however many walk back through the page")
+    func eachSeedOnce() {
+        var queue = atEnd(makePage(tap: "a"))
+        var asked: [String] = []
+        while let seed = queue.refillSeed {
+            asked.append(seed)
+            queue.noteAsked(seed)
+        }
+        #expect(asked == Array(MusicQueueAutomixTests.letters.reversed()))
     }
 }

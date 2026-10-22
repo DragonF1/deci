@@ -2628,6 +2628,7 @@ struct MusicServicePageQueueTests {
             browseId: Self.browseId, continuation: "t1", tracks: MusicSamples.tracks("i", "j", "k"), next: "t2"
         )
         await h.backend.setMoreTracks(browseId: Self.browseId, continuation: "t2", tracks: MusicSamples.tracks("l", "m"))
+        await h.backend.setRadio(seed: "m", tracks: MusicSamples.tracks("m", "r1", "r2", "r3", "r4", "r5"))
         await startPage(h, ["a", "b", "c", "d", "e", "f", "g", "h"], continuation: "t1")
 
         #expect(await h.backend.moreTracksCalls == [call("t1"), call("t2")])
@@ -2639,7 +2640,8 @@ struct MusicServicePageQueueTests {
 
         #expect(h.service.queue.upcomingCount == 9)
         #expect(await h.backend.moreTracksCalls == [call("t1"), call("t2")])
-        #expect(await h.backend.radioSeeds.isEmpty)
+        // The radio of the page's last song was asked for once, when the last page had landed, and not again.
+        #expect(await h.backend.radioSeeds == ["m"])
     }
 
     @Test("a short page with a continuation asks for more tracks at once")
