@@ -166,8 +166,13 @@ extension InnerTubeParser {
         let rows = trackShelf(in: sections)
         let rowRenderers = (rows?["contents"] as? [[String: Any]] ?? []).compactMap { $0["musicResponsiveListItemRenderer"] as? [String: Any] }
         var tracks = rowRenderers.compactMap(browseTrack(from:))
+        var audioPlaylistId: String?
 
         if browseId.hasPrefix("MPRE") {
+            // The rows of an album play from its OLAK audio playlist, which is what its automix is asked of.
+            audioPlaylistId = rowRenderers.lazy
+                .compactMap { string(watchEndpoint(ofRow: $0)?["playlistId"]) }
+                .first { $0.hasPrefix("OLAK") }
             // Album rows leave out what the page already says: the artist, the album and the cover.
             let artist = headerArtists(of: header.renderer)
             tracks = tracks.map { track in
@@ -197,7 +202,8 @@ extension InnerTubeParser {
             tracks: uniqueTracks(tracks),
             continuation: rows.flatMap { continuationToken(in: $0, items: $0["contents"] as? [[String: Any]] ?? []) },
             shelves: shelves,
-            isEditable: isEditablePlaylist(root: root, browseId: browseId, rows: rowRenderers)
+            isEditable: isEditablePlaylist(root: root, browseId: browseId, rows: rowRenderers),
+            audioPlaylistId: audioPlaylistId
         )
     }
 

@@ -66,6 +66,11 @@ actor FakeMusicBackend: MusicBackend {
         let continuation: String
     }
 
+    nonisolated struct AutoplayCall: Hashable, Sendable {
+        let afterVideoId: String
+        let playlistId: String
+    }
+
     nonisolated struct MoreLibraryCall: Hashable, Sendable {
         let section: MusicLibrarySection
         let continuation: String
@@ -115,6 +120,10 @@ actor FakeMusicBackend: MusicBackend {
     private var radioErrors: [String: any Error] = [:]
     private var radioGates: [String: MusicTestGate] = [:]
     private var radioFailures: [String: (error: any Error, remaining: Int)] = [:]
+    private var automixPages: [String: MusicQueuePage] = [:]
+    private var automixErrors: [String: any Error] = [:]
+    private var automixGates: [String: MusicTestGate] = [:]
+    private var automixFailures: [String: (error: any Error, remaining: Int)] = [:]
     private var morePages: [MoreRadioCall: MusicQueuePage] = [:]
     private var moreErrors: [MoreRadioCall: any Error] = [:]
     private var moreGates: [MoreRadioCall: MusicTestGate] = [:]
@@ -164,6 +173,7 @@ actor FakeMusicBackend: MusicBackend {
 
     private(set) var radioSeeds: [String] = []
     private(set) var moreRadioCalls: [MoreRadioCall] = []
+    private(set) var autoplayCalls: [AutoplayCall] = []
     private(set) var homeCallCount = 0
     private(set) var moreHomeCalls: [String] = []
     private(set) var historyCallCount = 0
@@ -243,6 +253,17 @@ actor FakeMusicBackend: MusicBackend {
     func setRadioGate(seed: String, _ gate: MusicTestGate) { radioGates[seed] = gate }
     /// The radio of `seed` fails with `error` for the next `times` calls, then answers as scripted.
     func setRadioFailures(seed: String, _ error: any Error, times: Int) { radioFailures[seed] = (error, times) }
+    /// What the automix after `afterVideoId` answers with. A seed with nothing scripted here (no page, error, gate or
+    /// failures) delegates to this fake's own `radio`, so a test of a page that never scripts an automix keeps working.
+    func setAutomix(afterVideoId: String, tracks: [Deci.MusicTrack], continuation: String? = nil) {
+        automixPages[afterVideoId] = MusicQueuePage(tracks: tracks, continuation: continuation)
+    }
+    func setAutomixError(afterVideoId: String, _ error: (any Error)?) { automixErrors[afterVideoId] = error }
+    func setAutomixGate(afterVideoId: String, _ gate: MusicTestGate) { automixGates[afterVideoId] = gate }
+    /// The automix after `afterVideoId` fails with `error` for the next `times` calls, then answers as scripted.
+    func setAutomixFailures(afterVideoId: String, _ error: any Error, times: Int) {
+        automixFailures[afterVideoId] = (error, times)
+    }
     func setMoreRadio(seed: String, continuation: String, tracks: [Deci.MusicTrack], next: String? = nil) {
         morePages[MoreRadioCall(seed: seed, continuation: continuation)] = MusicQueuePage(tracks: tracks, continuation: next)
     }
@@ -547,6 +568,19 @@ actor FakeMusicBackend: MusicBackend {
         return radioPages[seedVideoId] ?? MusicQueuePage(tracks: [], continuation: nil)
     }
 
+    func autoplay(afterVideoId: String, playlistId: String) async throws -> MusicQueuePage {
+        autoplayCalls.append(AutoplayCall(afterVideoId: afterVideoId, playlistId: playlistId))
+        if let gate = automixGates[afterVideoId] { await gate.wait() }
+        if var failing = automixFailures[afterVideoId], failing.remaining > 0 {
+            failing.remaining -= 1
+            automixFailures[afterVideoId] = failing
+            throw failing.error
+        }
+        if let error = automixErrors[afterVideoId] { throw error }
+        if let page = automixPages[afterVideoId] { return page }
+        return try await radio(seedVideoId: afterVideoId)
+    }
+
     func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage {
         let call = MoreRadioCall(seed: seedVideoId, continuation: continuation)
         moreRadioCalls.append(call)
@@ -708,7 +742,8 @@ nonisolated enum MusicSamples {
         continuation: String? = nil,
         title: String = "Page",
         shelves: [MusicShelf] = [],
-        isEditable: Bool = false
+        isEditable: Bool = false,
+        audioPlaylistId: String? = nil
     ) -> MusicBrowsePage {
         MusicBrowsePage(
             browseId: browseId,
@@ -718,7 +753,8 @@ nonisolated enum MusicSamples {
             tracks: tracks,
             continuation: continuation,
             shelves: shelves,
-            isEditable: isEditable
+            isEditable: isEditable,
+            audioPlaylistId: audioPlaylistId
         )
     }
 

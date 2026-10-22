@@ -254,6 +254,34 @@ struct MusicBrowsePage: Sendable, Equatable {
     let shelves: [MusicShelf]
     /// Whether the user can change this playlist's songs (their own playlist, not Liked Music or an album).
     var isEditable = false
+    /// An album's audio playlist ("OLAK5uy_..."), the playlist its automix is asked of. Nil on every other page, and on
+    /// an album whose rows name none.
+    var audioPlaylistId: String?
+
+    /// The playlist a mix page ("RD..." with or without the "VL" prefix) is, or nil for any other id. A curated
+    /// "RDCLAK5uy_" playlist is a playlist, not a mix.
+    static func mixPlaylistId(ofBrowseId browseId: String) -> String? {
+        let id = browseId.hasPrefix("VL") ? String(browseId.dropFirst(2)) : browseId
+        guard id.hasPrefix("RD"), !id.hasPrefix("RDCLAK5uy") else { return nil }
+        return id
+    }
+
+    /// The playlist whose automix follows this page: a playlist's own id ("VLLM" gives "LM"), an album's audio playlist.
+    /// Nil for a mix, an artist page and anything else, which end in the plain radio.
+    var automixPlaylistId: String? {
+        if browseId.hasPrefix("MPRE") { return audioPlaylistId.flatMap { $0.isEmpty ? nil : $0 } }
+        guard browseId.hasPrefix("VL"), Self.mixPlaylistId(ofBrowseId: browseId) == nil else { return nil }
+        let id = String(browseId.dropFirst(2))
+        return id.isEmpty ? nil : id
+    }
+}
+
+/// Where the automix of a playlist continues: the radio playlist YouTube names in the last row of the playlist's
+/// queue, and the parameters that go with it.
+struct MusicAutomixEndpoint: Sendable, Equatable {
+    let playlistId: String
+    /// Percent-encoded exactly as YouTube sent it; nil when the endpoint carries none.
+    let params: String?
 }
 
 /// Who the session is signed in as, from YouTube's account menu. Shown on the Music tab's account card.
@@ -276,6 +304,16 @@ enum MusicError: Error, Sendable, Equatable {
     case solver(String)
     /// A write call (save, remove, pin) came back without the success marker.
     case rejected
+
+    /// A queue page error that retrying will not fix: an unreadable response or a rejected request. A timeout (408) or a
+    /// rate limit (429) passes, so those wait for a retry.
+    static func endsPaging(_ error: any Error) -> Bool {
+        switch error as? MusicError {
+        case .parse: true
+        case .http(let status): (400..<500).contains(status) && status != 408 && status != 429
+        default: false
+        }
+    }
 }
 
 /// Everything the player/UI side needs from the YouTube Music backend.
@@ -305,6 +343,9 @@ protocol MusicBackend: Sendable {
     func radio(seedVideoId: String) async throws -> MusicQueuePage
     /// The page after `continuation` of the radio seeded by `seedVideoId`.
     func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage
+    /// First page of the automix of playlist `playlistId` after `afterVideoId`, the song the playlist ends on. Falls back
+    /// to the radio of `afterVideoId` when YouTube names no automix. Continuations are `moreRadio` pages.
+    func autoplay(afterVideoId: String, playlistId: String) async throws -> MusicQueuePage
     /// Home shelves (browse FEmusic_home).
     func home() async throws -> MusicHomePage
     /// The shelves after `continuation` on Home.

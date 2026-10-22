@@ -691,7 +691,13 @@ final class MusicService {
         noteActivity()
         // A page is its own order: a radio left over from the last queue must not add to it.
         cancelRadio()
-        queue.start(page: page.tracks, playing: track, browseId: page.browseId, continuation: page.continuation)
+        queue.start(
+            page: page.tracks,
+            playing: track,
+            browseId: page.browseId,
+            continuation: page.continuation,
+            automixPlaylistId: page.automixPlaylistId
+        )
         // The row that was tapped plays first; every other row, the ones above it too, is mixed in after it.
         if isShuffleOn { queue.shuffle(mixingEarlier: true, using: &shuffleGenerator) }
         direction = .forward
@@ -1166,6 +1172,11 @@ final class MusicService {
     private func requestQueuePage(source: MusicQueue.Source, continuation: String?) async throws -> MusicQueuePage {
         switch (source, continuation) {
         case (.radio(let seed), nil):
+            // The radio that follows a playlist or an album is its automix, when the page has one (the backend falls
+            // back to the song's radio if YouTube offers none); every other radio is the song's own.
+            if queue.isPage, let playlistId = queue.automixPlaylistId {
+                return try await backend.autoplay(afterVideoId: seed, playlistId: playlistId)
+            }
             return try await backend.radio(seedVideoId: seed)
         case (.radio(let seed), let token?):
             return try await backend.moreRadio(seedVideoId: seed, continuation: token)
@@ -1192,7 +1203,7 @@ final class MusicService {
                 settlePendingAdvance()
                 return
             }
-            if Self.endsPaging(error) {
+            if MusicError.endsPaging(error) {
                 // A page that cannot be read or that the server rejects would fail the same way again: stop paging,
                 // and never ask that radio again. The queue then refills from the next seed, counted as an empty
                 // page so a server that rejects every request cannot keep it asking.
@@ -1258,16 +1269,6 @@ final class MusicService {
     private func noteQueueFilling() {
         let filling = radioTask != nil || queueRetryTask != nil
         if filling != isFillingQueue { isFillingQueue = filling }
-    }
-
-    /// A page error that retrying will not fix: an unreadable response or a rejected request. A timeout (408) or a
-    /// rate limit (429) passes, so those wait for a retry.
-    private static func endsPaging(_ error: any Error) -> Bool {
-        switch error as? MusicError {
-        case .parse: true
-        case .http(let status): (400..<500).contains(status) && status != 408 && status != 429
-        default: false
-        }
     }
 
     private func cancelRadio() {

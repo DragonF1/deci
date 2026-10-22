@@ -606,6 +606,56 @@ struct InnerTubeParserBrowseTests {
         #expect(page.continuation == nil)
     }
 
+    private static let albumPlaylistId = "OLAK5uy_kKuGqoUQo37hejjtZXF1ALYGh1gSXjcUQ"
+
+    /// The album capture's text with the first `count` occurrences of its OLAK id replaced by `replacement`.
+    private func albumData(replacingOlak count: Int, with replacement: String) throws -> Data {
+        var text = try MusicFixtures.string("browse-album.json")
+        for _ in 0..<count {
+            let range = try #require(text.range(of: Self.albumPlaylistId))
+            text.replaceSubrange(range, with: replacement)
+        }
+        return Data(text.utf8)
+    }
+
+    @Test("Album capture: the page keeps the OLAK playlist its rows play from, and asks the automix of it")
+    func albumKeepsAudioPlaylistId() throws {
+        let page = try InnerTubeParser.browsePage(from: fixture("browse-album.json"), browseId: "MPREb_Me5NUhDIBWQ")
+        #expect(page.audioPlaylistId == Self.albumPlaylistId)
+        #expect(page.automixPlaylistId == Self.albumPlaylistId)
+    }
+
+    @Test("Hand-built album: a first row without an OLAK playlist is passed over for the next row that has one")
+    func albumAudioPlaylistIdFromLaterRow() throws {
+        let data = try albumData(replacingOlak: 1, with: "RDAMVMzVRaZlwLyJw")
+        let page = try InnerTubeParser.browsePage(from: data, browseId: "MPREb_Me5NUhDIBWQ")
+        #expect(page.audioPlaylistId == Self.albumPlaylistId)
+        #expect(page.tracks.count == 4)
+    }
+
+    @Test("Hand-built album: rows that play from a radio or a plain playlist leave the album with no audio playlist")
+    func albumWithoutOlak() throws {
+        let data = try albumData(replacingOlak: 4, with: "PLnotAnAlbum")
+        let page = try InnerTubeParser.browsePage(from: data, browseId: "MPREb_Me5NUhDIBWQ")
+        #expect(page.audioPlaylistId == nil)
+        #expect(page.automixPlaylistId == nil)
+        #expect(page.tracks.count == 4)
+    }
+
+    @Test("Playlist, Liked Music and artist captures carry no audio playlist id")
+    func otherPagesHaveNoAudioPlaylistId() throws {
+        let playlist = try InnerTubeParser.browsePage(from: fixture("browse-playlist.json"), browseId: "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i")
+        let liked = try InnerTubeParser.browsePage(from: fixture("browse-liked-music.json"), browseId: "VLLM")
+        let artist = try InnerTubeParser.browsePage(from: fixture("browse-artist.json"), browseId: "UCuAXFkgsw1L7xaCfnd5JJOw")
+        #expect(playlist.audioPlaylistId == nil)
+        #expect(liked.audioPlaylistId == nil)
+        #expect(artist.audioPlaylistId == nil)
+        // The automix of a playlist page is its own playlist, of an artist page there is none.
+        #expect(playlist.automixPlaylistId == "PL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i")
+        #expect(liked.automixPlaylistId == "LM")
+        #expect(artist.automixPlaylistId == nil)
+    }
+
     // MARK: - Artist pages
 
     @Test("Artist capture: name, subscriber line and the top songs as tracks")

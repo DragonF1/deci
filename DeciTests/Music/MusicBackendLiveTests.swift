@@ -158,6 +158,55 @@ struct MusicBackendLiveTests {
         await #expect(throws: MusicError.self) { _ = try await harness.backend.radio(seedVideoId: "x") }
     }
 
+    @Test("autoplay passes the song and the playlist through: the playlist is asked about, then its automix")
+    func autoplay() async throws {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update {
+            $0.nextBodies = [
+                "PLhandBuiltAutomix01": (try? MusicFixtures.data("next-playlist-automix.json")) ?? Data(),
+                "RDAMPLPLhandBuiltAutomix01": (try? MusicFixtures.data("next-automix-first.json")) ?? Data(),
+            ]
+        }
+        let page = try await harness.backend.autoplay(afterVideoId: "hbPlSong003", playlistId: "PLhandBuiltAutomix01")
+        #expect(page.tracks.map(\.videoId) == ["hbPlSong003", "hbAmxSong01", "hbAmxSong02", "hbAmxSong03"])
+        #expect(page.continuation == "HANDBUILT_AUTOMIX_CONTINUATION_2")
+        let bodies = harness.youtube.requests(path: "/youtubei/v1/next").map(FakeYouTube.jsonBody)
+        #expect(bodies.map { $0["playlistId"] as? String } == ["PLhandBuiltAutomix01", "RDAMPLPLhandBuiltAutomix01"])
+        #expect(bodies.first?["videoId"] as? String == "hbPlSong003")
+        #expect(bodies.last?["videoId"] == nil)
+    }
+
+    @Test("autoplay falls back to the radio of the song when the playlist has no automix")
+    func autoplayFallsBack() async throws {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let page = try await harness.backend.autoplay(afterVideoId: "4D7u5KF7SP8", playlistId: "PLnoAutomix")
+        #expect(page.tracks.first?.videoId == "4D7u5KF7SP8")
+        let bodies = harness.youtube.requests(path: "/youtubei/v1/next").map(FakeYouTube.jsonBody)
+        #expect(bodies.map { $0["playlistId"] as? String } == ["PLnoAutomix", "RDAMVM4D7u5KF7SP8"])
+    }
+
+    @Test("autoplay while signed out fails before any network request")
+    func autoplaySignedOut() async {
+        let harness = makeHarness(signedIn: false)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.autoplay(afterVideoId: "x", playlistId: "PLx") }
+        #expect(harness.youtube.requests.isEmpty)
+    }
+
+    @Test("autoplay errors that retrying could fix are thrown as they are")
+    func autoplayErrors() async {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update { $0.nextStatus = 401 }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.autoplay(afterVideoId: "x", playlistId: "PLx") }
+        for status in [429, 503] {
+            harness.youtube.update { $0.nextStatus = status }
+            await #expect(throws: MusicError.http(status)) { _ = try await harness.backend.autoplay(afterVideoId: "x", playlistId: "PLx") }
+        }
+    }
+
     // MARK: - Browse
 
     private func makeBrowseHarness(signedIn: Bool = true, _ configure: (inout FakeYouTube.Config) -> Void = { _ in }) -> Harness {

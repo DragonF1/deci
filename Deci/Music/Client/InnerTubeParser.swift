@@ -313,9 +313,25 @@ enum InnerTubeParser {
     /// The first page of a radio: `next` called with a seed video.
     static func radioPage(from data: Data) throws -> MusicQueuePage {
         let root = try jsonObject(data, what: "radio response")
+        return try queuePage(in: radioPanel(in: root), what: "radio response")
+    }
+
+    /// Where the automix of a playlist goes on: the preview row YouTube puts last in the queue panel of the playlist's
+    /// `next` response, which is not a song. Nil when the panel has no such row. A response without the queue panel is a
+    /// parse error, like `radioPage`.
+    static func automixEndpoint(from data: Data) throws -> MusicAutomixEndpoint? {
+        let root = try jsonObject(data, what: "radio response")
+        guard let panel = radioPanel(in: root) else { throw MusicError.parse("radio response has no queue") }
+        let last = (panel["contents"] as? [Any])?.last
+        let endpoint = path(last, "automixPreviewVideoRenderer", "content", "automixPlaylistVideoRenderer", "navigationEndpoint", "watchPlaylistEndpoint")
+        guard let playlistId = string(path(endpoint, "playlistId")) else { return nil }
+        // The params are posted back as they came, percent escapes and all.
+        return MusicAutomixEndpoint(playlistId: playlistId, params: string(path(endpoint, "params")))
+    }
+
+    private static func radioPanel(in root: [String: Any]) -> [String: Any]? {
         let tabs = path(root, "contents", "singleColumnMusicWatchNextResultsRenderer", "tabbedRenderer", "watchNextTabbedResultsRenderer", "tabs") as? [Any]
-        let panel = path(tabs?.first, "tabRenderer", "content", "musicQueueRenderer", "content", "playlistPanelRenderer")
-        return try queuePage(in: panel as? [String: Any], what: "radio response")
+        return path(tabs?.first, "tabRenderer", "content", "musicQueueRenderer", "content", "playlistPanelRenderer") as? [String: Any]
     }
 
     /// A later page: `next` called with a continuation token.

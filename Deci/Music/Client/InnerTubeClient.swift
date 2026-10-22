@@ -207,16 +207,58 @@ actor InnerTubeClient {
         let seed = seedVideoId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !seed.isEmpty else { return Self.emptyPage }
         let session = try await sessionOrFallback()
-        let data = try await post("next", session: session, body: [
-            "videoId": seed,
-            "playlistId": "RDAMVM" + seed,
-            "isAudioOnly": true,
-            "enablePersistentPlaylistPanel": true,
-            "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
-        ])
+        let data = try await post("next", session: session, body: Self.radioBody(videoId: seed, playlistId: "RDAMVM" + seed))
         let page = try InnerTubeParser.radioPage(from: data)
         Self.log.info("radio returned \(page.tracks.count) rows")
         return page
+    }
+
+    /// The first page of the automix of playlist `playlistId` (a playlist, Liked Music or an album's audio playlist), after
+    /// `afterVideoId`, the song the playlist ends on. YouTube names the automix in the last row of the playlist's own queue,
+    /// so this asks twice: for the playlist's queue to read that row, then for the automix it points to. It falls back to
+    /// the radio of `afterVideoId` when the playlist names no automix or YouTube rejects either request. Anything that
+    /// may pass (no network, a 5xx, a timeout, a rate limit) and a lost session are thrown. Continuations are `moreRadio`
+    /// pages. Only counts are logged, never an id.
+    func autoplay(afterVideoId: String, playlistId: String) async throws -> MusicQueuePage {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let seed = afterVideoId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !seed.isEmpty else { return Self.emptyPage }
+        let playlist = playlistId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !playlist.isEmpty else { return try await radio(seedVideoId: seed) }
+        do {
+            if let page = try await automixPage(afterVideoId: seed, playlistId: playlist) {
+                Self.log.info("autoplay returned \(page.tracks.count) rows")
+                return page
+            }
+            Self.log.info("autoplay found no automix, using the radio")
+        } catch where MusicError.endsPaging(error) {
+            // A rejected or unreadable answer would come back the same way: the song still has its radio.
+            Self.log.info("autoplay was turned down, using the radio")
+        }
+        return try await radio(seedVideoId: seed)
+    }
+
+    /// The automix page, or nil when the playlist's queue has no automix preview.
+    private func automixPage(afterVideoId seed: String, playlistId: String) async throws -> MusicQueuePage? {
+        let session = try await sessionOrFallback()
+        let queue = try await post("next", session: session, body: Self.radioBody(videoId: seed, playlistId: playlistId))
+        guard let endpoint = try InnerTubeParser.automixEndpoint(from: queue) else { return nil }
+        // The automix is asked for by its playlist and params alone: the preview names no video.
+        let data = try await post("next", session: session, body: Self.radioBody(videoId: nil, playlistId: endpoint.playlistId, params: endpoint.params))
+        return try InnerTubeParser.radioPage(from: data)
+    }
+
+    /// The `next` body of a radio queue: a seed video and its playlist, or an automix's playlist and params.
+    private static func radioBody(videoId: String?, playlistId: String, params: String? = nil) -> [String: Any] {
+        var body: [String: Any] = [
+            "playlistId": playlistId,
+            "isAudioOnly": true,
+            "enablePersistentPlaylistPanel": true,
+            "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
+        ]
+        if let videoId { body["videoId"] = videoId }
+        if let params { body["params"] = params }
+        return body
     }
 
     /// The token alone names the radio. Sending the seed along would make YouTube answer a stale

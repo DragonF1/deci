@@ -561,6 +561,101 @@ struct InnerTubeParserTests {
         #expect(throws: MusicError.self) { try InnerTubeParser.radioPage(from: next) }
     }
 
+    // MARK: - Playlist automix
+
+    private static func previewItem(playlistId: Any? = "RDAMPLPLx", params: Any? = "wAEB8gECeAE%3D") -> [String: Any] {
+        var endpoint: [String: Any] = [:]
+        if let playlistId { endpoint["playlistId"] = playlistId }
+        if let params { endpoint["params"] = params }
+        return ["automixPreviewVideoRenderer": ["content": ["automixPlaylistVideoRenderer": ["navigationEndpoint": ["watchPlaylistEndpoint": endpoint]]]]]
+    }
+
+    @Test("The playlist fixture's last entry is the automix preview, and its playlist id and params are read")
+    func automixEndpointFixture() throws {
+        let endpoint = try InnerTubeParser.automixEndpoint(from: MusicFixtures.data("next-playlist-automix.json"))
+        #expect(endpoint == MusicAutomixEndpoint(playlistId: "RDAMPLPLhandBuiltAutomix01", params: "wAEB8gECeAE%3D"))
+    }
+
+    @Test("The preview row is not a song: the playlist fixture parses as its three songs")
+    func automixPreviewIsNotASong() throws {
+        let page = try InnerTubeParser.radioPage(from: MusicFixtures.data("next-playlist-automix.json"))
+        #expect(page.tracks.map(\.videoId) == ["hbPlSong001", "hbPlSong002", "hbPlSong003"])
+        #expect(page.continuation == nil)
+    }
+
+    @Test("The params stay exactly as YouTube sent them, percent escapes and all")
+    func automixParamsVerbatim() throws {
+        let params = ["wAEB8gECeAE%3D", "8gECGAE%3D", "a%2Bb%2Fc%3D%3D", "plain", "wAEB%2BwAEB%25", "has space", "日本語"]
+        for value in params {
+            let json = Self.radioFirstPageJSON(items: [Self.panelItem(videoId: "a", title: "A"), Self.previewItem(params: value)])
+            #expect(try InnerTubeParser.automixEndpoint(from: json)?.params == value, "\(value)")
+        }
+    }
+
+    @Test("A preview with a playlist id and no params still gives an endpoint, with nil params")
+    func automixWithoutParams() throws {
+        for params in [nil, "", NSNull(), 5] as [Any?] {
+            let json = Self.radioFirstPageJSON(items: [Self.panelItem(videoId: "a", title: "A"), Self.previewItem(params: params)])
+            let endpoint = try InnerTubeParser.automixEndpoint(from: json)
+            #expect(endpoint == MusicAutomixEndpoint(playlistId: "RDAMPLPLx", params: nil), "\(String(describing: params))")
+        }
+    }
+
+    @Test("A preview without a usable playlist id gives no endpoint")
+    func automixWithoutPlaylistId() throws {
+        for playlistId in [nil, "", NSNull(), 5] as [Any?] {
+            let json = Self.radioFirstPageJSON(items: [Self.panelItem(videoId: "a", title: "A"), Self.previewItem(playlistId: playlistId)])
+            #expect(try InnerTubeParser.automixEndpoint(from: json) == nil, "\(String(describing: playlistId))")
+        }
+    }
+
+    @Test("A panel with no preview gives no endpoint")
+    func automixAbsent() throws {
+        let radio = try MusicFixtures.data("next-radio-first.json")
+        #expect(try InnerTubeParser.automixEndpoint(from: radio) == nil)
+        #expect(try InnerTubeParser.automixEndpoint(from: Self.radioFirstPageJSON(items: [])) == nil)
+        #expect(try InnerTubeParser.automixEndpoint(from: Self.radioFirstPageJSON(items: [Self.panelItem(videoId: "a", title: "A")])) == nil)
+    }
+
+    @Test("Only the last entry of the panel is the preview: one buried among songs is not read")
+    func automixOnlyAtTheEnd() throws {
+        let items = [Self.panelItem(videoId: "a", title: "A"), Self.previewItem(), Self.panelItem(videoId: "b", title: "B")]
+        #expect(try InnerTubeParser.automixEndpoint(from: Self.radioFirstPageJSON(items: items)) == nil)
+    }
+
+    @Test("A preview missing its content, renderer or watch endpoint gives no endpoint")
+    func automixBrokenShapes() throws {
+        let broken: [[String: Any]] = [
+            ["automixPreviewVideoRenderer": [:]],
+            ["automixPreviewVideoRenderer": ["content": [:]]],
+            ["automixPreviewVideoRenderer": ["content": ["automixPlaylistVideoRenderer": [:]]]],
+            ["automixPreviewVideoRenderer": ["content": ["automixPlaylistVideoRenderer": ["navigationEndpoint": [:]]]]],
+            ["automixPreviewVideoRenderer": ["content": ["automixPlaylistVideoRenderer": ["navigationEndpoint": ["watchEndpoint": ["videoId": "x", "playlistId": "RDAMPLPLx"]]]]]],
+            ["automixPreviewVideoRenderer": "not an object"],
+            ["somethingNew": ["content": [:]]],
+        ]
+        for item in broken {
+            let json = Self.radioFirstPageJSON(items: [Self.panelItem(videoId: "a", title: "A"), item])
+            #expect(try InnerTubeParser.automixEndpoint(from: json) == nil, "\(item)")
+        }
+    }
+
+    @Test("The automix's first page parses as an endless queue with its continuation, and has no preview of its own")
+    func automixFirstPageFixture() throws {
+        let data = try MusicFixtures.data("next-automix-first.json")
+        let page = try InnerTubeParser.radioPage(from: data)
+        #expect(page.tracks.map(\.videoId) == ["hbPlSong003", "hbAmxSong01", "hbAmxSong02", "hbAmxSong03"])
+        #expect(page.continuation == "HANDBUILT_AUTOMIX_CONTINUATION_2")
+        #expect(try InnerTubeParser.automixEndpoint(from: data) == nil)
+    }
+
+    @Test("A response without the queue panel, or that is not JSON, is a parse error")
+    func automixMissingPanel() {
+        for json in ["{}", #"{"contents":{}}"#, "<html>", ""] {
+            #expect(throws: MusicError.self) { try InnerTubeParser.automixEndpoint(from: Data(json.utf8)) }
+        }
+    }
+
     @Test("Radio garbage that is not JSON throws a parse error")
     func radioInvalidJSON() {
         #expect(throws: MusicError.self) { try InnerTubeParser.radioPage(from: Data("<html>".utf8)) }

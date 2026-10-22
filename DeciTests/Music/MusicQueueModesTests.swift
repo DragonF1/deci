@@ -286,11 +286,12 @@ struct MusicQueueModesTests {
         #expect(queue.seedVideoId == nil)
     }
 
-    @Test("the seed of a shuffled page is the last track of the shuffled order")
+    @Test("the seed of a shuffled page is the last track of the page's own order, not of the shuffled order")
     func refillSeedShuffled() {
         var queue = shuffled(makePageQueue(tap: "a"), seed: 6)
         for _ in 0..<(Self.letters.count - 1) { queue.advance() }
-        #expect(queue.refillSeed == queue.tracks.last?.videoId)
+        #expect(queue.tracks.last?.videoId != Self.letters.last)
+        #expect(queue.refillSeed == Self.letters.last)
     }
 
     @Test("a radio offers its last track once it has nothing more to load, never a seed it asked already")

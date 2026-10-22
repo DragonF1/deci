@@ -327,6 +327,11 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         /// The radio's first page; a request whose body has a `continuation` gets `nextContinuationBody`.
         var nextBody = (try? MusicFixtures.data("next-radio-first.json")) ?? Data()
         var nextContinuationBody = (try? MusicFixtures.data("next-radio-continuation.json")) ?? Data()
+        /// next answers by the `playlistId` in the body of a first-page request; an id with no entry gets `nextBody`.
+        /// The automix's two requests carry different playlist ids, so a test can serve each its own page.
+        var nextBodies: [String: Data] = [:]
+        /// The status for a first-page next request by its `playlistId`; an id with no entry gets `nextStatus`.
+        var nextStatuses: [String: Int] = [:]
         var nextStatus = 200
         var nextHeaders: [String: String] = [:]
         /// browse answers by the `browseId` in the body; an id with no entry gets `browseDefaultBody`.
@@ -397,11 +402,13 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         case ("music.youtube.com", "/youtubei/v1/search"):
             return HTTPResponse(statusCode: config.searchStatus, headers: config.searchHeaders, data: config.searchBody)
         case ("music.youtube.com", "/youtubei/v1/next"):
-            let isContinuation = Self.jsonBody(request)["continuation"] != nil
+            let body = Self.jsonBody(request)
+            let isContinuation = body["continuation"] != nil
+            let playlistId = body["playlistId"] as? String ?? ""
             return HTTPResponse(
-                statusCode: config.nextStatus,
+                statusCode: isContinuation ? config.nextStatus : config.nextStatuses[playlistId] ?? config.nextStatus,
                 headers: config.nextHeaders,
-                data: isContinuation ? config.nextContinuationBody : config.nextBody
+                data: isContinuation ? config.nextContinuationBody : config.nextBodies[playlistId] ?? config.nextBody
             )
         case ("music.youtube.com", "/youtubei/v1/browse"):
             let body = Self.jsonBody(request)

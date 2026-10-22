@@ -1,0 +1,345 @@
+{
+ "_handBuilt": "Hand built, not a capture: a finite playlist watch-next panel (step 1 of the automix, next {videoId, playlistId}) whose last entry is the automixPreviewVideoRenderer. Shape follows the radio capture; the preview row and its params are modelled on what YouTube Music's web client reads. Verify against a real response.",
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "contents": {
+  "singleColumnMusicWatchNextResultsRenderer": {
+   "tabbedRenderer": {
+    "watchNextTabbedResultsRenderer": {
+     "tabs": [
+      {
+       "tabRenderer": {
+        "title": "Up next",
+        "content": {
+         "musicQueueRenderer": {
+          "content": {
+           "playlistPanelRenderer": {
+            "contents": [
+             {
+              "playlistPanelVideoRenderer": {
+               "title": {
+                "runs": [
+                 {
+                  "text": "Hand Built One"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Hand Built Artist",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "UChandBuiltArtist01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "Hand Built Album",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "MPREhandBuiltAlbum01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "2024"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong001=w60-h60-l90-rj",
+                  "width": 60,
+                  "height": 60
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong001=w120-h120-l90-rj",
+                  "width": 120,
+                  "height": 120
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong001=w544-h544-l90-rj",
+                  "width": 544,
+                  "height": 544
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "3:10"
+                 }
+                ]
+               },
+               "selected": true,
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "hbPlSong001",
+                 "playlistId": "PLhandBuiltAutomix01",
+                 "index": 0,
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "hasPersistentPlaylistPanel": true,
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               },
+               "videoId": "hbPlSong001",
+               "shortBylineText": {
+                "runs": [
+                 {
+                  "text": "Hand Built Artist"
+                 }
+                ]
+               },
+               "canReorder": true
+              }
+             },
+             {
+              "playlistPanelVideoRenderer": {
+               "title": {
+                "runs": [
+                 {
+                  "text": "Hand Built Two"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Hand Built Artist",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "UChandBuiltArtist01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "Hand Built Album",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "MPREhandBuiltAlbum01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "2024"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong002=w60-h60-l90-rj",
+                  "width": 60,
+                  "height": 60
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong002=w120-h120-l90-rj",
+                  "width": 120,
+                  "height": 120
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong002=w544-h544-l90-rj",
+                  "width": 544,
+                  "height": 544
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "2:55"
+                 }
+                ]
+               },
+               "selected": false,
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "hbPlSong002",
+                 "playlistId": "PLhandBuiltAutomix01",
+                 "index": 1,
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "hasPersistentPlaylistPanel": true,
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               },
+               "videoId": "hbPlSong002",
+               "shortBylineText": {
+                "runs": [
+                 {
+                  "text": "Hand Built Artist"
+                 }
+                ]
+               },
+               "canReorder": true
+              }
+             },
+             {
+              "playlistPanelVideoRenderer": {
+               "title": {
+                "runs": [
+                 {
+                  "text": "Hand Built Three"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Hand Built Artist",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "UChandBuiltArtist01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "Hand Built Album",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "MPREhandBuiltAlbum01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "2024"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong003=w60-h60-l90-rj",
+                  "width": 60,
+                  "height": 60
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong003=w120-h120-l90-rj",
+                  "width": 120,
+                  "height": 120
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong003=w544-h544-l90-rj",
+                  "width": 544,
+                  "height": 544
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "4:01"
+                 }
+                ]
+               },
+               "selected": false,
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "hbPlSong003",
+                 "playlistId": "PLhandBuiltAutomix01",
+                 "index": 2,
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "hasPersistentPlaylistPanel": true,
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               },
+               "videoId": "hbPlSong003",
+               "shortBylineText": {
+                "runs": [
+                 {
+                  "text": "Hand Built Artist"
+                 }
+                ]
+               },
+               "canReorder": true
+              }
+             },
+             {
+              "automixPreviewVideoRenderer": {
+               "content": {
+                "automixPlaylistVideoRenderer": {
+                 "navigationEndpoint": {
+                  "watchPlaylistEndpoint": {
+                   "playlistId": "RDAMPLPLhandBuiltAutomix01",
+                   "params": "wAEB8gECeAE%3D"
+                  }
+                 }
+                }
+               }
+              }
+             }
+            ],
+            "playlistId": "PLhandBuiltAutomix01",
+            "isInfinite": false,
+            "numItemsToShow": 25
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

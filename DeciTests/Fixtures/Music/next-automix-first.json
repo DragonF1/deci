@@ -1,0 +1,437 @@
+{
+ "_handBuilt": "Hand built, not a capture: the first page of a playlist automix (step 2, next {playlistId, params} with no videoId): an endless panel with a nextRadioContinuationData token. Shape follows next-radio-first.json. Verify against a real response.",
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "contents": {
+  "singleColumnMusicWatchNextResultsRenderer": {
+   "tabbedRenderer": {
+    "watchNextTabbedResultsRenderer": {
+     "tabs": [
+      {
+       "tabRenderer": {
+        "title": "Up next",
+        "content": {
+         "musicQueueRenderer": {
+          "content": {
+           "playlistPanelRenderer": {
+            "contents": [
+             {
+              "playlistPanelVideoRenderer": {
+               "title": {
+                "runs": [
+                 {
+                  "text": "Hand Built Three"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Hand Built Artist",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "UChandBuiltArtist01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "Hand Built Album",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "MPREhandBuiltAlbum01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "2024"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong003=w60-h60-l90-rj",
+                  "width": 60,
+                  "height": 60
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong003=w120-h120-l90-rj",
+                  "width": 120,
+                  "height": 120
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbPlSong003=w544-h544-l90-rj",
+                  "width": 544,
+                  "height": 544
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "4:01"
+                 }
+                ]
+               },
+               "selected": true,
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "hbPlSong003",
+                 "playlistId": "RDAMPLPLhandBuiltAutomix01",
+                 "index": 0,
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "hasPersistentPlaylistPanel": true,
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               },
+               "videoId": "hbPlSong003",
+               "shortBylineText": {
+                "runs": [
+                 {
+                  "text": "Hand Built Artist"
+                 }
+                ]
+               },
+               "canReorder": true
+              }
+             },
+             {
+              "playlistPanelVideoRenderer": {
+               "title": {
+                "runs": [
+                 {
+                  "text": "Automix One"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Another Artist",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "UChandBuiltArtist01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "Another Album",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "MPREhandBuiltAlbum01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "2024"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong01=w60-h60-l90-rj",
+                  "width": 60,
+                  "height": 60
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong01=w120-h120-l90-rj",
+                  "width": 120,
+                  "height": 120
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong01=w544-h544-l90-rj",
+                  "width": 544,
+                  "height": 544
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "3:30"
+                 }
+                ]
+               },
+               "selected": false,
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "hbAmxSong01",
+                 "playlistId": "RDAMPLPLhandBuiltAutomix01",
+                 "index": 1,
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "hasPersistentPlaylistPanel": true,
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               },
+               "videoId": "hbAmxSong01",
+               "shortBylineText": {
+                "runs": [
+                 {
+                  "text": "Another Artist"
+                 }
+                ]
+               },
+               "canReorder": true
+              }
+             },
+             {
+              "playlistPanelVideoRenderer": {
+               "title": {
+                "runs": [
+                 {
+                  "text": "Automix Two"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Another Artist",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "UChandBuiltArtist01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "Another Album",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "MPREhandBuiltAlbum01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "2024"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong02=w60-h60-l90-rj",
+                  "width": 60,
+                  "height": 60
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong02=w120-h120-l90-rj",
+                  "width": 120,
+                  "height": 120
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong02=w544-h544-l90-rj",
+                  "width": 544,
+                  "height": 544
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "2:48"
+                 }
+                ]
+               },
+               "selected": false,
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "hbAmxSong02",
+                 "playlistId": "RDAMPLPLhandBuiltAutomix01",
+                 "index": 2,
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "hasPersistentPlaylistPanel": true,
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               },
+               "videoId": "hbAmxSong02",
+               "shortBylineText": {
+                "runs": [
+                 {
+                  "text": "Another Artist"
+                 }
+                ]
+               },
+               "canReorder": true
+              }
+             },
+             {
+              "playlistPanelVideoRenderer": {
+               "title": {
+                "runs": [
+                 {
+                  "text": "Automix Three"
+                 }
+                ]
+               },
+               "longBylineText": {
+                "runs": [
+                 {
+                  "text": "Third Artist",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "UChandBuiltArtist01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "Third Album",
+                  "navigationEndpoint": {
+                   "browseEndpoint": {
+                    "browseId": "MPREhandBuiltAlbum01",
+                    "browseEndpointContextSupportedConfigs": {
+                     "browseEndpointContextMusicConfig": {
+                      "pageType": "MUSIC_PAGE_TYPE_ALBUM"
+                     }
+                    }
+                   }
+                  }
+                 },
+                 {
+                  "text": " • "
+                 },
+                 {
+                  "text": "2024"
+                 }
+                ]
+               },
+               "thumbnail": {
+                "thumbnails": [
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong03=w60-h60-l90-rj",
+                  "width": 60,
+                  "height": 60
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong03=w120-h120-l90-rj",
+                  "width": 120,
+                  "height": 120
+                 },
+                 {
+                  "url": "https://yt3.googleusercontent.com/hand-built/hbAmxSong03=w544-h544-l90-rj",
+                  "width": 544,
+                  "height": 544
+                 }
+                ]
+               },
+               "lengthText": {
+                "runs": [
+                 {
+                  "text": "3:22"
+                 }
+                ]
+               },
+               "selected": false,
+               "navigationEndpoint": {
+                "watchEndpoint": {
+                 "videoId": "hbAmxSong03",
+                 "playlistId": "RDAMPLPLhandBuiltAutomix01",
+                 "index": 3,
+                 "watchEndpointMusicSupportedConfigs": {
+                  "watchEndpointMusicConfig": {
+                   "hasPersistentPlaylistPanel": true,
+                   "musicVideoType": "MUSIC_VIDEO_TYPE_ATV"
+                  }
+                 }
+                }
+               },
+               "videoId": "hbAmxSong03",
+               "shortBylineText": {
+                "runs": [
+                 {
+                  "text": "Third Artist"
+                 }
+                ]
+               },
+               "canReorder": true
+              }
+             }
+            ],
+            "playlistId": "RDAMPLPLhandBuiltAutomix01",
+            "isInfinite": true,
+            "continuations": [
+             {
+              "nextRadioContinuationData": {
+               "continuation": "HANDBUILT_AUTOMIX_CONTINUATION_2"
+              }
+             }
+            ],
+            "numItemsToShow": 25
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

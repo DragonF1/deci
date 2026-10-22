@@ -30,6 +30,8 @@ struct MusicQueue: Equatable {
     private(set) var seedVideoId: String?
     /// What `continuation` continues. Nil for an empty queue.
     private(set) var source: Source?
+    /// The playlist whose automix follows a page queue, when its page has one. Nil for a radio queue and for an empty one.
+    private(set) var automixPlaylistId: String?
     /// The play order is shuffled. `tracks` is then the shuffled order and `unshuffle()` brings the natural one back.
     private(set) var isShuffled = false
     /// Where each track sits in the natural order, kept only while shuffled.
@@ -82,11 +84,23 @@ struct MusicQueue: Equatable {
 
     /// The track whose radio should be asked for next: the last one not asked yet. Nil unless the queue is running out
     /// with no later page to load, or when a page already has its radio staged. A page hands over to the radio of its
-    /// last track; a radio that has run out carries on from the radio of its last track.
+    /// last own song in the page's order, which a shuffle does not change; a radio that has run out carries on from the
+    /// radio of its last track.
     var refillSeed: String? {
         guard !isEmpty, continuation == nil, upcomingCount <= Self.refillThreshold else { return nil }
-        if case .page = source, !autoplay.isEmpty { return nil }
+        if case .page = source {
+            if !autoplay.isEmpty { return nil }
+            if let seed = lastPageSong { return seed }
+        }
         return tracks.last { !askedSeeds.contains($0.videoId) }?.videoId
+    }
+
+    /// The last song of the page itself in the page's order: not one the listener queued, not one already asked.
+    /// While shuffled the natural rank gives the page's order back.
+    private var lastPageSong: String? {
+        let own = tracks.filter { !queuedIds.contains($0.videoId) && !askedSeeds.contains($0.videoId) }
+        guard isShuffled else { return own.last?.videoId }
+        return own.max { (naturalRank[$0.videoId] ?? Int.max) < (naturalRank[$1.videoId] ?? Int.max) }?.videoId
     }
 
     /// Replaces the queue with just this track and makes it the radio seed.
@@ -96,14 +110,22 @@ struct MusicQueue: Equatable {
         continuation = nil
         seedVideoId = track.videoId
         source = .radio(seedVideoId: track.videoId)
+        automixPlaylistId = nil
         forgetShuffle()
         forgetAutoplay()
         forgetEdits()
     }
 
     /// Replaces the queue with a page's tracks in page order, positioned on `track`. The tracks
-    /// before it stay for Previous. A track the page does not list is put in front of it.
-    mutating func start(page list: [MusicTrack], playing track: MusicTrack, browseId: String, continuation: String?) {
+    /// before it stay for Previous. A track the page does not list is put in front of it. `automixPlaylistId` is the
+    /// playlist whose automix follows the page, nil when the page has none.
+    mutating func start(
+        page list: [MusicTrack],
+        playing track: MusicTrack,
+        browseId: String,
+        continuation: String?,
+        automixPlaylistId: String? = nil
+    ) {
         var seen = Set<String>()
         var ordered = list.filter { seen.insert($0.videoId).inserted }
         if !seen.contains(track.videoId) { ordered.insert(track, at: 0) }
@@ -112,6 +134,7 @@ struct MusicQueue: Equatable {
         self.continuation = continuation
         seedVideoId = nil
         source = .page(browseId: browseId)
+        self.automixPlaylistId = automixPlaylistId
         forgetShuffle()
         forgetAutoplay()
         forgetEdits()
