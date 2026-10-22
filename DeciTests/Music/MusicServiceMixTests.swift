@@ -315,6 +315,41 @@ struct MusicServiceMixTests {
         #expect(await h.backend.autoplayCalls.isEmpty)
     }
 
+    @Test("turning Autoplay off, and on again, leaves a mix alone: its songs stay, and it keeps paging")
+    func autoplayToggledOnAMix() async {
+        let h = MixServiceHarness()
+        await h.setMix(after: "c", continuation: "t1")
+        await h.backend.setMoreRadio(seed: "c", continuation: "t1", tracks: MusicSamples.tracks("m6", "m7"), next: "t2")
+        await h.start(h.page(["a", "b", "c"]), tap: "c")
+        let songs = ["a", "b", "c"] + MixServiceHarness.songs
+        #expect(h.queuedIDs == songs)
+
+        h.service.setAutoplay(false)
+
+        // A mix ignores Autoplay: nothing is parked, and the mix is still the queue's.
+        #expect(h.queuedIDs == songs)
+        #expect(h.listing.upcoming.map(\.videoId) == MixServiceHarness.songs)
+        #expect(h.service.queue.mixPlaylistId == MixServiceHarness.mixId)
+        #expect(h.service.queue.continuation == "t1")
+        #expect(h.service.canGoNext)
+        #expect(h.listing.sourceLine == "From mix")
+
+        for _ in 0..<2 {
+            h.service.next()
+            await h.settle()
+        }
+
+        #expect(await h.backend.moreRadioCalls == [FakeMusicBackend.MoreRadioCall(seed: "c", continuation: "t1")])
+        #expect(h.queuedIDs == songs + ["m6", "m7"])
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(h.queuedIDs == songs + ["m6", "m7"])
+        #expect(h.service.queue.continuation == "t2")
+        #expect(h.service.queue.mixPlaylistId == MixServiceHarness.mixId)
+    }
+
     @Test("with Autoplay off a mix that has run dry stops where it is, and still says it comes from a mix")
     func autoplayOffDry() async {
         let h = MixServiceHarness(preferences: MusicPlaybackPreferences(autoplay: false))
@@ -628,6 +663,47 @@ struct MusicServiceMixTests {
         #expect(h.queuedIDs == ["a", "b", "c", "m1", "m2", "r1", "r2", "r3", "r4", "r5"])
         #expect(await h.backend.mixCalls == [h.call("c")])
         #expect(await h.backend.autoplayCalls.isEmpty)
+    }
+
+    @Test("Autoplay turned off while a dry mix's radio is on its way: the answer is dropped, the mix plays out its own songs, and Autoplay on asks again")
+    func autoplayOffWhileTheDryMixAsksForItsRadio() async {
+        let h = MixServiceHarness()
+        let gate = MusicTestGate()
+        await h.setMix(after: "c", ["m1", "m2"])
+        await h.backend.setRadio(seed: "m2", tracks: MusicSamples.tracks("m2", "r1", "r2", "r3", "r4", "r5"))
+        await h.backend.setRadioGate(seed: "m2", gate)
+        h.begin(h.page(["a", "b", "c"]), tap: "c")
+        #expect(await h.eventually { await h.backend.radioSeeds == ["m2"] })
+
+        h.service.setAutoplay(false)
+        await gate.open()
+        await h.settle()
+
+        // The mix is still the queue's: its songs are not parked and it does not say it comes from the radio.
+        #expect(h.queuedIDs == ["a", "b", "c", "m1", "m2"])
+        #expect(h.service.queue.mixPlaylistId == MixServiceHarness.mixId)
+        #expect(h.service.queue.radioIsParked == false)
+        #expect(h.service.queue.parked.isEmpty)
+        #expect(h.listing.sourceLine == "From mix")
+        #expect(h.service.canGoNext)
+
+        for _ in 0..<2 {
+            h.service.next()
+            await h.settle()
+        }
+
+        #expect(h.loadedIDs == ["c", "m1", "m2"])
+        #expect(h.service.queue.current?.videoId == "m2")
+        #expect(h.service.canGoNext == false)
+
+        // Autoplay back on: the dry mix asks for the radio of its last song again, and the radio takes over from it.
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(await h.backend.radioSeeds == ["m2", "m2"])
+        #expect(h.queuedIDs == ["a", "b", "c", "m1", "m2", "r1", "r2", "r3", "r4", "r5"])
+        #expect(h.service.queue.mixPlaylistId == nil)
+        #expect(h.listing.sourceLine == "From radio")
     }
 
     @Test("a mix whose continuation is refused is dry: the queue goes on as the radio of its last song")

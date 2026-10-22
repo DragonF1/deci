@@ -74,7 +74,8 @@ private struct ModesHarness {
 
     /// Plays the first of `ids` with a radio of all of them behind it and waits for both. A tapped song gets a radio
     /// only with Autoplay on, so a harness that starts with it off turns it on for the tap and puts it back at once,
-    /// before the radio lands: the queue then follows the setting the test chose. That adds two saves to `sink.saved`.
+    /// before the radio lands: that radio is then parked, as one landing under Autoplay off is. That adds two saves to
+    /// `sink.saved`.
     func startRadio(_ ids: [String], continuation: String? = nil) async {
         let tracks = ids.map { MusicSamples.track($0, title: "Song \($0)") }
         await backend.setRadio(seed: ids[0], tracks: tracks, continuation: continuation)
@@ -1208,25 +1209,23 @@ struct MusicServiceAutoplayTests {
         #expect(await h.backend.radioSeeds.isEmpty)
     }
 
-    @Test("with Autoplay off a radio queue keeps the page it loaded and fetches no more")
+    @Test("with Autoplay off a radio queue hides the page it loaded and fetches no more")
     func offRadioQueue() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(autoplay: false))
         await h.backend.setMoreRadio(seed: "a", continuation: "c1", tracks: MusicSamples.tracks("x", "y"))
         await h.startRadio(["a", "b", "c"], continuation: "c1")
-        #expect(h.queuedIDs == ["a", "b", "c"])
+        // The page landed after Autoplay went off, so it is parked and the song plays alone.
+        #expect(h.queuedIDs == ["a"])
+        #expect(h.service.canGoNext == false)
         #expect(await h.backend.moreRadioCalls.isEmpty)
 
-        h.service.next()
-        await h.settle()
-        h.service.next()
-        await h.settle()
         h.engine.emit(.ended)
         await h.settle()
 
         #expect(await h.backend.moreRadioCalls.isEmpty)
-        #expect(h.loadedIDs == ["a", "b", "c"])
+        #expect(h.loadedIDs == ["a"])
         #expect(h.player.hasEnded)
-        #expect(h.service.queue.continuation == "c1")
+        #expect(h.service.queue.continuation == nil)
     }
 
     @Test("with Autoplay off a song started by a tap, Play next or Add to queue plays alone and stops, and no radio is asked for")
@@ -1357,7 +1356,7 @@ struct MusicServiceAutoplayTests {
         #expect(await h.backend.moreRadioCalls.isEmpty)
     }
 
-    @Test("turning Autoplay off while a tapped song's first radio loads keeps the radio when it lands, and asks for no more")
+    @Test("turning Autoplay off while a tapped song's first radio loads parks the radio when it lands, and asks for no more")
     func turnedOffWhileTheFirstRadioLoads() async {
         let h = ModesHarness()
         let gate = MusicTestGate()
@@ -1373,11 +1372,361 @@ struct MusicServiceAutoplayTests {
         await gate.open()
         await h.settle()
 
-        #expect(h.queuedIDs == ["a", "b", "c"])
+        // The radio landed in the parking place: the song plays alone and the queue stays the radio's.
+        #expect(h.queuedIDs == ["a"])
         #expect(h.service.queue.source == .radio(seedVideoId: "a"))
+        #expect(h.service.canGoNext == false)
+        #expect(h.service.isFillingQueue == false)
+        #expect(h.listing.upcoming.isEmpty)
+        #expect(await h.backend.radioSeeds == ["a"])
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+
+        // Turning Autoplay back on shows the landed songs without asking for the first radio again; only the next
+        // page, which the queue wants whenever three songs or fewer are left, is asked for.
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a", "b", "c", "x", "y"])
+        #expect(await h.backend.radioSeeds == ["a"])
+        #expect(await h.backend.moreRadioCalls == [FakeMusicBackend.MoreRadioCall(seed: "a", continuation: "c1")])
+    }
+
+    // MARK: Autoplay off parks the radio
+
+    /// The radio behind a tapped song: five songs and a next page.
+    private static let radioOfFive = ["a", "r1", "r2", "r3", "r4", "r5"]
+    private static let hiddenRadio = ["r1", "r2", "r3", "r4", "r5"]
+
+    @Test("turning Autoplay off on a tapped song hides the radio songs it has not reached: Up next is empty, Next is off, the song plays and stops")
+    func offHidesTheTappedSongsRadio() async {
+        let h = ModesHarness()
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        #expect(h.listing.upcoming.map(\.videoId) == Self.hiddenRadio)
+        #expect(h.service.canGoNext)
+
+        h.service.setAutoplay(false)
+
+        #expect(h.queuedIDs == ["a"])
+        #expect(h.service.queue.current?.videoId == "a")
+        #expect(h.service.queue.upcomingCount == 0)
+        #expect(h.listing.upcoming.isEmpty)
+        #expect(h.listing.autoplayStart == nil)
+        #expect(h.service.canGoNext == false)
+        #expect(h.service.isFillingQueue == false)
+        // The radio is hidden, not held against the song: it names no source and the player is not touched.
+        #expect(h.listing.sourceLine == nil)
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: h.listing.sourceLine) == "NOW PLAYING")
+        #expect(h.loadedIDs == ["a"])
+        #expect(h.player.isPlaying)
+
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.player.hasEnded)
+        #expect(h.loadedIDs == ["a"])
+        #expect(await h.backend.radioSeeds == ["a"])
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+    }
+
+    @Test("songs added with Play next or Add to queue stay when Autoplay goes off, play in their order, and then the playback stops")
+    func offKeepsTheListenersSongs() async {
+        let h = ModesHarness()
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        h.service.playNext(MusicSamples.track("p1"))
+        h.service.addToQueue(MusicSamples.track("q1"))
+        #expect(h.queuedIDs == ["a", "p1", "q1"] + Self.hiddenRadio)
+
+        h.service.setAutoplay(false)
+
+        #expect(h.queuedIDs == ["a", "p1", "q1"])
+        #expect(h.listing.upcoming.map(\.videoId) == ["p1", "q1"])
+        #expect(h.service.canGoNext)
+
+        await h.finishTrack()
+        #expect(h.service.queue.current?.videoId == "p1")
+        #expect(h.service.canGoNext)
+        await h.finishTrack()
+        #expect(h.service.queue.current?.videoId == "q1")
+        #expect(h.service.canGoNext == false)
+
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.player.hasEnded)
+        #expect(h.loadedIDs == ["a", "p1", "q1"])
+        // Nothing was asked for while Autoplay was off, however few songs were left.
+        #expect(await h.backend.radioSeeds == ["a"])
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+    }
+
+    @Test("songs added while Autoplay is off join the queue and play, and the hidden radio is not asked for")
+    func addedWhileOff() async {
+        let h = ModesHarness()
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        h.service.setAutoplay(false)
+
+        h.service.playNext(MusicSamples.track("p1"))
+        h.service.addToQueue(MusicSamples.track("q1"))
+
+        #expect(h.queuedIDs == ["a", "p1", "q1"])
+        await h.finishTrack()
+        await h.finishTrack()
+        #expect(h.loadedIDs == ["a", "p1", "q1"])
+        #expect(h.service.canGoNext == false)
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+    }
+
+    @Test("turning Autoplay back on brings the same songs back behind the queued ones, with their next page, and asks for nothing new")
+    func onBringsTheSongsBack() async {
+        let h = ModesHarness()
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        h.service.playNext(MusicSamples.track("p1"))
+        h.service.addToQueue(MusicSamples.track("q1"))
+        h.service.setAutoplay(false)
+        #expect(h.queuedIDs == ["a", "p1", "q1"])
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a", "p1", "q1"] + Self.hiddenRadio)
+        #expect(h.listing.upcoming.map(\.videoId) == ["p1", "q1"] + Self.hiddenRadio)
+        #expect(h.service.queue.continuation == "c1")
+        #expect(h.service.canGoNext)
+        #expect(h.listing.sourceLine == "From radio")
+        // The song in the player is not restarted, and the radio that was parked is not asked for again.
+        #expect(h.loadedIDs == ["a"])
+        #expect(await h.backend.radioSeeds == ["a"])
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+
+        // The queue plays on through the restored songs.
+        await h.finishTrack()
+        await h.finishTrack()
+        await h.finishTrack()
+        #expect(h.loadedIDs == ["a", "p1", "q1", "r1"])
+    }
+
+    @Test("a radio that lands while Autoplay is off is parked and shown when Autoplay goes on, with no second request")
+    func firstRadioLandingWhileOff() async {
+        let h = ModesHarness()
+        let gate = MusicTestGate()
+        await h.backend.setRadioGate(seed: "a", gate)
+        await h.setLongRadio(seed: "a")
+        h.service.play(MusicSamples.track("a"))
+        let held = await h.eventually { await h.backend.radioSeeds.count == 1 }
+        #expect(held)
+
+        h.service.setAutoplay(false)
+        // The request is still on its way, but nothing will use it, so Up next does not show a loading row.
+        #expect(h.service.isFillingQueue == false)
+        #expect(h.service.canGoNext == false)
+        await gate.open()
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a"])
+        #expect(h.listing.upcoming.isEmpty)
+        #expect(h.service.canGoNext == false)
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a"] + Self.hiddenRadio)
         #expect(h.service.canGoNext)
         #expect(await h.backend.radioSeeds == ["a"])
         #expect(await h.backend.moreRadioCalls.isEmpty)
+    }
+
+    @Test("a song that ended while the first radio loaded stops when Autoplay goes off, and the radio then lands parked")
+    func offSettlesAWaitingEnd() async {
+        let h = ModesHarness()
+        let gate = MusicTestGate()
+        await h.backend.setRadioGate(seed: "a", gate)
+        await h.setLongRadio(seed: "a")
+        h.service.play(MusicSamples.track("a"))
+        await h.service.playTask?.value
+        let held = await h.eventually { await h.backend.radioSeeds.count == 1 }
+        #expect(held)
+        h.engine.emit(.playingChanged(true))
+        h.engine.emit(.ended)
+        #expect(h.player.hasEnded)
+
+        h.service.setAutoplay(false)
+        await gate.open()
+        await h.settle()
+
+        #expect(h.player.hasEnded)
+        #expect(h.loadedIDs == ["a"])
+        #expect(h.queuedIDs == ["a"])
+    }
+
+    @Test("a Next waiting for the first radio is dropped when Autoplay goes off: the song plays on and the radio lands parked")
+    func offDropsAWaitingNext() async {
+        let h = ModesHarness()
+        let gate = MusicTestGate()
+        await h.backend.setRadioGate(seed: "a", gate)
+        await h.setLongRadio(seed: "a")
+        h.service.play(MusicSamples.track("a"))
+        await h.service.playTask?.value
+        let held = await h.eventually { await h.backend.radioSeeds.count == 1 }
+        #expect(held)
+        h.engine.emit(.playingChanged(true))
+        h.service.next()
+        // The song keeps playing while the skip waits for the radio.
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.player.isPlaying)
+
+        h.service.setAutoplay(false)
+
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.player.isPlaying)
+        #expect(h.queuedIDs == ["a"])
+        #expect(h.service.queue.current?.videoId == "a")
+
+        await gate.open()
+        await h.settle()
+
+        // The radio lands out of sight, and nothing is skipped to now or when it landed.
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.player.isPlaying)
+        #expect(h.loadedIDs == ["a"])
+        #expect(h.queuedIDs == ["a"])
+        #expect(h.service.canGoNext == false)
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        // The same songs come back, and the song is still the one that plays: the skip is not carried out late.
+        #expect(h.queuedIDs == ["a"] + Self.hiddenRadio)
+        #expect(h.service.queue.current?.videoId == "a")
+        #expect(h.loadedIDs == ["a"])
+        #expect(await h.backend.radioSeeds == ["a"])
+    }
+
+    @Test("turning Autoplay off after a playlist handed over to its radio hides the radio songs ahead, not the songs behind")
+    func offAfterTheHandOver() async {
+        let h = ModesHarness()
+        await h.setLongRadio(seed: "b")
+        await h.startPage(["a", "b"], tap: "b")
+        h.service.next()
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        #expect(h.queuedIDs == ["a", "b", "r1", "r2", "r3", "r4", "r5"])
+        #expect(h.service.queue.current?.videoId == "r1")
+
+        h.service.setAutoplay(false)
+
+        #expect(h.queuedIDs == ["a", "b", "r1"])
+        #expect(h.service.queue.current?.videoId == "r1")
+        #expect(h.service.queue.hasPrevious)
+        #expect(h.listing.upcoming.isEmpty)
+        #expect(h.service.canGoNext == false)
+        // The song playing is itself from the radio, so the queue still says where it came from.
+        #expect(h.listing.sourceLine == "From radio")
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(h.queuedIDs == ["a", "b", "r1", "r2", "r3", "r4", "r5"])
+        #expect(h.service.canGoNext)
+    }
+
+    @Test("a song tapped while Autoplay is off drops the radio that was parked for the last one")
+    func tapDropsTheParkedRadio() async {
+        let h = ModesHarness()
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        h.service.setAutoplay(false)
+        h.service.play(MusicSamples.track("z"))
+        await h.settle()
+        #expect(h.queuedIDs == ["z"])
+
+        await h.backend.setRadio(seed: "z", tracks: MusicSamples.tracks("z", "s1", "s2", "s3", "s4"))
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        // The radio of the new song is asked for, and none of the old radio comes back.
+        #expect(h.queuedIDs == ["z", "s1", "s2", "s3", "s4"])
+        #expect(await h.backend.radioSeeds == ["a", "z"])
+    }
+
+    @Test("a playlist started while a radio is parked drops it")
+    func pageDropsTheParkedRadio() async {
+        let h = ModesHarness()
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        h.service.setAutoplay(false)
+        await h.startPage(["p", "q"])
+        #expect(h.queuedIDs == ["p", "q"])
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(h.queuedIDs == ["p", "q"])
+        #expect(h.service.queue.source == .page(browseId: "VLPL1"))
+    }
+
+    @Test("Next with nothing left ends the queue and the parked radio with it, so Autoplay on afterwards brings nothing back")
+    func nextAtTheEndDropsTheParkedRadio() async {
+        let h = ModesHarness()
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        h.service.setAutoplay(false)
+
+        h.service.next()
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.service.queue.isEmpty)
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(h.service.queue.isEmpty)
+        #expect(h.player.nowPlaying == nil)
+        #expect(h.loadedIDs == ["a"])
+        #expect(await h.backend.radioSeeds == ["a"])
+    }
+
+    @Test("turning Autoplay on after the song has ended brings the radio back but does not play it")
+    func onAfterTheEndDoesNotResume() async {
+        let h = ModesHarness()
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        h.service.setAutoplay(false)
+        h.engine.emit(.ended)
+        await h.settle()
+        #expect(h.player.hasEnded)
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        #expect(h.player.hasEnded)
+        #expect(h.loadedIDs == ["a"])
+        #expect(h.queuedIDs == ["a"] + Self.hiddenRadio)
+        #expect(h.service.queue.current?.videoId == "a")
+        #expect(h.service.canGoNext)
+        #expect(await h.backend.radioSeeds == ["a"])
+
+        // Next, pressed by the listener, plays the first of the songs that came back.
+        h.service.next()
+        await h.settle()
+        #expect(h.loadedIDs == ["a", "r1"])
+    }
+
+    @Test("with Shuffle on the parked radio comes back mixed in after the next song, and Shuffle off puts it in its order")
+    func offOnWhileShuffled() async {
+        let h = ModesHarness(preferences: MusicPlaybackPreferences(shuffle: true))
+        await h.startRadio(Self.radioOfFive, continuation: "c1")
+        h.service.playNext(MusicSamples.track("p1"))
+        #expect(Set(h.queuedIDs) == Set(["a", "p1"] + Self.hiddenRadio))
+
+        h.service.setAutoplay(false)
+        #expect(h.queuedIDs == ["a", "p1"])
+
+        h.service.setAutoplay(true)
+        await h.settle()
+
+        // The song queued with Play next still plays first; the radio songs are mixed in behind it.
+        #expect(h.queuedIDs.prefix(2) == ["a", "p1"])
+        #expect(Set(h.queuedIDs) == Set(["a", "p1"] + Self.hiddenRadio))
+        #expect(h.queuedIDs.count == 7)
+
+        h.service.setShuffle(false)
+        #expect(h.queuedIDs == ["a", "p1"] + Self.hiddenRadio)
     }
 
     @Test("a first radio still loading for the last queue does not land in the queue of a song tapped with Autoplay off")

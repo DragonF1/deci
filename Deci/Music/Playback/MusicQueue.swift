@@ -7,6 +7,9 @@ import Foundation
 /// runs out.
 /// A mix page is the exception: its mix is asked near the page's last song and what it answers joins the queue itself,
 /// page after page while the mix has a continuation (`mixPlaylistId`, `mixHasMore`).
+/// With Autoplay off a radio queue (a tapped song's, or what a page handed over to; not a mix) parks the radio songs the
+/// listener has not reached, and the radio's next page, out of `tracks` until Autoplay is on again: the songs the listener
+/// queued stay and the current song plays and stops (`parkRadio()`, `restoreRadio()`).
 /// A plain value; `MusicService` decides when to fetch and what to play.
 struct MusicQueue: Equatable {
     /// Fetch the next radio page, or ask for a radio to follow, when this many tracks, or fewer, are left after the
@@ -61,6 +64,19 @@ struct MusicQueue: Equatable {
     private var endIds: Set<String> = []
     /// The songs the listener took out. Later radio pages and a restaged radio do not bring them back.
     private var removedIds: Set<String> = []
+    /// The songs that came from the radio: its pages, and the staged radio once it joined the queue. Tells them from the
+    /// tapped song, the songs of a page and the songs the listener put here.
+    private var radioIds: Set<String> = []
+    /// The songs the play position has stood on since the queue was started: Next, Previous, a jump and a lap's wrap
+    /// all count. Told by id, so a shuffle and its undoing do not lose them. Parking leaves them where they are.
+    private var reachedIds: Set<String> = []
+    /// The radio songs parked by Autoplay off, in their natural order, with the radio's next page in
+    /// `parkedContinuation`. Not part of `tracks`, so Next, Up next and the shuffle never see them.
+    private(set) var parked: [MusicTrack] = []
+    private var parkedContinuation: String?
+    /// Autoplay is off for this radio queue: what the radio answers goes to `parked` and no page is asked for. Set by
+    /// `parkRadio()` even when no song was waiting, and gone with `restoreRadio()` or when the queue is replaced.
+    private(set) var radioIsParked = false
 
     var isEmpty: Bool { tracks.isEmpty }
     /// The queue plays a playlist or album page (not a radio).
@@ -68,7 +84,17 @@ struct MusicQueue: Equatable {
         guard case .page = source else { return false }
         return true
     }
+    /// The queue is a radio and not a mix: the only kind Autoplay parks the radio of.
+    var isPlainRadio: Bool {
+        guard case .radio = source else { return false }
+        return mixPlaylistId == nil
+    }
     var current: MusicTrack? { currentIndex.map { tracks[$0] } }
+    /// The song that plays came from the radio, not from the tapped song, a page or the listener.
+    var playsRadioSong: Bool {
+        guard let id = current?.videoId else { return false }
+        return isRadioSong(id)
+    }
 
     /// Everything after the current track.
     var upcoming: ArraySlice<MusicTrack> {
@@ -133,6 +159,7 @@ struct MusicQueue: Equatable {
         forgetShuffle()
         forgetAutoplay()
         forgetEdits()
+        forgetRadio()
     }
 
     /// Replaces the queue with a page's tracks in page order, positioned on `track`. The tracks
@@ -160,6 +187,7 @@ struct MusicQueue: Equatable {
         forgetShuffle()
         forgetAutoplay()
         forgetEdits()
+        forgetRadio()
     }
 
     /// Adds the tracks that are not queued yet, in order, and keeps the page's continuation.
@@ -176,6 +204,7 @@ struct MusicQueue: Equatable {
     mutating func append<G: RandomNumberGenerator>(_ page: [MusicTrack], continuation: String?, using generator: inout G) -> Int {
         var fresh = addable(from: page)
         self.continuation = continuation
+        if case .radio = source { radioIds.formUnion(fresh.map(\.videoId)) }
         guard isShuffled else {
             // A song added to the end of a page that was still loading stays behind the rest of the page.
             let from = (currentIndex ?? -1) + 1
@@ -222,15 +251,13 @@ struct MusicQueue: Equatable {
     @discardableResult
     mutating func advance() -> MusicTrack? {
         guard let currentIndex, currentIndex + 1 < tracks.count else { return nil }
-        self.currentIndex = currentIndex + 1
-        return tracks[currentIndex + 1]
+        return move(to: currentIndex + 1)
     }
 
     @discardableResult
     mutating func retreat() -> MusicTrack? {
         guard let currentIndex, currentIndex > 0 else { return nil }
-        self.currentIndex = currentIndex - 1
-        return tracks[currentIndex - 1]
+        return move(to: currentIndex - 1)
     }
 
     /// Plays a queued track. A track of the staged radio brings the radio into the queue first.
@@ -240,13 +267,14 @@ struct MusicQueue: Equatable {
             takeAutoplay()
         }
         guard let index = tracks.firstIndex(where: { $0.videoId == videoId }) else { return nil }
-        currentIndex = index
-        return tracks[index]
+        return move(to: index)
     }
 
-    /// Ends paging: the tracks and the position stay, no further page is asked for.
+    /// Ends paging: the tracks and the position stay, no further page is asked for, and a radio parked by Autoplay off
+    /// has no next page to bring back either.
     mutating func clearContinuation() {
         continuation = nil
+        parkedContinuation = nil
     }
 
     /// Loop playlist: back to the first track of the play order. A shuffled queue keeps its mix, so every lap starts
@@ -254,8 +282,14 @@ struct MusicQueue: Equatable {
     @discardableResult
     mutating func wrapToStart() -> MusicTrack? {
         guard !tracks.isEmpty else { return nil }
-        currentIndex = 0
-        return tracks[0]
+        return move(to: 0)
+    }
+
+    /// The play position moves to `index`, and the song there is reached from now on.
+    private mutating func move(to index: Int) -> MusicTrack {
+        currentIndex = index
+        reachedIds.insert(tracks[index].videoId)
+        return tracks[index]
     }
 
     /// The queue carries on as the radio seeded by `seedVideoId`: the tracks and the position stay, later pages are
@@ -310,6 +344,7 @@ struct MusicQueue: Equatable {
             }
         }
         tracks.append(contentsOf: fresh)
+        radioIds.formUnion(fresh.map(\.videoId))
         continuation = autoplayContinuation
         adoptRadio(seedVideoId: seed)
         forgetAutoplay(keepingAsked: true)
@@ -462,5 +497,90 @@ struct MusicQueue: Equatable {
 
     mutating func clear() {
         self = MusicQueue()
+    }
+
+    // MARK: - Parked radio
+
+    /// Autoplay is off: the radio songs after the current one that the listener has not reached, and the radio's next
+    /// page, leave the play order and wait in `parked`. The songs the listener queued (Play next, Add to queue), the songs
+    /// of a page that handed over to the radio, the songs before the current one, the current song itself and the radio
+    /// songs already heard (the listener went back from them with Previous) stay. Does nothing for a page or a mix.
+    mutating func parkRadio() {
+        guard isPlainRadio, !radioIsParked else { return }
+        radioIsParked = true
+        parkedContinuation = continuation
+        continuation = nil
+        guard let currentIndex else { return }
+        let from = currentIndex + 1
+        var hidden = tracks[from...].filter { isRadioSong($0.videoId) && !reachedIds.contains($0.videoId) }
+        guard !hidden.isEmpty else { return }
+        let hiddenIds = Set(hidden.map(\.videoId))
+        let kept = tracks[from...].filter { !hiddenIds.contains($0.videoId) }
+        tracks.replaceSubrange(from..., with: kept)
+        if isShuffled {
+            // Back in the order the radio answered them in, so they return the way a fresh radio page would.
+            hidden = hidden.enumerated()
+                .sorted { lhs, rhs in
+                    let left = naturalRank[lhs.element.videoId] ?? Int.max
+                    let right = naturalRank[rhs.element.videoId] ?? Int.max
+                    return left == right ? lhs.offset < rhs.offset : left < right
+                }
+                .map(\.element)
+            for id in hiddenIds { naturalRank[id] = nil }
+        }
+        parked = hidden
+    }
+
+    /// A radio page that lands while the radio is parked: its new songs wait in `parked`, behind the ones already there,
+    /// and its continuation replaces the parked one. Songs the queue or `parked` has, or the listener took out, are
+    /// left out. Parks the radio first when it was not parked yet. Returns how many songs it kept; none, and nothing
+    /// changes, for a queue that is not a plain radio.
+    @discardableResult
+    mutating func parkAnswer(_ page: [MusicTrack], continuation: String?) -> Int {
+        parkRadio()
+        guard radioIsParked else { return 0 }
+        var seen = Set(tracks.map(\.videoId))
+        seen.formUnion(parked.map(\.videoId))
+        let fresh = page.filter { !removedIds.contains($0.videoId) && seen.insert($0.videoId).inserted }
+        parked += fresh
+        radioIds.formUnion(fresh.map(\.videoId))
+        parkedContinuation = continuation
+        return fresh.count
+    }
+
+    /// Autoplay is on again: the parked songs join the end of the queue, behind the songs the listener queued and in the
+    /// order they were answered in, with the radio's next page (while shuffled they are mixed in as a radio page is, see
+    /// `append(_:continuation:using:)`). The current song is not touched, and a queue that has ended stays ended: nothing
+    /// here starts a song. Returns how many songs came back.
+    @discardableResult
+    mutating func restoreRadio() -> Int {
+        var generator = SystemRandomNumberGenerator()
+        return restoreRadio(using: &generator)
+    }
+
+    @discardableResult
+    mutating func restoreRadio<G: RandomNumberGenerator>(using generator: inout G) -> Int {
+        guard radioIsParked else { return 0 }
+        let returning = parked
+        let returningContinuation = parkedContinuation
+        forgetParked()
+        return append(returning, continuation: returningContinuation, using: &generator)
+    }
+
+    /// A song of the radio that the listener has not taken over with Play next or Add to queue.
+    private func isRadioSong(_ videoId: String) -> Bool {
+        radioIds.contains(videoId) && !queuedIds.contains(videoId)
+    }
+
+    private mutating func forgetParked() {
+        parked = []
+        parkedContinuation = nil
+        radioIsParked = false
+    }
+
+    private mutating func forgetRadio() {
+        radioIds = []
+        reachedIds = []
+        forgetParked()
     }
 }

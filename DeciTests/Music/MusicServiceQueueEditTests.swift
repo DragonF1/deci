@@ -54,7 +54,8 @@ private struct QueueEditHarness {
     }
 
     /// Plays the first of `ids` with a radio of the rest behind it. A tapped song gets a radio only with Autoplay on,
-    /// so a harness that starts with it off turns it on for the tap and puts it back at once, before the radio lands.
+    /// so a harness that starts with it off turns it on for the tap and puts it back at once, before the radio lands:
+    /// that radio lands parked, so the queue holds the tapped song alone.
     func startRadio(_ ids: [String]) async {
         await backend.setRadio(seed: ids[0], tracks: ids.map { song($0) })
         let putBack = !service.isAutoplayOn
@@ -122,15 +123,15 @@ struct MusicServiceQueueEditTests {
     func playedOutQueueStartsSong() async {
         for add in [false, true] {
             let h = QueueEditHarness(preferences: MusicPlaybackPreferences(autoplay: false))
-            await h.startRadio(["a", "b"])
+            await h.startRadio(["a", "r1"])
             await h.finishTrack()
             h.engine.emit(.ended)
             await h.settle()
-            #expect(h.loadedIDs == ["a", "b"])
+            #expect(h.loadedIDs == ["a"])
 
             if add { h.service.addToQueue(h.song("x")) } else { h.service.playNext(h.song("x")) }
             await h.settle()
-            #expect(h.loadedIDs == ["a", "b", "x"])
+            #expect(h.loadedIDs == ["a", "x"])
             #expect(h.service.queue.current?.videoId == "x")
         }
     }

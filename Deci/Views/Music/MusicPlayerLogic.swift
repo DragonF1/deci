@@ -23,7 +23,8 @@ nonisolated enum MusicOutputLabel {
 /// the queue came from. After the queue's own songs come the next lap under Loop playlist (the songs before the current
 /// one, from the start of the play order) or, with Autoplay, the radio staged to follow a page. The screen marks where
 /// that radio starts, so the listing says which row it opens on. A tapped song that no radio will follow, because
-/// Autoplay is off, names no source.
+/// Autoplay is off, names no source; neither does one whose radio Autoplay off parked, unless the song that plays came
+/// from that radio. A parked radio is not listed.
 @MainActor
 struct MusicQueueListing {
     let current: MusicTrack?
@@ -38,7 +39,7 @@ struct MusicQueueListing {
     /// The small label over the first staged song.
     static let autoplayKicker = "AUTOPLAY"
 
-    /// `autoplayIsOn` is the Autoplay setting; it only matters to a tapped song still waiting for its first radio.
+    /// `autoplayIsOn` is the Autoplay setting; it only matters to a tapped song that was never given a radio.
     init(queue: MusicQueue, listsNextLap: Bool = false, listsAutoplay: Bool = false, autoplayIsOn: Bool = true) {
         current = queue.current
         var upcoming = Array(queue.upcoming)
@@ -53,8 +54,10 @@ struct MusicQueueListing {
         }
         self.upcoming = upcoming
         self.autoplayStart = autoplayStart
-        // With Autoplay off a lone song never gets the radio its source would name.
-        sourceLine = queue.awaitsFirstRadioPage && !autoplayIsOn ? nil : Self.sourceLine(for: queue.source, isMix: queue.mixPlaylistId != nil)
+        // With Autoplay off a tapped song never gets the radio its source would name: none was asked for, or the one that
+        // was is parked. A song that came from the radio keeps naming it.
+        let namesNoRadio = queue.awaitsFirstRadioPage && !autoplayIsOn || queue.radioIsParked && !queue.playsRadioSong
+        sourceLine = namesNoRadio ? nil : Self.sourceLine(for: queue.source, isMix: queue.mixPlaylistId != nil)
     }
 
     /// Whether the row at `shownIndex` of a filtered list is the first shown row from the staged radio, so the

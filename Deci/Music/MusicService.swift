@@ -58,14 +58,14 @@ final class MusicService {
     let pinnedItems: MusicPinnedItems
     /// Next is on while a track follows. At the last track it stays on when something can still follow: Loop playlist
     /// wraps to the first track, a page waits for its next page or the radio that is loading, and Autoplay (with Loop
-    /// playlist off) plays the staged radio or asks for a new one. A mix that can still grow always has more.
+    /// playlist off) plays the staged radio or asks for a new one. A mix that can still grow always has more. With Autoplay
+    /// off a radio queue has only the songs the listener queued: its radio is parked.
     var canGoNext: Bool {
         if queue.hasNext { return true }
         if queue.isEmpty { return false }
         if queue.mixHasMore { return true }
         if loopMode == .playlist { return true }
         if queue.isPage, queue.continuation != nil { return true }
-        if queue.awaitsFirstRadioPage, isFillingQueue { return true }
         return isAutoplayOn && (isFillingQueue || queue.continuation != nil || !queue.autoplay.isEmpty || queue.refillSeed != nil)
     }
     /// A queue page or a radio is loading, or about to be asked for again: Up next shows that more is on its way.
@@ -796,13 +796,19 @@ final class MusicService {
         setLoopMode(loopMode.next)
     }
 
-    /// Autoplay on or off; the queue is topped up under the new setting at once. Turning it off while a first radio is
-    /// in flight keeps that radio once it lands, but a radio waiting on a retry is dropped.
+    /// Autoplay on or off; the queue is topped up under the new setting at once. Turning it off on a radio queue (a
+    /// tapped song's, or what a page handed over to; not a mix) parks the radio songs the listener has not reached and the
+    /// radio's next page: Up next no longer lists them, so the current song plays and stops, after the songs added with
+    /// Play next or Add to queue, and no page is asked for. A radio still in flight lands in the parking place, and a
+    /// radio waiting on a retry is dropped. Turning it on again brings the same songs back behind the queued ones, and
+    /// the top-up goes on from there. A queue that ended while Autoplay was off is not started again.
     func setAutoplay(_ on: Bool) {
         guard on != isAutoplayOn else { return }
         isAutoplayOn = on
         savePlaybackPreferences()
+        if on { queue.restoreRadio(using: &shuffleGenerator) } else { queue.parkRadio() }
         topUpQueueAfterModeChange()
+        noteQueueFilling()
     }
 
     private func savePlaybackPreferences() {
@@ -982,14 +988,19 @@ final class MusicService {
         isAutoplayOn && loopMode != .playlist
     }
 
+    /// Autoplay is off on a radio queue: what the radio answers is parked, so nothing waits for it and Up next shows no
+    /// loading row for it.
+    private var parksRadio: Bool {
+        !isAutoplayOn && queue.isPlainRadio
+    }
+
     /// Up next lists the next lap after the last track: Loop playlist is on and the queue loads no further page.
     var listsNextLap: Bool {
         // A tapped song waiting for its first radio has no lap yet: Up next shows the loading rows. Without Autoplay no
-        // radio is coming, so a lone song is its own lap. A mix that can still grow has no lap either: it goes on.
+        // radio is coming (it is parked, with its next page), so a lone song is its own lap. A mix that can still grow has
+        // no lap either: it goes on.
         guard loopMode == .playlist, !(queue.awaitsFirstRadioPage && isAutoplayOn), !queue.mixHasMore else { return false }
-        if queue.continuation == nil { return true }
-        // A radio without Autoplay stops at the tracks it has.
-        return !queue.isPage && !isAutoplayOn
+        return queue.continuation == nil
     }
 
     /// The next track of the queue. At the end of a page, with Autoplay, the staged radio joins the queue and its first
@@ -1103,9 +1114,11 @@ final class MusicService {
     }
 
     /// Parks `advance` until the radio's next page lands. False when no page is on its way, so the caller ends as before.
+    /// A radio parked by Autoplay off is never waited for: whatever lands is out of sight.
     /// A top-up that stopped on the empty-page cap gets a fresh attempt: this one starts with an empty count.
     /// A skip that is already parked stays one: the listener asked to move on, whatever happens to the track meanwhile.
     private func awaitRadio(for advance: PendingAdvance) -> Bool {
+        guard !parksRadio else { return false }
         topUpQueue()
         guard radioTask != nil || queueRetryTask != nil else { return false }
         if pendingAdvance != .skipped { pendingAdvance = advance }
@@ -1138,7 +1151,9 @@ final class MusicService {
             // The track is still the finished one unless the listener replayed it meanwhile.
             if player.hasEnded { _ = wrapAround() }
         case .skipped:
-            if !wrapAround() { stopPlayback() }
+            // A radio that Autoplay off parked is not coming, but the song is not cut short: it plays on and stops at its
+            // end, and the radio comes back with Autoplay.
+            if !wrapAround(), !parksRadio { stopPlayback() }
         case .failed:
             endQueue()
         }
@@ -1178,8 +1193,8 @@ final class MusicService {
             startRadio(seed: seed, emptyPages: emptyPages)
             return
         }
-        // Without Autoplay a radio queue stops at the tracks it has, unless a mix still has pages to load; a page still
-        // loads its own later pages.
+        // Without Autoplay a radio queue asks for nothing (its radio and next page are parked, see `setAutoplay`), unless
+        // a mix still has pages to load; a page still loads its own later pages.
         if case .radio = queue.source, !isAutoplayOn, !queue.mixHasMore { return }
         guard queue.needsMore, let source = queue.source, let continuation = queue.continuation else { return }
         cancelQueueRetry()
@@ -1247,8 +1262,9 @@ final class MusicService {
                 if continuation != nil { queue.clearContinuation() }
                 topUpQueue(emptyPages: emptyPages + 1)
             } else {
-                // Anything else (network, 5xx) may pass: the same request is asked for again after a wait.
-                scheduleQueueRetry(emptyPages: emptyPages)
+                // Anything else (network, 5xx) may pass: the same request is asked for again after a wait, unless the
+                // radio is parked: the next top-up under Autoplay on asks for it.
+                if !parksRadio { scheduleQueueRetry(emptyPages: emptyPages) }
             }
             if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
             return
@@ -1264,6 +1280,13 @@ final class MusicService {
             if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
             return
         }
+        if case .radio = source, continuation == nil, mixId == nil, queue.mixPlaylistId != nil, !isAutoplayOn {
+            // The radio a dry mix hands over to was asked for with Autoplay on, and Autoplay went off while it was on its
+            // way. Without Autoplay the mix stays a mix and plays out its own songs, so the answer is dropped and its seed
+            // is not marked asked: Autoplay on asks for it again.
+            if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
+            return
+        }
         let added: Int
         if case .radio(let seed) = source, continuation == nil, queue.isPage, mixId == nil {
             // The radio that follows a page waits beside it until the page runs out.
@@ -1275,6 +1298,13 @@ final class MusicService {
             if case .radio(let seed) = source {
                 queue.adoptRadio(seedVideoId: seed)
                 if mixId == nil, continuation == nil { queue.forgetMix() }
+            }
+            if parksRadio {
+                // Autoplay went off while this was on its way: the songs wait out of sight for Autoplay to come back,
+                // and nothing is waiting for them.
+                queue.parkAnswer(page.tracks, continuation: page.continuation)
+                if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
+                return
             }
             added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator)
         }
@@ -1307,16 +1337,17 @@ final class MusicService {
     }
 
     /// Loop or Autoplay changed: the top-up is decided again now. A retry still waiting would hold a parked Next back
-    /// for a refill the new mode may not want, so it is dropped, and a Next with nothing left to wait for goes ahead.
+    /// for a refill the new mode may not want, so it is dropped, and a Next with nothing left to wait for goes ahead. A
+    /// radio still loading for a queue that now parks it is not waited for either: it lands out of sight.
     private func topUpQueueAfterModeChange() {
         cancelQueueRetry()
         topUpQueue()
-        guard radioTask == nil, queueRetryTask == nil, !resumePendingAdvance() else { return }
+        guard radioTask == nil || parksRadio, queueRetryTask == nil, !resumePendingAdvance() else { return }
         settlePendingAdvance()
     }
 
     private func noteQueueFilling() {
-        let filling = radioTask != nil || queueRetryTask != nil
+        let filling = (radioTask != nil && !parksRadio) || queueRetryTask != nil
         if filling != isFillingQueue { isFillingQueue = filling }
     }
 

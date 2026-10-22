@@ -228,6 +228,48 @@ struct MusicQueueListingTests {
         #expect(MusicQueueListing(queue: queue, autoplayIsOn: true).sourceLine == "From radio")
     }
 
+    @Test("a radio parked behind the tapped song names no source; a playing song from the radio keeps it")
+    func parkedRadioNamesItsSourceByTheSong() {
+        var queue = MusicQueue()
+        queue.start(with: MusicSamples.track("a"))
+        queue.adoptRadio(seedVideoId: "a")
+        queue.append(MusicSamples.tracks("r1", "r2", "r3"), continuation: nil)
+        var played = queue
+        played.advance()
+
+        queue.parkRadio()
+        let tapped = MusicQueueListing(queue: queue, autoplayIsOn: false)
+        #expect(tapped.sourceLine == nil)
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: tapped.sourceLine) == "NOW PLAYING")
+
+        // The song that plays came from the radio, so the radio stays its source even though the rest is parked.
+        played.parkRadio()
+        let fromRadio = MusicQueueListing(queue: played, autoplayIsOn: false)
+        #expect(fromRadio.sourceLine == "From radio")
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: fromRadio.sourceLine) == "NOW PLAYING \u{00B7} FROM RADIO")
+
+        // Autoplay on again: the radio is back and the tapped song is from it.
+        queue.restoreRadio()
+        #expect(MusicQueueListing(queue: queue, autoplayIsOn: true).sourceLine == "From radio")
+    }
+
+    @Test("a parked radio is not listed in Up next, but the songs the listener queued are")
+    func parkedRadioIsNotListed() {
+        var queue = MusicQueue()
+        queue.start(with: MusicSamples.track("a"))
+        queue.adoptRadio(seedVideoId: "a")
+        queue.append(MusicSamples.tracks("r1", "r2", "r3"), continuation: "c1")
+        queue.playNext(MusicSamples.track("x"))
+        #expect(ids(MusicQueueListing(queue: queue).upcoming) == ["x", "r1", "r2", "r3"])
+
+        queue.parkRadio()
+        let listing = MusicQueueListing(queue: queue, autoplayIsOn: false)
+
+        #expect(ids(listing.upcoming) == ["x"])
+        #expect(listing.queuedCount == 1)
+        #expect(listing.autoplayStart == nil)
+    }
+
     @Test("a page queue names its source with Autoplay off too")
     func pageSourceWithoutAutoplay() {
         var queue = MusicQueue()
