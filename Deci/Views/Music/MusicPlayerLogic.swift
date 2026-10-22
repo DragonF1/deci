@@ -21,25 +21,51 @@ nonisolated enum MusicOutputLabel {
 
 /// What the Up next screen lists: the song in the player, every song that will play after it in play order, and where
 /// the queue came from. After the queue's own songs come the next lap under Loop playlist (the songs before the current
-/// one, from the start of the play order) or, with Autoplay, the radio staged to follow a page.
+/// one, from the start of the play order) or, with Autoplay, the radio staged to follow a page. The screen marks where
+/// that radio starts, so the listing says which row it opens on. A tapped song that no radio will follow, because
+/// Autoplay is off, names no source.
 @MainActor
 struct MusicQueueListing {
     let current: MusicTrack?
     let upcoming: [MusicTrack]
     let sourceLine: String?
+    /// The index in `upcoming` where the staged radio's songs begin; nil when none are listed.
+    let autoplayStart: Int?
 
-    init(queue: MusicQueue, listsNextLap: Bool = false, listsAutoplay: Bool = false) {
+    /// How many of the listed songs are the queue's own: all of them unless a staged radio follows.
+    var queuedCount: Int { autoplayStart ?? upcoming.count }
+
+    /// The small label over the first staged song.
+    static let autoplayKicker = "AUTOPLAY"
+
+    /// `autoplayIsOn` is the Autoplay setting; it only matters to a tapped song still waiting for its first radio.
+    init(queue: MusicQueue, listsNextLap: Bool = false, listsAutoplay: Bool = false, autoplayIsOn: Bool = true) {
         current = queue.current
         var upcoming = Array(queue.upcoming)
+        var autoplayStart: Int?
         if listsNextLap, let currentIndex = queue.currentIndex {
             upcoming += queue.tracks[..<currentIndex]
             // A queue of one song loops that song.
             if upcoming.isEmpty, let current = queue.current { upcoming = [current] }
         } else if listsAutoplay, queue.isPage {
+            if !queue.autoplay.isEmpty { autoplayStart = upcoming.count }
             upcoming += queue.autoplay
         }
         self.upcoming = upcoming
-        sourceLine = Self.sourceLine(for: queue.source)
+        self.autoplayStart = autoplayStart
+        // With Autoplay off a lone song never gets the radio its source would name.
+        sourceLine = queue.awaitsFirstRadioPage && !autoplayIsOn ? nil : Self.sourceLine(for: queue.source)
+    }
+
+    /// Whether the row at `shownIndex` of a filtered list is the first shown row from the staged radio, so the
+    /// "AUTOPLAY" label goes above it. `matches` are the list indices that pass the filter, in order, and `shownIndex`
+    /// counts within them; an unfiltered list passes every index. With no staged songs, or no shown row from them,
+    /// no row opens the radio.
+    static func opensAutoplay(shownIndex: Int, matches: [Int], autoplayStart: Int?) -> Bool {
+        guard let autoplayStart, matches.indices.contains(shownIndex), matches[shownIndex] >= autoplayStart else {
+            return false
+        }
+        return shownIndex == 0 || matches[shownIndex - 1] < autoplayStart
     }
 
     /// The small label over the song in the player: "NOW PLAYING · FROM PLAYLIST", or just "NOW PLAYING" while the

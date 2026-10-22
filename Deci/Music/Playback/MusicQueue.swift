@@ -74,7 +74,7 @@ struct MusicQueue: Equatable {
         return upcomingCount <= Self.refillThreshold
     }
 
-    /// The radio started with the queue has not answered yet.
+    /// No radio has answered for this tapped-song queue yet; with Autoplay off none is asked for.
     var awaitsFirstRadioPage: Bool {
         guard case .radio = source else { return false }
         return askedSeeds.isEmpty

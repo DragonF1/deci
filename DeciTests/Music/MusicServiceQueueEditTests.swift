@@ -53,10 +53,14 @@ private struct QueueEditHarness {
         engine.emit(.playingChanged(true))
     }
 
-    /// Plays the first of `ids` with a radio of the rest behind it.
+    /// Plays the first of `ids` with a radio of the rest behind it. A tapped song gets a radio only with Autoplay on,
+    /// so a harness that starts with it off turns it on for the tap and puts it back at once, before the radio lands.
     func startRadio(_ ids: [String]) async {
         await backend.setRadio(seed: ids[0], tracks: ids.map { song($0) })
+        let putBack = !service.isAutoplayOn
+        if putBack { service.setAutoplay(true) }
         service.play(song(ids[0]))
+        if putBack { service.setAutoplay(false) }
         await settle()
         engine.emit(.playingChanged(true))
     }
@@ -68,7 +72,12 @@ private struct QueueEditHarness {
     }
 
     var listing: MusicQueueListing {
-        MusicQueueListing(queue: service.queue, listsNextLap: service.listsNextLap, listsAutoplay: service.playsAutoplay)
+        MusicQueueListing(
+            queue: service.queue,
+            listsNextLap: service.listsNextLap,
+            listsAutoplay: service.playsAutoplay,
+            autoplayIsOn: service.isAutoplayOn
+        )
     }
 
     var queuedIDs: [String] { service.queue.tracks.map(\.videoId) }

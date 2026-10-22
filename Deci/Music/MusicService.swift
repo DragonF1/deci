@@ -667,7 +667,7 @@ final class MusicService {
 
     // MARK: - Playback
 
-    /// Plays a tapped track and starts a radio queue behind it.
+    /// Plays a tapped track. With Autoplay, a radio queue starts behind it; without, the song plays alone and stops.
     func play(_ track: MusicTrack) {
         noteActivity()
         queue.start(with: track)
@@ -676,7 +676,12 @@ final class MusicService {
         direction = .forward
         failureStreak = 0
         queueRetryAttempts = 0
-        startRadio(seed: track.videoId)
+        if isAutoplayOn {
+            startRadio(seed: track.videoId)
+        } else {
+            // A radio still loading for the last queue must not land in this one.
+            cancelRadio()
+        }
         begin(track)
     }
 
@@ -707,8 +712,8 @@ final class MusicService {
 
     // MARK: - Queue edits
 
-    /// Play next: the song plays right after the current one. With nothing queued it just starts the song, with a
-    /// radio behind it, like a tap on a lone song.
+    /// Play next: the song plays right after the current one. With nothing queued it just starts the song, like a tap
+    /// on a lone song: with Autoplay, a radio behind it.
     func playNext(_ track: MusicTrack) {
         guard !queue.isEmpty else { return play(track) }
         guard queue.playNext(track) else { return }
@@ -718,7 +723,7 @@ final class MusicService {
     }
 
     /// Add to queue: the song goes after the queue's own songs and before the radio that follows. With nothing queued it
-    /// just starts the song.
+    /// just starts the song, like a tap on a lone song: with Autoplay, a radio behind it.
     func addToQueue(_ track: MusicTrack) {
         guard !queue.isEmpty else { return play(track) }
         guard queue.addToQueue(track) else { return }
@@ -781,6 +786,8 @@ final class MusicService {
         setLoopMode(loopMode.next)
     }
 
+    /// Autoplay on or off; the queue is topped up under the new setting at once. Turning it off while a first radio is
+    /// in flight keeps that radio once it lands, but a radio waiting on a retry is dropped.
     func setAutoplay(_ on: Bool) {
         guard on != isAutoplayOn else { return }
         isAutoplayOn = on
@@ -967,8 +974,9 @@ final class MusicService {
 
     /// Up next lists the next lap after the last track: Loop playlist is on and the queue loads no further page.
     var listsNextLap: Bool {
-        // A tapped song waiting for its first radio has no lap yet: Up next shows the loading rows.
-        guard loopMode == .playlist, !queue.awaitsFirstRadioPage else { return false }
+        // A tapped song waiting for its first radio has no lap yet: Up next shows the loading rows. Without Autoplay no
+        // radio is coming, so a lone song is its own lap.
+        guard loopMode == .playlist, !(queue.awaitsFirstRadioPage && isAutoplayOn) else { return false }
         if queue.continuation == nil { return true }
         // A radio without Autoplay stops at the tracks it has.
         return !queue.isPage && !isAutoplayOn
@@ -1137,11 +1145,11 @@ final class MusicService {
     /// that added nothing after de-duplication.
     private func topUpQueue(emptyPages: Int = 0) {
         guard radioTask == nil, emptyPages < Self.maxEmptyPages else { return }
-        // A queue running out with nothing left to page asks for a radio: the first radio of a tapped song always,
-        // then with Autoplay (and Loop playlist off) the radio of the last track. A page stages it while its last
-        // tracks play, so it shows in Up next and the hand-over is gapless; a radio that has run out carries on from
-        // a new seed. A radio that could not be reached is asked for again by the next top-up.
-        if let seed = queue.refillSeed, queue.awaitsFirstRadioPage || playsAutoplay {
+        // A queue running out with nothing left to page asks for a radio: the first radio of a tapped song with
+        // Autoplay (Loop playlist or not), then with Autoplay and Loop playlist off the radio of the last track. A page
+        // stages it while its last tracks play, so it shows in Up next and the hand-over is gapless; a radio that has
+        // run out carries on from a new seed. A radio that could not be reached is asked for again by the next top-up.
+        if let seed = queue.refillSeed, (queue.awaitsFirstRadioPage && isAutoplayOn) || playsAutoplay {
             startRadio(seed: seed, emptyPages: emptyPages)
             return
         }

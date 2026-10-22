@@ -102,11 +102,139 @@ struct MusicQueueListingTests {
         #expect(ids(MusicQueueListing(queue: queue, listsNextLap: true, listsAutoplay: true).upcoming) == ["c", "a"])
     }
 
+    /// A page of a, b, c playing `playing`, with a radio of r1 and r2 staged behind it.
+    private func stagedPage(playing: Int) -> MusicQueue {
+        var queue = MusicQueue()
+        let tracks = ["a", "b", "c"].map { MusicSamples.track($0) }
+        queue.start(page: tracks, playing: tracks[playing], browseId: "VLPLsample", continuation: nil)
+        queue.stageAutoplay(MusicSamples.tracks("r1", "r2"), continuation: nil, seed: "c")
+        return queue
+    }
+
+    @Test("the staged radio starts after the page's own songs, wherever the page is played from")
+    func autoplayStartIsTheOwnSongCount() {
+        for (playing, own) in [(0, 2), (1, 1), (2, 0)] {
+            let listing = MusicQueueListing(queue: stagedPage(playing: playing), listsAutoplay: true)
+            #expect(listing.autoplayStart == own, "playing row \(playing)")
+            #expect(Array(ids(listing.upcoming).dropFirst(own)) == ["r1", "r2"], "playing row \(playing)")
+        }
+    }
+
+    @Test("without a staged radio on show there is no Autoplay start: Autoplay off, a radio queue, the next lap, nothing staged")
+    func autoplayStartIsNilWithoutAStagedRadio() {
+        let page = stagedPage(playing: 1)
+        #expect(MusicQueueListing(queue: page).autoplayStart == nil)
+        #expect(MusicQueueListing(queue: page, listsNextLap: true, listsAutoplay: true).autoplayStart == nil)
+
+        var radio = MusicQueue()
+        radio.start(with: MusicSamples.track("a"))
+        radio.append(MusicSamples.tracks("b", "c"), continuation: nil)
+        #expect(MusicQueueListing(queue: radio, listsAutoplay: true).autoplayStart == nil)
+
+        var bare = MusicQueue()
+        let tracks = ["a", "b", "c"].map { MusicSamples.track($0) }
+        bare.start(page: tracks, playing: tracks[1], browseId: "VLPLsample", continuation: nil)
+        #expect(MusicQueueListing(queue: bare, listsAutoplay: true).autoplayStart == nil)
+        #expect(MusicQueueListing(queue: MusicQueue(), listsAutoplay: true).autoplayStart == nil)
+    }
+
+    @Test("the staged radio goes once the queue takes it, and the listing counts the queue's own songs only")
+    func queuedCountLeavesOutTheRadio() {
+        var queue = stagedPage(playing: 1)
+        let staged = MusicQueueListing(queue: queue, listsAutoplay: true)
+        #expect(staged.upcoming.count == 3)
+        #expect(staged.queuedCount == 1)
+
+        queue.takeAutoplay()
+        let taken = MusicQueueListing(queue: queue, listsAutoplay: true)
+        #expect(ids(taken.upcoming) == ["c", "r1", "r2"])
+        #expect(taken.autoplayStart == nil)
+        #expect(taken.queuedCount == 3)
+
+        let hidden = MusicQueueListing(queue: stagedPage(playing: 1))
+        #expect(hidden.queuedCount == 1)
+        #expect(MusicQueueListing(queue: MusicQueue()).queuedCount == 0)
+    }
+
+    @Test("the label over the staged songs reads AUTOPLAY")
+    func autoplayKicker() {
+        #expect(MusicQueueListing.autoplayKicker == "AUTOPLAY")
+    }
+
+    @Test("unfiltered, the label opens the row at the Autoplay start and no other")
+    func opensAutoplayUnfiltered() {
+        let matches = Array(0..<5)
+        let opening = (0..<5).filter { MusicQueueListing.opensAutoplay(shownIndex: $0, matches: matches, autoplayStart: 2) }
+        #expect(opening == [2])
+        let first = (0..<5).filter { MusicQueueListing.opensAutoplay(shownIndex: $0, matches: matches, autoplayStart: 0) }
+        #expect(first == [0])
+    }
+
+    @Test("with no Autoplay start no row opens the label, and a row that is not shown cannot")
+    func opensAutoplayNeedsAStartAndARow() {
+        let matches = Array(0..<3)
+        #expect((0..<3).allSatisfy { !MusicQueueListing.opensAutoplay(shownIndex: $0, matches: matches, autoplayStart: nil) })
+        #expect(!MusicQueueListing.opensAutoplay(shownIndex: 3, matches: matches, autoplayStart: 0))
+        #expect(!MusicQueueListing.opensAutoplay(shownIndex: -1, matches: matches, autoplayStart: 0))
+        #expect(!MusicQueueListing.opensAutoplay(shownIndex: 0, matches: [], autoplayStart: 0))
+    }
+
+    @Test("filtered, the label opens the first shown row from the radio, even when none of the queue's own songs match")
+    func opensAutoplayFiltered() {
+        // Five songs, the radio starting at 3. Rows 1, 3 and 4 match.
+        let matches = [1, 3, 4]
+        let opening = matches.indices.filter { MusicQueueListing.opensAutoplay(shownIndex: $0, matches: matches, autoplayStart: 3) }
+        #expect(opening == [1])
+        // Only radio rows match: the first of them opens the label at the top of the list.
+        let radioOnly = [3, 4]
+        let top = radioOnly.indices.filter { MusicQueueListing.opensAutoplay(shownIndex: $0, matches: radioOnly, autoplayStart: 3) }
+        #expect(top == [0])
+    }
+
+    @Test("filtered, a list where no staged song matches never opens the label")
+    func opensAutoplayFilteredWithoutRadioMatches() {
+        let matches = [0, 2]
+        #expect(matches.indices.allSatisfy { !MusicQueueListing.opensAutoplay(shownIndex: $0, matches: matches, autoplayStart: 3) })
+    }
+
     @Test("a radio queue says it comes from the radio")
     func radioSource() {
         var queue = MusicQueue()
         queue.start(with: MusicSamples.track("a"))
         #expect(MusicQueueListing(queue: queue).sourceLine == "From radio")
+    }
+
+    @Test("a tapped song with Autoplay off names no source, because no radio is coming")
+    func loneSongWithoutAutoplayNamesNoSource() {
+        var queue = MusicQueue()
+        queue.start(with: MusicSamples.track("a"))
+        let off = MusicQueueListing(queue: queue, autoplayIsOn: false)
+
+        #expect(off.sourceLine == nil)
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: off.sourceLine) == "NOW PLAYING")
+        // With Autoplay on the radio is on its way, so the line already says so.
+        let on = MusicQueueListing(queue: queue, autoplayIsOn: true)
+        #expect(on.sourceLine == "From radio")
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: on.sourceLine) == "NOW PLAYING \u{00B7} FROM RADIO")
+    }
+
+    @Test("once a radio has answered the queue says it comes from the radio, whatever Autoplay is set to")
+    func answeredRadioNamesItsSource() {
+        var queue = MusicQueue()
+        queue.start(with: MusicSamples.track("a"))
+        queue.adoptRadio(seedVideoId: "a")
+
+        #expect(MusicQueueListing(queue: queue, autoplayIsOn: false).sourceLine == "From radio")
+        #expect(MusicQueueListing(queue: queue, autoplayIsOn: true).sourceLine == "From radio")
+    }
+
+    @Test("a page queue names its source with Autoplay off too")
+    func pageSourceWithoutAutoplay() {
+        var queue = MusicQueue()
+        let track = MusicSamples.track("a")
+        queue.start(page: [track], playing: track, browseId: "VLPLsample", continuation: nil)
+
+        #expect(MusicQueueListing(queue: queue, autoplayIsOn: false).sourceLine == "From playlist")
     }
 
     @Test("a page queue names what kind of page it came from when the id says so")

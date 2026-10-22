@@ -89,11 +89,16 @@ private struct Harness {
         }
     }
 
-    /// Plays `track` with its radio and waits for both. The engine reports the track as playing.
+    /// Plays `track` with its radio and waits for both. The engine reports the track as playing. A tapped song gets a
+    /// radio only with Autoplay on, so a test that turned it off still gets its radio: Autoplay is on for the tap and
+    /// put back at once, before the radio lands, so the queue then follows the setting the test chose.
     func startQueue(_ ids: [String], continuation: String? = nil) async {
         let tracks = ids.map { MusicSamples.track($0, title: "Song \($0)") }
         await backend.setRadio(seed: ids[0], tracks: tracks, continuation: continuation)
+        let putBack = !service.isAutoplayOn
+        if putBack { service.setAutoplay(true) }
         service.play(tracks[0])
+        if putBack { service.setAutoplay(false) }
         await settle()
         engine.emit(.playingChanged(true))
     }
@@ -2232,8 +2237,32 @@ struct MusicServiceQueueTests {
         #expect(h.service.canGoNext == false)
     }
 
-    @Test("with Autoplay off a tapped song still gets its radio, and no other radio is asked for when it runs out")
+    @Test("with Autoplay off a tapped song plays alone and stops: no radio is asked for, and Next is off")
     func firstRadioWithAutoplayOff() async {
+        let h = Harness()
+        h.service.setAutoplay(false)
+        // A radio is on offer, so a request for it would show.
+        await h.backend.setRadio(seed: "a", tracks: MusicSamples.tracks("a", "b", "c"))
+        h.service.play(MusicSamples.track("a"))
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+
+        #expect(h.queuedIDs == ["a"])
+        #expect(h.service.canGoNext == false)
+        #expect(h.service.isFillingQueue == false)
+        #expect(await h.backend.radioSeeds.isEmpty)
+
+        h.engine.emit(.ended)
+        await h.settle()
+
+        #expect(h.player.hasEnded)
+        #expect(h.loadedIDs == ["a"])
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(await h.backend.moreRadioCalls.isEmpty)
+    }
+
+    @Test("a first radio asked for while Autoplay was on stays when Autoplay goes off, and no other radio is asked for when it runs out")
+    func radioKeptWhenAutoplayGoesOff() async {
         let h = Harness()
         h.service.setAutoplay(false)
         await h.startQueue(["a", "b", "c"])
@@ -2770,15 +2799,22 @@ struct MusicServicePageQueueTests {
     func radioAfterPage() async {
         let h = Harness()
         h.service.setAutoplay(false)
-        await h.backend.setRadio(seed: "z", tracks: MusicSamples.tracks("z", "r1"))
+        // Long enough that the queue does not ask for another radio the moment this one has landed.
+        await h.backend.setRadio(seed: "z", tracks: MusicSamples.tracks("z", "r1", "r2", "r3", "r4"))
         await startPage(h, ["a", "b", "c"], continuation: "t1")
 
+        // A tapped song gets its radio only with Autoplay on. Turning it on also starts the page's own radio, of "c";
+        // the tap right after it drops that with the rest of the page, so its answer never lands. The request may still
+        // go out, since nothing ran between the two calls to stop it.
+        h.service.setAutoplay(true)
         h.service.play(MusicSamples.track("z"))
         await h.settle()
 
-        #expect(h.queuedIDs == ["z", "r1"])
+        #expect(h.queuedIDs == ["z", "r1", "r2", "r3", "r4"])
         #expect(h.service.queue.source == .radio(seedVideoId: "z"))
-        #expect(await h.backend.radioSeeds == ["z"])
+        #expect(h.service.queue.autoplay.isEmpty)
+        #expect(await h.backend.radioSeeds.filter { $0 == "z" } == ["z"])
+        #expect(await h.backend.radioSeeds.allSatisfy { $0 == "z" || $0 == "c" })
     }
 
     @Test("tapping another row of the same page restarts the queue on that row")

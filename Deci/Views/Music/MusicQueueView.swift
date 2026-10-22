@@ -3,8 +3,9 @@ import SwiftUI
 
 /// The body of the Up next panel, under its header (`MusicQueueHeader`): a line that says what Shuffle, Loop and Autoplay
 /// are set to, the song in the player, and under "NEXT IN QUEUE" the songs that follow, in a list that scrolls. A tap on
-/// a song plays it. The header's field filters the songs that follow, live: the song in the player stays put, the label
-/// counts the matches, the words are tinted and the end of the list says how to get the whole queue back.
+/// a song plays it. The radio staged behind a page, when Autoplay is on, starts under an "AUTOPLAY" label of its own.
+/// The header's field filters the songs that follow, live: the song in the player stays put, the label counts the
+/// matches, the words are tinted and the end of the list says how to get the whole queue back.
 struct MusicQueueView: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
@@ -13,7 +14,8 @@ struct MusicQueueView: View {
         let listing = MusicQueueListing(
             queue: service.queue,
             listsNextLap: service.listsNextLap,
-            listsAutoplay: service.playsAutoplay
+            listsAutoplay: service.playsAutoplay,
+            autoplayIsOn: service.isAutoplayOn
         )
         let terms = navigation.queueFilterTerms
         let matches = terms.isEmpty
@@ -30,12 +32,14 @@ struct MusicQueueView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
+                // The count leaves out the radio staged behind a page: its songs sit under their own "AUTOPLAY" label.
+                // A filtered list counts every song it searched, the radio's too.
                 MusicQueueKicker(
                     text: terms.isEmpty
-                        ? MusicQueueListing.nextKicker(count: listing.upcoming.count)
+                        ? MusicQueueListing.nextKicker(count: listing.queuedCount)
                         : MusicQueueListing.nextKicker(matched: matches.count, total: listing.upcoming.count)
                 )
-                upcoming(listing.upcoming, matches: matches, terms: terms)
+                upcoming(listing.upcoming, matches: matches, terms: terms, autoplayStart: listing.autoplayStart)
             }
         }
         .padding(.top, 10)
@@ -44,7 +48,7 @@ struct MusicQueueView: View {
     // MARK: - The list
 
     @ViewBuilder
-    private func upcoming(_ tracks: [MusicTrack], matches: [Int], terms: [String]) -> some View {
+    private func upcoming(_ tracks: [MusicTrack], matches: [Int], terms: [String], autoplayStart: Int?) -> some View {
         if tracks.isEmpty, service.isFillingQueue {
             // The radio or the rest of the playlist is on its way.
             VStack(spacing: 0) {
@@ -64,10 +68,7 @@ struct MusicQueueView: View {
                         noMatches
                     }
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, track in
-                        MusicSongRow(track: track, isCurrent: false, isPlaying: false, layout: .playlist) {
-                            service.jump(to: track)
-                        }
-                        .musicRowHairline(index > 0)
+                        upcomingRow(track, shownIndex: index, matches: matches, autoplayStart: autoplayStart)
                     }
                     if !terms.isEmpty {
                         clearHint(total: tracks.count)
@@ -80,6 +81,31 @@ struct MusicQueueView: View {
             }
             .scrollIndicators(.never)
             .mask(bottomFade)
+        }
+    }
+
+    /// The room above and below the "AUTOPLAY" label. Above the first shown row it has none, because the list's own
+    /// spacing under the "NEXT IN QUEUE" label already applies.
+    private static let autoplayLabelTopGap: CGFloat = 10
+    private static let autoplayLabelBottomGap: CGFloat = 4
+
+    /// A song of the list. The first shown song from the staged radio carries the "AUTOPLAY" label, and the label takes
+    /// the place of the hairline above it.
+    @ViewBuilder
+    private func upcomingRow(_ track: MusicTrack, shownIndex: Int, matches: [Int], autoplayStart: Int?) -> some View {
+        let opensAutoplay = MusicQueueListing.opensAutoplay(
+            shownIndex: shownIndex, matches: matches, autoplayStart: autoplayStart
+        )
+        VStack(alignment: .leading, spacing: 0) {
+            if opensAutoplay {
+                MusicQueueKicker(text: MusicQueueListing.autoplayKicker)
+                    .padding(.top, shownIndex == 0 ? 0 : Self.autoplayLabelTopGap)
+                    .padding(.bottom, Self.autoplayLabelBottomGap)
+            }
+            MusicSongRow(track: track, isCurrent: false, isPlaying: false, layout: .playlist) {
+                service.jump(to: track)
+            }
+            .musicRowHairline(shownIndex > 0 && !opensAutoplay)
         }
     }
 
