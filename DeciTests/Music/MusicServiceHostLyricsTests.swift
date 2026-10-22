@@ -10,10 +10,13 @@ import Testing
 @Suite("MusicServiceHost popup visibility and lyrics")
 struct MusicServiceHostLyricsTests {
 
-    private func makeHost(provider: FakeLyricsProvider = FakeLyricsProvider()) -> MusicServiceHost {
+    private func makeHost(
+        provider: FakeLyricsProvider = FakeLyricsProvider(),
+        backend: FakeMusicBackend = FakeMusicBackend()
+    ) -> MusicServiceHost {
         MusicServiceHost(makeService: {
             MusicService(
-                backend: FakeMusicBackend(),
+                backend: backend,
                 player: MusicPlayer(engine: FakePlaybackEngine()),
                 presentSignIn: { _ in },
                 nowPlaying: NowPlayingController(surface: FakeNowPlayingSurface(), fetchArtwork: { _ in nil }),
@@ -101,5 +104,50 @@ struct MusicServiceHostLyricsTests {
         await gate.open()
         for _ in 0..<20 { await Task.yield() }
         #expect(lyrics.state == .idle)
+    }
+
+    // MARK: - Related songs
+
+    @Test("The Related store is told the popup's visibility too, hidden then shown")
+    func forwardsToTheRelatedStore() throws {
+        let host = makeHost()
+        host.loadIfNeeded()
+        let related = try #require(host.service).related
+        #expect(related.isPopupVisible)
+
+        host.isPopupVisible = false
+        #expect(related.isPopupVisible == false)
+        host.isPopupVisible = true
+        #expect(related.isPopupVisible)
+    }
+
+    @Test("A flag set before the service exists is replayed to the new Related store")
+    func replayedToRelatedOnCreate() throws {
+        let host = makeHost()
+        host.isPopupVisible = false
+        host.loadIfNeeded()
+        #expect(try #require(host.service).related.isPopupVisible == false)
+    }
+
+    @Test("A hidden popup keeps an open Related panel from asking, and showing it asks once")
+    func hiddenPopupGatesRelated() async throws {
+        let backend = FakeMusicBackend()
+        await backend.setRelated(videoId: "a", [MusicSamples.track("ra")])
+        await backend.setRelated(videoId: "b", [MusicSamples.track("rb")])
+        let host = makeHost(backend: backend)
+        host.loadIfNeeded()
+        let related = try #require(host.service).related
+        related.follow(MusicSamples.track("a"))
+        #expect(await eventually { related.state != .loading })
+
+        host.isPopupVisible = false
+        related.nowPlayingChanged(MusicSamples.track("b"))
+        for _ in 0..<20 { await Task.yield() }
+        try? await Task.sleep(for: .milliseconds(400))
+        #expect(await backend.relatedCalls == ["a"])
+
+        host.isPopupVisible = true
+        #expect(await eventually { related.state != .loading })
+        #expect(await backend.relatedCalls == ["a", "b"])
     }
 }

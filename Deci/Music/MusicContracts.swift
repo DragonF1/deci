@@ -344,6 +344,10 @@ protocol MusicBackend: Sendable {
     /// Sets the like state of one song: `.like` and `.dislike` rate it, `.indifferent` takes the rating back. A 2xx answer
     /// is success. Throws `.signedOut` when signed out or the session is gone, `.http` for any other failed status.
     func rate(videoId: String, status: MusicLikeStatus) async throws
+    /// The songs YouTube Music suggests after one song ("You might also like"), in its order. Empty when the song has
+    /// no related tab or the answer has no song shelf. Throws `.signedOut` when signed out or the session is gone,
+    /// `.http` for any other failed status, `.parse` for an answer that is not what was expected.
+    func related(videoId: String) async throws -> [MusicTrack]
 }
 
 /// Client playback nonce: 16 chars from A-Za-z0-9-_, one per playback session.

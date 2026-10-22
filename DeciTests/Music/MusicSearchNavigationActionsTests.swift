@@ -343,25 +343,28 @@ struct MusicSearchNavigationActionsTests {
         let h = ActionNavHarness()
         var track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture")
         track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
-        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist])
+        #expect(
+            h.nav.actions(for: track, in: .none)
+                == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .related]
+        )
     }
 
     @Test("Pin to Home adds the song to Home, and the menu then offers Unpin from Home")
     func pinHomeAndUnpin() {
         let h = ActionNavHarness()
         let track = MusicSamples.track("v1")
-        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin)])
+        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
 
         h.nav.perform(.pinHome(.canPin), for: track, in: .none)
 
         #expect(h.service.pinnedItems.items.map(\.id) == ["v1"])
         #expect(h.service.pinnedItems.items.first?.kind == .song)
-        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned)])
+        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned), .related])
 
         h.nav.perform(.pinHome(.pinned), for: track, in: .none)
 
         #expect(h.service.pinnedItems.isEmpty)
-        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin)])
+        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
     }
 
     @Test("Pin to Home never reaches the account: nothing is sent to YouTube")
@@ -384,8 +387,8 @@ struct MusicSearchNavigationActionsTests {
         }
         #expect(h.service.pinnedItems.isFull)
         let fresh = MusicSamples.track("v1")
-        #expect(h.nav.actions(for: fresh, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.full)])
-        #expect(h.nav.actions(for: pinned, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned)])
+        #expect(h.nav.actions(for: fresh, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.full), .related])
+        #expect(h.nav.actions(for: pinned, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned), .related])
 
         h.nav.perform(.pinHome(.full), for: fresh, in: .none)
         #expect(h.service.pinnedItems.items.count == MusicPinnedItems.limit)
@@ -393,7 +396,7 @@ struct MusicSearchNavigationActionsTests {
 
         h.nav.perform(.pinHome(.pinned), for: pinned, in: .none)
         #expect(!h.service.pinnedItems.isPinned(pinned))
-        #expect(h.nav.actions(for: fresh, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin)])
+        #expect(h.nav.actions(for: fresh, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
     }
 
     // MARK: - Play next, Add to queue, Remove from queue
@@ -452,13 +455,16 @@ struct MusicSearchNavigationActionsTests {
         await h.service.refreshAuth()
         let track = MusicSamples.track("v1")
         #expect(h.nav.actions(for: track, in: .none)
-            == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .like(removing: false), .dislike(removing: false)])
+            == [
+                .playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .like(removing: false), .dislike(removing: false),
+                .related,
+            ])
 
         _ = await h.service.setLike(.like, of: track)
-        #expect(h.nav.actions(for: track, in: .none).suffix(2) == [.like(removing: true), .dislike(removing: false)])
+        #expect(likeEntries(h.nav.actions(for: track, in: .none)) == [.like(removing: true), .dislike(removing: false)])
 
         _ = await h.service.setLike(.dislike, of: track)
-        #expect(h.nav.actions(for: track, in: .none).suffix(2) == [.like(removing: false), .dislike(removing: true)])
+        #expect(likeEntries(h.nav.actions(for: track, in: .none)) == [.like(removing: false), .dislike(removing: true)])
     }
 
     @Test("Signed out, or before the session check has answered, the menu has no Like or Dislike")
@@ -759,12 +765,14 @@ struct MusicSearchNavigationActionsTests {
 
     // MARK: - Collection tiles
 
-    @Test("An album tile's menu is save, the Home pin, go to album and go to artist; a playlist's is save and the pin; an artist's is the pin and go to artist")
+    @Test("An album tile's menu is save, the Home pin, go to album, go to artist and related songs; a playlist's is save, the pin and related songs; an artist's is the pin, go to artist and related songs")
     func collectionActionsLists() {
         let h = ActionNavHarness()
-        #expect(h.nav.actions(for: h.albumTile, in: .none) == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist])
-        #expect(h.nav.actions(for: h.playlistTile, in: .none) == [.saveToPlaylist, .pinHome(.canPin)])
-        #expect(h.nav.actions(for: h.artistTile, in: .none) == [.pinHome(.canPin), .goToArtist])
+        #expect(
+            h.nav.actions(for: h.albumTile, in: .none) == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .related]
+        )
+        #expect(h.nav.actions(for: h.playlistTile, in: .none) == [.saveToPlaylist, .pinHome(.canPin), .related])
+        #expect(h.nav.actions(for: h.artistTile, in: .none) == [.pinHome(.canPin), .goToArtist, .related])
     }
 
     @Test("A tile's menu has no queue entries, whether or not a song is playing")

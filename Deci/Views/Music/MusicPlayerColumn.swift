@@ -3,8 +3,9 @@ import SwiftUI
 
 /// The left column of the Music popup: what is playing and everything to control it, always on screen. A stack 142 pt
 /// wide (kicker, cover, title and artist, the spectrum that is also the progress bar, the times, a strip with Like and
-/// Dislike, the transport, the two buttons that open Lyrics and Up next in the right column). Volume and output live in
-/// the Mixer popover. It takes the song's colour (`musicAccent`) for its wash and for everything that is on or played.
+/// Dislike, the transport, the three words that open Lyrics, Related and Up next in the right column). Volume and
+/// output live in the Mixer popover. It takes the song's colour (`musicAccent`) for its wash and for everything that is
+/// on or played.
 ///
 /// It stays whatever the right column shows. `service` and `navigation` are nil before the service exists; the column
 /// then shows its empty layout.
@@ -339,25 +340,39 @@ struct MusicPlayerColumn: View {
 
     // MARK: - Views
 
+    /// Lyrics, Related and Up next as words in one row: Lyrics on the left edge of the column, Up next on the right
+    /// edge, Related between them, with the two spaces taking the same width (`MusicViewButtons`). Each button dims
+    /// and turns off on its own (`MusicViewButtons.isAvailable`), not the row: an open Related panel's button stays
+    /// live when nothing plays.
     private func viewButtons(_ state: MusicPlayerColumnState) -> some View {
         let hasLyrics = service?.lyrics.track != nil
+        let hasSong = track != nil
         let hasQueue = !(service?.queue.isEmpty ?? true)
+        let relatedIsOpen = navigation?.showsRelated ?? false
+        func available(_ kind: MusicViewButtons.Kind) -> Bool {
+            MusicViewButtons.isAvailable(
+                kind, controlsAreEnabled: state.controlsAreEnabled, hasLyrics: hasLyrics, hasSong: hasSong,
+                hasQueue: hasQueue, relatedIsOpen: relatedIsOpen
+            )
+        }
         return HStack(spacing: 0) {
             MusicColumnViewButton(
-                title: "Lyrics", systemImage: "quote.bubble",
-                isActive: navigation?.showsLyrics ?? false, isAvailable: hasLyrics
+                title: MusicViewButtons.Kind.lyrics.title,
+                isActive: navigation?.showsLyrics ?? false, isAvailable: available(.lyrics)
             ) { navigation?.toggleLyrics() }
-            // Up next sits on the right edge of the column, under the end of the transport.
             Spacer(minLength: 0)
             MusicColumnViewButton(
-                title: "Up next", systemImage: "list.bullet.indent",
-                isActive: navigation?.showsQueue ?? false, isAvailable: hasQueue
+                title: MusicViewButtons.Kind.related.title,
+                isActive: relatedIsOpen, isAvailable: available(.related)
+            ) { navigation?.toggleRelated() }
+            Spacer(minLength: 0)
+            MusicColumnViewButton(
+                title: MusicViewButtons.Kind.queue.title,
+                isActive: navigation?.showsQueue ?? false, isAvailable: available(.queue)
             ) { navigation?.toggleQueue() }
         }
         .frame(maxWidth: .infinity)
         .frame(height: 12)
-        .opacity(state.controlsOpacity)
-        .disabled(!state.controlsAreEnabled)
     }
 }
 
@@ -394,11 +409,10 @@ private struct MusicColumnGlyphButton: View {
     }
 }
 
-/// Lyrics or Up next: an icon and a label, in the accent while that view is open on the right. Pressing it then goes
-/// back to browse. With nothing to show (no lyrics for the song, an empty queue) it stays and dims.
+/// Lyrics, Related or Up next: a word in the accent while that view is open on the right. Pressing it then goes back to
+/// browse. With nothing to show (no lyrics for the song, no song, an empty queue) it stays and dims.
 private struct MusicColumnViewButton: View {
     let title: String
-    let systemImage: String
     let isActive: Bool
     let isAvailable: Bool
     let action: () -> Void
@@ -407,17 +421,14 @@ private struct MusicColumnViewButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 11))
-                    .foregroundStyle(isActive ? accent.solid : Color.white.opacity(0.70))
-                Text(title)
-                    .musicText(MusicStyle.Typeface.columnLabel)
-                    .foregroundStyle(isActive ? accent.solid : Color.white.opacity(0.75))
-            }
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-            .padding(.vertical, -6)
+            Text(title)
+                .musicText(MusicStyle.Typeface.columnLabel)
+                .foregroundStyle(isActive ? accent.solid : Color.white.opacity(0.75))
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+                .padding(.vertical, -6)
         }
         .buttonStyle(.plain)
         .opacity(isAvailable ? 1 : 0.30)

@@ -41,6 +41,8 @@ enum MusicTrackAction: Hashable, Sendable {
     case dislike(removing: Bool)
     case goToAlbum
     case goToArtist
+    /// The Related panel for the song, or for the first song of an album, playlist, mix or artist.
+    case related
 
     var title: String {
         switch self {
@@ -54,6 +56,7 @@ enum MusicTrackAction: Hashable, Sendable {
         case .dislike(let removing): removing ? "Remove dislike" : "Dislike"
         case .goToAlbum: "Go to album"
         case .goToArtist: "Go to artist"
+        case .related: "Related songs"
         }
     }
 
@@ -92,7 +95,7 @@ enum MusicTrackAction: Hashable, Sendable {
         case .playNext, .addToQueue: .queue
         case .saveToPlaylist, .pinHome: .library
         case .like, .dislike: .rate
-        case .goToAlbum, .goToArtist: .navigate
+        case .goToAlbum, .goToArtist, .related: .navigate
         case .removeFromPlaylist, .removeFromQueue: .remove
         }
     }
@@ -101,19 +104,20 @@ enum MusicTrackAction: Hashable, Sendable {
 /// Which song actions a row offers. Pure rules, so the row, its context menu and the player column agree and the
 /// rules are tested without a view. An action shows only when it can work.
 enum MusicTrackActions {
-    /// In menu order: play next and add to queue, save, pin or unpin to Home, like and dislike, then go to album and go
-    /// to artist, then remove from playlist and remove from queue last. `home` is where the song stands with the Pinned
-    /// row on Home; nil leaves the entry out. The queue entries show only when the caller offers them (not for the song
-    /// that is playing), and Remove from queue only on an Up next row. Like and Dislike show only when the user `canRate`
-    /// (signed in) and the song has an id to rate; `likeStatus` is what is known of the song, nil while it is unknown, and
-    /// it turns the entry that is on into its Remove.
+    /// In menu order: play next and add to queue, save, pin or unpin to Home, like and dislike, then go to album, go to
+    /// artist and related songs, then remove from playlist and remove from queue last. `home` is where the song stands
+    /// with the Pinned row on Home; nil leaves the entry out. The queue entries show only when the caller offers them
+    /// (not for the song that is playing), and Remove from queue only on an Up next row. Like and Dislike show only
+    /// when the user `canRate` (signed in) and the song has an id to rate; `likeStatus` is what is known of the song,
+    /// nil while it is unknown, and it turns the entry that is on into its Remove. Related songs shows for any song
+    /// that has an id to ask about.
     static func available(
         for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil, offersQueue: Bool = false,
         canRate: Bool = false, likeStatus: MusicLikeStatus? = nil
     ) -> [MusicTrackAction] {
         var actions: [MusicTrackAction] = offersQueue ? [.playNext, .addToQueue, .saveToPlaylist] : [.saveToPlaylist]
         if let home { actions.append(.pinHome(home)) }
-        if canRate, !track.videoId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if canRate, hasId(track) {
             actions.append(.like(removing: likeStatus == .like))
             actions.append(.dislike(removing: likeStatus == .dislike))
         }
@@ -121,6 +125,7 @@ enum MusicTrackActions {
             actions.append(.goToAlbum)
         }
         if artistCollection(for: track, in: context) != nil { actions.append(.goToArtist) }
+        if hasId(track) { actions.append(.related) }
         if canRemove(track, in: context) { actions.append(.removeFromPlaylist) }
         if offersQueue, context.isUpNext { actions.append(.removeFromQueue) }
         return actions
@@ -128,6 +133,7 @@ enum MusicTrackActions {
 
     /// The entries of an album, playlist or artist tile, in the song menu's order and words. An album: save the whole
     /// album, pin, go to the album, go to its artist. A playlist or mix: save and pin. An artist: pin, go to the artist.
+    /// All three end with Related songs, which starts from the first song of the page; a tile with no page id has none.
     /// Save shows only for what has a playlist to add from (`playlistSourceId`). Go to album and Go to artist hide on
     /// the page they would open. `home` is where the tile stands with the Pinned row on Home; nil leaves the entry out.
     static func available(
@@ -138,6 +144,7 @@ enum MusicTrackActions {
         if let home { actions.append(.pinHome(home)) }
         if collection.kind == .album, collection.browseId != context.pageBrowseId { actions.append(.goToAlbum) }
         if artistCollection(for: collection, in: context) != nil { actions.append(.goToArtist) }
+        if !collection.browseId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { actions.append(.related) }
         return actions
     }
 
@@ -154,6 +161,11 @@ enum MusicTrackActions {
             }
         }
         return groups
+    }
+
+    /// The song has an id to rate or to ask for related songs by.
+    private static func hasId(_ track: MusicTrack) -> Bool {
+        !track.videoId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// The artist page a song opens: its first credited artist, unless that page is the one the row is on.

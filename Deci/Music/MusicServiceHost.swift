@@ -23,9 +23,13 @@ final class MusicServiceHost {
     /// view, so the popup's Escape handler can close the card before it dismisses the popup.
     var isAccountCardOpen = false
     /// The Music popup is on screen. It stays mounted while hidden, so `MusicPopupView` reports it here; the lyrics
-    /// panel fetches and animates only while this is true. Remembered for a service that is created later.
+    /// panel fetches and animates only while this is true, and a Related panel that follows the player asks for
+    /// nothing. Remembered for a service that is created later.
     var isPopupVisible = true {
-        didSet { service?.lyrics.setPopupVisible(isPopupVisible) }
+        didSet {
+            service?.lyrics.setPopupVisible(isPopupVisible)
+            service?.related.setPopupVisible(isPopupVisible)
+        }
     }
 
     /// The player column's spectrum: polls the loudness and the position while the popup is on screen and a song plays.
@@ -107,6 +111,7 @@ final class MusicServiceHost {
         let service = makeService()
         service.onNativePlayingChange = { [weak self] playing in self?.onNativePlayingChange?(playing) }
         service.lyrics.setPopupVisible(isPopupVisible)
+        service.related.setPopupVisible(isPopupVisible)
         service.onRatingBurst = { [weak self] kind in self?.burst.play(kind) }
         service.onRatingRemoval = { [weak self] kind in self?.burst.playRemoval(of: kind) }
         service.onRatingBurstCancel = { [weak self] kind in self?.burst.cancel(kind) }

@@ -158,6 +158,9 @@ actor FakeMusicBackend: MusicBackend {
     private var likeStatusGates: [String: MusicTestGate] = [:]
     private var rateErrors: [String: any Error] = [:]
     private var rateGates: [String: MusicTestGate] = [:]
+    private var relatedTracks: [String: [Deci.MusicTrack]] = [:]
+    private var relatedErrors: [String: any Error] = [:]
+    private var relatedGates: [String: MusicTestGate] = [:]
 
     private(set) var radioSeeds: [String] = []
     private(set) var moreRadioCalls: [MoreRadioCall] = []
@@ -176,6 +179,7 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var removeFromPlaylistCalls: [RemoveFromPlaylistCall] = []
     private(set) var likeStatusCalls: [String] = []
     private(set) var rateCalls: [RateCall] = []
+    private(set) var relatedCalls: [String] = []
     private(set) var searchedQueries: [String] = []
     private(set) var searchedArtistQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
@@ -324,6 +328,12 @@ actor FakeMusicBackend: MusicBackend {
     func setLikeStatusGate(videoId: String, _ gate: MusicTestGate?) { likeStatusGates[videoId] = gate }
     func setRateError(videoId: String, _ error: (any Error)?) { rateErrors[videoId] = error }
     func setRateGate(videoId: String, _ gate: MusicTestGate?) { rateGates[videoId] = gate }
+
+    // Related songs, scripted per seed video (an unscripted seed has none: an empty list). An error or a gate holds for
+    // that seed only, after the call was recorded; nil removes it.
+    func setRelated(videoId: String, _ tracks: [Deci.MusicTrack]) { relatedTracks[videoId] = tracks }
+    func setRelatedError(videoId: String, _ error: (any Error)?) { relatedErrors[videoId] = error }
+    func setRelatedGate(videoId: String, _ gate: MusicTestGate?) { relatedGates[videoId] = gate }
 
     // MARK: MusicBackend
 
@@ -486,6 +496,15 @@ actor FakeMusicBackend: MusicBackend {
         if let gate { await gate.wait() }
         if let error { throw error }
         likeStatuses[videoId] = status
+    }
+
+    // Like the browse calls, the songs answered are the ones scripted when the call was made, even if a gate holds it.
+    func related(videoId: String) async throws -> [Deci.MusicTrack] {
+        relatedCalls.append(videoId)
+        let gate = relatedGates[videoId], error = relatedErrors[videoId], tracks = relatedTracks[videoId] ?? []
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return tracks
     }
 
     func search(_ query: String) async throws -> [Deci.MusicTrack] {

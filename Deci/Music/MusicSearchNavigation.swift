@@ -52,7 +52,7 @@ struct MusicSearchAnchor: Equatable {
     let pageId: String?
 }
 
-/// What the Music popup's right column shows (Home, Library and History, search results, Up next, Lyrics, the
+/// What the Music popup's right column shows (Home, Library and History, search results, Up next, Lyrics, Related, the
 /// add-to-playlist picker), and the one way every artist, album name or tile opens its page, and every "..." menu
 /// action runs. It lives here, not in the view, so the rules can be tested. One instance belongs to each
 /// `MusicService` (`MusicServiceHost` makes it): the Music popup unmounts the player's view when the icon is hidden and
@@ -124,13 +124,20 @@ final class MusicSearchNavigation {
         return service.isSearching || hasResults || submittedQuery == trimmedQuery
     }
 
+    /// The Related panel is open: its store is for something, the playing song or a seed a menu pinned. The store is
+    /// the only record of that, so a sign-out that resets it closes the panel with nothing left to clear. Up next,
+    /// Lyrics and Related are never two at once: turning one on turns the others off.
+    var showsRelated: Bool {
+        service.related.state != .idle
+    }
+
     /// The save to playlist menu is open. The store owns it; it floats over the popup and leaves the column as it was.
     var showsPicker: Bool {
         service.trackActions.picker != nil
     }
 
     var isBrowsing: Bool {
-        !showsQueue && !showsResults && !showsLyrics
+        !showsQueue && !showsResults && !showsLyrics && !showsRelated
     }
 
     /// Home's root is on screen with nothing over it, so the header offers the refresh button.
@@ -138,9 +145,9 @@ final class MusicSearchNavigation {
         isBrowsing && service.browse.tab == .home && service.browse.path.isEmpty
     }
 
-    /// What fills the right column: browse, or Lyrics or Up next in place of it.
+    /// What fills the right column: browse, or Lyrics, Up next or Related in place of it.
     var rightColumn: MusicRightColumn {
-        MusicRightColumn.resolve(showsLyrics: showsLyrics, showsQueue: showsQueue)
+        MusicRightColumn.resolve(showsLyrics: showsLyrics, showsQueue: showsQueue, showsRelated: showsRelated)
     }
 
     /// The header tab to highlight: the tab on screen, whether its root or a page opened from it.
@@ -181,7 +188,7 @@ final class MusicSearchNavigation {
         MusicSearchScope.resolve(column: .browse, tab: service.browse.tab, page: pageKind)
     }
 
-    /// What the field of the screen on top searches. `.none` where there is no field to open (Lyrics).
+    /// What the field of the screen on top searches. `.none` where there is no field to open (Lyrics, Related).
     var scope: MusicSearchScope {
         MusicSearchScope.resolve(column: rightColumn, tab: service.browse.tab, page: pageKind)
     }
@@ -191,7 +198,7 @@ final class MusicSearchNavigation {
         switch rightColumn {
         case .queue: isQueueFieldOpen
         case .browse: (browseScope.isLocal ? filterAnchor : searchAnchor) == currentAnchor
-        case .lyrics: false
+        case .lyrics, .related: false
         }
     }
 
@@ -324,9 +331,11 @@ final class MusicSearchNavigation {
 
     // MARK: - Panels
 
-    /// The Up next button: the queue takes the right column, or gives it back. Lyrics closes, since they are never both on.
+    /// The Up next button: the queue takes the right column, or gives it back. Lyrics and Related close, since they are
+    /// never on together.
     func toggleQueue() {
         service.lyrics.setPanelOpen(false)
+        closeRelated()
         service.trackActions.closePicker()
         queueForced.toggle()
         // A queue opens with its field closed.
@@ -337,6 +346,7 @@ final class MusicSearchNavigation {
     /// view is the right column.
     func toggleLyrics() {
         queueForced = false
+        closeRelated()
         service.trackActions.closePicker()
         service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
     }
@@ -345,21 +355,79 @@ final class MusicSearchNavigation {
     /// had it (the popover opens on them, so a toggle would close them).
     func openLyrics() {
         queueForced = false
+        closeRelated()
         service.trackActions.closePicker()
         service.lyrics.setPanelOpen(true)
     }
 
-    /// Lyrics or Up next goes back to browse, the screen under it.
-    func closePanel() {
+    /// The player's Related button: the related songs of the song that plays take the right column and follow the
+    /// player from here on, or the panel gives the column back. Lyrics and Up next close, since they are never on
+    /// together. A panel that a menu opened for another song is turned off by the button too, as any open panel is.
+    func toggleRelated() {
+        if showsRelated {
+            closeRelated()
+            return
+        }
+        makeRoomForRelated()
+        service.related.follow(service.player.nowPlaying)
+    }
+
+    /// A song's menu, Related songs: the panel shows that song's related songs and stays on it, whatever the player
+    /// does. A panel that is already open moves to the song.
+    func openRelated(for track: MusicTrack) {
+        makeRoomForRelated()
+        service.related.show(track)
+    }
+
+    /// An album, playlist, mix or artist menu, Related songs: the panel shows the related songs of the first song on
+    /// its page and stays on it. The page is read for that song only; it is not opened.
+    func openRelated(for collection: MusicCollection) {
+        makeRoomForRelated()
+        service.related.show(collection)
+    }
+
+    /// The Related panel goes back to browse, the screen under it, and its store stops asking. Does nothing when it is
+    /// closed already.
+    func closeRelated() {
+        guard showsRelated else { return }
+        service.related.close()
+    }
+
+    /// What Related takes the column from: Up next (its field with it), Lyrics and the save menu.
+    private func makeRoomForRelated() {
         queueForced = false
         closeQueueField()
         service.lyrics.setPanelOpen(false)
+        service.trackActions.closePicker()
+    }
+
+    /// Lyrics, Up next or Related goes back to browse, the screen under it.
+    func closePanel() {
+        queueForced = false
+        closeQueueField()
+        closeRelated()
+        service.lyrics.setPanelOpen(false)
+    }
+
+    /// The player was stopped: Lyrics and Up next have nothing to show, so they close, and so does a Related panel
+    /// that follows the player. A panel a menu pinned is for a seed of its own and stays.
+    func playerStopped() {
+        queueForced = false
+        closeQueueField()
+        service.lyrics.setPanelOpen(false)
+        if service.related.isFollowing { closeRelated() }
+    }
+
+    /// The queue ended: the next song played must not pop Up next open again. Lyrics and Related are not Up next's.
+    func queueEnded() {
+        queueForced = false
     }
 
     /// Everything that sits over the browse screens goes away.
     private func closePanels() {
         queueForced = false
         closeQueueField()
+        closeRelated()
         service.lyrics.setPanelOpen(false)
         service.trackActions.closePicker()
     }
@@ -390,15 +458,15 @@ final class MusicSearchNavigation {
     }
 
     /// Escape: closes the topmost thing over the browse screens and says whether there was one. The save menu first, then
-    /// whatever covers the column (Lyrics or Up next, where an open field gives way first: its words, then the field),
-    /// then the field of the screen on top, again its words first. Escape never pops the page stack. The account card is
-    /// the popup's and closes before this is asked.
+    /// whatever covers the column (Lyrics, Related or Up next, where an open field gives way first: its words, then the
+    /// field), then the field of the screen on top, again its words first. Escape never pops the page stack. The
+    /// account card is the popup's and closes before this is asked.
     func escape() -> Bool {
         if showsPicker {
             closePicker()
             return true
         }
-        if showsLyrics {
+        if showsLyrics || showsRelated {
             closePanel()
             return true
         }
@@ -428,7 +496,8 @@ final class MusicSearchNavigation {
 
     /// An artist or an album (a name, a tile or Go to album) was opened, from anywhere. It opens on top of the pages
     /// already open. Over search results the results step aside, keeping the query and those pages, and Back returns
-    /// to them. Up next, Lyrics and the save menu close before the open, so the page is not hidden behind them.
+    /// to them. Up next, Lyrics, Related and the save menu close before the open, so the page is not hidden behind
+    /// them.
     func openCollection(_ collection: MusicCollection) {
         let fromResults = showsResults
         closePanels()
@@ -469,16 +538,18 @@ final class MusicSearchNavigation {
     }
 
     /// Runs a menu item. Save to playlist opens the save menu over whatever shows, which stays as it was; Go to album
-    /// and Go to artist open the page; Remove goes to the actions store, which shows what happened as a short line;
-    /// Pin to Home is Deci's own list, changed on the spot; Play next, Add to queue and Remove from queue edit the play
-    /// order and say so the same way. Like, Remove like, Dislike and Remove dislike set the song's rating and say what
-    /// came of it where the hotkeys' outcome shows (`rate`).
+    /// and Go to artist open the page; Related songs opens the Related panel for the song; Remove goes to the actions
+    /// store, which shows what happened as a short line; Pin to Home is Deci's own list, changed on the spot; Play
+    /// next, Add to queue and Remove from queue edit the play order and say so the same way. Like, Remove like, Dislike
+    /// and Remove dislike set the song's rating and say what came of it where the hotkeys' outcome shows (`rate`).
     func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
             if let album = MusicTrackActions.albumCollection(for: track) { openCollection(album) }
         case .goToArtist:
             if let artist = MusicTrackActions.artistCollection(for: track, in: context) { openArtist(artist) }
+        case .related:
+            openRelated(for: track)
         case .saveToPlaylist:
             service.trackActions.openPicker(for: track)
         case .removeFromPlaylist:
@@ -522,14 +593,17 @@ final class MusicSearchNavigation {
     }
 
     /// Runs a tile's menu item, with the same effects as the song menu's: Save to playlist opens the save menu for the
-    /// whole album or playlist, Go to album and Go to artist open the page, Pin to Home changes Deci's own list. The
-    /// song-only entries do nothing on a tile.
+    /// whole album or playlist, Go to album and Go to artist open the page, Related songs opens the Related panel for
+    /// the first song of the tile's page, Pin to Home changes Deci's own list. The song-only entries do nothing on a
+    /// tile.
     func perform(_ action: MusicTrackAction, for collection: MusicCollection, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
             if let album = MusicTrackActions.albumCollection(for: collection) { openCollection(album) }
         case .goToArtist:
             if let artist = MusicTrackActions.artistCollection(for: collection, in: context) { openArtist(artist) }
+        case .related:
+            openRelated(for: collection)
         case .saveToPlaylist:
             service.trackActions.openPicker(for: collection)
         case .pinHome:

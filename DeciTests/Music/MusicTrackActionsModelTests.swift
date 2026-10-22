@@ -1,7 +1,8 @@
 // DeciTests/Music/MusicTrackActionsModelTests.swift
 // Which song actions a row offers, and in what order: the pure rules behind the row's "..." button and its
-// context menu, without any view. Save to playlist, Pin to / Unpin from Home, Go to album, Go to artist and Remove
-// from playlist, and the blocks the menu cuts them into. The same rules for an album, playlist or artist tile.
+// context menu, without any view. Save to playlist, Pin to / Unpin from Home, Go to album, Go to artist, Related
+// songs and Remove from playlist, and the blocks the menu cuts them into. The same rules for an album, playlist or
+// artist tile.
 
 import Foundation
 import Testing
@@ -20,30 +21,32 @@ struct MusicTrackActionsModelTests {
 
     // MARK: - Save to playlist
 
-    @Test("A bare song with no page around it can still be saved to a playlist, and nothing else")
+    @Test("A bare song with no page around it can still be saved to a playlist and asked for related songs, and nothing else")
     func bareSongOnlySaves() {
-        #expect(actions(MusicSamples.track()) == [.saveToPlaylist])
+        #expect(actions(MusicSamples.track()) == [.saveToPlaylist, .related])
     }
 
     // MARK: - Order
 
-    @Test("Every action shows in the fixed order: save, go to album, go to artist, remove last")
+    @Test("Every action shows in the fixed order: save, go to album, go to artist, related songs, remove last")
     func fullSetInOrder() {
         let track = fullTrack()
-        #expect(actions(track, in: ownPlaylist) == [.saveToPlaylist, .goToAlbum, .goToArtist, .removeFromPlaylist])
+        #expect(
+            actions(track, in: ownPlaylist) == [.saveToPlaylist, .goToAlbum, .goToArtist, .related, .removeFromPlaylist]
+        )
     }
 
-    @Test("Pin to Home sits right after save, ahead of go to album, go to artist and remove")
+    @Test("Pin to Home sits right after save, ahead of go to album, go to artist, related songs and remove")
     func homeEntryInOrder() {
         let track = fullTrack()
         #expect(
             actions(track, in: ownPlaylist, home: .canPin)
-                == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .removeFromPlaylist]
+                == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .related, .removeFromPlaylist]
         )
         #expect(
-            actions(MusicSamples.track("v1"), home: .pinned) == [.saveToPlaylist, .pinHome(.pinned)]
+            actions(MusicSamples.track("v1"), home: .pinned) == [.saveToPlaylist, .pinHome(.pinned), .related]
         )
-        #expect(actions(MusicSamples.track("v1"), home: .canPin) == [.saveToPlaylist, .pinHome(.canPin)])
+        #expect(actions(MusicSamples.track("v1"), home: .canPin) == [.saveToPlaylist, .pinHome(.canPin), .related])
     }
 
     @Test("With no Home state the entry is left out, which is how every list stood before")
@@ -57,7 +60,7 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackAction.pinHome(.pinned).group == .library)
         #expect(MusicTrackAction.pinHome(.full).group == .library)
         #expect(MusicTrackActions.groups(of: actions(fullTrack(), in: ownPlaylist, home: .canPin))
-            == [[.saveToPlaylist, .pinHome(.canPin)], [.goToAlbum, .goToArtist], [.removeFromPlaylist]])
+            == [[.saveToPlaylist, .pinHome(.canPin)], [.goToAlbum, .goToArtist, .related], [.removeFromPlaylist]])
     }
 
     @Test("Only the refusal while Home is full is turned off; every other action is on")
@@ -65,7 +68,7 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackAction.pinHome(.canPin).isEnabled)
         #expect(MusicTrackAction.pinHome(.pinned).isEnabled)
         #expect(!MusicTrackAction.pinHome(.full).isEnabled)
-        for action in [MusicTrackAction.saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist, .playNext, .addToQueue, .removeFromQueue] {
+        for action in [MusicTrackAction.saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist, .related, .playNext, .addToQueue, .removeFromQueue] {
             #expect(action.isEnabled)
         }
     }
@@ -82,15 +85,15 @@ struct MusicTrackActionsModelTests {
     @Test("The menu has three blocks: library, go to, and remove, with no empty block between them")
     func blocks() {
         #expect(MusicTrackActions.groups(of: actions(fullTrack(), in: ownPlaylist))
-            == [[.saveToPlaylist], [.goToAlbum, .goToArtist], [.removeFromPlaylist]])
+            == [[.saveToPlaylist], [.goToAlbum, .goToArtist, .related], [.removeFromPlaylist]])
         #expect(MusicTrackActions.groups(of: [.saveToPlaylist]) == [[.saveToPlaylist]])
         #expect(MusicTrackActions.groups(of: [.saveToPlaylist, .goToAlbum]) == [[.saveToPlaylist], [.goToAlbum]])
         #expect(MusicTrackActions.groups(of: [.saveToPlaylist, .removeFromPlaylist]) == [[.saveToPlaylist], [.removeFromPlaylist]])
     }
 
-    @Test("A bare song has one block, so the menu draws no line")
+    @Test("A bare song has a block to save and a block to go to, and nothing else")
     func bareSongOneBlock() {
-        #expect(MusicTrackActions.groups(of: actions(MusicSamples.track())) == [[.saveToPlaylist]])
+        #expect(MusicTrackActions.groups(of: actions(MusicSamples.track())) == [[.saveToPlaylist], [.related]])
         #expect(MusicTrackActions.groups(of: []).isEmpty)
     }
 
@@ -103,6 +106,7 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackAction.saveToPlaylist.group == .library)
         #expect(MusicTrackAction.goToAlbum.group == .navigate)
         #expect(MusicTrackAction.goToArtist.group == .navigate)
+        #expect(MusicTrackAction.related.group == .navigate)
         #expect(MusicTrackAction.removeFromPlaylist.group == .remove)
         #expect(MusicTrackAction.Group.library < .navigate && MusicTrackAction.Group.navigate < .remove)
     }
@@ -117,27 +121,33 @@ struct MusicTrackActionsModelTests {
 
     @Test("Play next and Add to queue come first, in a block of their own, ahead of save")
     func queueEntriesFirst() {
-        #expect(actions(MusicSamples.track("v1"), queue: true) == [.playNext, .addToQueue, .saveToPlaylist])
+        #expect(actions(MusicSamples.track("v1"), queue: true) == [.playNext, .addToQueue, .saveToPlaylist, .related])
         #expect(
             actions(fullTrack(), in: ownPlaylist, home: .canPin, queue: true)
-                == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .removeFromPlaylist]
+                == [
+                    .playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .related,
+                    .removeFromPlaylist,
+                ]
         )
         #expect(MusicTrackActions.groups(of: actions(fullTrack(), in: ownPlaylist, home: .canPin, queue: true))
-            == [[.playNext, .addToQueue], [.saveToPlaylist, .pinHome(.canPin)], [.goToAlbum, .goToArtist], [.removeFromPlaylist]])
+            == [[.playNext, .addToQueue], [.saveToPlaylist, .pinHome(.canPin)], [.goToAlbum, .goToArtist, .related],
+                [.removeFromPlaylist]])
     }
 
     @Test("Remove from queue shows on an Up next row only, as the last and destructive block")
     func removeFromQueueOnlyInUpNext() {
         let track = MusicSamples.track("v1")
         #expect(!actions(track, in: .none, queue: true).contains(.removeFromQueue))
-        #expect(actions(track, in: .upNext, queue: true) == [.playNext, .addToQueue, .saveToPlaylist, .removeFromQueue])
+        #expect(
+            actions(track, in: .upNext, queue: true) == [.playNext, .addToQueue, .saveToPlaylist, .related, .removeFromQueue]
+        )
         #expect(MusicTrackActions.groups(of: actions(track, in: .upNext, queue: true))
-            == [[.playNext, .addToQueue], [.saveToPlaylist], [.removeFromQueue]])
+            == [[.playNext, .addToQueue], [.saveToPlaylist], [.related], [.removeFromQueue]])
     }
 
     @Test("A row that is the song in the player gets no queue entries, even in Up next")
     func noQueueEntriesWithoutOffer() {
-        #expect(actions(MusicSamples.track("v1"), in: .upNext, queue: false) == [.saveToPlaylist])
+        #expect(actions(MusicSamples.track("v1"), in: .upNext, queue: false) == [.saveToPlaylist, .related])
     }
 
     // MARK: - Go to artist
@@ -174,13 +184,13 @@ struct MusicTrackActionsModelTests {
     func removeNeedsEditablePage() {
         let track = MusicSamples.track("v1", setVideoId: "set1")
         let readOnly = MusicTrackContext(pageBrowseId: "VLPLfixtureTheirs", pageTitle: "Theirs", pageIsEditable: false)
-        #expect(actions(track, in: readOnly) == [.saveToPlaylist])
+        #expect(actions(track, in: readOnly) == [.saveToPlaylist, .related])
         #expect(actions(track, in: ownPlaylist).contains(.removeFromPlaylist))
     }
 
     @Test("Remove needs the row's own place in the playlist")
     func removeNeedsSetVideoId() {
-        #expect(actions(MusicSamples.track("v1"), in: ownPlaylist) == [.saveToPlaylist])
+        #expect(actions(MusicSamples.track("v1"), in: ownPlaylist) == [.saveToPlaylist, .related])
     }
 
     @Test("Remove never shows on Liked Music, in either spelling of its id, even when the page claims to be editable")
@@ -188,7 +198,7 @@ struct MusicTrackActionsModelTests {
         let track = MusicSamples.track("v1", setVideoId: "set1")
         for id in ["VLLM", "LM"] {
             let liked = MusicTrackContext(pageBrowseId: id, pageTitle: "Liked music", pageIsEditable: true)
-            #expect(actions(track, in: liked) == [.saveToPlaylist], "page \(id)")
+            #expect(actions(track, in: liked) == [.saveToPlaylist, .related], "page \(id)")
         }
     }
 
@@ -204,9 +214,9 @@ struct MusicTrackActionsModelTests {
     @Test("Remove does not show with no page, as in search results, Up next and the mini player")
     func removeNeedsAPage() {
         let track = MusicSamples.track("v1", setVideoId: "set1")
-        #expect(actions(track, in: .none) == [.saveToPlaylist])
+        #expect(actions(track, in: .none) == [.saveToPlaylist, .related])
         let unnamed = MusicTrackContext(pageBrowseId: nil, pageTitle: nil, pageIsEditable: true)
-        #expect(actions(track, in: unnamed) == [.saveToPlaylist])
+        #expect(actions(track, in: unnamed) == [.saveToPlaylist, .related])
     }
 
     // MARK: - Go to album
@@ -253,23 +263,23 @@ struct MusicTrackActionsModelTests {
         MusicTrackActions.available(for: collection, in: context, home: home)
     }
 
-    @Test("An album tile offers save, go to album and go to artist, with the Home pin after save")
+    @Test("An album tile offers save, go to album, go to artist and related songs, with the Home pin after save")
     func albumTileOffers() {
-        #expect(actions(album()) == [.saveToPlaylist, .goToAlbum, .goToArtist])
-        #expect(actions(album(), home: .canPin) == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist])
-        #expect(actions(album(), home: .pinned) == [.saveToPlaylist, .pinHome(.pinned), .goToAlbum, .goToArtist])
-        #expect(actions(album(), home: .full) == [.saveToPlaylist, .pinHome(.full), .goToAlbum, .goToArtist])
+        #expect(actions(album()) == [.saveToPlaylist, .goToAlbum, .goToArtist, .related])
+        #expect(actions(album(), home: .canPin) == [.saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .related])
+        #expect(actions(album(), home: .pinned) == [.saveToPlaylist, .pinHome(.pinned), .goToAlbum, .goToArtist, .related])
+        #expect(actions(album(), home: .full) == [.saveToPlaylist, .pinHome(.full), .goToAlbum, .goToArtist, .related])
     }
 
-    @Test("An album tile cuts into the same blocks as a song: save and pin, then the pages to go to")
+    @Test("An album tile cuts into the same blocks as a song: save and pin, then the pages to go to and related songs")
     func albumTileBlocks() {
         let blocks = MusicTrackActions.groups(of: actions(album(), home: .canPin))
-        #expect(blocks == [[.saveToPlaylist, .pinHome(.canPin)], [.goToAlbum, .goToArtist]])
+        #expect(blocks == [[.saveToPlaylist, .pinHome(.canPin)], [.goToAlbum, .goToArtist, .related]])
     }
 
     @Test("An album tile with no artist link has no Go to artist, and one with several opens the first")
     func albumTileArtist() {
-        #expect(actions(album(links: [])) == [.saveToPlaylist, .goToAlbum])
+        #expect(actions(album(links: [])) == [.saveToPlaylist, .goToAlbum, .related])
         let two = album(links: [daftPunk, MusicArtistLink(name: "Pharrell", browseId: "UCpharrell")])
         #expect(MusicTrackActions.artistCollection(for: two, in: .none) == daftPunk.opener)
         #expect(MusicTrackActions.artistCollection(for: album(links: []), in: .none) == nil)
@@ -279,24 +289,24 @@ struct MusicTrackActionsModelTests {
     @Test("An album tile on its artist's own page has no Go to artist, and on its own page no Go to album")
     func albumTileOnOwnPages() {
         let artistPage = MusicTrackContext(pageBrowseId: "UCdaft", pageTitle: "Daft Punk", pageIsEditable: false)
-        #expect(actions(album(), in: artistPage) == [.saveToPlaylist, .goToAlbum])
+        #expect(actions(album(), in: artistPage) == [.saveToPlaylist, .goToAlbum, .related])
         let ownPage = MusicTrackContext(pageBrowseId: "MPREbalbum", pageTitle: "Random Access Memories", pageIsEditable: false)
-        #expect(actions(album(), in: ownPage) == [.saveToPlaylist, .goToArtist])
+        #expect(actions(album(), in: ownPage) == [.saveToPlaylist, .goToArtist, .related])
     }
 
     @Test("An album tile with no album playlist id cannot be saved, whatever else it offers")
     func albumTileNeedsAudioPlaylist() {
-        #expect(actions(album(audio: nil)) == [.goToAlbum, .goToArtist])
-        #expect(actions(album(audio: ""), home: .canPin) == [.pinHome(.canPin), .goToAlbum, .goToArtist])
+        #expect(actions(album(audio: nil)) == [.goToAlbum, .goToArtist, .related])
+        #expect(actions(album(audio: ""), home: .canPin) == [.pinHome(.canPin), .goToAlbum, .goToArtist, .related])
     }
 
-    @Test("A playlist or mix tile offers save and the Home pin, and no artist or album entry")
+    @Test("A playlist or mix tile offers save, the Home pin and related songs, and no artist or album entry")
     func playlistTileOffers() {
         let list = MusicSamples.collection("VLPLroad", kind: .playlist, artistLinks: [daftPunk])
-        #expect(actions(list) == [.saveToPlaylist])
-        #expect(actions(list, home: .canPin) == [.saveToPlaylist, .pinHome(.canPin)])
+        #expect(actions(list) == [.saveToPlaylist, .related])
+        #expect(actions(list, home: .canPin) == [.saveToPlaylist, .pinHome(.canPin), .related])
         let mix = MusicSamples.collection("VLRDAMPLmixone", kind: .playlist)
-        #expect(actions(mix, home: .pinned) == [.saveToPlaylist, .pinHome(.pinned)])
+        #expect(actions(mix, home: .pinned) == [.saveToPlaylist, .pinHome(.pinned), .related])
     }
 
     @Test("Liked music, a bare VL and a blank id have nothing to save")
@@ -304,18 +314,20 @@ struct MusicTrackActionsModelTests {
         for id in ["VLLM", "LM", "VL", ""] {
             let list = MusicSamples.collection(id, kind: .playlist)
             #expect(MusicTrackActions.playlistSourceId(for: list) == nil, "id \(id)")
-            #expect(actions(list, home: .canPin) == [.pinHome(.canPin)], "id \(id)")
+            // A blank id has no page to read a first song from, so it has no related songs either.
+            let related: [MusicTrackAction] = id.isEmpty ? [] : [.related]
+            #expect(actions(list, home: .canPin) == [.pinHome(.canPin)] + related, "id \(id)")
         }
     }
 
     @Test("An artist tile offers Go to artist, with the Home pin ahead of it, and hides it on that artist's page")
     func artistTileOffers() {
         let artist = MusicSamples.collection("UCdaft", kind: .artist, title: "Daft Punk")
-        #expect(actions(artist) == [.goToArtist])
-        #expect(actions(artist, home: .canPin) == [.pinHome(.canPin), .goToArtist])
+        #expect(actions(artist) == [.goToArtist, .related])
+        #expect(actions(artist, home: .canPin) == [.pinHome(.canPin), .goToArtist, .related])
         let ownPage = MusicTrackContext(pageBrowseId: "UCdaft", pageTitle: "Daft Punk", pageIsEditable: false)
-        #expect(actions(artist, in: ownPage) == [])
-        #expect(actions(artist, in: ownPage, home: .pinned) == [.pinHome(.pinned)])
+        #expect(actions(artist, in: ownPage) == [.related])
+        #expect(actions(artist, in: ownPage, home: .pinned) == [.pinHome(.pinned), .related])
         #expect(MusicTrackActions.artistCollection(for: artist, in: .none) == artist)
         #expect(MusicTrackActions.artistCollection(for: artist, in: ownPage) == nil)
     }
@@ -354,7 +366,49 @@ struct MusicTrackActionsModelTests {
     @Test("A collection tile's menu words are the song menu's words")
     func collectionTileWords() {
         let titles = actions(album(), home: .canPin).map(\.title)
-        #expect(titles == ["Save to playlist", "Pin to Home", "Go to album", "Go to artist"])
+        #expect(titles == ["Save to playlist", "Pin to Home", "Go to album", "Go to artist", "Related songs"])
+    }
+
+    // MARK: - Related songs
+
+    @Test("A song with an id offers Related songs, after Go to artist and ahead of Remove from playlist")
+    func relatedAfterGoToArtist() {
+        #expect(actions(fullTrack(), in: ownPlaylist).suffix(3) == [.goToArtist, .related, .removeFromPlaylist])
+        #expect(actions(MusicSamples.track("v1")).contains(.related))
+    }
+
+    @Test("A song with a blank id has no Related songs, since there is nothing to ask about", arguments: ["", " ", "\n"])
+    func relatedNeedsAnId(id: String) {
+        #expect(!actions(MusicSamples.track(id)).contains(.related))
+        #expect(!rated(MusicSamples.track(id)).contains(.related))
+    }
+
+    @Test("Related songs shows on every page and in Up next, and on the row of the song that plays")
+    func relatedEverywhere() {
+        let artistPage = MusicTrackContext(pageBrowseId: "UCfixtureArtist", pageTitle: "Artist", pageIsEditable: false)
+        for context in [MusicTrackContext.none, .upNext, ownPlaylist, artistPage] {
+            #expect(actions(MusicSamples.track("v1"), in: context, queue: true).contains(.related))
+        }
+        #expect(actions(MusicSamples.track("v1"), queue: false).contains(.related))
+    }
+
+    @Test("Related songs is in the go to block, between Go to artist and the remove block")
+    func relatedGroup() {
+        #expect(MusicTrackAction.related.group == .navigate)
+        #expect(MusicTrackActions.groups(of: [.goToAlbum, .goToArtist, .related, .removeFromPlaylist])
+            == [[.goToAlbum, .goToArtist, .related], [.removeFromPlaylist]])
+    }
+
+    @Test("Every tile that has a page to read offers Related songs last, and one with a blank id does not")
+    func relatedOnTiles() {
+        let artist = MusicSamples.collection("UCdaft", kind: .artist)
+        let mix = MusicSamples.collection("VLRDAMPLmixone", kind: .playlist)
+        let liked = MusicSamples.collection("VLLM", kind: .playlist)
+        for tile in [album(), artist, mix, liked] {
+            #expect(actions(tile, home: .canPin).last == .related, "tile \(tile.browseId)")
+        }
+        #expect(!actions(MusicSamples.collection("", kind: .album)).contains(.related))
+        #expect(!actions(MusicSamples.collection("  ", kind: .playlist)).contains(.related))
     }
 
     // MARK: - Like and Dislike
@@ -368,8 +422,10 @@ struct MusicTrackActionsModelTests {
 
     @Test("A song the user can rate offers Like and Dislike, and a list asked for without a rating has neither")
     func rateEntriesOffered() {
-        #expect(rated(MusicSamples.track("v1")) == [.saveToPlaylist, .like(removing: false), .dislike(removing: false)])
-        #expect(actions(MusicSamples.track("v1")) == [.saveToPlaylist])
+        #expect(
+            rated(MusicSamples.track("v1")) == [.saveToPlaylist, .like(removing: false), .dislike(removing: false), .related]
+        )
+        #expect(actions(MusicSamples.track("v1")) == [.saveToPlaylist, .related])
     }
 
     @Test("Like and Dislike read the cached state: Remove like on a liked song, Remove dislike on a disliked one, else the plain words", arguments: [
@@ -380,13 +436,13 @@ struct MusicTrackActionsModelTests {
     ])
     func rateEntryWords(status: MusicLikeStatus?, like: String, dislike: String) {
         let offered = rated(MusicSamples.track("v1"), status: status)
-        #expect(offered.map(\.title) == ["Save to playlist", like, dislike])
+        #expect(offered.map(\.title) == ["Save to playlist", like, dislike, "Related songs"])
     }
 
     @Test("A user who cannot rate, and a song with no id, get neither entry")
     func rateEntriesHidden() {
-        #expect(rated(MusicSamples.track("v1"), canRate: false) == [.saveToPlaylist])
-        #expect(rated(MusicSamples.track("v1"), status: .like, canRate: false) == [.saveToPlaylist])
+        #expect(rated(MusicSamples.track("v1"), canRate: false) == [.saveToPlaylist, .related])
+        #expect(rated(MusicSamples.track("v1"), status: .like, canRate: false) == [.saveToPlaylist, .related])
         #expect(rated(MusicSamples.track("")) == [.saveToPlaylist])
         #expect(rated(MusicSamples.track("  ")) == [.saveToPlaylist])
     }
@@ -418,12 +474,12 @@ struct MusicTrackActionsModelTests {
 
         #expect(MusicTrackActions.groups(of: rated(fullTrack(), in: ownPlaylist, home: .canPin))
             == [[.saveToPlaylist, .pinHome(.canPin)], [.like(removing: false), .dislike(removing: false)],
-                [.goToAlbum, .goToArtist], [.removeFromPlaylist]])
+                [.goToAlbum, .goToArtist, .related], [.removeFromPlaylist]])
         #expect(MusicTrackActions.groups(of: rated(MusicSamples.track("v1")))
-            == [[.saveToPlaylist], [.like(removing: false), .dislike(removing: false)]])
+            == [[.saveToPlaylist], [.like(removing: false), .dislike(removing: false)], [.related]])
     }
 
-    @Test("With the queue entries, the order is queue, save and pin, Like and Dislike, go to, remove")
+    @Test("With the queue entries, the order is queue, save and pin, Like and Dislike, go to and related, remove")
     func rateEntriesInFullOrder() {
         let offered = MusicTrackActions.available(
             for: fullTrack(), in: ownPlaylist, home: .canPin, offersQueue: true, canRate: true, likeStatus: .like
@@ -431,7 +487,7 @@ struct MusicTrackActionsModelTests {
         #expect(offered == [
             .playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin),
             .like(removing: true), .dislike(removing: false),
-            .goToAlbum, .goToArtist, .removeFromPlaylist,
+            .goToAlbum, .goToArtist, .related, .removeFromPlaylist,
         ])
     }
 
@@ -441,7 +497,7 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackAction.like(removing: true).ratingStatus == .indifferent)
         #expect(MusicTrackAction.dislike(removing: false).ratingStatus == .dislike)
         #expect(MusicTrackAction.dislike(removing: true).ratingStatus == .indifferent)
-        for action in [MusicTrackAction.saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist, .playNext, .addToQueue, .removeFromQueue, .pinHome(.canPin)] {
+        for action in [MusicTrackAction.saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist, .related, .playNext, .addToQueue, .removeFromQueue, .pinHome(.canPin)] {
             #expect(action.ratingStatus == nil)
         }
     }
@@ -471,6 +527,7 @@ struct MusicTrackActionsModelTests {
         #expect(MusicTrackAction.removeFromPlaylist.title == "Remove from playlist")
         #expect(MusicTrackAction.goToAlbum.title == "Go to album")
         #expect(MusicTrackAction.goToArtist.title == "Go to artist")
+        #expect(MusicTrackAction.related.title == "Related songs")
         #expect(MusicTrackAction.playNext.title == "Play next")
         #expect(MusicTrackAction.addToQueue.title == "Add to queue")
         #expect(MusicTrackAction.removeFromQueue.title == "Remove from queue")
@@ -482,7 +539,7 @@ struct MusicTrackActionsModelTests {
     @Test("No menu word has a dash or an ellipsis, since the menu is text only")
     func noDashesOrEllipses() {
         let all: [MusicTrackAction] = [
-            .saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist,
+            .saveToPlaylist, .removeFromPlaylist, .goToAlbum, .goToArtist, .related,
             .pinHome(.canPin), .pinHome(.pinned), .pinHome(.full),
             .playNext, .addToQueue, .removeFromQueue,
         ]

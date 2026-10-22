@@ -64,6 +64,51 @@ nonisolated enum MusicPlayerColumnState: Equatable {
     static let emptyBarWidth: Double = 18
 }
 
+/// The three text buttons under the transport: Lyrics, Related and Up next. Each opens its view in the right column,
+/// and pressing the open one goes back to browse. They are words only, in a row 142 pt wide with the spare width shared
+/// equally by the two spaces between them, so the space between neighbours is one number. Pure.
+nonisolated enum MusicViewButtons {
+    enum Kind: CaseIterable {
+        case lyrics
+        case related
+        case queue
+
+        var title: String {
+            switch self {
+            case .lyrics: "Lyrics"
+            case .related: "Related"
+            case .queue: "Up next"
+            }
+        }
+    }
+
+    /// The least space between two neighbouring words, so the three never read as one run.
+    static let minGap: CGFloat = 8
+
+    /// What each button needs to be pressable: Lyrics a song with lyrics, Related a song that plays (its related songs
+    /// are asked for from it) or a Related panel that is open already, Up next a queue with songs in it. Without it
+    /// the button stays and dims. A column with nothing to control (`controlsAreEnabled` false) turns every button off
+    /// but an open Related panel, which a song's menu can open with nothing playing: its button is lit, so it must
+    /// answer, and closes the panel.
+    static func isAvailable(
+        _ kind: Kind, controlsAreEnabled: Bool, hasLyrics: Bool, hasSong: Bool, hasQueue: Bool, relatedIsOpen: Bool
+    ) -> Bool {
+        switch kind {
+        case .lyrics: controlsAreEnabled && hasLyrics
+        case .related: relatedIsOpen || (controlsAreEnabled && hasSong)
+        case .queue: controlsAreEnabled && hasQueue
+        }
+    }
+
+    /// The space between two neighbouring words when the words are `labelWidths` wide, left to right, and the row is
+    /// `rowWidth` wide: what the words leave, over the spaces between them. Negative when the words do not fit.
+    static func gap(labelWidths: [CGFloat], rowWidth: CGFloat = MusicPopupMetrics.playerColumnContentWidth) -> CGFloat {
+        guard labelWidths.count > 1, rowWidth.isFinite else { return 0 }
+        let words = labelWidths.reduce(0, +)
+        return (rowWidth - words) / CGFloat(labelWidths.count - 1)
+    }
+}
+
 /// The colour the player column takes from the cover, lifted so it reads on the column's near black.
 nonisolated enum MusicAccent {
     /// The lowest brightness an accent has: a darker cover colour is raised to this.

@@ -134,4 +134,8 @@ actor MusicBackendLive: MusicBackend {
     func rate(videoId: String, status: MusicLikeStatus) async throws {
         try await client.rate(videoId: videoId, status: status)
     }
+
+    func related(videoId: String) async throws -> [MusicTrack] {
+        try await client.related(videoId: videoId)
+    }
 }

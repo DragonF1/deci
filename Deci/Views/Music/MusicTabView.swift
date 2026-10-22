@@ -1,7 +1,7 @@
 // Deci/Views/Music/MusicTabView.swift
 import SwiftUI
 
-/// The right column's content, under its header: browse, Lyrics or Up next once signed in, the sign-in note
+/// The right column's content, under its header: browse, Lyrics, Related or Up next once signed in, the sign-in note
 /// before that. It fills the column; the player column and the header are the popup's.
 struct MusicTabView: View {
     let host: MusicServiceHost
@@ -39,12 +39,12 @@ private struct MusicServiceView: View {
     }
 }
 
-/// The signed-in right column: the browse screens, kept alive under Lyrics and Up next so they keep
+/// The signed-in right column: the browse screens, kept alive under Lyrics, Related and Up next so they keep
 /// their place. Which one shows comes from `navigation.rightColumn`. The tabs and the avatar are the column's header, the
 /// song's controls are the player column.
 private struct MusicSignedInView: View {
     @Bindable var service: MusicService
-    /// What shows over the browse screens (Lyrics, Up next) and how an artist page opens. Owned by the host,
+    /// What shows over the browse screens (Lyrics, Related, Up next) and how an artist page opens. Owned by the host,
     /// so it outlives this view: the popup unmounts the player when the Music icon is hidden and builds it again.
     let navigation: MusicSearchNavigation
 
@@ -65,6 +65,7 @@ private struct MusicSignedInView: View {
             service.lyrics.setPanelOpen(false)
             service.trackActions.closePicker()
             navigation.queueForced = false
+            navigation.closeRelated()
             navigation.resetFields()
         }
         .onChange(of: service.query) {
@@ -76,15 +77,16 @@ private struct MusicSignedInView: View {
         }
         // The queue ended: the next song played must not pop Up next open again.
         .onChange(of: service.queue.isEmpty) { _, isEmpty in
-            if isEmpty { navigation.queueForced = false }
+            if isEmpty { navigation.queueEnded() }
         }
         // Nothing is loaded any more: the button is gone, so the panel goes with it.
         .onChange(of: service.lyrics.track == nil) { _, noTrack in
             if noTrack { service.lyrics.setPanelOpen(false) }
         }
-        // The player was stopped: Lyrics and Up next have nothing to show, so they close.
+        // The player was stopped: Lyrics, Up next and a Related panel that follows the player have nothing to show, so
+        // they close. A Related panel a menu pinned stays.
         .onChange(of: nowPlaying == nil) { _, noTrack in
-            if noTrack { navigation.closePanel() }
+            if noTrack { navigation.playerStopped() }
         }
         // A screen reader hears the line that says what a song action did.
         .onChange(of: service.trackActions.notice?.id) {
@@ -96,7 +98,7 @@ private struct MusicSignedInView: View {
 
     // MARK: - Layers
 
-    /// The browse screen stays alive under Lyrics and Up next, so it keeps its place; they show in its
+    /// The browse screen stays alive under Lyrics, Related and Up next, so it keeps its place; they show in its
     /// place, one at a time.
     private var content: some View {
         let column = navigation.rightColumn
@@ -115,6 +117,9 @@ private struct MusicSignedInView: View {
                     .transition(.opacity)
             case .queue:
                 MusicQueueView(service: service, navigation: navigation)
+                    .transition(.opacity)
+            case .related:
+                MusicRelatedView(service: service)
                     .transition(.opacity)
             }
         }

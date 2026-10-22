@@ -3,7 +3,7 @@ import Foundation
 
 /// What the search field of the right column searches on the screen it sits on. Kept apart from the views so each
 /// screen is tested: Home and an artist page search YouTube Music; Library, a playlist (Liked music too), an album and
-/// Up next filter what is already loaded, live; Lyrics has no search.
+/// Up next filter what is already loaded, live; Lyrics and Related have no search.
 nonisolated enum MusicSearchScope: Equatable {
     /// Home and an artist page: search YouTube Music, sent with Return.
     case global
@@ -13,7 +13,7 @@ nonisolated enum MusicSearchScope: Equatable {
     case playlist
     case album
     case queue
-    /// Lyrics: no magnifier, no field.
+    /// Lyrics and Related: no magnifier, no field.
     case none
 
     /// What the empty field says.
@@ -38,12 +38,12 @@ nonisolated enum MusicSearchScope: Equatable {
         }
     }
 
-    /// The scope of the screen on top: Up next searches the queue, Lyrics nothing, and browse depends on
+    /// The scope of the screen on top: Up next searches the queue, Lyrics and Related nothing, and browse depends on
     /// the page open on top of the tab (an artist page searches YouTube Music like Home) or the tab itself.
     @MainActor
     static func resolve(column: MusicRightColumn, tab: MusicBrowseStore.Tab, page: MusicPageKind?) -> MusicSearchScope {
         switch column {
-        case .lyrics:
+        case .lyrics, .related:
             return .none
         case .queue:
             return .queue

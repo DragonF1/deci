@@ -37,8 +37,8 @@ struct MusicSaveMenuPlacementTests {
 
 @Suite("MusicRightColumn")
 struct MusicRightColumnTests {
-    private func column(lyrics: Bool = false, queue: Bool = false) -> MusicRightColumn {
-        MusicRightColumn.resolve(showsLyrics: lyrics, showsQueue: queue)
+    private func column(lyrics: Bool = false, queue: Bool = false, related: Bool = false) -> MusicRightColumn {
+        MusicRightColumn.resolve(showsLyrics: lyrics, showsQueue: queue, showsRelated: related)
     }
 
     @Test("nothing open is browse")
@@ -53,17 +53,27 @@ struct MusicRightColumnTests {
         #expect(column(lyrics: true, queue: true) == .lyrics)
     }
 
-    @Test("Lyrics and Up next wear their own headers, browse keeps the browse one")
+    @Test("Related takes the column too, and gives way to Lyrics and to Up next if they were somehow on as well")
+    func relatedPanel() {
+        #expect(column(related: true) == .related)
+        #expect(column(lyrics: true, related: true) == .lyrics)
+        #expect(column(queue: true, related: true) == .queue)
+        #expect(column(lyrics: true, queue: true, related: true) == .lyrics)
+    }
+
+    @Test("Lyrics, Up next and Related wear their own headers, browse keeps the browse one")
     func headers() {
         #expect(MusicRightColumn.lyrics.header == .lyrics)
         #expect(MusicRightColumn.queue.header == .queue)
+        #expect(MusicRightColumn.related.header == .related)
         #expect(MusicRightColumn.browse.header == .browse)
     }
 
-    @Test("only Lyrics and Up next sit on the accent wash")
+    @Test("Lyrics, Up next and Related sit on the accent wash, browse does not")
     func wash() {
         #expect(MusicRightColumn.lyrics.hasWash)
         #expect(MusicRightColumn.queue.hasWash)
+        #expect(MusicRightColumn.related.hasWash)
         #expect(!MusicRightColumn.browse.hasWash)
     }
 

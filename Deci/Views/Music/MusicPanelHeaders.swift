@@ -1,11 +1,12 @@
 // Deci/Views/Music/MusicPanelHeaders.swift
 import SwiftUI
 
-// The headers of the two panels that take the right column in place of browse: Lyrics and Up next. Each is 32 pt tall
-// like the browse header and has no tabs and no avatar. The player's Lyrics and Up next buttons, Escape and the tabs
-// give the column back.
+// The headers of the three panels that take the right column in place of browse: Lyrics, Related and Up next. Each is
+// 32 pt tall like the browse header and has no tabs and no avatar. The player's Lyrics, Related and Up next buttons,
+// Escape and the tabs give the column back.
 
-/// The wash behind Lyrics and Up next: the song's accent at 0.10 at the top of the column, gone by 90% of its height.
+/// The wash behind Lyrics, Related and Up next: the song's accent at 0.10 at the top of the column, gone by 90% of its
+/// height.
 struct MusicPanelWash: View {
     let isOn: Bool
 
@@ -86,6 +87,33 @@ private struct MusicNotSyncedTag: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+    }
+}
+
+// MARK: - Related
+
+/// "Related" and, quietly beside it, "From <title>" of the song, album, playlist or artist the panel is for. No
+/// magnifier: Related has no search to open.
+struct MusicRelatedHeader: View {
+    let store: MusicRelatedStore
+
+    var body: some View {
+        MusicPanelHeaderBar(sidePadding: MusicPopupMetrics.rightPaddingSide) {
+            Text("Related")
+                .musicText(MusicStyle.Typeface.heading)
+                .foregroundStyle(MusicStyle.Palette.textHeading)
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityAddTraits(.isHeader)
+            if let subline = store.subline {
+                Text(subline)
+                    .musicText(MusicStyle.Typeface.secondary)
+                    .foregroundStyle(MusicStyle.Palette.textMeta)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+        }
     }
 }
 

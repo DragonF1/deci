@@ -51,6 +51,8 @@ final class MusicService {
     let trackActions: MusicTrackActionsStore
     /// The like state of the songs played this session, for the Like and Dislike buttons and shortcuts.
     let likes: MusicLikeStore
+    /// The songs YouTube Music suggests next to a song, for the Related panel.
+    let related: MusicRelatedStore
     /// The artists, playlists, albums and songs pinned to the top of Home. Remembered across launches, and kept
     /// through sign-out and account switches: they belong to the app, not to an account.
     let pinnedItems: MusicPinnedItems
@@ -228,6 +230,7 @@ final class MusicService {
         self.browse = browse
         self.trackActions = MusicTrackActionsStore(backend: backend, browse: browse)
         self.likes = MusicLikeStore(backend: backend)
+        self.related = MusicRelatedStore(backend: backend, browse: browse)
         self.lyrics = lyrics
         self.pinnedItems = MusicPinnedItems(items: pinnedItems, save: savePinnedItems)
         self.player = player
@@ -265,6 +268,7 @@ final class MusicService {
         browse.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         trackActions.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         likes.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
+        related.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         likes.onRatingShown = { [weak self] videoId, status, previous in
             self?.ratingShown(videoId: videoId, status: status, previous: previous)
         }
@@ -363,6 +367,7 @@ final class MusicService {
         lyrics.reset()
         trackActions.reset()
         likes.reset()
+        related.reset()
         signOutTask = Task { [backend] in await backend.signOut() }
     }
 
@@ -462,6 +467,7 @@ final class MusicService {
         lyrics.reset()
         trackActions.reset()
         likes.reset()
+        related.reset()
         clearAccount()
         refreshIdentity()
     }
@@ -528,6 +534,7 @@ final class MusicService {
                 self.trackActions.reset()
                 // The other channel has its own likes: the song playing is read again.
                 self.likes.reset()
+                self.related.reset()
                 self.loadLikeStatus()
                 // The card shows the channel that was picked, not the one that was left.
                 self.clearAccount()
@@ -1304,6 +1311,8 @@ final class MusicService {
         }
         // The lyrics follow the loaded track. Its length is the stream's exact one once that has loaded.
         lyrics.trackChanged(player.nowPlaying, duration: player.duration)
+        // The Related panel moves to the song that plays, when it follows the player.
+        related.nowPlayingChanged(player.nowPlaying)
         lyrics.observePlayback(position: player.currentTime, isPlaying: player.isPlaying)
         loadLikeStatus()
         syncNowPlaying()
@@ -1569,6 +1578,7 @@ final class MusicService {
             browse.reset()
             trackActions.reset()
             likes.reset()
+            related.reset()
             clearAccount()
             signOutTask = Task { [backend] in await backend.signOut() }
             return

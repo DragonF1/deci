@@ -379,6 +379,27 @@ actor InnerTubeClient {
         guard succeeded else { throw MusicError.rejected }
     }
 
+    // MARK: - Related
+
+    /// The songs YouTube Music suggests after one song ("You might also like"). Two calls, as the site makes: `next`
+    /// for the song alone, whose Related tab names a browse id, then a `browse` of that id. A song with no Related tab,
+    /// or an answer with no song shelf, is an empty list and not an error. Only counts are logged, never an id.
+    func related(videoId: String) async throws -> [MusicTrack] {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let id = videoId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return [] }
+        let session = try await sessionOrFallback()
+        let next = try await post("next", session: session, body: ["videoId": id, "isAudioOnly": true])
+        guard let browseId = try InnerTubeParser.relatedBrowseId(inNext: next) else {
+            Self.log.info("related songs: the song has no related tab")
+            return []
+        }
+        let data = try await post("browse", session: session, body: ["browseId": browseId])
+        let tracks = try InnerTubeParser.relatedTracks(from: data)
+        Self.log.info("related songs returned \(tracks.count) songs")
+        return tracks
+    }
+
     // MARK: - Likes
 
     /// The like state of one song, from the like button in the overlay of a `next` call for it alone. Nil when the answer

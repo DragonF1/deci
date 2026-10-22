@@ -137,6 +137,8 @@ struct MusicPopupView: View {
     private func header(for column: MusicRightColumn) -> some View {
         if let service = signedInService, musicHost.navigation != nil, column.header == .lyrics {
             MusicLyricsHeader(store: service.lyrics)
+        } else if let service = signedInService, musicHost.navigation != nil, column.header == .related {
+            MusicRelatedHeader(store: service.related)
         } else if let service = signedInService, let navigation = musicHost.navigation, column.header == .queue {
             MusicQueueHeader(service: service, navigation: navigation)
         } else {

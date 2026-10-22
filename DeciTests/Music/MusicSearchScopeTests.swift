@@ -44,10 +44,11 @@ struct MusicSearchScopeTests {
         #expect(MusicSearchScope.resolve(column: .queue, tab: .library, page: .artist) == .queue)
     }
 
-    @Test("Lyrics has no search")
+    @Test("Lyrics and Related have no search")
     func none() {
         for page in [MusicPageKind?.none, .album, .artist, .playlist, .liked] {
             #expect(MusicSearchScope.resolve(column: .lyrics, tab: .home, page: page) == .none)
+            #expect(MusicSearchScope.resolve(column: .related, tab: .home, page: page) == .none)
         }
     }
 
