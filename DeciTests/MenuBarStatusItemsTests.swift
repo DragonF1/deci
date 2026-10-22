@@ -19,6 +19,12 @@ struct MenuBarStatusItemsTests {
         return (try #require(UserDefaults(suiteName: suite)), suite)
     }
 
+    /// The keys written to the test's own suite. A suite's lookups also fall through to the app's domain, where the
+    /// installed Deci keeps its real status item keys, so reads that look for an absent key go to the suite alone.
+    private func written(in defaults: UserDefaults, suite: String) -> [String: Any] {
+        defaults.persistentDomain(forName: suite) ?? [:]
+    }
+
     @Test("shown writes 1 to both keys and hidden writes 0", arguments: [true, false])
     func writesBothKeys(shown: Bool) throws {
         let (defaults, suite) = try makeDefaults()
@@ -63,7 +69,7 @@ struct MenuBarStatusItemsTests {
 
         MenuBarStatusItems.writeVisibilityDefaults(true, for: .mixer, in: defaults)
 
-        #expect(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("NSStatusItem") }.isEmpty)
+        #expect(written(in: defaults, suite: suite).keys.filter { $0.hasPrefix("NSStatusItem") }.isEmpty)
     }
 
     @Test("only the Music keys are written, the Mixer's Item-0 keys are left alone")
@@ -73,8 +79,9 @@ struct MenuBarStatusItemsTests {
 
         MenuBarStatusItems.writeVisibilityDefaults(false, for: .music, in: defaults)
 
-        #expect(defaults.object(forKey: "NSStatusItem Visible Item-0") == nil)
-        #expect(defaults.object(forKey: "NSStatusItem VisibleCC Item-0") == nil)
+        let keys = written(in: defaults, suite: suite).keys
+        #expect(!keys.contains("NSStatusItem Visible Item-0"))
+        #expect(!keys.contains("NSStatusItem VisibleCC Item-0"))
     }
 }
 
