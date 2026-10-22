@@ -312,7 +312,6 @@ actor InnerTubeClient {
         switch section {
         case .playlists: "FEmusic_liked_playlists"
         case .albums: "FEmusic_liked_albums"
-        case .artists: "FEmusic_library_corpus_track_artists"
         }
     }
 

@@ -7,15 +7,13 @@ extension MusicLibrarySection {
         switch self {
         case .playlists: .playlist
         case .albums: .album
-        case .artists: .artist
         }
     }
 
     init(noun: MusicSearchNoun) {
         switch noun {
         case .album: self = .albums
-        case .artist: self = .artists
-        case .playlist, .song: self = .playlists
+        case .artist, .playlist, .song: self = .playlists
         }
     }
 }

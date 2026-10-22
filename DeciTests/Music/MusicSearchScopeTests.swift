@@ -227,15 +227,10 @@ struct MusicLibraryFilterTests {
         MusicSamples.collection(id, kind: .album, title: title, subtitle: "Album \u{2022} \(artist)")
     }
 
-    private func artist(_ id: String, _ name: String) -> MusicCollection {
-        MusicSamples.collection(id, kind: .artist, title: name, subtitle: "12 songs")
-    }
-
     private var loaded: [MusicLibrarySection: [MusicCollection]] {
         [
             .playlists: [playlist("p1", "Late Night Drive"), playlist("p2", "Focus"), playlist("p3", "Late Show")],
             .albums: [album("a1", "Hurry Up"), album("a2", "Late Registration"), album("a3", "Blue")],
-            .artists: [artist("r1", "Late Owner"), artist("r2", "M83")],
         ]
     }
 
@@ -262,16 +257,12 @@ struct MusicLibraryFilterTests {
         #expect(filter.countLine == "1 OF 4 PLAYLISTS")
     }
 
-    @Test("Liked music is not a row of Albums and Artists, and is not in their totals")
+    @Test("Liked music is not a row of Albums, and is not in its total")
     func likedOnlyInPlaylists() {
         let albums = MusicLibraryFilter.resolve(section: .albums, loaded: loaded, hasMore: [], terms: ["liked"])
         #expect(albums.showsLiked == false)
         #expect(albums.total == 3)
         #expect(albums.isEmpty)
-
-        let artists = MusicLibraryFilter.resolve(section: .artists, loaded: loaded, hasMore: [], terms: ["blue"])
-        #expect(artists.showsLiked == false)
-        #expect(artists.total == 2)
     }
 
     @Test("a list with more pages to load counts what is loaded and says so")
@@ -301,12 +292,12 @@ struct MusicLibraryFilterTests {
     @Test("the other segments' matches are counted and named, the most of them the link's target")
     func otherMatches() {
         let filter = MusicLibraryFilter.resolve(section: .playlists, loaded: loaded, hasMore: [], terms: ["late"])
-        #expect(filter.other?.text == "Also 1 album and 1 artist match")
+        #expect(filter.other?.text == "Also 1 album matches")
         #expect(filter.other?.target == .album)
 
-        let fromArtists = MusicLibraryFilter.resolve(section: .artists, loaded: loaded, hasMore: [], terms: ["late"])
-        #expect(fromArtists.other?.text == "Also 2 playlists and 1 album match")
-        #expect(fromArtists.other?.target == .playlist)
+        let fromAlbums = MusicLibraryFilter.resolve(section: .albums, loaded: loaded, hasMore: [], terms: ["late"])
+        #expect(fromAlbums.other?.text == "Also 2 playlists match")
+        #expect(fromAlbums.other?.target == .playlist)
     }
 
     @Test("a segment that is not loaded is left out of the other matches")
@@ -314,8 +305,7 @@ struct MusicLibraryFilterTests {
         var partial = loaded
         partial[.albums] = nil
         let filter = MusicLibraryFilter.resolve(section: .playlists, loaded: partial, hasMore: [], terms: ["late"])
-        #expect(filter.other?.text == "Also 1 artist matches")
-        #expect(filter.other?.target == .artist)
+        #expect(filter.other == nil)
     }
 
     @Test("Liked music counts toward the Playlists segment in the other matches")
@@ -361,10 +351,9 @@ struct MusicLibraryFilterTests {
     func segmentNouns() {
         #expect(MusicLibrarySection.playlists.noun == .playlist)
         #expect(MusicLibrarySection.albums.noun == .album)
-        #expect(MusicLibrarySection.artists.noun == .artist)
         #expect(MusicLibrarySection(noun: .playlist) == .playlists)
         #expect(MusicLibrarySection(noun: .album) == .albums)
-        #expect(MusicLibrarySection(noun: .artist) == .artists)
+        #expect(MusicLibrarySection(noun: .artist) == .playlists)
         #expect(MusicLibrarySection(noun: .song) == .playlists)
     }
 }

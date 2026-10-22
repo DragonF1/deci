@@ -79,12 +79,11 @@ struct InnerTubeClientBrowseTests {
         let client = makeClient(fake)
         _ = try await client.library(.playlists)
         _ = try await client.library(.albums)
-        _ = try await client.library(.artists)
         let ids = browseRequests(fake).map { FakeYouTube.jsonBody($0)["browseId"] as? String }
-        #expect(ids == ["FEmusic_liked_playlists", "FEmusic_liked_albums", "FEmusic_library_corpus_track_artists"])
+        #expect(ids == ["FEmusic_liked_playlists", "FEmusic_liked_albums"])
     }
 
-    @Test("library parses the grid and the artist rows it gets back")
+    @Test("library parses the rows and the grid it gets back")
     func libraryParses() async throws {
         let client = makeClient(youtube())
         let playlists = try await client.library(.playlists)
@@ -92,8 +91,6 @@ struct InnerTubeClientBrowseTests {
         #expect(playlists.continuation == "q:FIXTURE_LIB_PLAYLISTS_NEXT%3D")
         let albums = try await client.library(.albums)
         #expect(albums.items.count == 2)
-        let artists = try await client.library(.artists)
-        #expect(artists.items.map(\.kind) == [.artist, .artist])
     }
 
     @Test("page sends the browse id it was given, trimmed, for playlists, albums and artists")
@@ -154,7 +151,7 @@ struct InnerTubeClientBrowseTests {
     @Test("Characters a URL cannot hold are escaped once in an old-style token")
     func oldStyleTokenEscaping() async throws {
         let fake = youtube { $0.browseContinuationBody = (try? MusicFixtures.data("browse-library-continuation-shelf.json")) ?? Data() }
-        _ = try await makeClient(fake).moreLibrary(.artists, continuation: "q:a+b/c d&e=f%3D")
+        _ = try await makeClient(fake).moreLibrary(.albums, continuation: "q:a+b/c d&e=f%3D")
         let request = try onlyRequest(fake)
         #expect(request.url.absoluteString.hasSuffix("&ctoken=a%2Bb%2Fc%20d%26e%3Df%3D&continuation=a%2Bb%2Fc%20d%26e%3Df%3D"))
         #expect(queryItems(request)["ctoken"] == "a+b/c d&e=f=")
@@ -361,7 +358,7 @@ struct InnerTubeClientBrowseTests {
             $0.browseBodies = [:]
             $0.browseDefaultBody = Data(#"{"contents":{}}"#.utf8)
         })
-        #expect(try await client.library(.artists) == MusicCollectionList(items: [], continuation: nil))
+        #expect(try await client.library(.albums) == MusicCollectionList(items: [], continuation: nil))
     }
 
     @Test("Browse calls keep the cookie values out of the request URL")

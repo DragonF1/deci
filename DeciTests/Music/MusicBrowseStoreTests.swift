@@ -361,7 +361,6 @@ struct MusicBrowseStoreTests {
         #expect(ids(loadedCollections(h.store, .albums)) == ["MPREb1", "MPREb2"])
         #expect(h.store.libraryHasMore == [.albums])
         #expect(h.store.libraryState(.playlists) == .idle)
-        #expect(h.store.libraryState(.artists) == .idle)
         #expect(await h.backend.libraryCalls == [.albums])
     }
 
@@ -383,18 +382,18 @@ struct MusicBrowseStoreTests {
     @Test("loadLibraryIfNeeded does nothing while loading or once loaded, and retries after a failure")
     func libraryLoadsOnceAndRetries() async {
         let h = StoreHarness()
-        await h.backend.setLibraryError(.artists, MusicError.http(500))
-        h.store.loadLibraryIfNeeded(.artists)
-        h.store.loadLibraryIfNeeded(.artists)
+        await h.backend.setLibraryError(.albums, MusicError.http(500))
+        h.store.loadLibraryIfNeeded(.albums)
+        h.store.loadLibraryIfNeeded(.albums)
         let message = MusicService.message(for: MusicError.http(500))
-        #expect(await h.until { h.store.libraryState(.artists) == .failed(message) })
+        #expect(await h.until { h.store.libraryState(.albums) == .failed(message) })
         #expect(await h.backend.libraryCalls.count == 1)
 
-        await h.backend.setLibraryError(.artists, nil)
-        await h.backend.setLibrary(.artists, items: MusicSamples.collections("UC1"))
-        h.store.loadLibraryIfNeeded(.artists)
-        #expect(await h.until { loadedCollections(h.store, .artists).count == 1 })
-        h.store.loadLibraryIfNeeded(.artists)
+        await h.backend.setLibraryError(.albums, nil)
+        await h.backend.setLibrary(.albums, items: MusicSamples.collections("MPREb1"))
+        h.store.loadLibraryIfNeeded(.albums)
+        #expect(await h.until { loadedCollections(h.store, .albums).count == 1 })
+        h.store.loadLibraryIfNeeded(.albums)
         await h.letLateWorkLand()
         #expect(await h.backend.libraryCalls.count == 2)
     }

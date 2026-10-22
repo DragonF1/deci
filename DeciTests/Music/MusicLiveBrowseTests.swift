@@ -104,8 +104,8 @@ struct MusicLiveBrowseTests {
         }
 
         // The grid can lack a Liked music tile (the Library view pins its own row), and an account can have no
-        // saved albums or followed artists, so these only have to parse.
-        for section in [MusicLibrarySection.albums, .artists] {
+        // saved albums, so these only have to parse.
+        for section in [MusicLibrarySection.albums] {
             let list = try await backend.library(section)
             report("MUSIC_LIVE library \(section.rawValue) items=\(list.items.count) hasContinuation=\(list.continuation != nil)")
             let listFilled = list.items.allSatisfy { !$0.browseId.isEmpty && !$0.title.isEmpty }

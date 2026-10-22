@@ -226,8 +226,6 @@ enum MusicLibrarySection: String, Sendable, Hashable, CaseIterable, Identifiable
     case playlists
     /// FEmusic_liked_albums
     case albums
-    /// FEmusic_library_corpus_track_artists
-    case artists
 
     var id: String { rawValue }
 }

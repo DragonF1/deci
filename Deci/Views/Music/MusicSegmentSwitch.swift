@@ -70,7 +70,6 @@ extension MusicLibrarySection {
         switch self {
         case .playlists: "Playlists"
         case .albums: "Albums"
-        case .artists: "Artists"
         }
     }
 
@@ -79,7 +78,6 @@ extension MusicLibrarySection {
         switch self {
         case .playlists: "No playlists yet."
         case .albums: "No albums yet."
-        case .artists: "No artists yet."
         }
     }
 

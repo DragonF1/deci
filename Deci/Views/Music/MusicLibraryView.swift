@@ -1,8 +1,8 @@
 // Deci/Views/Music/MusicLibraryView.swift
 import SwiftUI
 
-/// The Library root: the Playlists / Albums / Artists switch, then the saved list, with Liked music first on
-/// Playlists. Playlists and Artists are rows, Albums a grid of covers. One scroll view, so the switch scrolls away with
+/// The Library root: the Playlists / Albums switch, then the saved list, with Liked music first on
+/// Playlists. Playlists are rows, Albums a grid of covers. One scroll view, so the switch scrolls away with
 /// the content. The header's field filters the segment live, from what is loaded: a count line, the rows that match
 /// with the words tinted, and a line for what the other segments hold.
 struct MusicLibraryView: View {
