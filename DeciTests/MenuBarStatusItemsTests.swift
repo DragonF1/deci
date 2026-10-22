@@ -175,4 +175,33 @@ struct MenuBarStatusItemsPositionTests {
 
         #expect(defaults.object(forKey: newKey) == nil)
     }
+
+    // The seed tests use names of their own: a suite's lookups fall through to the app's domain, where the
+    // installed Deci keeps its real DeciMusic and Item-1 positions.
+
+    @Test("the saved position is copied to the launch name, over a stale one")
+    func seedsLaunchPosition() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let saved = "Saved-\(UUID().uuidString)", launch = "Launch-\(UUID().uuidString)"
+        defaults.set(771, forKey: "NSStatusItem Preferred Position \(launch)")
+        defaults.set(794, forKey: "NSStatusItem Preferred Position \(saved)")
+
+        MenuBarStatusItems.seedPosition(from: saved, to: launch, in: defaults)
+
+        #expect(defaults.object(forKey: "NSStatusItem Preferred Position \(launch)") as? Int == 794)
+        #expect(defaults.object(forKey: "NSStatusItem Preferred Position \(saved)") as? Int == 794)
+    }
+
+    @Test("no saved position leaves the launch name alone")
+    func nothingToSeed() throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let saved = "Saved-\(UUID().uuidString)", launch = "Launch-\(UUID().uuidString)"
+        defaults.set(771, forKey: "NSStatusItem Preferred Position \(launch)")
+
+        MenuBarStatusItems.seedPosition(from: saved, to: launch, in: defaults)
+
+        #expect(defaults.object(forKey: "NSStatusItem Preferred Position \(launch)") as? Int == 771)
+    }
 }

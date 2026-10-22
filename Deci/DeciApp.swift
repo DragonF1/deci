@@ -173,6 +173,8 @@ struct DeciApp: App {
         // Ensure macOS ControlCenter never marks the status item as hidden/removed
         UserDefaults.standard.set(1, forKey: "NSStatusItem VisibleCC Item-0")
         UserDefaults.standard.set(1, forKey: "NSStatusItem Visible Item-0")
+        // The Music item is built under its launch name before it is renamed, so it starts in its saved spot.
+        MenuBarStatusItems.seedMusicLaunchPosition()
 
         #if DEBUG
         DebugFaults.install()

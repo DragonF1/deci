@@ -79,6 +79,26 @@ enum MenuBarStatusItems {
         defaults.set(position, forKey: newKey)
     }
 
+    /// The autosave name AppKit gives the Music item when its scene builds it, after the Mixer's "Item-0". The item
+    /// keeps it until `nameMusicItem` renames it.
+    static let musicLaunchName = "Item-1"
+
+    /// Copies the Music item's saved position to the name AppKit builds it under, before its scene builds it. AppKit
+    /// places a new item by the position saved under its name, and macOS rewrites that number only on a Cmd-drag, so
+    /// the launch name's number goes stale once the item is renamed. Without this the item first appears in an old
+    /// spot, and stays there when the rename comes late (a busy login after a restart).
+    static func seedMusicLaunchPosition(in defaults: UserDefaults = .standard) {
+        guard let name = MenuBarItemID.music.autosaveName else { return }
+        seedPosition(from: name, to: musicLaunchName, in: defaults)
+    }
+
+    /// Copies the position saved under one autosave name to another, over whatever the other holds. Nothing is
+    /// written when the first has none.
+    static func seedPosition(from source: String, to target: String, in defaults: UserDefaults = .standard) {
+        guard let position = defaults.object(forKey: "NSStatusItem Preferred Position \(source)") else { return }
+        defaults.set(position, forKey: "NSStatusItem Preferred Position \(target)")
+    }
+
     /// One attempt at giving the Music status item its fixed autosave name. False when its scene has not
     /// built the item yet. Safe to call again: an item that already has the name is left alone. The saved
     /// visibility is made to match the setting first, and the item is set to it again after the rename.
@@ -90,6 +110,9 @@ enum MenuBarStatusItems {
         defer { isConfiguringMusicItem = false }
         writeVisibilityDefaults(shown, for: .music)
         if let oldName = item.autosaveName as String? {
+            if oldName != musicLaunchName {
+                logger.warning("Music menu bar item was built as \(oldName, privacy: .public), not \(Self.musicLaunchName, privacy: .public); its launch spot was not seeded")
+            }
             carryPosition(from: oldName, to: name)
         }
         item.autosaveName = name
@@ -98,13 +121,13 @@ enum MenuBarStatusItems {
     }
 
     /// Names the Music status item once its scene has built it. The scene is created after the app's init
-    /// returns, so this retries for a second, the way the icon coordinator waits for the Mixer's button.
-    /// `isShown` is read when the item is found, so it sees the setting as it is then. If the second runs
-    /// out, the Music popup tries once more when it first opens.
-    static func configureMusicItem(isShown: @escaping @MainActor () -> Bool, retriesLeft: Int = 20) {
+    /// returns, so this retries for up to 10 seconds, long enough for a busy login after a restart. `isShown`
+    /// is read when the item is found, so it sees the setting as it is then. If the time runs out, the Music
+    /// popup tries once more when it first opens.
+    static func configureMusicItem(isShown: @escaping @MainActor () -> Bool, retriesLeft: Int = 200) {
         if nameMusicItem(shown: isShown()) { return }
         guard retriesLeft > 0 else {
-            logger.error("Music menu bar item not found after 20 tries (1s); it keeps its default autosave name until its popup opens")
+            logger.error("Music menu bar item not found after 200 tries (10s); it keeps its default autosave name until its popup opens")
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
