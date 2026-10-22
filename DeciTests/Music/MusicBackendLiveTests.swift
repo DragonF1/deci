@@ -207,6 +207,44 @@ struct MusicBackendLiveTests {
         }
     }
 
+    @Test("mix passes the song and the mix's playlist through in one request with no params")
+    func mix() async throws {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update {
+            $0.nextBodies = ["RDTMAK5uy_handBuiltMix01": (try? MusicFixtures.data("next-mix-first.json")) ?? Data()]
+        }
+        let page = try await harness.backend.mix(playlistId: "RDTMAK5uy_handBuiltMix01", afterVideoId: "hbMixSong001")
+        #expect(page.tracks.map(\.videoId) == ["hbMixSong001", "hbMixSong002", "hbMixSong003", "hbMixSong004"])
+        #expect(page.continuation == "HANDBUILT_MIX_CONTINUATION_2")
+        let bodies = harness.youtube.requests(path: "/youtubei/v1/next").map(FakeYouTube.jsonBody)
+        #expect(bodies.count == 1)
+        #expect(bodies.first?["playlistId"] as? String == "RDTMAK5uy_handBuiltMix01")
+        #expect(bodies.first?["videoId"] as? String == "hbMixSong001")
+        #expect(bodies.first?["params"] == nil)
+    }
+
+    @Test("mix while signed out fails before any network request")
+    func mixSignedOut() async {
+        let harness = makeHarness(signedIn: false)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.mix(playlistId: "RDx", afterVideoId: "x") }
+        #expect(harness.youtube.requests.isEmpty)
+    }
+
+    @Test("mix errors are thrown as they are, a refusal included: there is no radio to fall back to")
+    func mixErrors() async {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update { $0.nextStatus = 401 }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.mix(playlistId: "RDx", afterVideoId: "x") }
+        for status in [404, 429, 503] {
+            harness.youtube.update { $0.nextStatus = status }
+            await #expect(throws: MusicError.http(status)) { _ = try await harness.backend.mix(playlistId: "RDx", afterVideoId: "x") }
+        }
+        #expect(harness.youtube.requests(path: "/youtubei/v1/next").count == 4)
+    }
+
     // MARK: - Browse
 
     private func makeBrowseHarness(signedIn: Bool = true, _ configure: (inout FakeYouTube.Config) -> Void = { _ in }) -> Harness {

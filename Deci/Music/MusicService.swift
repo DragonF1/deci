@@ -58,10 +58,11 @@ final class MusicService {
     let pinnedItems: MusicPinnedItems
     /// Next is on while a track follows. At the last track it stays on when something can still follow: Loop playlist
     /// wraps to the first track, a page waits for its next page or the radio that is loading, and Autoplay (with Loop
-    /// playlist off) plays the staged radio or asks for a new one.
+    /// playlist off) plays the staged radio or asks for a new one. A mix that can still grow always has more.
     var canGoNext: Bool {
         if queue.hasNext { return true }
         if queue.isEmpty { return false }
+        if queue.mixHasMore { return true }
         if loopMode == .playlist { return true }
         if queue.isPage, queue.continuation != nil { return true }
         if queue.awaitsFirstRadioPage, isFillingQueue { return true }
@@ -686,7 +687,9 @@ final class MusicService {
     }
 
     /// Plays `track` with the rest of `page`'s songs queued after it in page order. The rest of a long playlist is
-    /// loaded at once, so Up next lists all of it. With Autoplay the radio of the last track follows the page.
+    /// loaded at once, so Up next lists all of it. With Autoplay the automix of a playlist or an album follows the page
+    /// (the radio of the last song when YouTube names none). A mix page is an endless mix: it is asked for more after its
+    /// last song whatever Autoplay and Loop say.
     func play(_ track: MusicTrack, in page: MusicBrowsePage) {
         noteActivity()
         // A page is its own order: a radio left over from the last queue must not add to it.
@@ -696,7 +699,8 @@ final class MusicService {
             playing: track,
             browseId: page.browseId,
             continuation: page.continuation,
-            automixPlaylistId: page.automixPlaylistId
+            automixPlaylistId: page.automixPlaylistId,
+            mixPlaylistId: page.mixPlaylistId
         )
         // The row that was tapped plays first; every other row, the ones above it too, is mixed in after it.
         if isShuffleOn { queue.shuffle(mixingEarlier: true, using: &shuffleGenerator) }
@@ -981,8 +985,8 @@ final class MusicService {
     /// Up next lists the next lap after the last track: Loop playlist is on and the queue loads no further page.
     var listsNextLap: Bool {
         // A tapped song waiting for its first radio has no lap yet: Up next shows the loading rows. Without Autoplay no
-        // radio is coming, so a lone song is its own lap.
-        guard loopMode == .playlist, !(queue.awaitsFirstRadioPage && isAutoplayOn) else { return false }
+        // radio is coming, so a lone song is its own lap. A mix that can still grow has no lap either: it goes on.
+        guard loopMode == .playlist, !(queue.awaitsFirstRadioPage && isAutoplayOn), !queue.mixHasMore else { return false }
         if queue.continuation == nil { return true }
         // A radio without Autoplay stops at the tracks it has.
         return !queue.isPage && !isAutoplayOn
@@ -1027,9 +1031,15 @@ final class MusicService {
         let exhausted = failureStreak >= Self.maxFailures
         if Self.skipsTrack(error) {
             if skipToNeighbour() { return }
-            player.stop()
-            // At the end of the queue there is nothing to keep; after three failures Next must still work.
-            if !exhausted { endQueue() }
+            // The last song of a page whose mix or radio is still on its way: wait for it (it parks as `.skipped`, a
+            // resolve failure leaves no player error) and keep the song selected, as a player failure does.
+            if !exhausted, direction == .forward, awaitRadio(for: .skipped) {
+                player.failLoading()
+            } else {
+                player.stop()
+                // At the end of the queue there is nothing to keep; after three failures Next must still work.
+                if !exhausted { endQueue() }
+            }
         } else if exhausted {
             player.stop()
         } else {
@@ -1060,11 +1070,11 @@ final class MusicService {
     }
 
     /// Moves past a failed track in the direction the listener was going. False when it cannot.
-    /// Going forward off the end of a Loop playlist wraps to the next lap; the failure cap still stops a queue
-    /// in which nothing plays.
+    /// Going forward off the end of a Loop playlist wraps to the next lap, unless a mix is still to add songs; the
+    /// failure cap still stops a queue in which nothing plays.
     private func skipToNeighbour() -> Bool {
         guard failureStreak < Self.maxFailures else { return false }
-        if direction == .forward, queue.upcomingCount == 0, loopMode == .playlist, !queue.isEmpty {
+        if direction == .forward, queue.upcomingCount == 0, loopMode == .playlist, !queue.isEmpty, !queue.mixHasMore {
             return wrapAround()
         }
         guard let neighbour = direction == .forward ? advanceQueue() : queue.retreat() else { return false }
@@ -1139,9 +1149,12 @@ final class MusicService {
     private func startRadio(seed: String, emptyPages: Int = 0) {
         cancelRadio()
         let generation = radioGeneration
+        // The mix of a mix page's first ask: read now, the queue may be another one by the time the task runs.
+        let mixId = queue.pendingMixPlaylistId
         radioTask = Task { [weak self] in
             await self?.fetchQueuePage(
-                source: .radio(seedVideoId: seed), continuation: nil, generation: generation, emptyPages: emptyPages
+                source: .radio(seedVideoId: seed), continuation: nil, generation: generation, mixId: mixId,
+                emptyPages: emptyPages
             )
         }
     }
@@ -1155,12 +1168,15 @@ final class MusicService {
         // Autoplay (Loop playlist or not), then with Autoplay and Loop playlist off the radio of the last track. A page
         // stages it while its last tracks play, so it shows in Up next and the hand-over is gapless; a radio that has
         // run out carries on from a new seed. A radio that could not be reached is asked for again by the next top-up.
-        if let seed = queue.refillSeed, (queue.awaitsFirstRadioPage && isAutoplayOn) || playsAutoplay {
+        // A mix page is the exception: its mix is the playlist, so it is asked for its songs whatever Autoplay and Loop
+        // playlist say, and what it answers joins the queue itself (see `fetchQueuePage`).
+        if let seed = queue.refillSeed, queue.mixHasMore || (queue.awaitsFirstRadioPage && isAutoplayOn) || playsAutoplay {
             startRadio(seed: seed, emptyPages: emptyPages)
             return
         }
-        // Without Autoplay a radio queue stops at the tracks it has; a page still loads its own later pages.
-        if case .radio = queue.source, !isAutoplayOn { return }
+        // Without Autoplay a radio queue stops at the tracks it has, unless a mix still has pages to load; a page still
+        // loads its own later pages.
+        if case .radio = queue.source, !isAutoplayOn, !queue.mixHasMore { return }
         guard queue.needsMore, let source = queue.source, let continuation = queue.continuation else { return }
         cancelQueueRetry()
         let generation = radioGeneration
@@ -1169,9 +1185,15 @@ final class MusicService {
         }
     }
 
-    private func requestQueuePage(source: MusicQueue.Source, continuation: String?) async throws -> MusicQueuePage {
+    /// `mixPlaylistId` is the mix to ask for its first songs after the seed, when the queue is a mix page still waiting for
+    /// them.
+    private func requestQueuePage(
+        source: MusicQueue.Source, continuation: String?, mixPlaylistId: String? = nil
+    ) async throws -> MusicQueuePage {
         switch (source, continuation) {
         case (.radio(let seed), nil):
+            // A mix page asks its mix; the backend does not fall back, so a mix YouTube refuses comes back as an error.
+            if let mixPlaylistId { return try await backend.mix(playlistId: mixPlaylistId, afterVideoId: seed) }
             // The radio that follows a playlist or an album is its automix, when the page has one (the backend falls
             // back to the song's radio if YouTube offers none); every other radio is the song's own.
             if queue.isPage, let playlistId = queue.automixPlaylistId {
@@ -1187,10 +1209,13 @@ final class MusicService {
         }
     }
 
-    private func fetchQueuePage(source: MusicQueue.Source, continuation: String?, generation: Int, emptyPages: Int = 0) async {
+    /// `mixId` is the mix the first ask of a mix page goes to, fixed when the ask was started (see `startRadio`).
+    private func fetchQueuePage(
+        source: MusicQueue.Source, continuation: String?, generation: Int, mixId: String? = nil, emptyPages: Int = 0
+    ) async {
         let page: MusicQueuePage
         do {
-            page = try await requestQueuePage(source: source, continuation: continuation)
+            page = try await requestQueuePage(source: source, continuation: continuation, mixPlaylistId: mixId)
         } catch {
             // No more tracks is not an error: the song keeps playing, the queue just does not grow.
             guard generation == radioGeneration else { return }
@@ -1198,12 +1223,19 @@ final class MusicService {
             logger.info("queue page unavailable: \(Self.logDescription(of: error), privacy: .public)")
             if Self.isSignedOut(error) {
                 if case .radio(let seed) = source, continuation == nil { queue.noteAsked(seed) }
+                if mixId != nil { queue.forgetMix() }
                 queue.clearContinuation()
                 handle(error)
                 settlePendingAdvance()
                 return
             }
-            if MusicError.endsPaging(error) {
+            if MusicError.endsPaging(error), mixId != nil {
+                // A mix that is turned down or cannot be read is not a mix: the page follows the Autoplay rules like any
+                // playlist, so the radio of the same last song is still to ask. Forgetting the mix is the progress, so
+                // this is not counted as an empty page.
+                queue.forgetMix()
+                topUpQueue(emptyPages: emptyPages)
+            } else if MusicError.endsPaging(error) {
                 // A page that cannot be read or that the server rejects would fail the same way again: stop paging,
                 // and never ask that radio again. The queue then refills from the next seed, counted as an empty
                 // page so a server that rejects every request cannot keep it asking.
@@ -1220,13 +1252,26 @@ final class MusicService {
         guard generation == radioGeneration, !Task.isCancelled else { return }
         radioTask = nil
         queueRetryAttempts = 0
+        if mixId != nil, page.continuation == nil, queue.addableCount(of: page.tracks) == 0 {
+            // A mix with nothing new to play (no songs, or only ones the queue has) is as good as turned down. The seed is
+            // not marked asked, so the page's own rules ask the radio of the same last song.
+            queue.forgetMix()
+            topUpQueue(emptyPages: emptyPages)
+            if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
+            return
+        }
         let added: Int
-        if case .radio(let seed) = source, continuation == nil, queue.isPage {
+        if case .radio(let seed) = source, continuation == nil, queue.isPage, mixId == nil {
             // The radio that follows a page waits beside it until the page runs out.
             added = queue.stageAutoplay(page.tracks, continuation: page.continuation, seed: seed)
         } else {
-            // The radio has answered: from here the queue is the radio's, even if it had nothing new to add.
-            if case .radio(let seed) = source { queue.adoptRadio(seedVideoId: seed) }
+            // The radio has answered: from here the queue is the radio's, even if it had nothing new to add. A mix's
+            // answer joins the queue itself and the queue stays the mix's; a plain radio asked once the mix has run dry
+            // makes it the radio's.
+            if case .radio(let seed) = source {
+                queue.adoptRadio(seedVideoId: seed)
+                if mixId == nil, continuation == nil { queue.forgetMix() }
+            }
             added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator)
         }
         if added > 0, resumePendingAdvance() { return }
@@ -1294,12 +1339,13 @@ final class MusicService {
     }
 
     /// The track that plays after this one. Loop song replays the same track, so that is the stream worth resolving
-    /// ahead. At the end of the queue it is the staged radio's first track, or the first track again under Loop playlist.
+    /// ahead. At the end of the queue it is the staged radio's first track, or the first track again under Loop playlist
+    /// (not while a mix can still grow: its next song is not known yet).
     private var prefetchTarget: MusicTrack? {
         if loopMode == .song { return queue.current }
         if let next = queue.upcoming.first { return next }
         if playsAutoplay { return queue.autoplay.first }
-        if loopMode == .playlist, queue.continuation == nil { return queue.tracks.first }
+        if loopMode == .playlist, queue.continuation == nil, !queue.mixHasMore { return queue.tracks.first }
         return nil
     }
 

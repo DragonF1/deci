@@ -129,6 +129,28 @@ struct MusicBrowsePageAutomixTests {
         #expect(MusicSamples.page("VL").automixPlaylistId == nil)
     }
 
+    @Test("A mix page names its own mix playlist, and every other page names none")
+    func pageMixPlaylistId() {
+        for (id, playlist) in [
+            ("VLRDTMAK5uy_abc", "RDTMAK5uy_abc"), ("VLRDAMVM4D7u5KF7SP8", "RDAMVM4D7u5KF7SP8"),
+            ("VLRDEMabc", "RDEMabc"), ("VLRDATabc", "RDATabc"),
+        ] {
+            #expect(MusicSamples.page(id).mixPlaylistId == playlist, "\(id)")
+        }
+        for id in ["VLPL123", "VLLM", "VLRDCLAK5uy_kAbCdEf", "MPREb_abc", "UCabc", "FEmusic_home", "", "VL"] {
+            #expect(MusicSamples.page(id).mixPlaylistId == nil, "\"\(id)\"")
+        }
+        #expect(MusicSamples.page("MPREb_abc", audioPlaylistId: "OLAK5uy_xyz").mixPlaylistId == nil)
+    }
+
+    @Test("A page is a mix or has an automix, never both")
+    func mixOrAutomix() {
+        for id in ["VLRDTMAK5uy_abc", "VLRDAMVM4D7u5KF7SP8", "VLRDCLAK5uy_kAbCdEf", "VLPL123", "VLLM", "UCabc", "MPREb_abc"] {
+            let page = MusicSamples.page(id)
+            #expect(page.mixPlaylistId == nil || page.automixPlaylistId == nil, "\(id)")
+        }
+    }
+
     @Test("A page carries no audio playlist id unless it is given one")
     func audioPlaylistIdDefaults() {
         #expect(MusicSamples.page("VLPL123").audioPlaylistId == nil)

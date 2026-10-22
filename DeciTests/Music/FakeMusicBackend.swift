@@ -71,6 +71,11 @@ actor FakeMusicBackend: MusicBackend {
         let playlistId: String
     }
 
+    nonisolated struct MixCall: Hashable, Sendable {
+        let playlistId: String
+        let afterVideoId: String
+    }
+
     nonisolated struct MoreLibraryCall: Hashable, Sendable {
         let section: MusicLibrarySection
         let continuation: String
@@ -124,6 +129,10 @@ actor FakeMusicBackend: MusicBackend {
     private var automixErrors: [String: any Error] = [:]
     private var automixGates: [String: MusicTestGate] = [:]
     private var automixFailures: [String: (error: any Error, remaining: Int)] = [:]
+    private var mixPages: [String: MusicQueuePage] = [:]
+    private var mixErrors: [String: any Error] = [:]
+    private var mixGates: [String: MusicTestGate] = [:]
+    private var mixFailures: [String: (error: any Error, remaining: Int)] = [:]
     private var morePages: [MoreRadioCall: MusicQueuePage] = [:]
     private var moreErrors: [MoreRadioCall: any Error] = [:]
     private var moreGates: [MoreRadioCall: MusicTestGate] = [:]
@@ -174,6 +183,7 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var radioSeeds: [String] = []
     private(set) var moreRadioCalls: [MoreRadioCall] = []
     private(set) var autoplayCalls: [AutoplayCall] = []
+    private(set) var mixCalls: [MixCall] = []
     private(set) var homeCallCount = 0
     private(set) var moreHomeCalls: [String] = []
     private(set) var historyCallCount = 0
@@ -263,6 +273,17 @@ actor FakeMusicBackend: MusicBackend {
     /// The automix after `afterVideoId` fails with `error` for the next `times` calls, then answers as scripted.
     func setAutomixFailures(afterVideoId: String, _ error: any Error, times: Int) {
         automixFailures[afterVideoId] = (error, times)
+    }
+    /// What the mix asked after `afterVideoId` answers with. Scripted per song like the automix: a song with nothing
+    /// scripted here (no page, error, gate or failures) delegates to this fake's own `radio`.
+    func setMix(afterVideoId: String, tracks: [Deci.MusicTrack], continuation: String? = nil) {
+        mixPages[afterVideoId] = MusicQueuePage(tracks: tracks, continuation: continuation)
+    }
+    func setMixError(afterVideoId: String, _ error: (any Error)?) { mixErrors[afterVideoId] = error }
+    func setMixGate(afterVideoId: String, _ gate: MusicTestGate) { mixGates[afterVideoId] = gate }
+    /// The mix after `afterVideoId` fails with `error` for the next `times` calls, then answers as scripted.
+    func setMixFailures(afterVideoId: String, _ error: any Error, times: Int) {
+        mixFailures[afterVideoId] = (error, times)
     }
     func setMoreRadio(seed: String, continuation: String, tracks: [Deci.MusicTrack], next: String? = nil) {
         morePages[MoreRadioCall(seed: seed, continuation: continuation)] = MusicQueuePage(tracks: tracks, continuation: next)
@@ -578,6 +599,19 @@ actor FakeMusicBackend: MusicBackend {
         }
         if let error = automixErrors[afterVideoId] { throw error }
         if let page = automixPages[afterVideoId] { return page }
+        return try await radio(seedVideoId: afterVideoId)
+    }
+
+    func mix(playlistId: String, afterVideoId: String) async throws -> MusicQueuePage {
+        mixCalls.append(MixCall(playlistId: playlistId, afterVideoId: afterVideoId))
+        if let gate = mixGates[afterVideoId] { await gate.wait() }
+        if var failing = mixFailures[afterVideoId], failing.remaining > 0 {
+            failing.remaining -= 1
+            mixFailures[afterVideoId] = failing
+            throw failing.error
+        }
+        if let error = mixErrors[afterVideoId] { throw error }
+        if let page = mixPages[afterVideoId] { return page }
         return try await radio(seedVideoId: afterVideoId)
     }
 

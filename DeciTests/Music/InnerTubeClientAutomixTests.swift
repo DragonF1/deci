@@ -133,11 +133,27 @@ struct InnerTubeClientAutomixTests {
         #expect(youtube.requests(path: "/").count == 1)
     }
 
-    @Test("An automix page with no songs is returned as it is, not replaced by the radio")
-    func emptyAutomixPage() async throws {
+    @Test("An automix that answers with no songs and no continuation is no automix: the call falls back to the radio")
+    func emptyAutomixPageFallsBack() async throws {
         let youtube = try automixYouTube { $0.nextBodies[Self.automixId] = Self.panelJSON(items: []) }
         let page = try await autoplay(makeClient(youtube))
+
+        #expect(page.tracks.map(\.videoId) == Self.radioVideoIds)
+        #expect(page.continuation == "SCRUBBED_RADIO_CONTINUATION_2")
+        let bodies = nextBodies(youtube)
+        #expect(bodies.count == 3)
+        #expect(bodies.last?["videoId"] as? String == Self.afterVideoId)
+        #expect(bodies.last?["playlistId"] as? String == "RDAMVM" + Self.afterVideoId)
+        #expect(bodies.last?["params"] == nil)
+    }
+
+    @Test("An automix with no songs but a continuation is kept: the continuation may still lead to songs")
+    func emptyAutomixPageWithContinuationIsKept() async throws {
+        let youtube = try automixYouTube { $0.nextBodies[Self.automixId] = Self.panelJSON(items: [], continuation: "AMX_NEXT") }
+        let page = try await autoplay(makeClient(youtube))
+
         #expect(page.tracks.isEmpty)
+        #expect(page.continuation == "AMX_NEXT")
         #expect(youtube.requests(path: Self.nextPath).count == 2)
     }
 
@@ -284,9 +300,11 @@ struct InnerTubeClientAutomixTests {
 
     // MARK: - Builders
 
-    /// A queue panel of `items` and nothing else: no continuation, and with no items a valid page that lists nothing.
-    private static func panelJSON(items: [[String: Any]]) -> Data {
-        let panel: [String: Any] = ["contents": items]
+    /// A queue panel of `items` and nothing else: no continuation unless one is given, and with no items a valid page
+    /// that lists nothing.
+    private static func panelJSON(items: [[String: Any]], continuation: String? = nil) -> Data {
+        var panel: [String: Any] = ["contents": items]
+        if let continuation { panel["continuations"] = [["nextRadioContinuationData": ["continuation": continuation]]] }
         let root: [String: Any] = [
             "contents": ["singleColumnMusicWatchNextResultsRenderer": ["tabbedRenderer": ["watchNextTabbedResultsRenderer": ["tabs": [
                 ["tabRenderer": ["content": ["musicQueueRenderer": ["content": ["playlistPanelRenderer": panel]]]]],

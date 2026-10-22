@@ -266,6 +266,9 @@ struct MusicBrowsePage: Sendable, Equatable {
         return id
     }
 
+    /// The mix playlist this page is, nil when it is not a mix: the queue it starts keeps asking the mix for more.
+    var mixPlaylistId: String? { Self.mixPlaylistId(ofBrowseId: browseId) }
+
     /// The playlist whose automix follows this page: a playlist's own id ("VLLM" gives "LM"), an album's audio playlist.
     /// Nil for a mix, an artist page and anything else, which end in the plain radio.
     var automixPlaylistId: String? {
@@ -346,6 +349,10 @@ protocol MusicBackend: Sendable {
     /// First page of the automix of playlist `playlistId` after `afterVideoId`, the song the playlist ends on. Falls back
     /// to the radio of `afterVideoId` when YouTube names no automix. Continuations are `moreRadio` pages.
     func autoplay(afterVideoId: String, playlistId: String) async throws -> MusicQueuePage
+    /// First page of the mix `playlistId` ("RDTMAK5uy_..." and the other RD ids) after `afterVideoId`, the song the mix
+    /// page ends on. Unlike the automix there is no fallback: a mix YouTube refuses throws, and the caller decides what
+    /// follows. Continuations are `moreRadio` pages.
+    func mix(playlistId: String, afterVideoId: String) async throws -> MusicQueuePage
     /// Home shelves (browse FEmusic_home).
     func home() async throws -> MusicHomePage
     /// The shelves after `continuation` on Home.

@@ -54,7 +54,7 @@ struct MusicQueueListing {
         self.upcoming = upcoming
         self.autoplayStart = autoplayStart
         // With Autoplay off a lone song never gets the radio its source would name.
-        sourceLine = queue.awaitsFirstRadioPage && !autoplayIsOn ? nil : Self.sourceLine(for: queue.source)
+        sourceLine = queue.awaitsFirstRadioPage && !autoplayIsOn ? nil : Self.sourceLine(for: queue.source, isMix: queue.mixPlaylistId != nil)
     }
 
     /// Whether the row at `shownIndex` of a filtered list is the first shown row from the staged radio, so the
@@ -86,11 +86,14 @@ struct MusicQueueListing {
     }
 
     /// The line under "Playing Next". The queue knows its source's id, not its name, so the line says what kind of
-    /// source it was where the id tells.
-    static func sourceLine(for source: MusicQueue.Source?) -> String? {
+    /// source it was where the id tells. A queue that is a mix's, as a page or as the radio it went on as, comes from
+    /// the mix.
+    static func sourceLine(for source: MusicQueue.Source?, isMix: Bool = false) -> String? {
         switch source {
         case nil:
             nil
+        case _ where isMix:
+            "From mix"
         case .radio:
             "From radio"
         case .page(let browseId):

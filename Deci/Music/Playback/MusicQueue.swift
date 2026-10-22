@@ -2,8 +2,10 @@
 import Foundation
 
 /// The play order for the Music tab: the tapped track first, then radio pages as they arrive,
-/// or a playlist or album page in its own order, loaded in full. Near the end of a page the radio of its last track
-/// is staged in `autoplay` and joins the queue when the page runs out.
+/// or a playlist or album page in its own order, loaded in full. Near the end of a page the automix of its playlist
+/// (the radio of its last track when it has none) is staged in `autoplay` and joins the queue when the page runs out.
+/// A mix page is the exception: its mix is asked after the page's last song and what it answers joins the queue itself,
+/// page after page while the mix has a continuation (`mixPlaylistId`, `mixHasMore`).
 /// A plain value; `MusicService` decides when to fetch and what to play.
 struct MusicQueue: Equatable {
     /// Fetch the next radio page, or ask for a radio to follow, when this many tracks, or fewer, are left after the
@@ -32,6 +34,9 @@ struct MusicQueue: Equatable {
     private(set) var source: Source?
     /// The playlist whose automix follows a page queue, when its page has one. Nil for a radio queue and for an empty one.
     private(set) var automixPlaylistId: String?
+    /// The mix playlist this queue is the endless play of, when it was started from a mix page. It stays through the
+    /// radio the queue becomes, and goes when the mix is turned down or runs dry into a plain radio. Nil otherwise.
+    private(set) var mixPlaylistId: String?
     /// The play order is shuffled. `tracks` is then the shuffled order and `unshuffle()` brings the natural one back.
     private(set) var isShuffled = false
     /// Where each track sits in the natural order, kept only while shuffled.
@@ -111,6 +116,7 @@ struct MusicQueue: Equatable {
         seedVideoId = track.videoId
         source = .radio(seedVideoId: track.videoId)
         automixPlaylistId = nil
+        mixPlaylistId = nil
         forgetShuffle()
         forgetAutoplay()
         forgetEdits()
@@ -118,13 +124,15 @@ struct MusicQueue: Equatable {
 
     /// Replaces the queue with a page's tracks in page order, positioned on `track`. The tracks
     /// before it stay for Previous. A track the page does not list is put in front of it. `automixPlaylistId` is the
-    /// playlist whose automix follows the page, nil when the page has none.
+    /// playlist whose automix follows the page, nil when the page has none. `mixPlaylistId` is the mix the page is, nil
+    /// for any other page; the queue then asks that mix for more instead of staging an automix.
     mutating func start(
         page list: [MusicTrack],
         playing track: MusicTrack,
         browseId: String,
         continuation: String?,
-        automixPlaylistId: String? = nil
+        automixPlaylistId: String? = nil,
+        mixPlaylistId: String? = nil
     ) {
         var seen = Set<String>()
         var ordered = list.filter { seen.insert($0.videoId).inserted }
@@ -135,6 +143,7 @@ struct MusicQueue: Equatable {
         seedVideoId = nil
         source = .page(browseId: browseId)
         self.automixPlaylistId = automixPlaylistId
+        self.mixPlaylistId = mixPlaylistId.flatMap { $0.isEmpty ? nil : $0 }
         forgetShuffle()
         forgetAutoplay()
         forgetEdits()
@@ -152,8 +161,7 @@ struct MusicQueue: Equatable {
     /// after the next track instead of going on the end. The tracks that were already queued keep their order.
     @discardableResult
     mutating func append<G: RandomNumberGenerator>(_ page: [MusicTrack], continuation: String?, using generator: inout G) -> Int {
-        var seen = Set(tracks.map(\.videoId))
-        var fresh = page.filter { !removedIds.contains($0.videoId) && seen.insert($0.videoId).inserted }
+        var fresh = addable(from: page)
         self.continuation = continuation
         guard isShuffled else {
             // A song added to the end of a page that was still loading stays behind the rest of the page.
@@ -185,6 +193,17 @@ struct MusicQueue: Equatable {
             tracks.insert(track, at: start + slot)
         }
         return fresh.count
+    }
+
+    /// How many of a page's tracks `append` would add: the ones the queue does not have and the listener did not take out,
+    /// each once. Changes nothing.
+    func addableCount(of page: [MusicTrack]) -> Int {
+        addable(from: page).count
+    }
+
+    private func addable(from page: [MusicTrack]) -> [MusicTrack] {
+        var seen = Set(tracks.map(\.videoId))
+        return page.filter { !removedIds.contains($0.videoId) && seen.insert($0.videoId).inserted }
     }
 
     @discardableResult
@@ -227,10 +246,11 @@ struct MusicQueue: Equatable {
     }
 
     /// The queue carries on as the radio seeded by `seedVideoId`: the tracks and the position stay, later pages are
-    /// `moreRadio`.
+    /// `moreRadio`. A radio has no playlist to ask the automix of, so that id goes.
     mutating func adoptRadio(seedVideoId: String) {
         self.seedVideoId = seedVideoId
         source = .radio(seedVideoId: seedVideoId)
+        automixPlaylistId = nil
         askedSeeds.insert(seedVideoId)
     }
 
@@ -238,6 +258,17 @@ struct MusicQueue: Equatable {
     mutating func noteAsked(_ seed: String) {
         askedSeeds.insert(seed)
     }
+
+    /// The mix was turned down or ran dry into a plain radio: the queue is no longer a mix's. Nothing else changes.
+    mutating func forgetMix() {
+        mixPlaylistId = nil
+    }
+
+    /// The mix to ask for its first songs: set only while the queue is still the mix page, before the mix has answered.
+    var pendingMixPlaylistId: String? { isPage ? mixPlaylistId : nil }
+
+    /// The mix can still grow: its first answer has not come yet, or the answer left a continuation to load.
+    var mixHasMore: Bool { mixPlaylistId != nil && (isPage || continuation != nil) }
 
     /// Keeps a radio page to play after the page queue runs out, without the tracks the queue already has.
     /// Returns how many tracks it kept; none when the queue is not a page.

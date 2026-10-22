@@ -252,6 +252,62 @@ struct MusicQueueListingTests {
         #expect(line("UCsample") == "From playlist or album")
     }
 
+    @Test("a mix names itself, whichever kind of source the queue currently is")
+    func mixSources() {
+        for source in [
+            MusicQueue.Source.page(browseId: "VLRDTMAK5uy_mix"), .page(browseId: "VLPLsample"), .page(browseId: "MPREb_sample"),
+            .page(browseId: "VLLM"), .page(browseId: "UCsample"), .radio(seedVideoId: "a"),
+        ] {
+            #expect(MusicQueueListing.sourceLine(for: source, isMix: true) == "From mix", "\(source)")
+        }
+    }
+
+    @Test("a queue that is not a mix names its source as it always did")
+    func notMixSources() {
+        let sources: [(MusicQueue.Source, String)] = [
+            (.radio(seedVideoId: "a"), "From radio"), (.page(browseId: "MPREb_sample"), "From album"),
+            (.page(browseId: "VLLM"), "From Liked music"), (.page(browseId: "VLPLsample"), "From playlist"),
+            (.page(browseId: "UCsample"), "From playlist or album"),
+        ]
+        for (source, line) in sources {
+            #expect(MusicQueueListing.sourceLine(for: source, isMix: false) == line, "\(source)")
+            #expect(MusicQueueListing.sourceLine(for: source) == line, "\(source)")
+        }
+    }
+
+    @Test("a queue with no source has no source line, mix or not")
+    func noSourceNoLine() {
+        #expect(MusicQueueListing.sourceLine(for: nil, isMix: true) == nil)
+        #expect(MusicQueueListing.sourceLine(for: nil, isMix: false) == nil)
+        #expect(MusicQueueListing.sourceLine(for: nil) == nil)
+    }
+
+    @Test("a queue started from a mix page says it comes from a mix, and says so after the mix answered")
+    func mixQueueListing() {
+        var queue = MusicQueue()
+        let track = MusicSamples.track("a")
+        queue.start(page: [track], playing: track, browseId: "VLRDTMAK5uy_mix", continuation: nil, mixPlaylistId: "RDTMAK5uy_mix")
+        #expect(MusicQueueListing(queue: queue).sourceLine == "From mix")
+        #expect(MusicQueueListing(queue: queue, autoplayIsOn: false).sourceLine == "From mix")
+
+        queue.adoptRadio(seedVideoId: "a")
+        #expect(MusicQueueListing(queue: queue).sourceLine == "From mix")
+        #expect(MusicQueueListing(queue: queue, autoplayIsOn: false).sourceLine == "From mix")
+        #expect(MusicQueueListing.nowPlayingKicker(sourceLine: MusicQueueListing(queue: queue).sourceLine) == "NOW PLAYING \u{00B7} FROM MIX")
+    }
+
+    @Test("a mix that was forgotten goes back to naming its page or its radio")
+    func forgottenMixListing() {
+        var queue = MusicQueue()
+        let track = MusicSamples.track("a")
+        queue.start(page: [track], playing: track, browseId: "VLRDTMAK5uy_mix", continuation: nil, mixPlaylistId: "RDTMAK5uy_mix")
+        queue.forgetMix()
+        #expect(MusicQueueListing(queue: queue).sourceLine == "From playlist")
+
+        queue.adoptRadio(seedVideoId: "a")
+        #expect(MusicQueueListing(queue: queue).sourceLine == "From radio")
+    }
+
     @Test("the kicker over the song in the player names the source in capitals")
     func nowPlayingKicker() {
         #expect(MusicQueueListing.nowPlayingKicker(sourceLine: "From playlist") == "NOW PLAYING \u{00B7} FROM PLAYLIST")

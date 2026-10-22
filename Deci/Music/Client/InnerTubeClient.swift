@@ -217,8 +217,9 @@ actor InnerTubeClient {
     /// `afterVideoId`, the song the playlist ends on. YouTube names the automix in the last row of the playlist's own queue,
     /// so this asks twice: for the playlist's queue to read that row, then for the automix it points to. It falls back to
     /// the radio of `afterVideoId` when the playlist names no automix or YouTube rejects either request. Anything that
-    /// may pass (no network, a 5xx, a timeout, a rate limit) and a lost session are thrown. Continuations are `moreRadio`
-    /// pages. Only counts are logged, never an id.
+    /// may pass (no network, a 5xx, a timeout, a rate limit) and a lost session are thrown. An automix that answers with
+    /// no songs and no continuation counts as none. Continuations are `moreRadio` pages. Only counts and error kinds are
+    /// logged, never an id.
     func autoplay(afterVideoId: String, playlistId: String) async throws -> MusicQueuePage {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         let seed = afterVideoId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -233,19 +234,47 @@ actor InnerTubeClient {
             Self.log.info("autoplay found no automix, using the radio")
         } catch where MusicError.endsPaging(error) {
             // A rejected or unreadable answer would come back the same way: the song still has its radio.
-            Self.log.info("autoplay was turned down, using the radio")
+            Self.log.info("autoplay was turned down (\(Self.logKind(of: error), privacy: .public)), using the radio")
         }
         return try await radio(seedVideoId: seed)
     }
 
-    /// The automix page, or nil when the playlist's queue has no automix preview.
+    /// The first page of the mix `playlistId` ("RDTMAK5uy_..." and the other RD ids) after `afterVideoId`, the song the mix
+    /// page ends on, starting with that song. The request carries no params, so YouTube plays the mix on from the song.
+    /// Unlike `autoplay` there is no radio to fall back to: a rejected or unreadable answer, anything that may pass (no
+    /// network, a 5xx, a timeout, a rate limit) and a lost session are thrown, and the caller decides what follows.
+    /// Continuations are `moreRadio` pages. Only counts are logged, never an id.
+    func mix(playlistId: String, afterVideoId: String) async throws -> MusicQueuePage {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let seed = afterVideoId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let playlist = playlistId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !seed.isEmpty, !playlist.isEmpty else { return Self.emptyPage }
+        let session = try await sessionOrFallback()
+        let data = try await post("next", session: session, body: Self.radioBody(videoId: seed, playlistId: playlist))
+        let page = try InnerTubeParser.radioPage(from: data)
+        Self.log.info("mix returned \(page.tracks.count) rows")
+        return page
+    }
+
+    /// The automix page, or nil when the playlist's queue has no automix preview or the automix has nothing to play: no
+    /// songs and no continuation, so the song's own radio is the better answer.
     private func automixPage(afterVideoId seed: String, playlistId: String) async throws -> MusicQueuePage? {
         let session = try await sessionOrFallback()
         let queue = try await post("next", session: session, body: Self.radioBody(videoId: seed, playlistId: playlistId))
         guard let endpoint = try InnerTubeParser.automixEndpoint(from: queue) else { return nil }
         // The automix is asked for by its playlist and params alone: the preview names no video.
         let data = try await post("next", session: session, body: Self.radioBody(videoId: nil, playlistId: endpoint.playlistId, params: endpoint.params))
-        return try InnerTubeParser.radioPage(from: data)
+        let page = try InnerTubeParser.radioPage(from: data)
+        return page.tracks.isEmpty && page.continuation == nil ? nil : page
+    }
+
+    /// Safe for logs: the kind of an answer that ends paging (unreadable, or the HTTP status), never a URL or response text.
+    private static func logKind(of error: any Error) -> String {
+        switch error as? MusicError {
+        case .parse: "parse"
+        case .http(let status): "http \(status)"
+        default: "other"
+        }
     }
 
     /// The `next` body of a radio queue: a seed video and its playlist, or an automix's playlist and params.

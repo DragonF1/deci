@@ -78,6 +78,24 @@ struct MusicQueueAutomixTests {
         #expect(other.automixPlaylistId == nil)
     }
 
+    @Test("adopting a radio clears the id: a radio queue has no playlist to ask the automix of")
+    func adoptClears() {
+        var queue = makePage(["a", "b", "c"], tap: "c")
+        queue.adoptRadio(seedVideoId: "c")
+        #expect(queue.automixPlaylistId == nil)
+        #expect(queue.source == .radio(seedVideoId: "c"))
+    }
+
+    @Test("the radio that takes over from a page clears the id too")
+    func takeAutoplayClears() {
+        var queue = makePage(["a", "b", "c"], tap: "c")
+        queue.stageAutoplay([song("r1"), song("r2")], continuation: nil, seed: "c")
+        #expect(queue.automixPlaylistId == "PL1", "staging the radio leaves the page a page, with its playlist")
+        let took = queue.takeAutoplay()
+        #expect(took)
+        #expect(queue.automixPlaylistId == nil)
+    }
+
     @Test("clearing the queue clears the id")
     func cleared() {
         var queue = makePage()

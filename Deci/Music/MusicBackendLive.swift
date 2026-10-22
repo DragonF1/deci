@@ -70,6 +70,10 @@ actor MusicBackendLive: MusicBackend {
         try await client.autoplay(afterVideoId: afterVideoId, playlistId: playlistId)
     }
 
+    func mix(playlistId: String, afterVideoId: String) async throws -> MusicQueuePage {
+        try await client.mix(playlistId: playlistId, afterVideoId: afterVideoId)
+    }
+
     /// The continuation token already carries the seed, so only the token goes out.
     func moreRadio(seedVideoId: String, continuation: String) async throws -> MusicQueuePage {
         try await client.moreRadio(continuation: continuation)

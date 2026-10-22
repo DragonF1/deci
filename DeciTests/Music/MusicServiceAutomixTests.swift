@@ -177,14 +177,15 @@ struct MusicServiceAutomixTests {
         #expect(await h.backend.radioSeeds == ["c"])
     }
 
-    @Test("a mix gets the plain radio: it is not a playlist to take an automix of")
+    @Test("a mix asks its own mix, not the automix and not the plain radio: it is not a playlist to take an automix of")
     func mixPage() async {
         let h = AutomixServiceHarness()
-        await h.backend.setRadio(seed: "c", tracks: MusicSamples.tracks("c", "r1"))
+        await h.backend.setMix(afterVideoId: "c", tracks: MusicSamples.tracks("c", "r1", "r2", "r3", "r4", "r5"))
         await h.start(h.page(["a", "b", "c"], browseId: "VLRDTMAK5uy_mix"), tap: "c")
 
         #expect(await h.backend.autoplayCalls.isEmpty)
-        #expect(await h.backend.radioSeeds == ["c"])
+        #expect(await h.backend.radioSeeds.isEmpty)
+        #expect(await h.backend.mixCalls == [FakeMusicBackend.MixCall(playlistId: "RDTMAK5uy_mix", afterVideoId: "c")])
     }
 
     @Test("Liked Music asks the automix of LM")
