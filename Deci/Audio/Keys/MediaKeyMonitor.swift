@@ -11,6 +11,7 @@ import os
 protocol MediaKeyHUDPresenting: AnyObject {
     func show(sliderFraction: Double, mute: Bool, deviceName: String)
     func swallowObserved()
+    func passThroughObserved()
 }
 
 @MainActor
@@ -18,20 +19,16 @@ protocol MediaKeyIconFlashing: AnyObject {
     func flashDevice()
 }
 
-/// What the modifier keys held with a volume key mean: which step chord they pick, and the Shift and
-/// Option state the feedback pop sees. Under Command, Shift belongs to the chord, so it must not also
-/// invert the pop.
+/// The Shift and Option state the feedback pop sees for a volume key press. A modifier that belongs to the
+/// matched row's combo is part of choosing the step, so it must not also invert the pop: under a Command+Shift
+/// row, Shift is spent on the row.
 struct VolumeKeyModifiers: Equatable {
-    let chord: VolumeStepChord
     let feedbackShiftHeld: Bool
-    let optionHeld: Bool
+    let feedbackOptionHeld: Bool
 
-    init(flags: CGEventFlags) {
-        let command = flags.contains(.maskCommand)
-        let shift = flags.contains(.maskShift)
-        chord = .from(command: command, shift: shift)
-        feedbackShiftHeld = shift && !command
-        optionHeld = flags.contains(.maskAlternate)
+    init(held: VolumeKeyCombo, matched: VolumeKeyCombo) {
+        feedbackShiftHeld = held.contains(.shift) && !matched.contains(.shift)
+        feedbackOptionHeld = held.contains(.option) && !matched.contains(.option)
     }
 }
 
@@ -48,6 +45,7 @@ final class MediaKeyMonitor {
     private let hudController: MediaKeyHUDPresenting
     private let popupVisibility: PopupVisibilityService
     private let mediaKeyStatus: MediaKeyStatus
+    private let volumeKeyRecorder: VolumeKeyRecorder
     private let logger = Logger(subsystem: "com.abraham.Deci", category: "MediaKeyMonitor")
 
     // MARK: - Tap state
@@ -63,6 +61,19 @@ final class MediaKeyMonitor {
     var lastDDCRepeatTime: DispatchTime?
 
     private var ghostTapProbeTask: Task<Void, Never>?
+
+    /// How the last fresh press of a volume key was routed. macOS sends the auto-repeats of a held key with
+    /// whatever modifiers are down at that moment, so a repeat follows its press instead of being matched from
+    /// scratch: a modifier released mid-hold must not hand the rest of the hold to macOS.
+    private enum PressRoute {
+        /// Deci stepped the volume. The row is kept by id so a row removed mid-hold is simply not found.
+        case handled(rowID: UUID)
+        /// No row fit, so macOS acted on the press and acts on its repeats.
+        case passedThrough
+    }
+
+    private var upRoute: PressRoute?
+    private var downRoute: PressRoute?
 
     /// CGEventTaps are per-session; wake leaves them enabled-but-inert.
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -83,7 +94,8 @@ final class MediaKeyMonitor {
         accessibility: any AccessibilityTrustProviding,
         hudController: MediaKeyHUDPresenting,
         popupVisibility: PopupVisibilityService,
-        mediaKeyStatus: MediaKeyStatus
+        mediaKeyStatus: MediaKeyStatus,
+        volumeKeyRecorder: VolumeKeyRecorder
     ) {
         self.decoder = decoder
         self.audioEngine = audioEngine
@@ -92,6 +104,7 @@ final class MediaKeyMonitor {
         self.hudController = hudController
         self.popupVisibility = popupVisibility
         self.mediaKeyStatus = mediaKeyStatus
+        self.volumeKeyRecorder = volumeKeyRecorder
         subscribeToWorkspaceLifecycle()
     }
 
@@ -223,6 +236,7 @@ final class MediaKeyMonitor {
         disableWatchdogTask = nil
         watchdogOpen = false
         cancelGhostTapProbe()
+        forgetPressRoutes()
 
         if let tap = tap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -238,13 +252,10 @@ final class MediaKeyMonitor {
 
     // MARK: - Event handling
 
-    /// Applies a decoded `MediaKeyEvent` to the default output device.
-    func handle(
-        _ event: MediaKeyEvent,
-        shiftHeld: Bool = false,
-        optionHeld: Bool = false,
-        chord: VolumeStepChord = .plain
-    ) {
+    /// Applies a decoded `MediaKeyEvent` to the default output device, stepping by the row that fits the
+    /// modifiers `held` with the key. `stepping` names the row instead, for a repeat that keeps the row of its
+    /// press after the modifiers changed; `held` still decides the feedback pop's Shift and Option.
+    func handle(_ event: MediaKeyEvent, held: VolumeKeyCombo = [], stepping row: VolumeKeyBinding? = nil) {
         let volumeMonitor = audioEngine.deviceVolumeMonitor
         let deviceID = volumeMonitor.defaultDeviceID
         guard deviceID.isValid else {
@@ -253,6 +264,9 @@ final class MediaKeyMonitor {
         }
         let tier = volumeMonitor.outputVolumeBackend(for: deviceID)
         let deviceName = audioEngine.deviceMonitor.outputDevices.first { $0.id == deviceID }?.name ?? ""
+        let rowCombo = row?.combo ?? held
+        let matched = settingsManager.appSettings.volumeKeyBinding(for: rowCombo)?.combo ?? []
+        let modifiers = VolumeKeyModifiers(held: held, matched: matched)
         handleCore(
             event: event,
             deviceID: deviceID,
@@ -265,17 +279,18 @@ final class MediaKeyMonitor {
             playFeedback: { gain in
                 self.feedbackPlayer?.requestFeedback(
                     gain: gain,
-                    shiftHeld: shiftHeld,
-                    optionHeld: optionHeld
+                    shiftHeld: modifiers.feedbackShiftHeld,
+                    optionHeld: modifiers.feedbackOptionHeld
                 )
             },
-            chord: chord
+            held: rowCombo
         )
     }
 
     /// `.ddc` tier coalesces repeats to an 80 ms floor; hardware/software pass them through.
-    /// Mute repeats are dropped upstream. Stepping operates on slider-position, by the percent set
-    /// for `chord`; HUD receives the slider fraction so it always matches the popup device row.
+    /// Mute repeats are dropped upstream. Stepping operates on slider-position, by the percent of the row
+    /// that fits `held`; a volume key no row fits does nothing here. HUD receives the slider fraction so it
+    /// always matches the popup device row.
     func handleCore(
         event: MediaKeyEvent,
         deviceID: AudioDeviceID,
@@ -286,14 +301,15 @@ final class MediaKeyMonitor {
         setVolume: (AudioDeviceID, Float) -> Void,
         setMute: (AudioDeviceID, Bool) -> Void,
         playFeedback: (Float) -> Void = { _ in },
-        chord: VolumeStepChord = .plain
+        held: VolumeKeyCombo = []
     ) {
         let shouldShowHUD = !popupVisibility.isVisible
-        let sliderDelta = settingsManager.appSettings.sliderDelta(for: chord)
+        let sliderDelta = settingsManager.appSettings.sliderDelta(for: held)
         let currentSlider = VolumeMapping.sliderFraction(forSystemGain: currentVolume, tier: tier)
 
         switch event {
         case .volumeUp(let isRepeat):
+            guard let sliderDelta else { return }
             if isRepeat && tier == .ddc && isDDCRepeatCoalesced() {
                 logger.debug("DDC repeat coalesced")
                 return
@@ -312,6 +328,7 @@ final class MediaKeyMonitor {
             iconCoordinator?.flashDevice()
 
         case .volumeDown(let isRepeat):
+            guard let sliderDelta else { return }
             if isRepeat && tier == .ddc && isDDCRepeatCoalesced() {
                 logger.debug("DDC repeat coalesced")
                 return
@@ -390,6 +407,8 @@ final class MediaKeyMonitor {
             self?.disableWatchdogTask = nil
         }
 
+        // Presses may have gone by while the tap was off, so no remembered route can be trusted for their repeats.
+        forgetPressRoutes()
         if let tap = tap {
             CGEvent.tapEnable(tap: tap, enable: true)
         }
@@ -406,16 +425,68 @@ final class MediaKeyMonitor {
         guard nsEvent.subtype.rawValue == 8 else { return false }
         let data1 = nsEvent.data1
         guard let mediaEvent = decoder.decode(data1: data1) else { return false }
+        return processMediaKey(mediaEvent, held: VolumeKeyCombo(flags: cgEvent.flags))
+    }
 
+    /// Decides what a decoded key does and returns `true` if the caller should swallow it. While a keybind row
+    /// is recording, a volume key is that recording and changes no volume. A volume key no row fits is left
+    /// alone, not swallowed, so macOS makes its own change. Mute has no combos and is always handled.
+    func processMediaKey(_ event: MediaKeyEvent, held: VolumeKeyCombo) -> Bool {
+        var stepping: VolumeKeyBinding?
+        switch event {
+        case .volumeUp(let isRepeat), .volumeDown(let isRepeat):
+            if volumeKeyRecorder.capture(held, isRepeat: isRepeat) {
+                hudController.swallowObserved()
+                return true
+            }
+            guard let row = steppingRow(for: event, held: held) else {
+                hudController.passThroughObserved()
+                return false
+            }
+            stepping = row
+        case .muteToggle:
+            break
+        }
         hudController.swallowObserved()
-        let modifiers = VolumeKeyModifiers(flags: cgEvent.flags)
-        handle(
-            mediaEvent,
-            shiftHeld: modifiers.feedbackShiftHeld,
-            optionHeld: modifiers.optionHeld,
-            chord: modifiers.chord
-        )
+        handle(event, held: held, stepping: stepping)
         return true
+    }
+
+    // MARK: - Key repeat routing
+
+    /// The row a volume key steps by, or nil to leave the key to macOS.
+    ///
+    /// A fresh press is matched on the modifiers held and its route remembered per key. A repeat follows that
+    /// route: after a handled press the modifiers held now are matched again, falling back to the pressed row when
+    /// none fits; after a passed-through press it passes through, whatever is held by then. A repeat whose press
+    /// was never seen is matched on the modifiers held, as a fresh press would be.
+    private func steppingRow(for event: MediaKeyEvent, held: VolumeKeyCombo) -> VolumeKeyBinding? {
+        let isUp: Bool
+        let isRepeat: Bool
+        switch event {
+        case .volumeUp(let value): (isUp, isRepeat) = (true, value)
+        case .volumeDown(let value): (isUp, isRepeat) = (false, value)
+        case .muteToggle: return nil
+        }
+        let rows = settingsManager.appSettings.volumeKeyBindings
+        let matched = rows.binding(matching: held)
+
+        if isRepeat {
+            switch isUp ? upRoute : downRoute {
+            case .handled(let rowID)?: return matched ?? rows.first { $0.id == rowID }
+            case .passedThrough?: return nil
+            case nil: return matched
+            }
+        }
+
+        let route: PressRoute = matched.map { .handled(rowID: $0.id) } ?? .passedThrough
+        if isUp { upRoute = route } else { downRoute = route }
+        return matched
+    }
+
+    private func forgetPressRoutes() {
+        upRoute = nil
+        downRoute = nil
     }
 }
 

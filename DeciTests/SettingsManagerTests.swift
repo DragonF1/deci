@@ -4,6 +4,7 @@
 
 import Testing
 import Foundation
+import CoreGraphics
 @testable import Deci
 
 // MARK: - Settings JSON Round-Trip
@@ -268,66 +269,134 @@ struct AppSettingsDefaultTests {
         #expect(manager.appSettings.loudnessEqualizationEnabled == true)
     }
 
-    @Test("Volume key steps default to 10% / 5% / 1%")
-    func volumeStepDefaults() {
+    // MARK: Volume key bindings
+
+    private func decodeAppSettings(_ json: String) throws -> AppSettings {
+        try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
+    }
+
+    /// One binding as a settings.json element: the modifier raw value is part of the file format.
+    private func bindingJSON(combo: Int, percent: Int, id: UUID = UUID()) -> String {
+        #"{"id": "\#(id.uuidString)", "combo": \#(combo), "percent": \#(percent)}"#
+    }
+
+    @Test("Volume key bindings default to plain 10%, Command 5% and Command+Shift 1%")
+    func volumeKeyBindingDefaults() {
         let settings = AppSettings()
-        #expect(settings.volumeStepPercent == 10)
-        #expect(settings.volumeStepCommandPercent == 5)
-        #expect(settings.volumeStepCommandShiftPercent == 1)
+        #expect(settings.volumeKeyBindings.rows == defaultVolumeKeyRows)
+        #expect(settings.volumeKeyBindings.rows == VolumeKeyBinding.defaults.rows)
     }
 
-    @Test("stepPercent(for:) and sliderDelta(for:) map each chord to its own field")
-    func volumeStepHelpers() {
-        var settings = AppSettings()
-        #expect(settings.stepPercent(for: .plain) == 10)
-        #expect(settings.stepPercent(for: .command) == 5)
-        #expect(settings.stepPercent(for: .commandShift) == 1)
-        #expect(abs(settings.sliderDelta(for: .plain) - 0.10) < 1e-12)
-        #expect(abs(settings.sliderDelta(for: .command) - 0.05) < 1e-12)
-        #expect(abs(settings.sliderDelta(for: .commandShift) - 0.01) < 1e-12)
-
-        settings.volumeStepPercent = 20
-        settings.volumeStepCommandPercent = 3
-        settings.volumeStepCommandShiftPercent = 2
-        #expect(settings.stepPercent(for: .plain) == 20)
-        #expect(settings.stepPercent(for: .command) == 3)
-        #expect(settings.stepPercent(for: .commandShift) == 2)
-        #expect(abs(settings.sliderDelta(for: .plain) - 0.20) < 1e-12)
-        #expect(abs(settings.sliderDelta(for: .command) - 0.03) < 1e-12)
-        #expect(abs(settings.sliderDelta(for: .commandShift) - 0.02) < 1e-12)
+    @Test("Each AppSettings gets default rows with ids of its own, so no id outlives a reset")
+    func volumeKeyBindingDefaultIDsAreFresh() {
+        let first = AppSettings().volumeKeyBindings.map(\.id)
+        let second = AppSettings().volumeKeyBindings.map(\.id)
+        #expect(Set(first).count == 3)
+        #expect(Set(first).isDisjoint(with: second))
     }
 
-    @Test("Volume key steps round-trip through JSON")
-    func volumeStepRoundTrip() throws {
+    @Test("A decode that falls back to the defaults hands out fresh ids each time")
+    func fallbackDefaultsGetFreshIDs() throws {
+        let first = try decodeAppSettings(#"{"volumeKeyBindings": []}"#).volumeKeyBindings.map(\.id)
+        let second = try decodeAppSettings(#"{"volumeKeyBindings": []}"#).volumeKeyBindings.map(\.id)
+        #expect(Set(first).isDisjoint(with: second))
+    }
+
+    @Test("sliderDelta(for:) turns the matched binding's percent into a slider fraction")
+    func sliderDeltaFromBindings() throws {
         var settings = AppSettings()
-        settings.volumeStepPercent = 25
-        settings.volumeStepCommandPercent = 12
-        settings.volumeStepCommandShiftPercent = 3
+        #expect(abs(try #require(settings.sliderDelta(for: [])) - 0.10) < 1e-12)
+        #expect(abs(try #require(settings.sliderDelta(for: [.command])) - 0.05) < 1e-12)
+        #expect(abs(try #require(settings.sliderDelta(for: [.command, .shift])) - 0.01) < 1e-12)
+
+        settings.volumeKeyBindings[0].percent = 20
+        settings.volumeKeyBindings[1].percent = 3
+        settings.volumeKeyBindings[2].percent = 2
+        #expect(abs(try #require(settings.sliderDelta(for: [])) - 0.20) < 1e-12)
+        #expect(abs(try #require(settings.sliderDelta(for: [.command])) - 0.03) < 1e-12)
+        #expect(abs(try #require(settings.sliderDelta(for: [.command, .shift])) - 0.02) < 1e-12)
+    }
+
+    @Test("sliderDelta(for:) is nil when no binding fits the held modifiers")
+    func sliderDeltaNilWithoutMatch() {
+        var settings = AppSettings()
+        settings.volumeKeyBindings.removeFirst()  // the plain row
+        #expect(settings.sliderDelta(for: []) == nil)
+        #expect(settings.sliderDelta(for: [.shift]) == nil)
+        #expect(settings.volumeKeyBinding(for: [.option]) == nil)
+        #expect(settings.sliderDelta(for: [.command]) != nil)
+    }
+
+    @Test("sliderDelta(for:) clamps programmatic out-of-range values into 1...50", arguments: [
+        (raw: 0, clamped: 1),
+        (raw: -5, clamped: 1),
+        (raw: 51, clamped: 50),
+        (raw: 1_000, clamped: 50),
+    ])
+    func sliderDeltaClampsAssignedValues(_ c: (raw: Int, clamped: Int)) throws {
+        var settings = AppSettings()
+        for index in settings.volumeKeyBindings.indices { settings.volumeKeyBindings[index].percent = c.raw }
+        for held in [VolumeKeyCombo([]), [.command], [.command, .shift]] {
+            let delta = try #require(settings.sliderDelta(for: held))
+            #expect(abs(delta - Double(c.clamped) / 100) < 1e-12)
+        }
+    }
+
+    @Test("The arrow-key step is the empty-combo row's, and 10% when no row fits")
+    func arrowKeySliderDelta() {
+        var settings = AppSettings()
+        #expect(abs(settings.arrowKeySliderDelta - 0.10) < 1e-12)
+
+        settings.volumeKeyBindings[0].percent = 20
+        #expect(abs(settings.arrowKeySliderDelta - 0.20) < 1e-12)
+
+        settings.volumeKeyBindings = [VolumeKeyBinding(combo: [.command], percent: 5)]
+        #expect(abs(settings.arrowKeySliderDelta - 0.10) < 1e-12)  // the plain row is gone, so the fallback
+    }
+
+    @Test("Volume key bindings round-trip through JSON, ids included")
+    func volumeKeyBindingsRoundTrip() throws {
+        var settings = AppSettings()
+        settings.volumeKeyBindings = [
+            VolumeKeyBinding(combo: [.option], percent: 25),
+            VolumeKeyBinding(combo: [.control, .shift], percent: 3),
+            VolumeKeyBinding(combo: [], percent: 12),
+        ]
         let data = try JSONEncoder().encode(settings)
         let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
-        #expect(decoded.volumeStepPercent == 25)
-        #expect(decoded.volumeStepCommandPercent == 12)
-        #expect(decoded.volumeStepCommandShiftPercent == 3)
+        #expect(decoded.volumeKeyBindings == settings.volumeKeyBindings)
     }
 
-    @Test("Missing volume step keys decode to the defaults")
-    func volumeStepMissingKeysDefault() throws {
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
-        #expect(decoded.volumeStepPercent == 10)
-        #expect(decoded.volumeStepCommandPercent == 5)
-        #expect(decoded.volumeStepCommandShiftPercent == 1)
+    @Test("Missing volume key bindings decode to the defaults")
+    func volumeKeyBindingsMissingKeyDefaults() throws {
+        let decoded = try decodeAppSettings("{}")
+        #expect(decoded.volumeKeyBindings.rows == defaultVolumeKeyRows)
     }
 
-    @Test("A file with only some volume step keys keeps those and defaults the rest")
-    func volumeStepPartialKeys() throws {
-        let json = Data(#"{"volumeStepCommandPercent": 8}"#.utf8)
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: json)
-        #expect(decoded.volumeStepPercent == 10)
-        #expect(decoded.volumeStepCommandPercent == 8)
-        #expect(decoded.volumeStepCommandShiftPercent == 1)
+    @Test("An empty bindings array decodes to the defaults, even beside legacy keys")
+    func emptyBindingsArrayGivesDefaults() throws {
+        #expect(try decodeAppSettings(#"{"volumeKeyBindings": []}"#).volumeKeyBindings.rows == defaultVolumeKeyRows)
+        let withLegacy = try decodeAppSettings(#"{"volumeKeyBindings": [], "volumeStepPercent": 30}"#)
+        #expect(withLegacy.volumeKeyBindings.rows == defaultVolumeKeyRows)
     }
 
-    @Test("Out-of-range volume steps clamp into 1...50 on decode", arguments: [
+    @Test("A bindings array in the file is used as written, in order")
+    func volumeKeyBindingsDecodeNewKey() throws {
+        let id = UUID()
+        let json = "{\"volumeKeyBindings\": [\(bindingJSON(combo: 4, percent: 7, id: id)), \(bindingJSON(combo: 0, percent: 15))]}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [VolumeKeyRow([.option], 7), VolumeKeyRow([], 15)])
+        #expect(decoded.volumeKeyBindings.first?.id == id)
+    }
+
+    @Test("When the bindings key is present the legacy step keys are ignored")
+    func newKeyWinsOverLegacyKeys() throws {
+        let json = "{\"volumeKeyBindings\": [\(bindingJSON(combo: 0, percent: 4))], \"volumeStepPercent\": 30, \"volumeStepCommandPercent\": 20}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [VolumeKeyRow([], 4)])
+    }
+
+    @Test("Out-of-range binding percents clamp into 1...50 on decode", arguments: [
         (raw: 0, clamped: 1),
         (raw: -7, clamped: 1),
         (raw: 1, clamped: 1),
@@ -335,131 +404,310 @@ struct AppSettingsDefaultTests {
         (raw: 51, clamped: 50),
         (raw: 99, clamped: 50),
     ])
-    func volumeStepClampsOnDecode(_ c: (raw: Int, clamped: Int)) throws {
-        let json = Data(
-            #"{"volumeStepPercent": \#(c.raw), "volumeStepCommandPercent": \#(c.raw), "volumeStepCommandShiftPercent": \#(c.raw)}"#.utf8
-        )
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: json)
-        #expect(decoded.volumeStepPercent == c.clamped)
-        #expect(decoded.volumeStepCommandPercent == c.clamped)
-        #expect(decoded.volumeStepCommandShiftPercent == c.clamped)
+    func bindingPercentClampsOnDecode(_ c: (raw: Int, clamped: Int)) throws {
+        let json = "{\"volumeKeyBindings\": [\(bindingJSON(combo: 0, percent: c.raw)), \(bindingJSON(combo: 1, percent: c.raw))]}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.map(\.percent) == [c.clamped, c.clamped])
     }
 
-    @Test("stepPercent(for:) clamps programmatic out-of-range values into 1...50", arguments: [
-        (raw: 0, clamped: 1),
-        (raw: -5, clamped: 1),
-        (raw: 51, clamped: 50),
-        (raw: 1_000, clamped: 50),
-    ])
-    func stepPercentClampsAssignedValues(_ c: (raw: Int, clamped: Int)) {
-        var settings = AppSettings()
-        settings.volumeStepPercent = c.raw
-        settings.volumeStepCommandPercent = c.raw
-        settings.volumeStepCommandShiftPercent = c.raw
-        for chord in VolumeStepChord.allCases {
-            #expect(settings.stepPercent(for: chord) == c.clamped)
-            #expect(abs(settings.sliderDelta(for: chord) - Double(c.clamped) / 100) < 1e-12)
-        }
+    @Test("A later row with the same modifiers as an earlier one is dropped")
+    func duplicateCombosDropLaterRows() throws {
+        let json = "{\"volumeKeyBindings\": [\(bindingJSON(combo: 1, percent: 5)), \(bindingJSON(combo: 1, percent: 9)), "
+            + "\(bindingJSON(combo: 0, percent: 3)), \(bindingJSON(combo: 1, percent: 7))]}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [VolumeKeyRow([.command], 5), VolumeKeyRow([], 3)])
     }
 
-    @Test("A malformed volume step falls back to its default and keeps every other setting", arguments: [
-        "7.5", #""loud""#, "true", "null", "[10]", #"{"a": 1}"#,
+    @Test("A row that repeats an earlier row's id keeps its place and gets a fresh id")
+    func repeatedIDsAreRenewed() throws {
+        let id = UUID()
+        let json = "{\"volumeKeyBindings\": [\(bindingJSON(combo: 0, percent: 5, id: id)), \(bindingJSON(combo: 1, percent: 9, id: id))]}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [VolumeKeyRow([], 5), VolumeKeyRow([.command], 9)])
+        #expect(decoded.volumeKeyBindings[0].id == id)
+        #expect(decoded.volumeKeyBindings[1].id != id)
+    }
+
+    @Test("More than eight rows are cut to the first eight, after duplicates are dropped")
+    func bindingsCapAtEight() throws {
+        // combo 0 appears twice; 10 distinct combos follow in total (0...9).
+        let combos = [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        let json = "{\"volumeKeyBindings\": [" + combos.map { bindingJSON(combo: $0, percent: 5) }.joined(separator: ", ") + "]}"
+        let decoded = try decodeAppSettings(json)
+        #expect(VolumeKeyBinding.maxCount == 8)
+        #expect(decoded.volumeKeyBindings.map(\.combo.rawValue) == [0, 1, 2, 3, 4, 5, 6, 7])
+    }
+
+    @Test("Modifier bits this build does not know are dropped on decode")
+    func unknownModifierBitsDropped() throws {
+        let decoded = try decodeAppSettings("{\"volumeKeyBindings\": [\(bindingJSON(combo: 255, percent: 5))]}")
+        #expect(decoded.volumeKeyBindings.first?.combo == [.command, .shift, .option, .control])
+    }
+
+    @Test("A malformed bindings value falls back to the defaults and keeps every other setting", arguments: [
+        "7.5", #""loud""#, "true", "null", "[10]", #"{"a": 1}"#, #"[{"combo": 1}]"#, #"[{"id": "not-a-uuid", "combo": 1, "percent": 5}]"#,
     ])
-    func malformedVolumeStepFallsBack(raw: String) throws {
-        let json = Data(
-            #"{"launchAtLogin": true, "volumeStepPercent": \#(raw), "volumeStepCommandPercent": 8, "volumeStepCommandShiftPercent": \#(raw)}"#.utf8
-        )
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: json)
+    func malformedBindingsFallBack(raw: String) throws {
+        let decoded = try decodeAppSettings(#"{"launchAtLogin": true, "volumeKeyBindings": \#(raw)}"#)
         #expect(decoded.launchAtLogin == true)
-        #expect(decoded.volumeStepPercent == 10)
-        #expect(decoded.volumeStepCommandPercent == 8)  // the well-formed neighbour survives
-        #expect(decoded.volumeStepCommandShiftPercent == 1)
+        #expect(decoded.volumeKeyBindings.rows == defaultVolumeKeyRows)
     }
 
-    @Test("A hand-edited volume step does not reset the rest of the settings file")
-    func malformedVolumeStepKeepsWholeFile() throws {
+    @Test("One bad element drops only that row; the rows around it load", arguments: [
+        #"{"combo": 1}"#,
+        #"{"id": "not-a-uuid", "combo": 1, "percent": 5}"#,
+        #"{"id": "9F2C4E1A-0000-4000-8000-000000000001", "combo": "loud", "percent": 5}"#,
+        #"{"id": "9F2C4E1A-0000-4000-8000-000000000001", "combo": 1, "percent": "ten"}"#,
+        #"{"id": "9F2C4E1A-0000-4000-8000-000000000001", "combo": 1, "percent": 7.5}"#,
+        "7", #""loud""#, "null", "[]", "{}",
+    ])
+    func badElementDropsOnlyThatRow(bad: String) throws {
+        let id = UUID()
+        let json = "{\"volumeKeyBindings\": [\(bindingJSON(combo: 4, percent: 7, id: id)), \(bad), \(bindingJSON(combo: 0, percent: 15))]}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [VolumeKeyRow([.option], 7), VolumeKeyRow([], 15)])
+        #expect(decoded.volumeKeyBindings.first?.id == id)
+    }
+
+    @Test("A bad element beside a good one ignores the legacy keys, which only migrate when no row survives")
+    func badElementKeepsSurvivorsOverLegacyKeys() throws {
+        let json = "{\"volumeKeyBindings\": [{\"combo\": 1}, \(bindingJSON(combo: 0, percent: 4))], \"volumeStepPercent\": 30}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [VolumeKeyRow([], 4)])
+    }
+
+    @Test("When every element is bad the legacy keys migrate, as for any unreadable value")
+    func allBadElementsFallToLegacyKeys() throws {
+        let json = #"{"volumeKeyBindings": [{"combo": 1}, 7], "volumeStepPercent": 30}"#
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [
+            VolumeKeyRow([], 30), VolumeKeyRow([.command], 5), VolumeKeyRow([.command, .shift], 1),
+        ])
+    }
+
+    @Test("Surviving rows still lose duplicate combos and clamp their percent")
+    func survivorsAreStillCleaned() throws {
+        let json = "{\"volumeKeyBindings\": [\(bindingJSON(combo: 1, percent: 99)), {\"combo\": 2}, "
+            + "\(bindingJSON(combo: 1, percent: 9)), \(bindingJSON(combo: 0, percent: 0))]}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [VolumeKeyRow([.command], 50), VolumeKeyRow([], 1)])
+    }
+
+    @Test("Bad elements among more than the cap still cut the survivors at the cap")
+    func survivorsCutAtCap() throws {
+        let good = (0..<10).map { bindingJSON(combo: $0, percent: 5) }
+        let json = "{\"volumeKeyBindings\": [{\"combo\": 1}, " + good.joined(separator: ", ") + "]}"
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.count == VolumeKeyBinding.maxCount)
+        #expect(decoded.volumeKeyBindings.map(\.combo.rawValue) == [0, 1, 2, 3, 4, 5, 6, 7])
+    }
+
+    @Test("A hand-edited bindings value does not reset the rest of the settings file")
+    func malformedBindingsKeepWholeFile() throws {
         let json = Data(
-            #"{"appVolumes": {"com.test.app": 0.5}, "appSettings": {"volumeStepPercent": 7.5, "launchAtLogin": true}}"#.utf8
+            #"{"appVolumes": {"com.test.app": 0.5}, "appSettings": {"volumeKeyBindings": 7.5, "launchAtLogin": true}}"#.utf8
         )
         let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: json)
         #expect(decoded.appVolumes == ["com.test.app": 0.5])
         #expect(decoded.appSettings.launchAtLogin == true)
-        #expect(decoded.appSettings.volumeStepPercent == 10)
+        #expect(decoded.appSettings.volumeKeyBindings.rows == defaultVolumeKeyRows)
+    }
+
+    // MARK: Legacy step keys
+
+    @Test("A file with the three legacy step keys becomes plain, Command and Command+Shift rows")
+    func legacyKeysMigrate() throws {
+        let json = #"{"volumeStepPercent": 20, "volumeStepCommandPercent": 3, "volumeStepCommandShiftPercent": 2}"#
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.rows == [
+            VolumeKeyRow([], 20), VolumeKeyRow([.command], 3), VolumeKeyRow([.command, .shift], 2),
+        ])
+    }
+
+    @Test("A file with only some legacy keys keeps those and defaults the rest")
+    func legacyPartialKeys() throws {
+        let decoded = try decodeAppSettings(#"{"volumeStepCommandPercent": 8}"#)
+        #expect(decoded.volumeKeyBindings.rows == [
+            VolumeKeyRow([], 10), VolumeKeyRow([.command], 8), VolumeKeyRow([.command, .shift], 1),
+        ])
+    }
+
+    @Test("Out-of-range legacy steps clamp into 1...50 while migrating", arguments: [
+        (raw: 0, clamped: 1),
+        (raw: -7, clamped: 1),
+        (raw: 50, clamped: 50),
+        (raw: 99, clamped: 50),
+    ])
+    func legacyClamps(_ c: (raw: Int, clamped: Int)) throws {
+        let json = #"{"volumeStepPercent": \#(c.raw), "volumeStepCommandPercent": \#(c.raw), "volumeStepCommandShiftPercent": \#(c.raw)}"#
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.volumeKeyBindings.map(\.percent) == [c.clamped, c.clamped, c.clamped])
+    }
+
+    @Test("A malformed legacy step falls back to its own default and keeps its neighbours", arguments: [
+        "7.5", #""loud""#, "true", "null", "[10]", #"{"a": 1}"#,
+    ])
+    func malformedLegacyStepFallsBack(raw: String) throws {
+        let json = #"{"launchAtLogin": true, "volumeStepPercent": \#(raw), "volumeStepCommandPercent": 8, "volumeStepCommandShiftPercent": \#(raw)}"#
+        let decoded = try decodeAppSettings(json)
+        #expect(decoded.launchAtLogin == true)
+        #expect(decoded.volumeKeyBindings.rows == [
+            VolumeKeyRow([], 10), VolumeKeyRow([.command], 8), VolumeKeyRow([.command, .shift], 1),
+        ])
+    }
+
+    @Test("A malformed bindings value beside legacy keys migrates the legacy keys")
+    func malformedBindingsFallToLegacyKeys() throws {
+        let decoded = try decodeAppSettings(#"{"volumeKeyBindings": "loud", "volumeStepPercent": 30}"#)
+        #expect(decoded.volumeKeyBindings.rows == [
+            VolumeKeyRow([], 30), VolumeKeyRow([.command], 5), VolumeKeyRow([.command, .shift], 1),
+        ])
     }
 
     @Test("The legacy volumeHotkeyStep key is ignored, not migrated and not an error", arguments: [
         "coarse", "normal", "fine", "extraFine", "something-from-the-future",
     ])
     func legacyVolumeHotkeyStepIgnored(legacy: String) throws {
-        let json = Data(#"{"volumeHotkeyStep": "\#(legacy)", "launchAtLogin": true}"#.utf8)
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: json)
+        let decoded = try decodeAppSettings(#"{"volumeHotkeyStep": "\#(legacy)", "launchAtLogin": true}"#)
         #expect(decoded.launchAtLogin == true)  // the rest of the file still loads
-        #expect(decoded.volumeStepPercent == 10)
-        #expect(decoded.volumeStepCommandPercent == 5)
-        #expect(decoded.volumeStepCommandShiftPercent == 1)
+        #expect(decoded.volumeKeyBindings.rows == defaultVolumeKeyRows)
     }
 
-    @Test("Encoding writes the three step keys and no longer writes volumeHotkeyStep")
-    func volumeStepEncodedKeys() throws {
+    @Test("Encoding writes only the bindings key, as id, modifier raw value and percent")
+    func volumeKeyBindingsEncodedKeys() throws {
         let data = try JSONEncoder().encode(AppSettings())
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(object["volumeHotkeyStep"] == nil)
-        #expect(object["volumeStepPercent"] as? Int == 10)
-        #expect(object["volumeStepCommandPercent"] as? Int == 5)
-        #expect(object["volumeStepCommandShiftPercent"] as? Int == 1)
+        #expect(object["volumeStepPercent"] == nil)
+        #expect(object["volumeStepCommandPercent"] == nil)
+        #expect(object["volumeStepCommandShiftPercent"] == nil)
+
+        let rows = try #require(object["volumeKeyBindings"] as? [[String: Any]])
+        #expect(rows.count == 3)
+        #expect(rows.map { $0["combo"] as? Int } == [0, 1, 3])
+        #expect(rows.map { $0["percent"] as? Int } == [10, 5, 1])
+        #expect(rows.allSatisfy { UUID(uuidString: $0["id"] as? String ?? "") != nil })
     }
 
-    @Test("resetAllSettings puts the volume steps back to the defaults")
+    @Test("resetAllSettings puts the volume key bindings back to the defaults")
     @MainActor
-    func volumeStepResetAll() {
+    func volumeKeyBindingsResetAll() {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tempDir) }
         let manager = SettingsManager(directory: tempDir)
         var changed = manager.appSettings
-        changed.volumeStepPercent = 30
-        changed.volumeStepCommandPercent = 15
-        changed.volumeStepCommandShiftPercent = 4
+        changed.volumeKeyBindings = [
+            VolumeKeyBinding(combo: [.option], percent: 30),
+            VolumeKeyBinding(combo: [.control], percent: 4),
+        ]
         manager.updateAppSettings(changed)
-        #expect(manager.appSettings.volumeStepPercent == 30)
+        #expect(manager.appSettings.volumeKeyBindings.count == 2)
 
         manager.resetAllSettings()
 
-        #expect(manager.appSettings.volumeStepPercent == 10)
-        #expect(manager.appSettings.volumeStepCommandPercent == 5)
-        #expect(manager.appSettings.volumeStepCommandShiftPercent == 1)
+        #expect(manager.appSettings.volumeKeyBindings.rows == defaultVolumeKeyRows)
+    }
+
+    @Test("resetAllSettings hands out new row ids each time, so an old recording id matches nothing")
+    @MainActor
+    func volumeKeyBindingsResetAllFreshIDs() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let manager = SettingsManager(directory: tempDir)
+        manager.resetAllSettings()
+        let first = manager.appSettings.volumeKeyBindings.map(\.id)
+
+        manager.resetAllSettings()
+        let second = manager.appSettings.volumeKeyBindings.map(\.id)
+
+        #expect(first.count == 3)
+        #expect(Set(first).isDisjoint(with: second))
     }
 
 }
 
-// MARK: - Volume Step Chords
+// MARK: - Volume Key Bindings
 
-@Suite("VolumeStepChord: modifier mapping and metadata")
-struct VolumeStepChordTests {
+/// A binding without its id, so a test can compare the rows a decode produced with the rows it expects.
+struct VolumeKeyRow: Equatable {
+    let combo: VolumeKeyCombo
+    let percent: Int
 
-    @Test("from(command:shift:) maps every flag combination", arguments: [
-        (command: false, shift: false, expected: VolumeStepChord.plain),
-        (command: false, shift: true,  expected: VolumeStepChord.plain),  // Shift alone keeps the plain step
-        (command: true,  shift: false, expected: VolumeStepChord.command),
-        (command: true,  shift: true,  expected: VolumeStepChord.commandShift),
+    init(_ combo: VolumeKeyCombo, _ percent: Int) {
+        self.combo = combo
+        self.percent = percent
+    }
+}
+
+extension Array where Element == VolumeKeyBinding {
+    var rows: [VolumeKeyRow] { map { VolumeKeyRow($0.combo, $0.percent) } }
+}
+
+let defaultVolumeKeyRows = [VolumeKeyRow([], 10), VolumeKeyRow([.command], 5), VolumeKeyRow([.command, .shift], 1)]
+
+@Suite("VolumeKeyCombo: flags mapping and label")
+struct VolumeKeyComboTests {
+
+    @Test("init(flags:) maps each modifier flag and ignores the rest", arguments: [
+        (flags: CGEventFlags([]),                               expected: VolumeKeyCombo([])),
+        (flags: CGEventFlags([.maskCommand]),                   expected: VolumeKeyCombo([.command])),
+        (flags: CGEventFlags([.maskShift]),                     expected: VolumeKeyCombo([.shift])),
+        (flags: CGEventFlags([.maskAlternate]),                 expected: VolumeKeyCombo([.option])),
+        (flags: CGEventFlags([.maskControl]),                   expected: VolumeKeyCombo([.control])),
+        (flags: CGEventFlags([.maskCommand, .maskShift]),       expected: VolumeKeyCombo([.command, .shift])),
+        (flags: CGEventFlags([.maskCommand, .maskShift, .maskAlternate, .maskControl]),
+         expected: VolumeKeyCombo([.command, .shift, .option, .control])),
+        (flags: CGEventFlags([.maskAlphaShift, .maskSecondaryFn, .maskNumericPad, .maskHelp]),
+         expected: VolumeKeyCombo([])),  // Caps Lock, fn, arrow-pad and help are not modifiers a binding can name
+        (flags: CGEventFlags([.maskShift, .maskSecondaryFn]),   expected: VolumeKeyCombo([.shift])),
     ])
-    func chordFromFlags(_ c: (command: Bool, shift: Bool, expected: VolumeStepChord)) {
-        #expect(VolumeStepChord.from(command: c.command, shift: c.shift) == c.expected)
+    func flagsMapping(_ c: (flags: CGEventFlags, expected: VolumeKeyCombo)) {
+        #expect(VolumeKeyCombo(flags: c.flags) == c.expected)
     }
 
-    @Test("Default percents are 10 / 5 / 1")
-    func defaultPercents() {
-        #expect(VolumeStepChord.plain.defaultPercent == 10)
-        #expect(VolumeStepChord.command.defaultPercent == 5)
-        #expect(VolumeStepChord.commandShift.defaultPercent == 1)
+    @Test("The four modifiers have distinct raw values")
+    func rawValuesAreDistinct() {
+        let all: [VolumeKeyCombo] = [.command, .shift, .option, .control]
+        #expect(Set(all.map(\.rawValue)).count == 4)
+        #expect(VolumeKeyCombo.all == [.command, .shift, .option, .control])
     }
 
-    @Test("The allowed percent range is 1...50")
-    func percentRange() {
-        #expect(VolumeStepChord.percentRange == 1...50)
-        for chord in VolumeStepChord.allCases {
-            #expect(VolumeStepChord.percentRange.contains(chord.defaultPercent))
-        }
+    @Test("Labels list the modifier symbols in macOS order, control option shift command", arguments: [
+        (combo: VolumeKeyCombo([]),                         label: "F11 / F12"),
+        (combo: VolumeKeyCombo([.command]),                 label: "\u{2318} F11 / F12"),
+        (combo: VolumeKeyCombo([.shift]),                   label: "\u{21E7} F11 / F12"),
+        (combo: VolumeKeyCombo([.option]),                  label: "\u{2325} F11 / F12"),
+        (combo: VolumeKeyCombo([.control]),                 label: "\u{2303} F11 / F12"),
+        (combo: VolumeKeyCombo([.command, .shift]),         label: "\u{21E7}\u{2318} F11 / F12"),
+        (combo: VolumeKeyCombo([.shift, .command]),         label: "\u{21E7}\u{2318} F11 / F12"),  // set order is irrelevant
+        (combo: VolumeKeyCombo([.option, .control]),        label: "\u{2303}\u{2325} F11 / F12"),
+        (combo: VolumeKeyCombo([.command, .shift, .option, .control]),
+         label: "\u{2303}\u{2325}\u{21E7}\u{2318} F11 / F12"),
+    ])
+    func labels(_ c: (combo: VolumeKeyCombo, label: String)) {
+        #expect(c.combo.label == c.label)
+    }
+
+    @Test("modifierCount counts the modifiers in the set", arguments: [
+        (combo: VolumeKeyCombo([]), count: 0),
+        (combo: VolumeKeyCombo([.option]), count: 1),
+        (combo: VolumeKeyCombo([.command, .shift]), count: 2),
+        (combo: VolumeKeyCombo([.command, .shift, .option, .control]), count: 4),
+    ])
+    func modifierCount(_ c: (combo: VolumeKeyCombo, count: Int)) {
+        #expect(c.combo.modifierCount == c.count)
+    }
+}
+
+@Suite("VolumeKeyBinding: range, defaults and matching")
+struct VolumeKeyBindingTests {
+
+    @Test("The allowed percent range is 1...50 and at most eight rows exist")
+    func limits() {
+        #expect(VolumeKeyBinding.percentRange == 1...50)
+        #expect(VolumeKeyBinding.maxCount == 8)
     }
 
     @Test("clampedPercent pulls values into the range", arguments: [
@@ -467,20 +715,149 @@ struct VolumeStepChordTests {
         (raw: 25, clamped: 25), (raw: 50, clamped: 50), (raw: 51, clamped: 50), (raw: Int.max, clamped: 50),
     ])
     func clampedPercent(_ c: (raw: Int, clamped: Int)) {
-        #expect(VolumeStepChord.clampedPercent(c.raw) == c.clamped)
+        #expect(VolumeKeyBinding.clampedPercent(c.raw) == c.clamped)
     }
 
-    @Test("Labels name the key chord")
-    func labels() {
-        #expect(VolumeStepChord.plain.label == "F11 / F12")
-        #expect(VolumeStepChord.command.label == "\u{2318} F11 / F12")
-        #expect(VolumeStepChord.commandShift.label == "\u{2318}\u{21E7} F11 / F12")
+    @Test("The defaults are plain 10%, Command 5% and Command+Shift 1%, each with its own id")
+    func defaults() {
+        let defaults = VolumeKeyBinding.defaults
+        #expect(defaults.rows == defaultVolumeKeyRows)
+        #expect(Set(defaults.map(\.id)).count == 3)
+        for binding in defaults {
+            #expect(VolumeKeyBinding.percentRange.contains(binding.percent))
+        }
     }
 
-    @Test("Cases are ordered plain, command, commandShift with unique ids")
-    func casesAndIDs() {
-        #expect(VolumeStepChord.allCases == [.plain, .command, .commandShift])
-        #expect(Set(VolumeStepChord.allCases.map(\.id)).count == 3)
+    @Test("Every call to defaults makes new ids, so a reset never reuses a row id")
+    func defaultsAreFreshPerCall() {
+        let first = VolumeKeyBinding.defaults
+        let second = VolumeKeyBinding.defaults
+        #expect(first.rows == second.rows)
+        #expect(Set(first.map(\.id)).isDisjoint(with: second.map(\.id)))
+    }
+
+    @Test("A new binding gets a fresh id")
+    func freshIDs() {
+        let a = VolumeKeyBinding(combo: [.option], percent: 5)
+        let b = VolumeKeyBinding(combo: [.option], percent: 5)
+        #expect(a.id != b.id)
+        #expect(a != b)
+    }
+
+    // MARK: Matching
+
+    private func percent(_ bindings: [VolumeKeyBinding], _ held: VolumeKeyCombo) -> Int? {
+        bindings.binding(matching: held)?.percent
+    }
+
+    @Test("The default rows reproduce today's chords, and Shift, Option and Control alone fall to plain", arguments: [
+        (held: VolumeKeyCombo([]),                                          percent: 10),
+        (held: VolumeKeyCombo([.shift]),                                    percent: 10),
+        (held: VolumeKeyCombo([.option]),                                   percent: 10),
+        (held: VolumeKeyCombo([.control]),                                  percent: 10),
+        (held: VolumeKeyCombo([.shift, .option]),                           percent: 10),
+        (held: VolumeKeyCombo([.shift, .option, .control]),                 percent: 10),
+        (held: VolumeKeyCombo([.command]),                                  percent: 5),
+        (held: VolumeKeyCombo([.command, .option]),                         percent: 5),
+        (held: VolumeKeyCombo([.command, .control]),                        percent: 5),
+        (held: VolumeKeyCombo([.command, .shift]),                          percent: 1),
+        (held: VolumeKeyCombo([.command, .shift, .option]),                 percent: 1),
+        (held: VolumeKeyCombo([.command, .shift, .option, .control]),       percent: 1),
+    ])
+    func defaultsMatchToday(_ c: (held: VolumeKeyCombo, percent: Int)) {
+        #expect(percent(VolumeKeyBinding.defaults, c.held) == c.percent)
+    }
+
+    @Test("The row with the most modifiers inside the held set wins")
+    func mostModifiersWins() {
+        let bindings = [
+            VolumeKeyBinding(combo: [], percent: 10),
+            VolumeKeyBinding(combo: [.command], percent: 5),
+            VolumeKeyBinding(combo: [.command, .option], percent: 2),
+        ]
+        #expect(percent(bindings, [.command, .option]) == 2)
+        #expect(percent(bindings, [.command, .option, .shift]) == 2)
+        #expect(percent(bindings, [.command, .shift]) == 5)
+        #expect(percent(bindings, [.option]) == 10)  // the Command+Option row needs Command too
+    }
+
+    @Test("Row order does not change which row has the most modifiers")
+    func orderDoesNotBeatSpecificity() {
+        let bindings = [
+            VolumeKeyBinding(combo: [.command, .shift], percent: 1),
+            VolumeKeyBinding(combo: [.command], percent: 5),
+            VolumeKeyBinding(combo: [], percent: 10),
+        ]
+        #expect(percent(bindings, [.command, .shift]) == 1)
+        #expect(percent(bindings, [.command]) == 5)
+        #expect(percent(bindings, []) == 10)
+    }
+
+    @Test("A tie in modifier count goes to the earlier row")
+    func tieGoesToEarlierRow() {
+        let optionFirst = [VolumeKeyBinding(combo: [.option], percent: 2), VolumeKeyBinding(combo: [.control], percent: 3)]
+        #expect(percent(optionFirst, [.option, .control]) == 2)
+        let controlFirst = [VolumeKeyBinding(combo: [.control], percent: 3), VolumeKeyBinding(combo: [.option], percent: 2)]
+        #expect(percent(controlFirst, [.option, .control]) == 3)
+        // Only one of them fits when only one is held.
+        #expect(percent(optionFirst, [.control]) == 3)
+    }
+
+    @Test("No row matches when none is a subset of the held modifiers")
+    func noMatchWithoutSubset() {
+        let withoutPlain = [
+            VolumeKeyBinding(combo: [.command], percent: 5),
+            VolumeKeyBinding(combo: [.option], percent: 2),
+        ]
+        #expect(withoutPlain.binding(matching: []) == nil)
+        #expect(withoutPlain.binding(matching: [.shift]) == nil)
+        #expect(withoutPlain.binding(matching: [.control, .shift]) == nil)
+        #expect(percent(withoutPlain, [.command, .shift]) == 5)
+        #expect([VolumeKeyBinding]().binding(matching: []) == nil)
+    }
+
+    @Test("A rebound plain row stops matching a bare key press")
+    func reboundPlainRow() {
+        var bindings = VolumeKeyBinding.defaults
+        bindings[0].combo = [.option]
+        #expect(percent(bindings, []) == nil)
+        #expect(percent(bindings, [.shift]) == nil)
+        #expect(percent(bindings, [.option]) == 10)
+    }
+
+    @Test("Matching returns the row itself, with its id")
+    func matchReturnsTheRow() {
+        let row = VolumeKeyBinding(combo: [.control], percent: 9)
+        let bindings = [VolumeKeyBinding(combo: [.command], percent: 5), row]
+        #expect(bindings.binding(matching: [.control, .shift]) == row)
+    }
+
+    // MARK: Adding a row
+
+    @Test("The Add button's row takes the first unused combo, fewest modifiers first, at 5%")
+    func unusedBindingPicksFirstFreeCombo() throws {
+        let defaults = VolumeKeyBinding.defaults
+        let fromDefaults = try #require(defaults.unusedBinding())
+        #expect(fromDefaults.combo == [.shift])
+        #expect(fromDefaults.percent == 5)
+        #expect(!defaults.contains { $0.id == fromDefaults.id })
+
+        let withoutPlain = Array(defaults.dropFirst())
+        #expect(withoutPlain.unusedBinding()?.combo == [])  // a removed plain row comes back first
+
+        #expect([VolumeKeyBinding]().unusedBinding()?.combo == [])
+    }
+
+    @Test("Adding rows one after another never repeats a combo, and stops at the cap")
+    func unusedBindingFillsToTheCap() {
+        var bindings = VolumeKeyBinding.defaults
+        while let next = bindings.unusedBinding() {
+            #expect(!bindings.contains { $0.combo == next.combo })
+            bindings.append(next)
+        }
+        #expect(bindings.count == VolumeKeyBinding.maxCount)
+        #expect(Set(bindings.map(\.combo)).count == VolumeKeyBinding.maxCount)
+        #expect(bindings.unusedBinding() == nil)
     }
 }
 

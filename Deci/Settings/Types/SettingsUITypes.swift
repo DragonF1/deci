@@ -1,6 +1,7 @@
 // FineTune/Settings/Types/SettingsUITypes.swift
 import Foundation
 import AppKit
+import CoreGraphics
 
 // MARK: - App-Wide Settings Enums
 
@@ -128,43 +129,111 @@ extension MenuBarPopupSize {
     }
 }
 
-// MARK: - Volume Step Chords
+// MARK: - Volume Key Bindings
 
-/// The modifier chord held with the volume keys. Each chord has its own step size, edited in Settings.
-enum VolumeStepChord: String, CaseIterable, Identifiable, Sendable {
-    case plain
-    case command
-    case commandShift
+/// The modifier keys held with the volume keys. A binding fires while at least these are held.
+nonisolated struct VolumeKeyCombo: OptionSet, Codable, Hashable, Sendable {
+    let rawValue: Int
 
-    var id: String { rawValue }
+    static let command = VolumeKeyCombo(rawValue: 1)
+    static let shift   = VolumeKeyCombo(rawValue: 2)
+    static let option  = VolumeKeyCombo(rawValue: 4)
+    static let control = VolumeKeyCombo(rawValue: 8)
 
-    /// Command+Shift is the finest chord; Shift alone, Option and Control keep the plain step.
-    static func from(command: Bool, shift: Bool) -> VolumeStepChord {
-        if command && shift { return .commandShift }
-        return command ? .command : .plain
+    static let all: VolumeKeyCombo = [.command, .shift, .option, .control]
+
+    /// Bits a newer build might have written are dropped, so a file never holds a combo no key can make.
+    init(rawValue: Int) {
+        self.rawValue = rawValue & 0b1111
+    }
+
+    /// Only the four modifiers a binding can name count; Caps Lock, fn and the arrow-pad flag do not.
+    init(flags: CGEventFlags) {
+        var combo: VolumeKeyCombo = []
+        if flags.contains(.maskCommand) { combo.insert(.command) }
+        if flags.contains(.maskShift) { combo.insert(.shift) }
+        if flags.contains(.maskAlternate) { combo.insert(.option) }
+        if flags.contains(.maskControl) { combo.insert(.control) }
+        self = combo
+    }
+
+    var modifierCount: Int { rawValue.nonzeroBitCount }
+
+    /// Settings row title: the modifier symbols in macOS order (control, option, shift, command), then the keys.
+    var label: String {
+        var symbols = ""
+        if contains(.control) { symbols += "\u{2303}" }
+        if contains(.option) { symbols += "\u{2325}" }
+        if contains(.shift) { symbols += "\u{21E7}" }
+        if contains(.command) { symbols += "\u{2318}" }
+        return symbols.isEmpty ? "F11 / F12" : symbols + " F11 / F12"
+    }
+}
+
+/// One volume keybind row: the modifiers that pick it and the percent of the slider one press moves.
+nonisolated struct VolumeKeyBinding: Codable, Hashable, Identifiable, Sendable {
+    var id: UUID
+    var combo: VolumeKeyCombo
+    var percent: Int
+
+    init(id: UUID = UUID(), combo: VolumeKeyCombo, percent: Int) {
+        self.id = id
+        self.combo = combo
+        self.percent = percent
     }
 
     /// Whole percent of the slider moved per press.
     static let percentRange = 1...50
 
+    /// Rows past this many are not offered in Settings and are cut from a file that has more.
+    static let maxCount = 8
+
     static func clampedPercent(_ percent: Int) -> Int {
         min(max(percent, percentRange.lowerBound), percentRange.upperBound)
     }
 
-    var defaultPercent: Int {
-        switch self {
-        case .plain:        return 10
-        case .command:      return 5
-        case .commandShift: return 1
+    /// Plain F11 / F12 at 10%, Command at 5% and Command+Shift at 1%, as the keys always worked.
+    /// Computed, so every reset or migration gets rows with new ids: an id held across one (a recording left
+    /// open in Settings) then matches no row instead of re-arming a fresh one.
+    static var defaults: [VolumeKeyBinding] {
+        [
+            VolumeKeyBinding(combo: [], percent: 10),
+            VolumeKeyBinding(combo: [.command], percent: 5),
+            VolumeKeyBinding(combo: [.command, .shift], percent: 1),
+        ]
+    }
+}
+
+/// One element of the saved bindings list, read on its own so a single bad row (missing id, wrong type, not
+/// an object) is dropped instead of failing the whole list.
+nonisolated struct VolumeKeyBindingEntry: Decodable {
+    let binding: VolumeKeyBinding?
+
+    init(from decoder: Decoder) throws {
+        binding = try? VolumeKeyBinding(from: decoder)
+    }
+}
+
+extension Array where Element == VolumeKeyBinding {
+    /// The row a press with `held` modifiers uses: among the rows whose modifiers are all held, the one
+    /// naming the most; a tie goes to the earlier row. Nil when no row fits, so the key is left to macOS.
+    func binding(matching held: VolumeKeyCombo) -> VolumeKeyBinding? {
+        var best: VolumeKeyBinding?
+        for binding in self where held.isSuperset(of: binding.combo) {
+            if let current = best, current.combo.modifierCount >= binding.combo.modifierCount { continue }
+            best = binding
         }
+        return best
     }
 
-    /// Settings row title: the keys that make up the chord.
-    var label: String {
-        switch self {
-        case .plain:        return "F11 / F12"
-        case .command:      return "⌘ F11 / F12"
-        case .commandShift: return "⌘⇧ F11 / F12"
-        }
+    /// A new row for the Add button: the first combination no row uses, fewest modifiers first, at 5%.
+    /// Nil once the rows are at `VolumeKeyBinding.maxCount`.
+    func unusedBinding() -> VolumeKeyBinding? {
+        guard count < VolumeKeyBinding.maxCount else { return nil }
+        let free = (0...VolumeKeyCombo.all.rawValue)
+            .map { VolumeKeyCombo(rawValue: $0) }
+            .sorted { ($0.modifierCount, $0.rawValue) < ($1.modifierCount, $1.rawValue) }
+            .first { combo in !contains { $0.combo == combo } }
+        return free.map { VolumeKeyBinding(combo: $0, percent: 5) }
     }
 }

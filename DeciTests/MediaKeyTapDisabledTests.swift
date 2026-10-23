@@ -46,7 +46,8 @@ struct MediaKeyTapDisabledTests {
             accessibility: accessibility,
             hudController: hud,
             popupVisibility: popup,
-            mediaKeyStatus: status
+            mediaKeyStatus: status,
+            volumeKeyRecorder: VolumeKeyRecorder(settings: settings)
         )
         return (monitor, status, accessibility)
     }

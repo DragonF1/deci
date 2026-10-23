@@ -358,3 +358,63 @@ struct HUDWindowControllerMessageTests {
         #expect(hud.hideDelay(for: .tahoe) == .milliseconds(1100))
     }
 }
+
+// MARK: - Suppression-degraded detection
+
+@Suite("HUDWindowController: suppression-degraded detection")
+@MainActor
+struct HUDSuppressionDegradedTests {
+
+    private func makeController() -> (hud: HUDWindowController, status: MediaKeyStatus) {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        let status = MediaKeyStatus()
+        let hud = HUDWindowController(
+            settingsManager: SettingsManager(directory: tempDir),
+            mediaKeyStatus: status,
+            popupVisibility: PopupVisibilityService()
+        )
+        return (hud, status)
+    }
+
+    @Test("The system's own volume notification right after a swallowed key marks suppression degraded")
+    func nativeHudAfterSwallowIsDegraded() {
+        let (hud, status) = makeController()
+        hud.swallowObserved()
+        hud.handleSettingsChangedNotification()
+        #expect(status.suppressionDegraded)
+    }
+
+    @Test("A volume notification with no swallowed key before it is not a leak")
+    func notificationWithoutSwallowIsIgnored() {
+        let (hud, status) = makeController()
+        hud.handleSettingsChangedNotification()
+        #expect(status.suppressionDegraded == false)
+    }
+
+    @Test("A key left to macOS clears the stamp of an earlier swallow")
+    func passThroughClearsTheStamp() {
+        let (hud, status) = makeController()
+        hud.swallowObserved()
+        hud.passThroughObserved()
+        hud.handleSettingsChangedNotification()
+        #expect(status.suppressionDegraded == false)
+    }
+
+    @Test("A swallow after a pass-through arms the stamp again")
+    func swallowAfterPassThroughRearms() {
+        let (hud, status) = makeController()
+        hud.passThroughObserved()
+        hud.swallowObserved()
+        hud.handleSettingsChangedNotification()
+        #expect(status.suppressionDegraded)
+    }
+
+    @Test("A pass-through with nothing swallowed before it is harmless")
+    func passThroughWithoutSwallow() {
+        let (hud, status) = makeController()
+        hud.passThroughObserved()
+        hud.handleSettingsChangedNotification()
+        #expect(status.suppressionDegraded == false)
+    }
+}

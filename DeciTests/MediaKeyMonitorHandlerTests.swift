@@ -18,14 +18,25 @@ final class StubMediaKeyDecoder: MediaKeyEventDecoding, @unchecked Sendable {
     func decode(data1: Int) -> MediaKeyEvent? { nextEvent }
 }
 
-/// Records what the monitor asks the HUD to show, so a test can compare it with the popup slider.
+/// Records what the monitor asks the HUD to show, so a test can compare it with the popup slider,
+/// and how many keypresses it swallowed and left to macOS.
 @MainActor
 final class FractionRecordingHUD: MediaKeyHUDPresenting {
     private(set) var shown: [(sliderFraction: Double, mute: Bool, deviceName: String)] = []
+    private(set) var swallowed = 0
+    private(set) var passedThrough = 0
     func show(sliderFraction: Double, mute: Bool, deviceName: String) {
         shown.append((sliderFraction, mute, deviceName))
     }
-    func swallowObserved() {}
+    func swallowObserved() { swallowed += 1 }
+    func passThroughObserved() { passedThrough += 1 }
+}
+
+/// Stands in for `NSSound.beep` so a test can count the rejections without making a sound.
+@MainActor
+final class BeepCounter {
+    private(set) var count = 0
+    func beep() { count += 1 }
 }
 
 // MARK: - Test suite
@@ -45,12 +56,17 @@ struct MediaKeyMonitorHandlerTests {
     }
 
     /// Same wiring as `makeMonitor`, but also hands back the mock volume provider so a test can drive
-    /// the real `handle(_:chord:)` path (default device, tier and volume come from the mock).
+    /// the real `handle(_:held:)` path (default device, tier and volume come from the mock), plus the
+    /// keybind recorder the monitor consults and the beeps it made.
     private func makeRig(
         hudController: HUDWindowController? = nil,
         popupVisible: Bool = false,
         presenter: MediaKeyHUDPresenting? = nil
-    ) -> (monitor: MediaKeyMonitor, hud: HUDWindowController, popup: PopupVisibilityService, settingsManager: SettingsManager, volume: MockDeviceVolumeProviding) {
+    ) -> (
+        monitor: MediaKeyMonitor, hud: HUDWindowController, popup: PopupVisibilityService,
+        settingsManager: SettingsManager, volume: MockDeviceVolumeProviding,
+        recorder: VolumeKeyRecorder, beeps: BeepCounter
+    ) {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         let settings = SettingsManager(directory: tempDir)
@@ -76,6 +92,8 @@ struct MediaKeyMonitorHandlerTests {
         // Replace frameProvider to avoid NSScreen access in unit tests.
         hud.frameProvider = { NSRect(x: 0, y: 0, width: 1440, height: 900) }
 
+        let beeps = BeepCounter()
+        let recorder = VolumeKeyRecorder(settings: settings, beep: { beeps.beep() })
         let monitor = MediaKeyMonitor(
             decoder: StubMediaKeyDecoder(),
             audioEngine: engine,
@@ -83,9 +101,10 @@ struct MediaKeyMonitorHandlerTests {
             accessibility: MockAccessibilityTrustProviding(isTrusted: true),
             hudController: presenter ?? hud,
             popupVisibility: popup,
-            mediaKeyStatus: mediaKeyStatus
+            mediaKeyStatus: mediaKeyStatus,
+            volumeKeyRecorder: recorder
         )
-        return (monitor, hud, popup, settings, mockVolume)
+        return (monitor, hud, popup, settings, mockVolume, recorder, beeps)
     }
 
     // MARK: - Volume step arithmetic
@@ -608,14 +627,28 @@ struct MediaKeyMonitorHandlerTests {
         #expect(feedbackCalls == 1)
     }
 
-    // MARK: - Modifier chords (F11/F12, Cmd, Cmd+Shift)
+    // MARK: - Held modifiers (F11/F12, Cmd, Cmd+Shift and any added row)
+
+    /// Writes the rows the next press will be matched against.
+    private func setBindings(_ settings: SettingsManager, _ bindings: [VolumeKeyBinding]) {
+        var appSettings = settings.appSettings
+        appSettings.volumeKeyBindings = bindings
+        settings.updateAppSettings(appSettings)
+    }
+
+    /// Sets the percent of the default row at `index` (0 plain, 1 Command, 2 Command+Shift).
+    private func setDefaultRowPercent(_ settings: SettingsManager, _ index: Int, to percent: Int) {
+        var appSettings = settings.appSettings
+        appSettings.volumeKeyBindings[index].percent = percent
+        settings.updateAppSettings(appSettings)
+    }
 
     /// Runs one hardware-tier press at `currentVolume` and returns the volume written (nil if none).
     private func press(
         _ monitor: MediaKeyMonitor,
         _ event: MediaKeyEvent,
         from currentVolume: Float,
-        chord: VolumeStepChord,
+        held: VolumeKeyCombo = [],
         currentMute: Bool = false,
         setMute: @escaping (Bool) -> Void = { _ in }
     ) -> Float? {
@@ -624,31 +657,29 @@ struct MediaKeyMonitorHandlerTests {
             event: event, deviceID: 1, tier: .hardware,
             deviceName: "Test Device", currentVolume: currentVolume, currentMute: currentMute,
             setVolume: { _, v in written = v }, setMute: { _, m in setMute(m) },
-            chord: chord
+            held: held
         )
         return written
     }
 
-    @Test("Each chord steps the slider by its own percent", arguments: [
-        (chord: VolumeStepChord.plain,        step: 0.10),
-        (chord: VolumeStepChord.command,      step: 0.05),
-        (chord: VolumeStepChord.commandShift, step: 0.01),
+    @Test("Each default row steps the slider by its own percent", arguments: [
+        (held: VolumeKeyCombo([]),                    step: 0.10),
+        (held: VolumeKeyCombo([.command]),            step: 0.05),
+        (held: VolumeKeyCombo([.command, .shift]),    step: 0.01),
     ])
-    func chordStepsUpAndDown(_ c: (chord: VolumeStepChord, step: Double)) {
+    func rowStepsUpAndDown(_ c: (held: VolumeKeyCombo, step: Double)) {
         let (monitor, _, _, _) = makeMonitor()
-        let up = press(monitor, .volumeUp(isRepeat: false), from: 0.5, chord: c.chord)
-        let down = press(monitor, .volumeDown(isRepeat: false), from: 0.5, chord: c.chord)
+        let up = press(monitor, .volumeUp(isRepeat: false), from: 0.5, held: c.held)
+        let down = press(monitor, .volumeDown(isRepeat: false), from: 0.5, held: c.held)
         #expect(abs(Double(up ?? 0) - (0.5 + c.step)) < 1e-6)
         #expect(abs(Double(down ?? 0) - (0.5 - c.step)) < 1e-6)
     }
 
-    @Test("Without a chord argument handleCore uses the plain step")
-    func chordDefaultsToPlain() {
+    @Test("Without a held combo handleCore uses the empty-combo row's step")
+    func heldDefaultsToEmpty() {
         let (monitor, _, _, settings) = makeMonitor()
-        var appSettings = settings.appSettings
-        appSettings.volumeStepPercent = 20
-        appSettings.volumeStepCommandPercent = 3
-        settings.updateAppSettings(appSettings)
+        setDefaultRowPercent(settings, 0, to: 20)
+        setDefaultRowPercent(settings, 1, to: 3)
         var written: Float?
         monitor.handleCore(
             event: .volumeUp(isRepeat: false), deviceID: 1, tier: .hardware,
@@ -658,50 +689,83 @@ struct MediaKeyMonitorHandlerTests {
         #expect(abs(Double(written ?? 0) - 0.7) < 1e-6)
     }
 
-    @Test("Edited percents are honoured per chord")
+    @Test("Edited percents are honoured per row")
     func customPercentsHonoured() {
         let (monitor, _, _, settings) = makeMonitor()
-        var appSettings = settings.appSettings
-        appSettings.volumeStepPercent = 20
-        appSettings.volumeStepCommandPercent = 3
-        appSettings.volumeStepCommandShiftPercent = 2
-        settings.updateAppSettings(appSettings)
+        setDefaultRowPercent(settings, 0, to: 20)
+        setDefaultRowPercent(settings, 1, to: 3)
+        setDefaultRowPercent(settings, 2, to: 2)
 
-        let plain = press(monitor, .volumeUp(isRepeat: false), from: 0.5, chord: .plain)
-        let command = press(monitor, .volumeUp(isRepeat: false), from: 0.5, chord: .command)
-        let commandShift = press(monitor, .volumeDown(isRepeat: false), from: 0.5, chord: .commandShift)
+        let plain = press(monitor, .volumeUp(isRepeat: false), from: 0.5)
+        let command = press(monitor, .volumeUp(isRepeat: false), from: 0.5, held: [.command])
+        let commandShift = press(monitor, .volumeDown(isRepeat: false), from: 0.5, held: [.command, .shift])
         #expect(abs(Double(plain ?? 0) - 0.70) < 1e-6)
         #expect(abs(Double(command ?? 0) - 0.53) < 1e-6)
         #expect(abs(Double(commandShift ?? 0) - 0.48) < 1e-6)
     }
 
-    @Test("A chord steps in slider space on the software tier (x² taper)")
-    func chordStepOnSoftwareTier() {
+    @Test("A row added in Settings steps by its own percent, also with extra modifiers held")
+    func addedRowSteps() {
+        let (monitor, _, _, settings) = makeMonitor()
+        setBindings(settings, VolumeKeyBinding.defaults + [VolumeKeyBinding(combo: [.option], percent: 25)])
+
+        let option = press(monitor, .volumeUp(isRepeat: false), from: 0.5, held: [.option])
+        let optionShift = press(monitor, .volumeDown(isRepeat: false), from: 0.5, held: [.option, .shift])
+        let plain = press(monitor, .volumeUp(isRepeat: false), from: 0.5, held: [.shift])
+        #expect(abs(Double(option ?? 0) - 0.75) < 1e-6)
+        #expect(abs(Double(optionShift ?? 0) - 0.25) < 1e-6)
+        #expect(abs(Double(plain ?? 0) - 0.60) < 1e-6)  // Shift alone still falls to plain
+    }
+
+    @Test("With no row for the held modifiers handleCore writes nothing and shows nothing")
+    func unmatchedHeldDoesNothing() {
+        let hud = FractionRecordingHUD()
+        let rig = makeRig(presenter: hud)
+        setBindings(rig.settingsManager, [VolumeKeyBinding(combo: [.command], percent: 5)])
+
+        var written = 0
+        var feedback = 0
+        for event in [MediaKeyEvent.volumeUp(isRepeat: false), .volumeDown(isRepeat: false)] {
+            rig.monitor.handleCore(
+                event: event, deviceID: 1, tier: .hardware,
+                deviceName: "Test Device", currentVolume: 0.5, currentMute: false,
+                setVolume: { _, _ in written += 1 }, setMute: { _, _ in written += 1 },
+                playFeedback: { _ in feedback += 1 },
+                held: [.shift]
+            )
+        }
+        #expect(written == 0)
+        #expect(feedback == 0)
+        #expect(hud.shown.isEmpty)
+    }
+
+    @Test("A row steps in slider space on the software tier (x² taper)")
+    func rowStepOnSoftwareTier() {
         let (monitor, _, _, _) = makeMonitor()
         var written: Float?
         monitor.handleCore(
             event: .volumeUp(isRepeat: false), deviceID: 1, tier: .software,
             deviceName: "Test Device", currentVolume: 0.5, currentMute: false,
             setVolume: { _, v in written = v }, setMute: { _, _ in },
-            chord: .commandShift
+            held: [.command, .shift]
         )
         let expected = Float(0.7171 * 0.7171)  // slider 0.7071 + 0.01, snapped to the 1e-4 grid
         #expect(abs((written ?? 0) - expected) < 1e-5)
     }
 
-    @Test("Chord steps clamp at 1.0 and 0.0", arguments: VolumeStepChord.allCases)
-    func chordClamps(chord: VolumeStepChord) {
+    @Test("Row steps clamp at 1.0 and 0.0", arguments: VolumeKeyBinding.defaults.map(\.combo))
+    func rowClamps(held: VolumeKeyCombo) {
         let (monitor, _, _, _) = makeMonitor()
-        #expect(press(monitor, .volumeUp(isRepeat: false), from: 1.0, chord: chord) == 1.0)
-        #expect(press(monitor, .volumeDown(isRepeat: false), from: 0.0, chord: chord) == 0.0)
+        #expect(press(monitor, .volumeUp(isRepeat: false), from: 1.0, held: held) == 1.0)
+        #expect(press(monitor, .volumeDown(isRepeat: false), from: 0.0, held: held) == 0.0)
     }
 
     @Test("A step bigger than the headroom lands on 1.0, a smaller one does not")
-    func chordClampBoundary() {
+    func rowClampBoundary() {
         let (monitor, _, _, _) = makeMonitor()
-        #expect(press(monitor, .volumeUp(isRepeat: false), from: 0.96, chord: .plain) == 1.0)
-        #expect(press(monitor, .volumeUp(isRepeat: false), from: 0.96, chord: .command) == 1.0)
-        let fine = press(monitor, .volumeUp(isRepeat: false), from: 0.96, chord: .commandShift)
+        #expect(press(monitor, .volumeUp(isRepeat: false), from: 0.96) == 1.0)
+        #expect(press(monitor, .volumeUp(isRepeat: false), from: 0.96, held: [.command]) == 1.0)
+        let fine = press(monitor, .volumeUp(isRepeat: false), from: 0.96, held: [.command, .shift])
         #expect(abs(Double(fine ?? 0) - 0.97) < 1e-6)
     }
 
@@ -710,39 +774,41 @@ struct MediaKeyMonitorHandlerTests {
         let (monitor, _, _, _) = makeMonitor()
         var volume: Float = 0
         for _ in 0..<100 {
-            volume = press(monitor, .volumeUp(isRepeat: false), from: volume, chord: .commandShift) ?? volume
+            volume = press(monitor, .volumeUp(isRepeat: false), from: volume, held: [.command, .shift]) ?? volume
         }
         #expect(abs(volume - 1.0) < 1e-4)
     }
 
-    @Test("Mute behaviour is the same under every chord", arguments: VolumeStepChord.allCases)
-    func muteSemanticsUnderChord(chord: VolumeStepChord) {
+    @Test("Mute behaviour is the same under every row", arguments: VolumeKeyBinding.defaults.map(\.combo))
+    func muteSemanticsUnderRow(held: VolumeKeyCombo) {
         let (monitor, _, _, _) = makeMonitor()
 
         // volumeUp while muted unmutes.
         var upMute: Bool?
-        _ = press(monitor, .volumeUp(isRepeat: false), from: 0.5, chord: chord, currentMute: true) { upMute = $0 }
+        _ = press(monitor, .volumeUp(isRepeat: false), from: 0.5, held: held, currentMute: true) { upMute = $0 }
         #expect(upMute == false)
 
         // volumeDown to audible while muted unmutes.
         var downMute: Bool?
-        _ = press(monitor, .volumeDown(isRepeat: false), from: 0.5, chord: chord, currentMute: true) { downMute = $0 }
+        _ = press(monitor, .volumeDown(isRepeat: false), from: 0.5, held: held, currentMute: true) { downMute = $0 }
         #expect(downMute == false)
 
         // volumeDown that reaches silence while unmuted auto-mutes (a step of at least the current volume).
         var silentMute: Bool?
-        let nearSilence = Float(VolumeStepChord.percentRange.lowerBound) / 100  // 0.01: every chord's step reaches 0
-        _ = press(monitor, .volumeDown(isRepeat: false), from: nearSilence, chord: chord) { silentMute = $0 }
+        let nearSilence = Float(VolumeKeyBinding.percentRange.lowerBound) / 100  // 0.01: every row's step reaches 0
+        _ = press(monitor, .volumeDown(isRepeat: false), from: nearSilence, held: held) { silentMute = $0 }
         #expect(silentMute == true)
 
         // volumeUp while unmuted never touches mute.
         var untouched = 0
-        _ = press(monitor, .volumeUp(isRepeat: false), from: 0.5, chord: chord) { _ in untouched += 1 }
+        _ = press(monitor, .volumeUp(isRepeat: false), from: 0.5, held: held) { _ in untouched += 1 }
         #expect(untouched == 0)
     }
 
-    @Test("muteToggle ignores the chord and leaves the volume alone", arguments: VolumeStepChord.allCases)
-    func muteToggleUnderChord(chord: VolumeStepChord) {
+    @Test("muteToggle ignores the held modifiers and leaves the volume alone", arguments: [
+        VolumeKeyCombo([]), VolumeKeyCombo([.command]), VolumeKeyCombo([.option, .control]),
+    ])
+    func muteToggleUnderModifiers(held: VolumeKeyCombo) {
         let (monitor, _, _, _) = makeMonitor()
         var writtenMute: Bool?
         var setVolumeCalls = 0
@@ -750,14 +816,14 @@ struct MediaKeyMonitorHandlerTests {
             event: .muteToggle, deviceID: 1, tier: .hardware,
             deviceName: "Test Device", currentVolume: 0.5, currentMute: false,
             setVolume: { _, _ in setVolumeCalls += 1 }, setMute: { _, m in writtenMute = m },
-            chord: chord
+            held: held
         )
         #expect(writtenMute == true)
         #expect(setVolumeCalls == 0)
     }
 
-    @Test("playFeedback still fires once per chord press", arguments: VolumeStepChord.allCases)
-    func feedbackUnderChord(chord: VolumeStepChord) {
+    @Test("playFeedback still fires once per press under every row", arguments: VolumeKeyBinding.defaults.map(\.combo))
+    func feedbackUnderRow(held: VolumeKeyCombo) {
         let (monitor, _, _, _) = makeMonitor()
         var feedbackCalls = 0
         monitor.handleCore(
@@ -765,7 +831,7 @@ struct MediaKeyMonitorHandlerTests {
             deviceName: "Test Device", currentVolume: 0.5, currentMute: false,
             setVolume: { _, _ in }, setMute: { _, _ in },
             playFeedback: { _ in feedbackCalls += 1 },
-            chord: chord
+            held: held
         )
         #expect(feedbackCalls == 1)
     }
@@ -775,9 +841,7 @@ struct MediaKeyMonitorHandlerTests {
     @Test("An 11% step walking down from 1.0 ends muted at exactly 0, never 0 while unmuted")
     func elevenPercentWalkDownEndsMutedAtZero() {
         let (monitor, _, _, settings) = makeMonitor()
-        var appSettings = settings.appSettings
-        appSettings.volumeStepPercent = 11
-        settings.updateAppSettings(appSettings)
+        setDefaultRowPercent(settings, 0, to: 11)
 
         // Model the device: hardware/DDC floor sub-1% scalars to 0 exactly as DeviceVolumeMonitor does.
         var volume: Float = 1.0
@@ -801,29 +865,29 @@ struct MediaKeyMonitorHandlerTests {
 
     // MARK: - Real handle() path (default device, tier and volume read from the volume provider)
 
-    @Test("handle() applies the Command+Shift step (1%) to the default device", arguments: [
-        (chord: VolumeStepChord.plain,        up: 0.60, down: 0.40),
-        (chord: VolumeStepChord.command,      up: 0.55, down: 0.45),
-        (chord: VolumeStepChord.commandShift, up: 0.51, down: 0.49),
+    @Test("handle() applies each default row's step to the default device", arguments: [
+        (held: VolumeKeyCombo([]),                 up: 0.60, down: 0.40),
+        (held: VolumeKeyCombo([.command]),         up: 0.55, down: 0.45),
+        (held: VolumeKeyCombo([.command, .shift]), up: 0.51, down: 0.49),
     ])
-    func handleAppliesChordStep(_ c: (chord: VolumeStepChord, up: Double, down: Double)) {
+    func handleAppliesRowStep(_ c: (held: VolumeKeyCombo, up: Double, down: Double)) {
         let rig = makeRig()
         rig.volume.defaultDeviceID = 7
         rig.volume.defaultTier = .hardware
         rig.volume.volumes[7] = 0.5
 
-        rig.monitor.handle(.volumeUp(isRepeat: false), chord: c.chord)
+        rig.monitor.handle(.volumeUp(isRepeat: false), held: c.held)
         #expect(rig.volume.setVolumeCalls.count == 1)
         #expect(rig.volume.setVolumeCalls.last?.deviceID == 7)
         #expect(abs(Double(rig.volume.setVolumeCalls.last?.volume ?? 0) - c.up) < 1e-6)
 
         rig.volume.volumes[7] = 0.5
-        rig.monitor.handle(.volumeDown(isRepeat: false), chord: c.chord)
+        rig.monitor.handle(.volumeDown(isRepeat: false), held: c.held)
         #expect(rig.volume.setVolumeCalls.count == 2)
         #expect(abs(Double(rig.volume.setVolumeCalls.last?.volume ?? 0) - c.down) < 1e-6)
     }
 
-    @Test("handle() without a chord uses the plain step, and edited percents flow through")
+    @Test("handle() without a held combo uses the plain step, and edited percents flow through")
     func handleDefaultsToPlainAndHonoursSettings() {
         let rig = makeRig()
         rig.volume.defaultDeviceID = 7
@@ -832,11 +896,9 @@ struct MediaKeyMonitorHandlerTests {
         rig.monitor.handle(.volumeUp(isRepeat: false))
         #expect(abs(Double(rig.volume.setVolumeCalls.last?.volume ?? 0) - 0.60) < 1e-6)
 
-        var appSettings = rig.settingsManager.appSettings
-        appSettings.volumeStepCommandPercent = 3
-        rig.settingsManager.updateAppSettings(appSettings)
+        setDefaultRowPercent(rig.settingsManager, 1, to: 3)
         rig.volume.volumes[7] = 0.5
-        rig.monitor.handle(.volumeUp(isRepeat: false), chord: .command)
+        rig.monitor.handle(.volumeUp(isRepeat: false), held: [.command])
         #expect(abs(Double(rig.volume.setVolumeCalls.last?.volume ?? 0) - 0.53) < 1e-6)
     }
 
@@ -844,14 +906,13 @@ struct MediaKeyMonitorHandlerTests {
     func handleIgnoresInvalidDevice() {
         let rig = makeRig()
         rig.volume.defaultDeviceID = AudioDeviceID.unknown
-        rig.monitor.handle(.volumeUp(isRepeat: false), chord: .commandShift)
+        rig.monitor.handle(.volumeUp(isRepeat: false), held: [.command, .shift])
         #expect(rig.volume.setVolumeCalls.isEmpty)
     }
 
-    @Test("The HUD fraction equals the popup slider for the gain written, under every chord and tier", arguments: [
-        VolumeStepChord.plain, .command, .commandShift,
-    ])
-    func hudFractionMatchesPopupSliderForWrittenGain(chord: VolumeStepChord) {
+    @Test("The HUD fraction equals the popup slider for the gain written, under every row and tier",
+          arguments: VolumeKeyBinding.defaults.map(\.combo))
+    func hudFractionMatchesPopupSliderForWrittenGain(held: VolumeKeyCombo) {
         for tier in [VolumeControlTier.hardware, .ddc, .software] {
             let hud = FractionRecordingHUD()
             let rig = makeRig(presenter: hud)
@@ -861,12 +922,415 @@ struct MediaKeyMonitorHandlerTests {
                     event: event, deviceID: 1, tier: tier,
                     deviceName: "Test Device", currentVolume: 0.5, currentMute: false,
                     setVolume: { _, v in written = v }, setMute: { _, _ in },
-                    chord: chord
+                    held: held
                 )
                 let shown = hud.shown.last?.sliderFraction
                 let popup = DeviceRow.volumeToSlider(written ?? -1, backend: tier)
-                #expect(abs((shown ?? -1) - popup) < 1e-5, "\(chord) \(tier) \(event): HUD \(shown ?? -1) vs popup \(popup)")
+                #expect(abs((shown ?? -1) - popup) < 1e-5, "\(held.label) \(tier) \(event): HUD \(shown ?? -1) vs popup \(popup)")
             }
         }
+    }
+
+    // MARK: - Routing a decoded key: swallow, pass through, or record
+
+    /// A rig whose default device is a hardware-tier device at 50%, with a recording HUD.
+    private func makeRoutingRig() -> (
+        monitor: MediaKeyMonitor, hud: FractionRecordingHUD, settings: SettingsManager,
+        volume: MockDeviceVolumeProviding, recorder: VolumeKeyRecorder, beeps: BeepCounter
+    ) {
+        let hud = FractionRecordingHUD()
+        let rig = makeRig(presenter: hud)
+        rig.volume.defaultDeviceID = 7
+        rig.volume.defaultTier = .hardware
+        rig.volume.volumes[7] = 0.5
+        return (rig.monitor, hud, rig.settingsManager, rig.volume, rig.recorder, rig.beeps)
+    }
+
+    private func rowID(_ settings: SettingsManager, _ index: Int) -> UUID {
+        settings.appSettings.volumeKeyBindings[index].id
+    }
+
+    @Test("A volume key with a matching row is swallowed and steps by that row", arguments: [
+        (held: VolumeKeyCombo([]),                          up: 0.60),
+        (held: VolumeKeyCombo([.shift]),                    up: 0.60),
+        (held: VolumeKeyCombo([.option]),                   up: 0.60),
+        (held: VolumeKeyCombo([.control]),                  up: 0.60),
+        (held: VolumeKeyCombo([.command]),                  up: 0.55),
+        (held: VolumeKeyCombo([.command, .option]),         up: 0.55),
+        (held: VolumeKeyCombo([.command, .shift]),          up: 0.51),
+        (held: VolumeKeyCombo([.command, .shift, .option]), up: 0.51),
+    ])
+    func matchedVolumeKeyIsSwallowed(_ c: (held: VolumeKeyCombo, up: Double)) {
+        let rig = makeRoutingRig()
+        let swallowed = rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: c.held)
+        #expect(swallowed)
+        #expect(rig.volume.setVolumeCalls.count == 1)
+        #expect(abs(Double(rig.volume.setVolumeCalls.last?.volume ?? 0) - c.up) < 1e-6)
+        #expect(rig.hud.swallowed == 1)
+        #expect(rig.hud.passedThrough == 0)
+    }
+
+    @Test("A volume key with no matching row is not swallowed and changes nothing", arguments: [
+        VolumeKeyCombo([]), VolumeKeyCombo([.shift]), VolumeKeyCombo([.control, .shift]),
+    ])
+    func unmatchedVolumeKeyPassesThrough(held: VolumeKeyCombo) {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [
+            VolumeKeyBinding(combo: [.command], percent: 5),
+            VolumeKeyBinding(combo: [.option], percent: 2),
+        ])
+        for event in [MediaKeyEvent.volumeUp(isRepeat: false), .volumeDown(isRepeat: false), .volumeUp(isRepeat: true)] {
+            #expect(rig.monitor.processMediaKey(event, held: held) == false)
+        }
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+        #expect(rig.volume.setMuteCalls.isEmpty)
+        #expect(rig.hud.shown.isEmpty)
+        #expect(rig.hud.swallowed == 0)
+        #expect(rig.hud.passedThrough == 3)  // each one tells the HUD that macOS will act on its own
+    }
+
+    @Test("A key left to macOS clears the swallow stamp, so macOS's own volume change is not read as a leak")
+    func passThroughClearsSuppressionStamp() {
+        let status = MediaKeyStatus()
+        let popup = PopupVisibilityService()
+        let settings = SettingsManager(directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString))
+        let hud = HUDWindowController(settingsManager: settings, mediaKeyStatus: status, popupVisibility: popup)
+        hud.fullscreenOverride = true  // show() returns early, so no panel is ordered front
+        let rig = makeRig(hudController: hud)
+        rig.volume.defaultDeviceID = 7
+        rig.volume.volumes[7] = 0.5
+        setBindings(rig.settingsManager, [
+            VolumeKeyBinding(combo: [.command], percent: 5),
+        ])
+
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: [.command]))  // swallowed
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: []) == false)  // left to macOS
+
+        hud.handleSettingsChangedNotification()  // macOS reports the volume change it made itself
+        #expect(status.suppressionDegraded == false)
+    }
+
+    @Test("A swallowed key whose native HUD still fires does mark suppression degraded")
+    func swallowStillMarksSuppressionDegraded() {
+        let status = MediaKeyStatus()
+        let popup = PopupVisibilityService()
+        let settings = SettingsManager(directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString))
+        let hud = HUDWindowController(settingsManager: settings, mediaKeyStatus: status, popupVisibility: popup)
+        hud.fullscreenOverride = true  // show() returns early, so no panel is ordered front
+        let rig = makeRig(hudController: hud)
+        rig.volume.defaultDeviceID = 7
+        rig.volume.volumes[7] = 0.5
+
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: []))
+
+        hud.handleSettingsChangedNotification()
+        #expect(status.suppressionDegraded)
+    }
+
+    @Test("Once the plain row is rebound a bare press passes through, and the new combo steps")
+    func reboundPlainRowPassesBareKeyThrough() {
+        let rig = makeRoutingRig()
+        var bindings = VolumeKeyBinding.defaults
+        bindings[0].combo = [.option]
+        setBindings(rig.settings, bindings)
+
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: []) == false)
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: [.option]))
+        #expect(abs(Double(rig.volume.setVolumeCalls.last?.volume ?? 0) - 0.60) < 1e-6)
+    }
+
+    @Test("Mute is swallowed and applied whatever rows exist")
+    func muteIsAlwaysHandled() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [VolumeKeyBinding(combo: [.command], percent: 5)])
+        #expect(rig.monitor.processMediaKey(.muteToggle, held: []))
+        #expect(rig.volume.setMuteCalls.count == 1)
+        #expect(rig.volume.setMuteCalls.last?.muted == true)
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+    }
+
+    // MARK: Recording a keybind
+
+    @Test("A volume key pressed while recording captures the held modifiers and changes no volume", arguments: [
+        MediaKeyEvent.volumeUp(isRepeat: false), MediaKeyEvent.volumeDown(isRepeat: false),
+    ])
+    func recordingCapturesHeldModifiers(event: MediaKeyEvent) {
+        let rig = makeRoutingRig()
+        rig.recorder.begin(rowID(rig.settings, 1))
+
+        let swallowed = rig.monitor.processMediaKey(event, held: [.option, .shift])
+
+        #expect(swallowed)
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+        #expect(rig.volume.setMuteCalls.isEmpty)
+        #expect(rig.hud.shown.isEmpty)
+        #expect(rig.hud.swallowed == 1)
+        #expect(rig.recorder.recordingID == nil)
+        #expect(rig.settings.appSettings.volumeKeyBindings.rows == [
+            VolumeKeyRow([], 10), VolumeKeyRow([.option, .shift], 5), VolumeKeyRow([.command, .shift], 1),
+        ])
+        #expect(rig.beeps.count == 0)
+    }
+
+    @Test("The recorded combo steps by that row from the next press on")
+    func recordedComboWorksAtOnce() {
+        let rig = makeRoutingRig()
+        rig.recorder.begin(rowID(rig.settings, 1))
+        _ = rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: [.control])
+
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: [.control]))
+        #expect(abs(Double(rig.volume.setVolumeCalls.last?.volume ?? 0) - 0.55) < 1e-6)  // the row's 5%
+        #expect(rig.volume.setVolumeCalls.count == 1)
+    }
+
+    @Test("A combo another row already uses is rejected with a beep, and the row keeps its combo")
+    func recordingDuplicateIsRejected() {
+        let rig = makeRoutingRig()
+        rig.recorder.begin(rowID(rig.settings, 1))
+
+        let swallowed = rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: [])  // the plain row's combo
+
+        #expect(swallowed)
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+        #expect(rig.beeps.count == 1)
+        #expect(rig.recorder.recordingID == nil)
+        #expect(rig.settings.appSettings.volumeKeyBindings.rows == defaultVolumeKeyRows)
+    }
+
+    @Test("Re-recording a row's own combo succeeds quietly and changes nothing")
+    func recordingOwnComboIsNoOp() {
+        let rig = makeRoutingRig()
+        rig.recorder.begin(rowID(rig.settings, 1))
+
+        let swallowed = rig.monitor.processMediaKey(.volumeDown(isRepeat: false), held: [.command])
+
+        #expect(swallowed)
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+        #expect(rig.beeps.count == 0)
+        #expect(rig.recorder.recordingID == nil)
+        #expect(rig.settings.appSettings.volumeKeyBindings.rows == defaultVolumeKeyRows)
+    }
+
+    @Test("Mute is not a capture: it works as usual and recording stays on")
+    func muteDuringRecordingIsNotCaptured() {
+        let rig = makeRoutingRig()
+        let id = rowID(rig.settings, 1)
+        rig.recorder.begin(id)
+
+        #expect(rig.monitor.processMediaKey(.muteToggle, held: [.option]))
+
+        #expect(rig.volume.setMuteCalls.count == 1)
+        #expect(rig.recorder.recordingID == id)
+        #expect(rig.settings.appSettings.volumeKeyBindings.rows == defaultVolumeKeyRows)
+    }
+
+    @Test("Repeats of the press that ended recording are swallowed; the next fresh press steps normally")
+    func repeatsOfCapturingPressDoNotStepVolume() {
+        let rig = makeRoutingRig()
+        rig.recorder.begin(rowID(rig.settings, 1))
+        _ = rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: [.option])
+
+        // The key is still down: macOS keeps sending repeats, and the row now matches them.
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: true), held: [.option]))
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: true), held: [.option]))
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: [.option]))
+        #expect(rig.volume.setVolumeCalls.count == 1)
+        // A repeat of that new press is a real step again.
+        rig.volume.volumes[7] = 0.5
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: true), held: [.option]))
+        #expect(rig.volume.setVolumeCalls.count == 2)
+    }
+
+    // MARK: Key repeat follows its press
+
+    private let freshUp = MediaKeyEvent.volumeUp(isRepeat: false)
+    private let freshDown = MediaKeyEvent.volumeDown(isRepeat: false)
+    private let repeatUp = MediaKeyEvent.volumeUp(isRepeat: true)
+    private let repeatDown = MediaKeyEvent.volumeDown(isRepeat: true)
+
+    private func lastVolume(_ volume: MockDeviceVolumeProviding) -> Double {
+        Double(volume.setVolumeCalls.last?.volume ?? -1)
+    }
+
+    @Test("With no plain row, releasing the modifier mid-hold keeps the repeats on the pressed row")
+    func repeatsOutliveTheReleasedModifier() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [
+            VolumeKeyBinding(combo: [.command], percent: 5),
+            VolumeKeyBinding(combo: [.option], percent: 2),
+        ])
+
+        #expect(rig.monitor.processMediaKey(freshDown, held: [.command]))
+        #expect(abs(lastVolume(rig.volume) - 0.45) < 1e-6)
+
+        // Command is up, the key is still down: nothing fits [] now, but the press was Deci's.
+        #expect(rig.monitor.processMediaKey(repeatDown, held: []))
+        #expect(abs(lastVolume(rig.volume) - 0.40) < 1e-6)
+        #expect(rig.monitor.processMediaKey(repeatDown, held: []))
+        #expect(abs(lastVolume(rig.volume) - 0.35) < 1e-6)
+
+        #expect(rig.volume.setVolumeCalls.count == 3)
+        #expect(rig.hud.swallowed == 3)
+        #expect(rig.hud.passedThrough == 0)
+    }
+
+    @Test("A repeat of a handled press re-matches the modifiers held now")
+    func repeatRematchesCurrentModifiers() {
+        let rig = makeRoutingRig()
+
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.command]))
+        #expect(abs(lastVolume(rig.volume) - 0.55) < 1e-6)
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: [.command, .shift]))  // Shift added: the 1% row
+        #expect(abs(lastVolume(rig.volume) - 0.56) < 1e-6)
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []))  // everything released: the plain row
+        #expect(abs(lastVolume(rig.volume) - 0.66) < 1e-6)
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: [.command]))
+        #expect(abs(lastVolume(rig.volume) - 0.71) < 1e-6)
+    }
+
+    @Test("A repeat of a press left to macOS stays with macOS, whatever is held by then")
+    func repeatOfPassedThroughPressPassesThrough() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [VolumeKeyBinding(combo: [.command], percent: 5)])
+
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.shift]) == false)
+        #expect(rig.monitor.processMediaKey(repeatUp, held: [.shift]) == false)
+        // Command goes down mid-hold: a row fits now, but macOS already owns this hold.
+        #expect(rig.monitor.processMediaKey(repeatUp, held: [.command]) == false)
+
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+        #expect(rig.hud.swallowed == 0)
+        #expect(rig.hud.passedThrough == 3)
+    }
+
+    @Test("The route is kept per key: up and down do not share it")
+    func routesArePerKey() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [VolumeKeyBinding(combo: [.command], percent: 5)])
+
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.command]))
+        #expect(rig.monitor.processMediaKey(freshDown, held: []) == false)
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []))  // up was handled
+        #expect(abs(lastVolume(rig.volume) - 0.60) < 1e-6)  // 0.55 from the press, 0.60 from the repeat
+        #expect(rig.monitor.processMediaKey(repeatDown, held: [.command]) == false)  // down was not
+        #expect(rig.volume.setVolumeCalls.count == 2)
+    }
+
+    @Test("A fresh press replaces the route of the one before it")
+    func freshPressReplacesRoute() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [VolumeKeyBinding(combo: [.command], percent: 5)])
+
+        #expect(rig.monitor.processMediaKey(freshUp, held: []) == false)
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.command]))
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []))  // follows the handled press now
+        #expect(rig.volume.setVolumeCalls.count == 2)
+
+        #expect(rig.monitor.processMediaKey(freshUp, held: []) == false)
+        #expect(rig.monitor.processMediaKey(repeatUp, held: [.command]) == false)  // and the passed-through one
+        #expect(rig.volume.setVolumeCalls.count == 2)
+    }
+
+    @Test("A repeat whose press was never seen is matched on the modifiers held, as before")
+    func repeatWithoutSeenPressMatchesHeld() {
+        let rig = makeRoutingRig()
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []))
+        #expect(abs(lastVolume(rig.volume) - 0.60) < 1e-6)
+
+        let other = makeRoutingRig()
+        setBindings(other.settings, [VolumeKeyBinding(combo: [.command], percent: 5)])
+        #expect(other.monitor.processMediaKey(repeatDown, held: []) == false)
+        #expect(other.monitor.processMediaKey(repeatDown, held: [.command]))
+        #expect(abs(lastVolume(other.volume) - 0.45) < 1e-6)
+    }
+
+    @Test("If the pressed row is gone and nothing fits, the repeat is left to macOS")
+    func repeatPassesThroughWhenItsRowWasRemoved() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [
+            VolumeKeyBinding(combo: [.command], percent: 5),
+            VolumeKeyBinding(combo: [.option], percent: 2),
+        ])
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.command]))
+
+        setBindings(rig.settings, [VolumeKeyBinding(combo: [.option], percent: 2)])  // the Command row is removed
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []) == false)
+        #expect(rig.monitor.processMediaKey(repeatUp, held: [.option]))  // a row that fits the held modifiers still works
+        #expect(abs(lastVolume(rig.volume) - 0.57) < 1e-6)
+    }
+
+    @Test("Mute in between does not disturb the route of a held volume key")
+    func muteLeavesRoutesAlone() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [VolumeKeyBinding(combo: [.command], percent: 5)])
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.command]))
+
+        #expect(rig.monitor.processMediaKey(.muteToggle, held: []))
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []))
+        #expect(rig.volume.setVolumeCalls.count == 2)
+    }
+
+    @Test("Stopping the tap forgets the routes: a repeat after a restart is matched on its own modifiers")
+    func stopForgetsRoutes() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [VolumeKeyBinding(combo: [.command], percent: 5)])
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.command]))
+
+        rig.monitor.stop()
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []) == false)
+        #expect(rig.monitor.processMediaKey(repeatUp, held: [.command]))
+    }
+
+    @Test("Re-enabling the tap forgets the routes, since presses may have been missed while it was off")
+    func tapReEnableForgetsRoutes() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [VolumeKeyBinding(combo: [.command], percent: 5)])
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.command]))
+
+        rig.monitor.handleTapDisabled()
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []) == false)
+    }
+
+    @Test("Repeats of the press that ended recording stay swallowed after its modifier is released")
+    func recorderAbsorptionSurvivesReleasedModifier() {
+        let rig = makeRoutingRig()
+        setBindings(rig.settings, [
+            VolumeKeyBinding(combo: [.command], percent: 5),
+            VolumeKeyBinding(combo: [.shift], percent: 3),
+        ])
+        rig.recorder.begin(rowID(rig.settings, 1))
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.option]))  // captured: the row is Option now
+
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []))
+        #expect(rig.monitor.processMediaKey(repeatUp, held: [.option]))
+        #expect(rig.volume.setVolumeCalls.isEmpty)
+
+        // The next fresh press is a real step, and its repeats follow it past the released modifier.
+        #expect(rig.monitor.processMediaKey(freshUp, held: [.option]))
+        #expect(rig.monitor.processMediaKey(repeatUp, held: []))
+        #expect(rig.volume.setVolumeCalls.count == 2)
+        #expect(abs(lastVolume(rig.volume) - 0.56) < 1e-6)  // two steps of the row's 3%
+    }
+
+    @Test("Not recording, a press is handled as before and nothing is captured")
+    func idleRecorderCapturesNothing() {
+        let rig = makeRoutingRig()
+        #expect(rig.monitor.processMediaKey(.volumeUp(isRepeat: false), held: [.option]))
+        #expect(rig.volume.setVolumeCalls.count == 1)
+        #expect(rig.settings.appSettings.volumeKeyBindings.rows == defaultVolumeKeyRows)
+        #expect(rig.beeps.count == 0)
     }
 }

@@ -43,10 +43,8 @@ nonisolated struct AppSettings: Codable, Equatable {
     // Media Keys & HUD
     var hudStyle: HUDStyle = .tahoe                // Visual style of the volume HUD
     var mediaKeyControlEnabled: Bool = true        // Intercept F10/F11/F12 to drive the default output device
-    // Whole percent of the slider per press of the volume keys, by modifier chord; user-configurable
-    var volumeStepPercent: Int = VolumeStepChord.plain.defaultPercent
-    var volumeStepCommandPercent: Int = VolumeStepChord.command.defaultPercent
-    var volumeStepCommandShiftPercent: Int = VolumeStepChord.commandShift.defaultPercent
+    // What F11 / F12 do under each set of held modifiers, and by how many percent of the slider; user-configurable
+    var volumeKeyBindings: [VolumeKeyBinding] = VolumeKeyBinding.defaults
 
     // Global Hotkeys
     // Keyed by ShortcutAction.rawValue. Values mirror what KeyboardShortcuts persists in
@@ -92,15 +90,11 @@ nonisolated struct AppSettings: Codable, Equatable {
         loudnessEqualizationEnabled = try c.decodeIfPresent(Bool.self, forKey: .loudnessEqualizationEnabled) ?? false
         hudStyle = try c.decodeIfPresent(HUDStyle.self, forKey: .hudStyle) ?? .tahoe
         mediaKeyControlEnabled = try c.decodeIfPresent(Bool.self, forKey: .mediaKeyControlEnabled) ?? true
-        // An earlier build's volumeHotkeyStep key is ignored; these steps start from the new defaults.
-        // A hand-edited value of the wrong type (7.5, "loud") falls back to the default instead of failing
-        // the whole file, which would reset every setting.
-        volumeStepPercent = VolumeStepChord.clampedPercent(
-            (try? c.decodeIfPresent(Int.self, forKey: .volumeStepPercent)) ?? VolumeStepChord.plain.defaultPercent)
-        volumeStepCommandPercent = VolumeStepChord.clampedPercent(
-            (try? c.decodeIfPresent(Int.self, forKey: .volumeStepCommandPercent)) ?? VolumeStepChord.command.defaultPercent)
-        volumeStepCommandShiftPercent = VolumeStepChord.clampedPercent(
-            (try? c.decodeIfPresent(Int.self, forKey: .volumeStepCommandShiftPercent)) ?? VolumeStepChord.commandShift.defaultPercent)
+        // A hand-edited value of the wrong type (7.5, "loud") falls back to the defaults instead of failing
+        // the whole file, which would reset every setting. One bad row costs only itself.
+        volumeKeyBindings = Self.cleanedVolumeKeyBindings(
+            saved: Self.readableVolumeKeyBindings(try? c.decode([VolumeKeyBindingEntry].self, forKey: .volumeKeyBindings)),
+            decoder: decoder)
         customShortcuts = try c.decodeIfPresent([String: ShortcutCodable].self, forKey: .customShortcuts) ?? [:]
         appearance = try c.decodeIfPresent(AppearancePreference.self, forKey: .appearance) ?? .system
         popupSize = try c.decodeIfPresent(MenuBarPopupSize.self, forKey: .popupSize) ?? .comfortable
@@ -130,25 +124,70 @@ nonisolated struct AppSettings: Codable, Equatable {
     /// Keys an earlier build wrote that this one only reads.
     private enum LegacyCodingKeys: String, CodingKey {
         case musicPinnedArtists
+        case volumeStepPercent
+        case volumeStepCommandPercent
+        case volumeStepCommandShiftPercent
+    }
+
+    /// The saved rows that can be read, each element on its own so one bad row is dropped and the rest load.
+    /// Nil when the value is not a list, or when a list with rows in it has none readable: both fall back like
+    /// any unreadable value. An empty list stays empty, which cleaning turns into the defaults.
+    private static func readableVolumeKeyBindings(_ entries: [VolumeKeyBindingEntry]?) -> [VolumeKeyBinding]? {
+        guard let entries else { return nil }
+        let rows = entries.compactMap(\.binding)
+        return rows.isEmpty && !entries.isEmpty ? nil : rows
+    }
+
+    /// The saved rows, cleaned up: percents clamped, a later row with the same modifiers or id dropped
+    /// (the first one wins), at most `VolumeKeyBinding.maxCount` kept, and the defaults when none is left.
+    /// A file from before rows existed has three step keys instead, and they become the three default rows.
+    /// A value that cannot be read at all counts as missing, so it never costs the listener the rest of the file.
+    /// An earlier build's volumeHotkeyStep key is not read.
+    private static func cleanedVolumeKeyBindings(saved: [VolumeKeyBinding]?, decoder: Decoder) -> [VolumeKeyBinding] {
+        guard let saved else { return migratedVolumeKeyBindings(decoder: decoder) }
+        var seenCombos = Set<VolumeKeyCombo>()
+        var seenIDs = Set<UUID>()
+        var rows: [VolumeKeyBinding] = []
+        for var row in saved {
+            guard seenCombos.insert(row.combo).inserted else { continue }
+            row.percent = VolumeKeyBinding.clampedPercent(row.percent)
+            if !seenIDs.insert(row.id).inserted { row.id = UUID() }
+            rows.append(row)
+            if rows.count == VolumeKeyBinding.maxCount { break }
+        }
+        return rows.isEmpty ? VolumeKeyBinding.defaults : rows
+    }
+
+    /// The three step keys an earlier build wrote, as plain, Command and Command+Shift rows; each one that is
+    /// missing or of the wrong type keeps its old default.
+    private static func migratedVolumeKeyBindings(decoder: Decoder) -> [VolumeKeyBinding] {
+        guard let legacy = try? decoder.container(keyedBy: LegacyCodingKeys.self) else {
+            return VolumeKeyBinding.defaults
+        }
+        let keys: [LegacyCodingKeys] = [.volumeStepPercent, .volumeStepCommandPercent, .volumeStepCommandShiftPercent]
+        return zip(VolumeKeyBinding.defaults, keys).map { row, key in
+            let percent = (try? legacy.decodeIfPresent(Int.self, forKey: key)) ?? row.percent
+            return VolumeKeyBinding(id: row.id, combo: row.combo, percent: VolumeKeyBinding.clampedPercent(percent))
+        }
     }
 }
 
 extension AppSettings {
-    /// Whole percent of the slider one press moves for this chord, always within `VolumeStepChord.percentRange`
-    /// (decode clamps too, but a programmatic write can still put the field out of range).
-    func stepPercent(for chord: VolumeStepChord) -> Int {
-        let raw: Int
-        switch chord {
-        case .plain:        raw = volumeStepPercent
-        case .command:      raw = volumeStepCommandPercent
-        case .commandShift: raw = volumeStepCommandShiftPercent
-        }
-        return VolumeStepChord.clampedPercent(raw)
+    /// The row a press with `held` modifiers uses, or nil when none fits and macOS should handle the key.
+    func volumeKeyBinding(for held: VolumeKeyCombo) -> VolumeKeyBinding? {
+        volumeKeyBindings.binding(matching: held)
     }
 
-    /// The step in slider fraction (0...1) for this chord.
-    func sliderDelta(for chord: VolumeStepChord) -> Double {
-        Double(stepPercent(for: chord)) / 100.0
+    /// The step in slider fraction (0...1) for a press with `held` modifiers, nil when no row fits. The percent
+    /// is clamped to `VolumeKeyBinding.percentRange` (decode clamps too, but a programmatic write can still put
+    /// a row out of range).
+    func sliderDelta(for held: VolumeKeyCombo) -> Double? {
+        volumeKeyBinding(for: held).map { Double(VolumeKeyBinding.clampedPercent($0.percent)) / 100.0 }
+    }
+
+    /// The step of the popup's arrow keys: the plain row's, or 10% when that row has been rebound.
+    var arrowKeySliderDelta: Double {
+        sliderDelta(for: []) ?? 0.10
     }
 }
 

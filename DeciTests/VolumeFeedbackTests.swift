@@ -23,52 +23,44 @@ struct VolumeFeedbackShouldPlayTests {
     }
 }
 
-@Suite("VolumeKeyModifiers: chord and feedback modifiers from event flags")
+@Suite("VolumeKeyModifiers: the modifiers the feedback pop still sees")
 struct VolumeKeyModifiersTests {
-    @Test("Flags pick the step chord; Shift alone, Option and Control stay plain", arguments: [
-        (flags: CGEventFlags([]),                           chord: VolumeStepChord.plain),
-        (flags: CGEventFlags([.maskShift]),                 chord: VolumeStepChord.plain),
-        (flags: CGEventFlags([.maskAlternate]),             chord: VolumeStepChord.plain),
-        (flags: CGEventFlags([.maskControl]),               chord: VolumeStepChord.plain),
-        (flags: CGEventFlags([.maskShift, .maskAlternate]), chord: VolumeStepChord.plain),
-        (flags: CGEventFlags([.maskCommand]),               chord: VolumeStepChord.command),
-        (flags: CGEventFlags([.maskCommand, .maskAlternate]), chord: VolumeStepChord.command),
-        (flags: CGEventFlags([.maskCommand, .maskShift]),   chord: VolumeStepChord.commandShift),
-        (flags: CGEventFlags([.maskCommand, .maskShift, .maskAlternate]), chord: VolumeStepChord.commandShift),
+
+    @Test("A modifier that belongs to the matched combo does not count for the pop", arguments: [
+        (held: VolumeKeyCombo([]),                          matched: VolumeKeyCombo([]),                shift: false, option: false),
+        (held: VolumeKeyCombo([.shift]),                    matched: VolumeKeyCombo([]),                shift: true,  option: false),
+        (held: VolumeKeyCombo([.option]),                   matched: VolumeKeyCombo([]),                shift: false, option: true),
+        (held: VolumeKeyCombo([.shift, .option]),           matched: VolumeKeyCombo([]),                shift: true,  option: true),
+        (held: VolumeKeyCombo([.control]),                  matched: VolumeKeyCombo([]),                shift: false, option: false),
+        (held: VolumeKeyCombo([.command]),                  matched: VolumeKeyCombo([.command]),        shift: false, option: false),
+        (held: VolumeKeyCombo([.command, .shift]),          matched: VolumeKeyCombo([.command, .shift]), shift: false, option: false),
+        (held: VolumeKeyCombo([.command, .shift]),          matched: VolumeKeyCombo([.command]),        shift: true,  option: false),
+        (held: VolumeKeyCombo([.command, .option]),         matched: VolumeKeyCombo([.command]),        shift: false, option: true),
+        (held: VolumeKeyCombo([.option]),                   matched: VolumeKeyCombo([.option]),         shift: false, option: false),
+        (held: VolumeKeyCombo([.option, .shift]),           matched: VolumeKeyCombo([.option]),         shift: true,  option: false),
+        (held: VolumeKeyCombo([.control, .shift]),          matched: VolumeKeyCombo([.control]),        shift: true,  option: false),
+        (held: VolumeKeyCombo([.shift]),                    matched: VolumeKeyCombo([.shift]),          shift: false, option: false),
     ])
-    func chordFromFlags(_ c: (flags: CGEventFlags, chord: VolumeStepChord)) {
-        #expect(VolumeKeyModifiers(flags: c.flags).chord == c.chord)
+    func feedbackFlags(_ c: (held: VolumeKeyCombo, matched: VolumeKeyCombo, shift: Bool, option: Bool)) {
+        let modifiers = VolumeKeyModifiers(held: c.held, matched: c.matched)
+        #expect(modifiers.feedbackShiftHeld == c.shift)
+        #expect(modifiers.feedbackOptionHeld == c.option)
     }
 
-    @Test("Shift alone still reaches the feedback rule; under Command it does not")
-    func feedbackShift() {
-        #expect(VolumeKeyModifiers(flags: []).feedbackShiftHeld == false)
-        #expect(VolumeKeyModifiers(flags: [.maskShift]).feedbackShiftHeld == true)
-        #expect(VolumeKeyModifiers(flags: [.maskShift, .maskAlternate]).feedbackShiftHeld == true)
-        #expect(VolumeKeyModifiers(flags: [.maskCommand]).feedbackShiftHeld == false)
-        #expect(VolumeKeyModifiers(flags: [.maskCommand, .maskShift]).feedbackShiftHeld == false)
-    }
-
-    @Test("Option is passed through whether or not Command is held")
-    func feedbackOption() {
-        #expect(VolumeKeyModifiers(flags: []).optionHeld == false)
-        #expect(VolumeKeyModifiers(flags: [.maskAlternate]).optionHeld == true)
-        #expect(VolumeKeyModifiers(flags: [.maskCommand, .maskAlternate]).optionHeld == true)
-        #expect(VolumeKeyModifiers(flags: [.maskCommand, .maskShift]).optionHeld == false)
-    }
-
-    @Test("Command+Shift does not invert the pop; Shift alone still does", arguments: [true, false])
+    @Test("With the default rows Command+Shift does not invert the pop; Shift alone still does", arguments: [true, false])
     func popDecision(prefOn: Bool) {
-        func shouldPlay(_ flags: CGEventFlags) -> Bool {
-            let mods = VolumeKeyModifiers(flags: flags)
-            return VolumeFeedback.shouldPlay(prefOn: prefOn, shiftHeld: mods.feedbackShiftHeld, optionHeld: mods.optionHeld)
+        func shouldPlay(_ held: VolumeKeyCombo) -> Bool? {
+            guard let binding = VolumeKeyBinding.defaults.binding(matching: held) else { return nil }
+            let mods = VolumeKeyModifiers(held: held, matched: binding.combo)
+            return VolumeFeedback.shouldPlay(prefOn: prefOn, shiftHeld: mods.feedbackShiftHeld, optionHeld: mods.feedbackOptionHeld)
         }
         #expect(shouldPlay([]) == prefOn)
-        #expect(shouldPlay([.maskShift]) == !prefOn)                      // macOS convention kept
-        #expect(shouldPlay([.maskShift, .maskAlternate]) == prefOn)       // Option+Shift follows the preference
-        #expect(shouldPlay([.maskCommand]) == prefOn)
-        #expect(shouldPlay([.maskCommand, .maskShift]) == prefOn)         // Shift belongs to the chord here
-        #expect(shouldPlay([.maskCommand, .maskShift, .maskAlternate]) == prefOn)
+        #expect(shouldPlay([.shift]) == !prefOn)                          // macOS convention kept
+        #expect(shouldPlay([.shift, .option]) == prefOn)                  // Option+Shift follows the preference
+        #expect(shouldPlay([.option]) == prefOn)
+        #expect(shouldPlay([.command]) == prefOn)
+        #expect(shouldPlay([.command, .shift]) == prefOn)                 // Shift belongs to the combo here
+        #expect(shouldPlay([.command, .shift, .option]) == prefOn)
     }
 }
 

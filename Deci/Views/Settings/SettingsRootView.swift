@@ -3,12 +3,16 @@ import SwiftUI
 
 @MainActor
 struct SettingsRootView: View {
+    /// The title the Settings window is pinned to; Shortcuts uses it to tell this window from the popups.
+    static let windowTitle = "Deci Settings"
+
     @Bindable var settings: SettingsManager
     @Bindable var audioEngine: AudioEngine
     @Bindable var deviceVolumeMonitor: DeviceVolumeMonitor
     @Bindable var accessibility: AccessibilityPermissionService
     @Bindable var mediaKeyStatus: MediaKeyStatus
     let mediaKeyMonitor: MediaKeyMonitor
+    let volumeKeyRecorder: VolumeKeyRecorder
     let shortcutsRegistry: ShortcutsRegistry
     @ObservedObject var updateManager: UpdateManager
     /// Reset all settings, for the parts that live outside the audio engine (the Music tab).
@@ -47,6 +51,7 @@ struct SettingsRootView: View {
                 accessibility: accessibility,
                 mediaKeyStatus: mediaKeyStatus,
                 mediaKeyMonitor: mediaKeyMonitor,
+                volumeKeyRecorder: volumeKeyRecorder,
                 shortcutsRegistry: shortcutsRegistry
             )
             .tabItem { Label("Shortcuts", systemImage: "command") }
@@ -59,6 +64,6 @@ struct SettingsRootView: View {
         .frame(width: 720, height: 560)
         .preferredColorScheme(settings.appSettings.appearance.swiftUIColorScheme)
         .background(WindowAppearanceBridge(appearance: settings.appSettings.appearance.nsAppearance))
-        .background(WindowTitleBridge(title: "Deci Settings"))
+        .background(WindowTitleBridge(title: Self.windowTitle))
     }
 }

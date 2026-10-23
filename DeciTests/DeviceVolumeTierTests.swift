@@ -483,10 +483,10 @@ struct DeviceVolumeStoredVolumeTests {
     /// Issue #295: pre-fix the < 0.01 floor zeroed software gain, so each step re-derived
     /// a 0 slider and froze. Mirrors `handleCore`'s slider-space step + `storedVolume`.
     @Test("Software volume steps up out of silence instead of freezing at 0",
-          arguments: VolumeStepChord.allCases)
-    func softwareStepRecoversFromZero(chord: VolumeStepChord) {
+          arguments: VolumeKeyBinding.defaults)
+    func softwareStepRecoversFromZero(binding: VolumeKeyBinding) throws {
         let tier = VolumeControlTier.software
-        let delta = AppSettings().sliderDelta(for: chord)
+        let delta = try #require(AppSettings().sliderDelta(for: binding.combo))
         var stored: Float = 0
 
         let currentSlider = VolumeMapping.sliderFraction(forSystemGain: stored, tier: tier)
@@ -494,7 +494,7 @@ struct DeviceVolumeStoredVolumeTests {
         let newVolume = VolumeMapping.systemGain(forSliderFraction: nextSlider, tier: tier)
         stored = DeviceVolumeMonitor.storedVolume(newVolume, tier: tier)
 
-        #expect(stored > 0, "\(chord) software step-up stuck at silence (issue #295 regression)")
+        #expect(stored > 0, "\(binding.combo.label) software step-up stuck at silence (issue #295 regression)")
     }
 }
 

@@ -228,6 +228,12 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         lastSwallowedKeyTime = DispatchTime.now()
     }
 
+    /// Called when the monitor leaves a keypress to macOS. macOS then changes the volume itself and posts the
+    /// same notification a leaked native HUD would, so an earlier swallow must not be matched to it.
+    func passThroughObserved() {
+        lastSwallowedKeyTime = nil
+    }
+
     func hide() {
         hideTask?.cancel()
         hideTask = nil
@@ -392,7 +398,8 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         }
     }
 
-    private func handleSettingsChangedNotification() {
+    /// Internal so tests can drive it without a distributed notification.
+    func handleSettingsChangedNotification() {
         guard let lastSwallow = lastSwallowedKeyTime else { return }
         let elapsed = DispatchTime.now().uptimeNanoseconds &- lastSwallow.uptimeNanoseconds
         let elapsedMs = elapsed / 1_000_000

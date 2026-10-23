@@ -8,12 +8,12 @@ struct ShortcutsTab: View {
     @Bindable var accessibility: AccessibilityPermissionService
     @Bindable var mediaKeyStatus: MediaKeyStatus
     let mediaKeyMonitor: MediaKeyMonitor
+    let volumeKeyRecorder: VolumeKeyRecorder
     let shortcutsRegistry: ShortcutsRegistry
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                volumeSection
                 mediaKeysSection
                 hotkeysSection
             }
@@ -25,44 +25,22 @@ struct ShortcutsTab: View {
         .onChange(of: settings.appSettings.mediaKeyControlEnabled) { _, _ in
             mediaKeyMonitor.reconcile()
         }
+        // The monitor listens system-wide, so a recording left open would take a volume key pressed anywhere.
+        .onChange(of: canRecordVolumeKey) { _, canRecord in
+            if !canRecord { volumeKeyRecorder.cancel() }
+        }
+        .onDisappear { volumeKeyRecorder.cancel() }
+        // Only this window: a popup or the HUD resigning key says nothing about a recording in Settings.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { notification in
+            guard Self.isSettingsWindow(notification) else { return }
+            volumeKeyRecorder.cancel()
+        }
+        .onExitCommand { volumeKeyRecorder.cancel() }
     }
 
-    // MARK: - Volume
-
-    private var volumeSection: some View {
-        SettingsSection("Volume Steps") {
-            ForEach(Array(VolumeStepChord.allCases.enumerated()), id: \.element) { index, chord in
-                if index > 0 { SettingsRowDivider() }
-                SettingsRow(chord.label, description: description(for: chord)) {
-                    HStack(spacing: DesignTokens.Spacing.sm) {
-                        Text("\(settings.appSettings.stepPercent(for: chord))%")
-                            .font(DesignTokens.Typography.percentage)
-                            .monospacedDigit()
-                            .foregroundStyle(DesignTokens.Colors.textSecondary)
-                            .frame(width: DesignTokens.Dimensions.settingsPercentageWidth, alignment: .trailing)
-                        Stepper(chord.label, value: stepBinding(for: chord), in: VolumeStepChord.percentRange, step: 1)
-                            .labelsHidden()
-                            .controlSize(.small)
-                    }
-                }
-            }
-        }
-    }
-
-    private func stepBinding(for chord: VolumeStepChord) -> Binding<Int> {
-        switch chord {
-        case .plain: $settings.appSettings.volumeStepPercent
-        case .command: $settings.appSettings.volumeStepCommandPercent
-        case .commandShift: $settings.appSettings.volumeStepCommandShiftPercent
-        }
-    }
-
-    private func description(for chord: VolumeStepChord) -> String {
-        switch chord {
-        case .plain: "Per press of the volume keys. Also used by the arrow keys in the popup."
-        case .command: "Step while holding Command."
-        case .commandShift: "Step while holding Command and Shift."
-        }
+    /// Whether a window notification is about the Settings window, found by the title `WindowTitleBridge` pins.
+    static func isSettingsWindow(_ notification: Notification) -> Bool {
+        (notification.object as? NSWindow)?.title == SettingsRootView.windowTitle
     }
 
     // MARK: - Media Keys
@@ -123,7 +101,91 @@ struct ShortcutsTab: View {
                     )
                 }
             }
+            ForEach(settings.appSettings.volumeKeyBindings) { binding in
+                SettingsRowDivider()
+                volumeKeyRow(binding)
+            }
+            SettingsRowDivider()
+            addVolumeKeybindRow
         }
+    }
+
+    // MARK: - Volume keybinds
+
+    /// Recording needs the media key tap to be running, since a hardware volume key only reaches Deci through it.
+    private var canRecordVolumeKey: Bool {
+        settings.appSettings.mediaKeyControlEnabled && accessibility.isTrustedCached && !mediaKeyStatus.isOffline
+    }
+
+    private func volumeKeyRow(_ binding: VolumeKeyBinding) -> some View {
+        let isRecording = volumeKeyRecorder.recordingID == binding.id
+        let isOnlyRow = settings.appSettings.volumeKeyBindings.count == 1
+        return SettingsRow("Volume step") {
+            HStack(spacing: DesignTokens.Spacing.sm) {
+                VolumeKeyRecorderField(combo: binding.combo, isRecording: isRecording, isEnabled: canRecordVolumeKey) {
+                    if isRecording { volumeKeyRecorder.cancel() } else { volumeKeyRecorder.begin(binding.id) }
+                }
+                Text("\(VolumeKeyBinding.clampedPercent(binding.percent))%")
+                    .font(DesignTokens.Typography.percentage)
+                    .monospacedDigit()
+                    .foregroundStyle(DesignTokens.Colors.textSecondary)
+                    .frame(width: DesignTokens.Dimensions.settingsPercentageWidth, alignment: .trailing)
+                Stepper(binding.combo.label, value: percentBinding(for: binding.id), in: VolumeKeyBinding.percentRange, step: 1)
+                    .labelsHidden()
+                    .controlSize(.small)
+                Button {
+                    remove(binding.id)
+                } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+                .disabled(isOnlyRow)
+                .help(isOnlyRow ? "At least one volume keybind stays" : "Remove this volume keybind")
+            }
+        }
+    }
+
+    private var addVolumeKeybindRow: some View {
+        let isFull = settings.appSettings.volumeKeyBindings.count >= VolumeKeyBinding.maxCount
+        return SettingsRow(
+            "Add volume keybind",
+            description: isFull
+                ? "Up to \(VolumeKeyBinding.maxCount) volume keybinds."
+                : "Hold modifiers with F11 / F12 for their own step. The plain step also sets the popup's arrow keys."
+        ) {
+            Button("Add") {
+                // The new row waits for its modifiers right away when a press can reach the recorder.
+                volumeKeyRecorder.addBinding(startRecording: canRecordVolumeKey)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isFull)
+        }
+    }
+
+    /// The percent of one row, looked up by id so a row removed in the meantime is never indexed.
+    private func percentBinding(for id: UUID) -> Binding<Int> {
+        Binding(
+            get: {
+                settings.appSettings.volumeKeyBindings.first { $0.id == id }
+                    .map { VolumeKeyBinding.clampedPercent($0.percent) } ?? VolumeKeyBinding.percentRange.lowerBound
+            },
+            set: { newValue in
+                var app = settings.appSettings
+                guard let index = app.volumeKeyBindings.firstIndex(where: { $0.id == id }) else { return }
+                app.volumeKeyBindings[index].percent = VolumeKeyBinding.clampedPercent(newValue)
+                settings.appSettings = app
+            }
+        )
+    }
+
+    /// The last row stays: a saved empty list reads back as the defaults, so removing it would only look like it worked.
+    private func remove(_ id: UUID) {
+        var app = settings.appSettings
+        guard app.volumeKeyBindings.count > 1 else { return }
+        if volumeKeyRecorder.recordingID == id { volumeKeyRecorder.cancel() }
+        app.volumeKeyBindings.removeAll { $0.id == id }
+        settings.appSettings = app
     }
 
     private func description(for action: ShortcutAction) -> String {

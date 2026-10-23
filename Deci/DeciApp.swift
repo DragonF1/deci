@@ -66,6 +66,7 @@ struct DeciApp: App {
     @State private var popupVisibility: PopupVisibilityService
     @State private var hudController: HUDWindowController
     @State private var mediaKeyMonitor: MediaKeyMonitor
+    @State private var volumeKeyRecorder: VolumeKeyRecorder
     @State private var feedbackPlayer: VolumeFeedbackPlayer
     @State private var iconCoordinator: MenuBarIconCoordinator
     @State private var menuBarPopupController: MenuBarPopupController
@@ -94,6 +95,7 @@ struct DeciApp: App {
                 accessibility: accessibility,
                 mediaKeyStatus: mediaKeyStatus,
                 mediaKeyMonitor: mediaKeyMonitor,
+                volumeKeyRecorder: volumeKeyRecorder,
                 shortcutsRegistry: shortcutsRegistry,
                 updateManager: updateManager,
                 onSettingsReset: { musicHost.settingsDidReset() }
@@ -237,6 +239,7 @@ struct DeciApp: App {
             )
         }
 
+        let recorder = VolumeKeyRecorder(settings: settings)
         let monitor = MediaKeyMonitor(
             decoder: IOKitMediaKeyDecoder(),
             audioEngine: engine,
@@ -244,7 +247,8 @@ struct DeciApp: App {
             accessibility: accessibilityService,
             hudController: hud,
             popupVisibility: popupService,
-            mediaKeyStatus: statusService
+            mediaKeyStatus: statusService,
+            volumeKeyRecorder: recorder
         )
         monitor.feedbackPlayer = feedbackPlayer
         _accessibility = State(initialValue: accessibilityService)
@@ -252,6 +256,7 @@ struct DeciApp: App {
         _popupVisibility = State(initialValue: popupService)
         _hudController = State(initialValue: hud)
         _mediaKeyMonitor = State(initialValue: monitor)
+        _volumeKeyRecorder = State(initialValue: recorder)
         _feedbackPlayer = State(initialValue: feedbackPlayer)
 
         let coordinator = MenuBarIconCoordinator(
