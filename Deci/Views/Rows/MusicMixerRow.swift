@@ -28,8 +28,7 @@ struct MusicMixerRow: View {
     let isEQExpanded: Bool
     let onEQToggle: () -> Void
 
-    @State private var displayLevel: Float = 0
-    @State private var levelTimer: Timer?
+    @State private var levelPoller = LevelPoller()
 
     init(
         mixer: MusicMixerState,
@@ -71,7 +70,7 @@ struct MusicMixerRow: View {
     var body: some View {
         ExpandableGlassRow(isExpanded: isEQExpanded) {
             HStack(spacing: DesignTokens.Spacing.sm) {
-                VUMeter(level: displayLevel, isMuted: mixer.isMuted || mixer.volume == 0)
+                PolledVUMeter(poller: levelPoller, isMuted: mixer.isMuted || mixer.volume == 0)
 
                 iconImage
 
@@ -131,14 +130,13 @@ struct MusicMixerRow: View {
             if isPopupVisible { startLevelPolling() }
         }
         .onDisappear {
-            stopLevelPolling()
+            levelPoller.stop()
         }
         .onChange(of: isPopupVisible) { _, visible in
             if visible {
                 startLevelPolling()
             } else {
-                stopLevelPolling()
-                displayLevel = 0
+                levelPoller.stop()
             }
         }
     }
@@ -159,20 +157,8 @@ struct MusicMixerRow: View {
     // MARK: - Level polling
 
     private func startLevelPolling() {
-        guard levelTimer == nil else { return }
-        levelTimer = Timer.scheduledTimer(
-            withTimeInterval: DesignTokens.Timing.vuMeterUpdateInterval,
-            repeats: true
-        ) { _ in
-            MainActor.assumeIsolated {
-                // The peak is post gain, so a boosted signal can pass 1: the meter's scale ends there.
-                displayLevel = min(1, mixer.sampleLevel())
-            }
-        }
-    }
-
-    private func stopLevelPolling() {
-        levelTimer?.invalidate()
-        levelTimer = nil
+        // The peak is post gain, so a boosted signal can pass 1: the meter's scale ends there.
+        // The closure holds the mixer and nothing else: capturing the view would keep a copy of all of its inputs alive.
+        levelPoller.start { [mixer] in min(1, mixer.sampleLevel()) }
     }
 }

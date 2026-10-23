@@ -136,19 +136,42 @@ final class ChromeExtensionManager: NSObject {
                 let duration = (json["duration"] as? NSNumber)?.doubleValue ?? 0
                 
                 guard let index = self.chromeTabs.firstIndex(where: { $0.id == tabId }) else { return }
-                if self.chromeTabs[index].lastSyncedAt == nil {
-                    self.chromeTabs[index].songBaselineCurrentTime = currentTime
+                // A write into the array notifies every reader of `chromeTabs`, equal value or not, so a reply that
+                // changes nothing (a paused tab asked again) must not reach it.
+                if let updated = Self.applyingMediaState(
+                    to: self.chromeTabs[index], paused: paused, currentTime: currentTime, duration: duration, now: Date()
+                ) {
+                    self.chromeTabs[index] = updated
                 }
-                self.chromeTabs[index].paused = paused
-                self.chromeTabs[index].currentTime = currentTime
-                self.chromeTabs[index].duration = duration
-                self.chromeTabs[index].lastSyncedAt = Date()
             }
         } catch {
             // parsing error ignored
         }
     }
     
+    /// The tab after a MEDIA_STATE reply, or nil when the reply changes nothing. Pure: callers pass the clock.
+    ///
+    /// `lastSyncedAt` only marks that the tab has been synced (nothing reads its value, and the song baseline is taken on
+    /// the first reply), so it moves when the reply changes something, and is set by the first reply whatever it holds.
+    static func applyingMediaState(
+        to tab: ChromeTab,
+        paused: Bool,
+        currentTime: Double,
+        duration: Double,
+        now: Date
+    ) -> ChromeTab? {
+        var updated = tab
+        if tab.lastSyncedAt == nil {
+            updated.songBaselineCurrentTime = currentTime
+        }
+        updated.paused = paused
+        updated.currentTime = currentTime
+        updated.duration = duration
+        guard updated != tab || tab.lastSyncedAt == nil else { return nil }
+        updated.lastSyncedAt = now
+        return updated
+    }
+
     /// Parses a TAB_LIST message. Pure: no state, no side effects.
     static func parseTabList(_ json: [String: Any]) -> (tabs: [ChromeTab], incognitoAllowed: Bool, deviceAccess: Bool, tracking: ChromeTracking?) {
         let incognitoAllowed = json["incognitoAllowed"] as? Bool ?? true

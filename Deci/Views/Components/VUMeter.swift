@@ -6,6 +6,8 @@ import SwiftUI
 struct VUMeter: View {
     let level: Float
     var isMuted: Bool = false
+    /// False once whatever feeds the level has stopped (a closed popup): the peak marker and its fall are dropped.
+    var isLive: Bool = true
 
     @State private var peakLevel: Float = 0
     @State private var decayTask: Task<Void, Never>?
@@ -26,15 +28,47 @@ struct VUMeter: View {
         }
         .frame(width: 10, height: DesignTokens.Dimensions.rowContentHeight - 4)
         .onChange(of: level) { _, newLevel in
-            if newLevel > peakLevel {
-                peakLevel = newLevel
-                scheduleDecay()
-            } else if peakLevel > newLevel && decayTask == nil {
-                scheduleDecay()
-            }
+            applyPeakStep(level: newLevel, isLive: isLive)
+        }
+        .onChange(of: isLive) { _, live in
+            applyPeakStep(level: level, isLive: live)
         }
         .onDisappear {
             stopDecay()
+        }
+    }
+
+    /// What the peak marker does next.
+    enum PeakStep: Equatable {
+        case none
+        /// A new high: hold it at this level and schedule its fall.
+        case raise(Float)
+        /// The level is under the held peak and nothing is bringing it down yet.
+        case decay
+        /// The meter stopped: forget the peak and cancel the fall, so a closed popup animates nothing.
+        case reset
+    }
+
+    /// The peak rule, apart from the view so it can be tested.
+    static func peakStep(level: Float, peak: Float, isLive: Bool, isDecaying: Bool) -> PeakStep {
+        guard isLive else { return peak > 0 || isDecaying ? .reset : .none }
+        if level > peak { return .raise(level) }
+        if peak > level && !isDecaying { return .decay }
+        return .none
+    }
+
+    private func applyPeakStep(level: Float, isLive: Bool) {
+        switch Self.peakStep(level: level, peak: peakLevel, isLive: isLive, isDecaying: decayTask != nil) {
+        case .none:
+            break
+        case .raise(let high):
+            peakLevel = high
+            scheduleDecay()
+        case .decay:
+            scheduleDecay()
+        case .reset:
+            stopDecay()
+            peakLevel = 0
         }
     }
 
@@ -61,6 +95,17 @@ struct VUMeter: View {
     private func stopDecay() {
         decayTask?.cancel()
         decayTask = nil
+    }
+}
+
+/// A VU meter that reads its level from a `LevelPoller`. The read happens here, in this small body, so the
+/// poller's ticks redraw this view and not the row that holds it.
+struct PolledVUMeter: View {
+    let poller: LevelPoller
+    var isMuted: Bool = false
+
+    var body: some View {
+        VUMeter(level: poller.level, isMuted: isMuted, isLive: poller.isRunning)
     }
 }
 

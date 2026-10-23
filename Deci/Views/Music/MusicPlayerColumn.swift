@@ -18,6 +18,9 @@ struct MusicPlayerColumn: View {
 
     @Environment(\.musicAccent) private var accent
     @Environment(\.musicTrackMenu) private var trackMenu
+    /// The popup stays mounted while hidden: its times are read only while it is on screen, so a closed popup is not
+    /// redrawn at every tick of the player.
+    @Environment(\.musicPopupIsVisible) private var isPopupVisible
 
     private var player: MusicPlayer? { service?.player }
     private var track: MusicTrack? { player?.nowPlaying }
@@ -216,7 +219,9 @@ struct MusicPlayerColumn: View {
                 }
                 Spacer(minLength: 0)
             case .playing, .paused:
-                playbackTimes(current: player?.currentTime ?? 0, total: total, viewCount: player?.viewCount)
+                playbackTimes(
+                    current: player?.readCurrentTime(observed: isPopupVisible) ?? 0, total: total, viewCount: player?.viewCount
+                )
             case .signedOut, .empty:
                 timePair(current: 0, total: 0, currentOpacity: 0.30, totalOpacity: 0.30)
                 Spacer(minLength: 0)

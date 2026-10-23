@@ -1,7 +1,7 @@
 // FineTune/Views/Rows/AppRowWithLevelPolling.swift
 import SwiftUI
 
-/// App row that polls audio levels at regular intervals
+/// App row that polls audio levels at regular intervals, while the popup is on screen.
 struct AppRowWithLevelPolling: View {
     let app: AudioApp
     let volume: Float
@@ -35,8 +35,7 @@ struct AppRowWithLevelPolling: View {
     let onEQToggle: () -> Void
     let isFocused: Bool
 
-    @State private var displayLevel: Float = 0
-    @State private var levelTimer: Timer?
+    @State private var levelPoller = LevelPoller()
 
     init(
         app: AudioApp,
@@ -108,7 +107,7 @@ struct AppRowWithLevelPolling: View {
         AppRow(
             app: app,
             volume: volume,
-            audioLevel: displayLevel,
+            levelPoller: levelPoller,
             devices: devices,
             deviceIconOverrides: deviceIconOverrides,
             selectedDeviceUID: selectedDeviceUID,
@@ -139,38 +138,18 @@ struct AppRowWithLevelPolling: View {
         )
         .onAppear {
             if isPopupVisible {
-                startLevelPolling()
+                levelPoller.start(getAudioLevel)
             }
         }
         .onDisappear {
-            stopLevelPolling()
+            levelPoller.stop()
         }
         .onChange(of: isPopupVisible) { _, visible in
             if visible {
-                startLevelPolling()
+                levelPoller.start(getAudioLevel)
             } else {
-                stopLevelPolling()
-                displayLevel = 0  // Reset meter when hidden
+                levelPoller.stop()  // Resets the meter when hidden
             }
         }
-    }
-
-    private func startLevelPolling() {
-        // Guard against duplicate timers
-        guard levelTimer == nil else { return }
-
-        levelTimer = Timer.scheduledTimer(
-            withTimeInterval: DesignTokens.Timing.vuMeterUpdateInterval,
-            repeats: true
-        ) { _ in
-            MainActor.assumeIsolated {
-                displayLevel = getAudioLevel()
-            }
-        }
-    }
-
-    private func stopLevelPolling() {
-        levelTimer?.invalidate()
-        levelTimer = nil
     }
 }

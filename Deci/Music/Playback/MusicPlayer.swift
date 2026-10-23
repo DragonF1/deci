@@ -14,7 +14,20 @@ final class MusicPlayer {
     private(set) var nowPlaying: MusicTrack?
     private(set) var isPlaying = false
     private(set) var isLoading = false
-    private(set) var currentTime: TimeInterval = 0
+    /// Where the track was at the last engine tick (every half second). Observed like a stored property, but kept by
+    /// hand so a view that is not on screen can read it without subscribing (`readCurrentTime(observed:)`).
+    private(set) var currentTime: TimeInterval {
+        get {
+            access(keyPath: \.currentTime)
+            return storedTime
+        }
+        set {
+            // Same rule the macro applies to a stored property: an equal write publishes nothing.
+            guard newValue != storedTime else { return }
+            withMutation(keyPath: \.currentTime) { storedTime = newValue }
+        }
+    }
+    @ObservationIgnored private var storedTime: TimeInterval = 0
     private(set) var duration: TimeInterval = 0
     /// How many times YouTube says the current song was viewed. Nil until the song's stream is resolved, when nothing
     /// plays, and when the response did not carry one: never the previous song's.
@@ -118,6 +131,13 @@ final class MusicPlayer {
         guard nowPlaying != nil, stream != nil, refreshTask == nil, !isLoading, !hasEnded else { return currentTime }
         let position = engine.position
         return position.isFinite && position >= 0 ? position : currentTime
+    }
+
+    /// `currentTime`, for a view. A view that is not on screen passes `observed: false`: it gets the same value but is not
+    /// subscribed to the next tick, so a hidden popup is not redrawn twice a second for a time nobody sees. Passing the
+    /// popup's visibility makes the flip to visible redraw the view, and that redraw reads the live value.
+    func readCurrentTime(observed: Bool) -> TimeInterval {
+        observed ? currentTime : storedTime
     }
 
     /// Jumps to `seconds`, clamped to the track. Does not change whether it is playing.

@@ -112,6 +112,8 @@ struct MusicSpectrumView: View {
 
     @Environment(\.musicAccent) private var accent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The popup stays mounted while hidden: the fill follows the player's ticks only while it is on screen.
+    @Environment(\.musicPopupIsVisible) private var isPopupVisible
     /// The pointer's height in the box while it is over it.
     @State private var hoverY: Double?
     /// The finger's height while it is down, which lets go by itself when the drag is cancelled.
@@ -130,8 +132,17 @@ struct MusicSpectrumView: View {
 
     /// How far along the song is: the live poll while it runs, else the player's own position.
     private var progress: Double {
-        guard state.showsProgress, let player else { return 0 }
-        return spectrum.progress ?? MusicTimeFormat.progress(current: player.currentTime, duration: player.duration)
+        Self.shownProgress(
+            showsProgress: state.showsProgress, player: player, spectrumProgress: spectrum.progress, observed: isPopupVisible
+        )
+    }
+
+    /// The fill's position. `observed` false (the popup is hidden) reads the player's position without subscribing to
+    /// its ticks, so a closed popup is not redrawn every half second; the redraw on opening reads the live one.
+    static func shownProgress(showsProgress: Bool, player: MusicPlayer?, spectrumProgress: Double?, observed: Bool) -> Double {
+        guard showsProgress, let player else { return 0 }
+        return spectrumProgress
+            ?? MusicTimeFormat.progress(current: player.readCurrentTime(observed: observed), duration: player.duration)
     }
 
     private var levels: [Double] {

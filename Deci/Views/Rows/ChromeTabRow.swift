@@ -4,8 +4,9 @@ import AppKit
 /// A row displaying an individual Google Chrome tab with playback and volume controls.
 struct ChromeTabRow: View {
     let tab: ChromeTab
-    let now: Date
-    
+    /// False while the popup is closed: the meter stops its timer and rests.
+    let isPopupVisible: Bool
+
     let devices: [AudioDevice]
     let defaultDeviceUID: String?
     
@@ -15,8 +16,7 @@ struct ChromeTabRow: View {
     let onRenameUserPreset: (UUID, String) -> Void
 
     @State private var isEQExpanded = false
-    @State private var simulatedLevel: Float = 0
-    @State private var levelTimer: Timer?
+    @State private var levelPoller = LevelPoller()
 
     private var chromeManager: ChromeExtensionManager {
         ChromeExtensionManager.shared
@@ -38,7 +38,7 @@ struct ChromeTabRow: View {
         ExpandableGlassRow(isExpanded: isEQExpanded) {
             HStack(spacing: DesignTokens.Spacing.sm) {
                 // VU Meter
-                VUMeter(level: simulatedLevel, isMuted: tab.isMuted || tab.volume == 0)
+                PolledVUMeter(poller: levelPoller, isMuted: tab.isMuted || tab.volume == 0)
 
                 // Tab Favicon
                 Group {
@@ -145,10 +145,17 @@ struct ChromeTabRow: View {
         }
         .onAppear {
             localEQSettings = tab.eqSettings
-            startSimulatedVUMeter()
+            if isPopupVisible { startSimulatedVUMeter() }
         }
         .onDisappear {
-            stopSimulatedVUMeter()
+            levelPoller.stop()
+        }
+        .onChange(of: isPopupVisible) { _, visible in
+            if visible {
+                startSimulatedVUMeter()
+            } else {
+                levelPoller.stop()
+            }
         }
         .onChange(of: tab.isControlled) { _, isControlled in
             // EQ is unavailable on an uncontrolled tab, so don't leave its panel open.
@@ -157,9 +164,6 @@ struct ChromeTabRow: View {
         .onChange(of: tab.eqSettings) { _, newEQ in
             // Update local state if the tab model changes (e.g. from background sync)
             localEQSettings = newEQ
-        }
-        .onChange(of: tab.paused) { _, _ in
-            // Keep simulation updating naturally
         }
     }
 
@@ -203,24 +207,21 @@ struct ChromeTabRow: View {
         }
     }
 
-    private func startSimulatedVUMeter() {
-        guard levelTimer == nil else { return }
-        levelTimer = Timer.scheduledTimer(withTimeInterval: DesignTokens.Timing.vuMeterUpdateInterval, repeats: true) { _ in
-            MainActor.assumeIsolated {
-                let currentTab = chromeManager.chromeTabs.first(where: { $0.id == tab.id }) ?? tab
-                let isPlaying = (currentTab.isAudible || currentTab.isCaptured) && !currentTab.paused
-                if isPlaying && currentTab.volume > 0 && !currentTab.isMuted {
-                    // Simulate an active audio level
-                    simulatedLevel = Float.random(in: 0.1...0.7) * currentTab.volume
-                } else {
-                    simulatedLevel = 0
-                }
-            }
-        }
+    /// The jitter a playing tab's made-up level is drawn from, before its volume scales it.
+    static let jitterRange: ClosedRange<Float> = 0.1...0.7
+
+    /// The level to show for a tab: a made-up one while the tab plays, 0 otherwise.
+    static func simulatedLevel(for tab: ChromeTab, jitter: Float = .random(in: jitterRange)) -> Float {
+        let isPlaying = (tab.isAudible || tab.isCaptured) && !tab.paused
+        guard isPlaying, tab.volume > 0, !tab.isMuted else { return 0 }
+        return jitter * tab.volume
     }
 
-    private func stopSimulatedVUMeter() {
-        levelTimer?.invalidate()
-        levelTimer = nil
+    private func startSimulatedVUMeter() {
+        // The closure holds the manager, the tab's id and the tab as it is now (the fallback if the tab is gone), and
+        // not the view: capturing the view would keep a copy of all of its inputs alive.
+        levelPoller.start { [manager = chromeManager, id = tab.id, fallback = tab] in
+            Self.simulatedLevel(for: manager.chromeTabs.first(where: { $0.id == id }) ?? fallback)
+        }
     }
 }

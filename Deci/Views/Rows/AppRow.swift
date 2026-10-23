@@ -6,7 +6,8 @@ import SwiftUI
 struct AppRow: View {
     let app: AudioApp
     let volume: Float  // Linear gain 0-1 (boost applied separately)
-    let audioLevel: Float
+    /// Where the VU meter reads its level. Only the meter observes it, so the row is not redrawn by a tick.
+    let levelPoller: LevelPoller
     let devices: [AudioDevice]
     let deviceIconOverrides: [String: String]
     let selectedDeviceUID: String  // For single mode
@@ -41,7 +42,7 @@ struct AppRow: View {
     init(
         app: AudioApp,
         volume: Float,
-        audioLevel: Float = 0,
+        levelPoller: LevelPoller = LevelPoller(),
         devices: [AudioDevice],
         deviceIconOverrides: [String: String] = [:],
         selectedDeviceUID: String,
@@ -72,7 +73,7 @@ struct AppRow: View {
     ) {
         self.app = app
         self.volume = volume
-        self.audioLevel = audioLevel
+        self.levelPoller = levelPoller
         self.devices = devices
         self.deviceIconOverrides = deviceIconOverrides
         self.selectedDeviceUID = selectedDeviceUID
@@ -109,7 +110,7 @@ struct AppRow: View {
             // Header: Main row content (always visible)
             HStack(spacing: DesignTokens.Spacing.sm) {
                 // VU Meter
-                VUMeter(level: audioLevel, isMuted: isMutedExternal || volume == 0)
+                PolledVUMeter(poller: levelPoller, isMuted: isMutedExternal || volume == 0)
 
                 // App icon - clickable to activate app
                 Button(action: onAppActivate) {
@@ -217,7 +218,7 @@ struct AppRow: View {
             AppRow(
                 app: MockData.sampleApps[0],
                 volume: 1.0,
-                audioLevel: 0.65,
+                levelPoller: LevelPoller(level: 0.65),
                 devices: MockData.sampleDevices,
                 selectedDeviceUID: MockData.sampleDevices[0].uid,
                 onVolumeChange: { _ in },
@@ -228,7 +229,7 @@ struct AppRow: View {
             AppRow(
                 app: MockData.sampleApps[1],
                 volume: 0.5,
-                audioLevel: 0.25,
+                levelPoller: LevelPoller(level: 0.25),
                 devices: MockData.sampleDevices,
                 selectedDeviceUID: MockData.sampleDevices[1].uid,
                 onVolumeChange: { _ in },
@@ -239,7 +240,7 @@ struct AppRow: View {
             AppRow(
                 app: MockData.sampleApps[2],
                 volume: 1.5,
-                audioLevel: 0.85,
+                levelPoller: LevelPoller(level: 0.85),
                 devices: MockData.sampleDevices,
                 selectedDeviceUID: MockData.sampleDevices[2].uid,
                 onVolumeChange: { _ in },
@@ -257,7 +258,7 @@ struct AppRow: View {
                 AppRow(
                     app: app,
                     volume: Float.random(in: 0.5...1.5),
-                    audioLevel: Float.random(in: 0...0.8),
+                    levelPoller: LevelPoller(level: Float.random(in: 0...0.8)),
                     devices: MockData.sampleDevices,
                     selectedDeviceUID: MockData.sampleDevices.randomElement()!.uid,
                     onVolumeChange: { _ in },

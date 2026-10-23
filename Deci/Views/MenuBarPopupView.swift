@@ -51,9 +51,6 @@ struct MenuBarPopupView: View {
     /// Debounce EQ toggle to prevent rapid clicks during animation
     @State private var isEQAnimating = false
 
-    /// Track popup visibility to pause VU meter polling when hidden
-    @State private var isPopupVisible = true
-
     /// Error message shown when AutoEQ profile import fails
     @State private var autoEQImportError: String?
     /// Task that auto-clears the import error after 3 seconds
@@ -67,8 +64,6 @@ struct MenuBarPopupView: View {
 
     /// Chrome extension manager for individual tab audio and transport controls
     @State private var chromeManager = ChromeExtensionManager.shared
-    @State private var popupNow = Date()
-    @State private var chromeTickCount = 0
 
     /// Whether edit mode is active (affects both device priority and app visibility)
     @State private var isEditingDevicePriority = false
@@ -107,6 +102,13 @@ struct MenuBarPopupView: View {
     @Environment(\.openSettings) private var openSettings
 
     // MARK: - Resolved Dimensions
+
+    /// Whether the Mixer popup is open. The service is the one truth for it: the key-window handlers below report
+    /// into it, and the row timers and the Chrome poll gate on it, so a closed popup (and a popup not yet opened
+    /// since launch) polls nothing.
+    private var isPopupVisible: Bool {
+        popupVisibility.isOpen(.mixer)
+    }
 
     private var popupDimensions: PopupDimensions {
         audioEngine.settingsManager.appSettings.popupSize.dimensions
@@ -216,9 +218,10 @@ struct MenuBarPopupView: View {
             guard let window = notification.object as? NSWindow,
                   MenuBarStatusItems.itemID(of: window) == .mixer
             else { return }
-            isPopupVisible = true
             popupVisibility.setOpen(.mixer, true)
             audioEngine.bluetoothDeviceMonitor.refresh()
+            // Once per open: the rows show the volume tier read now, not one read before a handshake or a wake.
+            deviceVolumeMonitor.refreshOutputBackends()
             requestChromeTabs()
             syncNavOrder()
             hasKeyboardEngaged = false
@@ -230,7 +233,6 @@ struct MenuBarPopupView: View {
             guard let window = notification.object as? NSWindow,
                   MenuBarStatusItems.itemID(of: window) == .mixer
             else { return }
-            isPopupVisible = false
             popupVisibility.setOpen(.mixer, false)
             hasKeyboardEngaged = false
             selectedRow = nil
@@ -242,20 +244,24 @@ struct MenuBarPopupView: View {
             // in-popup pickers don't collapse edit mode.
             exitEditModeSaving()
         }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { date in
-            popupNow = date
+        // The Chrome poll exists only while the popup is open: a closed popup's window keeps this view mounted
+        // and redrawing, so nothing in here may tick, or write state, while it is hidden.
+        .task(id: isPopupVisible) {
             guard isPopupVisible else { return }
-            chromeTickCount += 1
-            if chromeTickCount % 10 == 0 {
-                // Re-checks the connection while the popup stays open, so a Chrome quit
-                // or host crash clears stale tabs instead of leaving dead controls.
-                requestChromeTabs()
-            }
-            if chromeTickCount % 2 == 0 {
-                // The tab list itself is pushed by the extension on every change;
-                // only playback position needs polling. Silent, uncaptured tabs have no playback info worth polling for.
-                for tab in chromeManager.chromeTabs where tab.isAudible || tab.isCaptured {
-                    chromeManager.requestMediaState(tabId: tab.id)
+            // The first reading comes with the open, not two seconds after it.
+            requestChromeMediaStates()
+            var ticks = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                ticks += 1
+                if ticks % 10 == 0 {
+                    // Re-checks the connection while the popup stays open, so a Chrome quit
+                    // or host crash clears stale tabs instead of leaving dead controls.
+                    requestChromeTabs()
+                }
+                if ticks % 2 == 0 {
+                    requestChromeMediaStates()
                 }
             }
         }
@@ -595,7 +601,7 @@ struct MenuBarPopupView: View {
                         isDefault: device.id == deviceVolumeMonitor.defaultDeviceID,
                         volume: deviceVolumeMonitor.volumes[device.id] ?? 1.0,
                         isMuted: deviceVolumeMonitor.muteStates[device.id] ?? false,
-                        volumeBackend: audioEngine.outputVolumeBackend(for: device.id),
+                        volumeBackend: deviceVolumeMonitor.cachedOutputVolumeBackend(for: device.id),
                         onSetDefault: {
                             audioEngine.setDefaultOutputDevice(device.id)
                         },
@@ -788,6 +794,14 @@ struct MenuBarPopupView: View {
     private func requestChromeTabs() {
         guard chromeManager.trackingTabs else { return }
         chromeManager.requestTabs()
+    }
+
+    /// Asks Chrome for the playback position of each tab that makes sound. The tab list itself is pushed by the
+    /// extension on every change; only the position needs polling, and silent, uncaptured tabs have none worth asking for.
+    private func requestChromeMediaStates() {
+        for tab in chromeManager.chromeTabs where tab.isAudible || tab.isCaptured {
+            chromeManager.requestMediaState(tabId: tab.id)
+        }
     }
 
     private static let chromeBundleID = "com.google.Chrome"
@@ -986,7 +1000,7 @@ struct MenuBarPopupView: View {
                     ForEach(chromeTabs) { tab in
                         ChromeTabRow(
                             tab: tab,
-                            now: popupNow,
+                            isPopupVisible: isPopupVisible,
                             devices: audioEngine.outputDevices,
                             defaultDeviceUID: audioEngine.deviceVolumeMonitor.defaultDeviceUID,
                             userPresets: presets,
@@ -1663,7 +1677,7 @@ struct MenuBarPopupView: View {
                 AppRow(
                     app: app,
                     volume: Float.random(in: 0.5...1.5),
-                    audioLevel: Float.random(in: 0...0.7),
+                    levelPoller: LevelPoller(level: Float.random(in: 0...0.7)),
                     devices: MockData.sampleDevices,
                     selectedDeviceUID: MockData.sampleDevices[0].uid,
                     isMuted: false,

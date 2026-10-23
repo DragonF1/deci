@@ -11,6 +11,8 @@ struct MusicMarquee<Content: View>: View {
     @ViewBuilder let content: Content
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The marquee scrolls only while the popup is on screen: its window keeps this view mounted when closed.
+    @Environment(\.musicPopupIsVisible) private var isPopupVisible
     @State private var textWidth: CGFloat = 0
     @State private var roomWidth: CGFloat = 0
     /// When the marquee started; nil while it is off.
@@ -19,7 +21,7 @@ struct MusicMarquee<Content: View>: View {
     private var scrolls: Bool { textWidth > roomWidth + 0.5 }
 
     var body: some View {
-        let runs = MusicChipMotion.runsMarquee(scrolls: scrolls, isPlaying: isPlaying, reduceMotion: reduceMotion)
+        let runs = MusicChipMotion.runsMarquee(scrolls: scrolls, isPlaying: isPlaying && isPopupVisible, reduceMotion: reduceMotion)
         // minWidth 0 keeps both branches at the room's width: without it the frame grows to a wider line, the line
         // spills out of its column and the room reads as wide as the line.
         Group {

@@ -14,6 +14,10 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
     /// Mute states for all tracked output devices (keyed by AudioDeviceID)
     private(set) var muteStates: [AudioDeviceID: Bool] = [:]
 
+    /// The volume backend of each tracked output device, as of the last time it was read. A view reads this instead
+    /// of asking CoreAudio from its body (`cachedOutputVolumeBackend(for:)`).
+    private let outputBackends = OutputBackendCache()
+
     /// The current default output device ID
     private(set) var defaultDeviceID: AudioDeviceID = .unknown
 
@@ -163,6 +167,32 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
             return override
         }
         return autoDetectBackend(for: deviceID)
+    }
+
+    /// The backend read last, for view bodies: `outputVolumeBackend(for:)` asks CoreAudio on every call. Falls back to
+    /// that query only for a device nothing has read yet.
+    /// The entry is rewritten by every state read (device list, DDC probe, tier override change), by a Bluetooth
+    /// output's confirmation, and by `refreshOutputBackends()`, which the Mixer popup calls each time it opens: the
+    /// events that can change the answer, and a net for the ones that announce nothing (HDMI after wake).
+    func cachedOutputVolumeBackend(for deviceID: AudioDeviceID) -> VolumeControlTier {
+        outputBackends.tier(for: deviceID) ?? outputVolumeBackend(for: deviceID)
+    }
+
+    /// Asks CoreAudio again for the backend of every live output device and updates the cache. A few property reads per
+    /// device, once each time the Mixer popup opens. Engine paths always use the live answer; this keeps the popup's rows
+    /// in step with them when a device's answer moved without any state read (a Bluetooth output whose first read beat
+    /// its handshake, HDMI or DisplayPort after wake).
+    func refreshOutputBackends() {
+        let live = deviceMonitor.outputDevices.map(\.id).filter { $0.isDeviceAlive() }
+        outputBackends.refresh(live) { outputVolumeBackend(for: $0) }
+    }
+
+    /// Reads one device's backend from CoreAudio and keeps the cache in step with it.
+    @discardableResult
+    private func cacheOutputBackend(for deviceID: AudioDeviceID) -> VolumeControlTier {
+        let backend = outputVolumeBackend(for: deviceID)
+        outputBackends.store(backend, for: deviceID)
+        return backend
     }
 
     /// Returns the tier that auto-detection would pick, ignoring any saved override.
@@ -333,6 +363,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
 
         volumes.removeAll()
         muteStates.removeAll()
+        outputBackends.removeAll()
         systemDeviceID = .unknown
         systemDeviceUID = nil
 
@@ -779,6 +810,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         for deviceID in staleVolumeIDs {
             removeVolumeListener(for: deviceID)
             volumes.removeValue(forKey: deviceID)
+            outputBackends.remove(deviceID)
             cancelBluetoothOutputConfirmation(for: deviceID)
         }
 
@@ -968,7 +1000,7 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
         // Skip devices that HAL reports as dead (mid-disconnect)
         guard deviceID.isDeviceAlive() else { return }
 
-        let backend = outputVolumeBackend(for: deviceID)
+        let backend = cacheOutputBackend(for: deviceID)
 
         if backend == .software {
             let muted = settingsManager.getSoftwareDeviceMuteState(for: device.uid)
@@ -1275,6 +1307,8 @@ final class DeviceVolumeMonitor: DeviceVolumeProviding {
             let confirmedMute = deviceID.readMuteState()
             self.volumes[deviceID] = confirmedVolume
             self.muteStates[deviceID] = confirmedMute
+            // The handshake may also have changed what the device can do: the Mixer row shows the tier read now.
+            self.cacheOutputBackend(for: deviceID)
             self.logger.debug("Bluetooth device \(deviceID) confirmed volume: \(confirmedVolume), muted: \(confirmedMute)")
         }
     }
