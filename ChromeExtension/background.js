@@ -35,17 +35,30 @@
  *                                     mute is never done in-page)
  *       eqBands: [10 numbers, dB],
  *       deviceName: string,          ("" means system default; a CoreAudio device name)
+ *       deviceNames: [string],       the outputs of a tab in multi-output mode (see
+ *                                    SET_TAB_DEVICES); [] for a tab on one output. Missing
+ *                                    means an older extension: the app reads it as []. While
+ *                                    it is not empty it replaces deviceName; deviceName keeps
+ *                                    the last single choice so SET_TAB_DEVICE can restore it.
+ *       deviceMissing: [string],     the names in deviceNames that matched no output while
+ *                                    captured (skipped, the tab plays on the others); [] when
+ *                                    not captured or when every name matched
  *       deviceStatus: string         one of:
- *                                      "default"  deviceName is "" (system default output)
- *                                      "pending"  deviceName set, tab not captured yet
+ *                                      "default"  no device chosen (system default output)
+ *                                      "pending"  a device is chosen, tab not captured yet
  *                                                 (also for control "page": devices need capture)
- *                                      "routed"   captured and playing on the named device
- *                                      "notFound" captured, no output matches deviceName,
- *                                                 playing on system default meanwhile
+ *                                      "routed"   captured and playing on the chosen device,
+ *                                                 or in multi mode on at least one chosen device
+ *                                      "notFound" captured, no output matches (in multi mode:
+ *                                                 none of the names), playing on system default
+ *                                                 meanwhile
  *                                      "noAccess" captured, device labels unreadable
  *                                                 (mic permission missing), playing on default
  *                                    (app treats unknown or missing values as "default")
  *     } ],
+ *     multiDevice: true,             this extension understands SET_TAB_DEVICES (1.8.0 and
+ *                                    later). Missing means an older extension: the app then
+ *                                    sends only SET_TAB_DEVICE.
  *     deviceAccess: boolean,         true when the extension origin may read output
  *                                    device labels (mic permission granted). Missing
  *                                    means an older extension: app treats it as true.
@@ -70,7 +83,19 @@
  *   SET_TAB_EQ { tabId, eqBands }            10 numbers in dB
  *   SET_TAB_DEVICE { tabId, deviceName }     "" = system default; applied with
  *                                            AudioContext.setSinkId while captured,
- *                                            stored and applied when capture starts
+ *                                            stored and applied when capture starts.
+ *                                            Ends multi-output mode for the tab.
+ *   SET_TAB_DEVICES { tabId, deviceNames }   multi-output: one tab plays on every named
+ *                                            device at once (at most 8, duplicates and
+ *                                            empty names dropped), one AudioContext with
+ *                                            its own setSinkId per device, all fed by the
+ *                                            same capture. A list with no usable name is
+ *                                            ignored (the tab stays where it is). Names
+ *                                            that match no output are skipped (see
+ *                                            deviceMissing); when none matches the tab
+ *                                            plays on the system default. Volume, boost,
+ *                                            mute and EQ apply to every output alike.
+ *                                            Stored and applied when capture starts.
  *   OPEN_DEVICE_PERMISSION {}                open (or focus) permissions.html so the
  *                                            user can grant the one-time mic prompt
  *   TOGGLE_PLAYBACK { tabId }
@@ -146,9 +171,12 @@
  *
  * Service worker <-> offscreen document messages carry target 'offscreen' or
  * target 'background'; each side ignores messages not addressed to it.
- *   to offscreen:  START_CAPTURE { tabId, streamId, volume, boost, muted, eqBands, deviceName }
- *                  SET_STATE { tabId, volume, boost, muted, eqBands, deviceName }
- *                                    (a changed deviceName re-resolves that capture's sink)
+ *   to offscreen:  START_CAPTURE { tabId, streamId, volume, boost, muted, eqBands, deviceName,
+ *                                  deviceNames }
+ *                  SET_STATE { tabId, volume, boost, muted, eqBands, deviceName, deviceNames }
+ *                                    (a changed deviceName or deviceNames re-resolves that
+ *                                     capture's sinks: outputs are added and removed without
+ *                                     restarting the capture)
  *                  STOP_CAPTURE { tabId }
  *                  LIST_CAPTURES {}  (response: array of captured tab ids)
  *                  RESOLVE_DEVICES {}  re-check label access and re-resolve every capture,
@@ -156,10 +184,14 @@
  *                                      when unchanged (sent when deviceAccess flips, and
  *                                      after adopting captures the worker did not know)
  *   to background: CAPTURE_ENDED { tabId }
- *                  DEVICE_STATUS { tabId, status }   status as in TAB_LIST deviceStatus
- *                                                    ("routed" | "notFound" | "noAccess" | "default")
- *                                                    sent when it changes for a capture, and
- *                                                    always first after a deviceName change
+ *                  DEVICE_STATUS { tabId, status, missing }
+ *                                                    status as in TAB_LIST deviceStatus
+ *                                                    ("routed" | "notFound" | "noAccess" | "default"),
+ *                                                    missing: [string], the deviceNames that
+ *                                                    matched no output (absent from an older
+ *                                                    offscreen document: read as [])
+ *                                                    sent when either changes for a capture, and
+ *                                                    always first after a device change
  *                  DEVICE_ACCESS { granted }         from offscreen (labels readable or not)
  *                                                    and from permissions.html (prompt result)
  *
@@ -167,11 +199,14 @@
  * 'default' and 'communications' pseudo entries; match deviceName against label:
  * exact, then label starting with deviceName + " (", then case-insensitive contains.
  * Re-resolved for every capture on navigator.mediaDevices 'devicechange'. No match or
- * no labels: setSinkId('') and report "notFound" / "noAccess".
+ * no labels: setSinkId('') and report "notFound" / "noAccess". A multi-output capture
+ * resolves each name the same way: names that match are played on (one AudioContext and
+ * sink per distinct output), names that do not are reported as missing and skipped.
  *
  * STORAGE
  *   chrome.storage.session  'tab:<id>'  -> { volume, boost, muted, eqBands, deviceName,
- *                                            deviceStatus, captured, pageControl, pageOrigin,
+ *                                            deviceNames, deviceMissing, deviceStatus,
+ *                                            captured, pageControl, pageOrigin,
  *                                            pageMedia, pageUnreachable }
  *                           pageControl: a frame of the tab routes its media in-page.
  *                           pageMedia: a frame of the tab saw a media element (PAGE_HELLO).
@@ -227,6 +262,7 @@ const YTM_SWITCH_FILE = 'ytm-switch.js';
 const YTM_URL_PATTERN = 'https://music.youtube.com/*';
 const DEVICE_STATUSES = ['default', 'pending', 'routed', 'notFound', 'noAccess'];
 const REPORTED_DEVICE_STATUSES = ['default', 'routed', 'notFound', 'noAccess'];
+const MAX_DEVICE_NAMES = 8; // outputs one tab can play on at once (offscreen.js has the same cap)
 
 // ---------------------------------------------------------------------------
 // Value helpers
@@ -254,6 +290,23 @@ function normalizeBands(bands) {
   return out;
 }
 
+// A list of output names: strings only, no empty ones, no duplicates, capped.
+// Pure.
+function normalizeNames(names) {
+  if (!Array.isArray(names)) return [];
+  const out = [];
+  for (const name of names) {
+    if (typeof name !== 'string' || name === '' || out.includes(name)) continue;
+    out.push(name);
+    if (out.length >= MAX_DEVICE_NAMES) break;
+  }
+  return out;
+}
+
+function sameNames(a, b) {
+  return a.length === b.length && a.every((name, i) => name === b[i]);
+}
+
 function defaultState() {
   return {
     volume: 1,
@@ -261,6 +314,8 @@ function defaultState() {
     muted: false,
     eqBands: new Array(EQ_BAND_COUNT).fill(0),
     deviceName: '',
+    deviceNames: [],
+    deviceMissing: [],
     deviceStatus: 'default',
     captured: false,
     pageControl: false,
@@ -270,15 +325,27 @@ function defaultState() {
   };
 }
 
+// True when the tab has an output chosen: a multi list, else a single name.
+function hasDeviceChoice(s) {
+  return s.deviceNames.length > 0 || !!s.deviceName;
+}
+
 // deviceStatus before the offscreen document has reported one.
 function unresolvedDeviceStatus(s) {
-  return s.deviceName ? 'pending' : 'default';
+  return hasDeviceChoice(s) ? 'pending' : 'default';
+}
+
+// Forgets what the offscreen document last said about the tab's outputs
+// (a new capture, a new choice or the end of the capture reports afresh).
+function resetDeviceReport(s) {
+  s.deviceStatus = unresolvedDeviceStatus(s);
+  s.deviceMissing = [];
 }
 
 // deviceStatus as sent in TAB_LIST: the stored (last reported) value only
 // counts while the tab is captured and a device is chosen.
 function listDeviceStatus(s, captured) {
-  if (!s.deviceName) return 'default';
+  if (!hasDeviceChoice(s)) return 'default';
   if (!captured || s.deviceStatus === 'default') return 'pending';
   return s.deviceStatus;
 }
@@ -291,6 +358,7 @@ function normalizeState(raw) {
   s.muted = raw.muted === true;
   s.eqBands = normalizeBands(raw.eqBands);
   s.deviceName = typeof raw.deviceName === 'string' ? raw.deviceName : '';
+  s.deviceNames = normalizeNames(raw.deviceNames);
   s.captured = raw.captured === true;
   s.pageControl = raw.pageControl === true;
   s.pageOrigin = typeof raw.pageOrigin === 'string' ? raw.pageOrigin : '';
@@ -298,6 +366,9 @@ function normalizeState(raw) {
   s.pageUnreachable = raw.pageUnreachable === true;
   s.deviceStatus = s.captured && DEVICE_STATUSES.includes(raw.deviceStatus)
     ? raw.deviceStatus : unresolvedDeviceStatus(s);
+  s.deviceMissing = s.captured
+    ? normalizeNames(raw.deviceMissing).filter((name) => s.deviceNames.includes(name))
+    : [];
   return s;
 }
 
@@ -308,13 +379,15 @@ function audioFields(s) {
     boost: s.boost,
     muted: s.muted,
     eqBands: s.eqBands.slice(),
-    deviceName: s.deviceName
+    deviceName: s.deviceName,
+    deviceNames: s.deviceNames.slice()
   };
 }
 
 function sameAudio(a, b) {
   return a.volume === b.volume && a.boost === b.boost && a.muted === b.muted &&
-    a.deviceName === b.deviceName && a.eqBands.every((v, i) => v === b.eqBands[i]);
+    a.deviceName === b.deviceName && sameNames(a.deviceNames, b.deviceNames) &&
+    a.eqBands.every((v, i) => v === b.eqBands[i]);
 }
 
 function hostOf(url) {
@@ -781,7 +854,7 @@ function markUncaptured(store, tabId) {
   if (!st) return;
   if (st.captured) {
     st.captured = false;
-    st.deviceStatus = unresolvedDeviceStatus(st);
+    resetDeviceReport(st);
     persistTab(tabId, st);
     if (st.muted) chrome.tabs.update(tabId, { muted: true }).catch(() => {});
     schedulePush();
@@ -810,8 +883,15 @@ async function startCapture(store, tabId, streamId) {
 
   const existing = store.tabs.get(tabId);
   // The new capture reports its own device status; drop any stale one.
-  if (existing) existing.deviceStatus = unresolvedDeviceStatus(existing);
-  const next = existing ? { ...existing, eqBands: existing.eqBands.slice() } : defaultState();
+  if (existing) resetDeviceReport(existing);
+  const next = existing
+    ? {
+      ...existing,
+      eqBands: existing.eqBands.slice(),
+      deviceNames: existing.deviceNames.slice(),
+      deviceMissing: existing.deviceMissing.slice()
+    }
+    : defaultState();
   if (!existing) {
     const site = await getSiteDefault(tab.url);
     if (site) next.volume = site.volume;
@@ -934,11 +1014,16 @@ chrome.runtime.onConnect.addListener((p) => {
 
 // Stores the offscreen document's latest device status for a tab (no graph
 // sync needed: it came from the graph).
-async function setDeviceStatus(tabId, status) {
+// `missing` lists the multi-output names that matched nothing; it only means
+// something for names the tab still has (a late report may name old ones).
+async function setDeviceStatus(tabId, status, missing) {
   const store = await ready();
   const st = store.tabs.get(tabId);
-  if (!st || st.deviceStatus === status) return;
+  if (!st) return;
+  const names = normalizeNames(missing).filter((name) => st.deviceNames.includes(name));
+  if (st.deviceStatus === status && sameNames(st.deviceMissing, names)) return;
   st.deviceStatus = status;
+  st.deviceMissing = names;
   persistTab(tabId, st);
   schedulePush();
 }
@@ -953,7 +1038,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     case 'DEVICE_STATUS':
       if (!Number.isInteger(msg.tabId) || !REPORTED_DEVICE_STATUSES.includes(msg.status)) break;
-      setDeviceStatus(msg.tabId, msg.status).catch(logError('DEVICE_STATUS'));
+      setDeviceStatus(msg.tabId, msg.status, msg.missing).catch(logError('DEVICE_STATUS'));
       break;
     case 'DEVICE_ACCESS':
       if (typeof msg.granted !== 'boolean') break;
@@ -1276,6 +1361,8 @@ async function sendTabList() {
       muted: captured ? s.muted : !!(t.mutedInfo && t.mutedInfo.muted),
       eqBands: s.eqBands.slice(),
       deviceName: s.deviceName,
+      deviceNames: s.deviceNames.slice(),
+      deviceMissing: captured ? s.deviceMissing.slice() : [],
       deviceStatus: listDeviceStatus(s, captured)
     });
   }
@@ -1296,7 +1383,8 @@ async function sendTabList() {
     type: 'TAB_LIST',
     incognitoAllowed: !!incognitoAllowed,
     tabs: list,
-    deviceAccess: access === true
+    deviceAccess: access === true,
+    multiDevice: true
   };
   // No echo while the gate is closed: the app reads that as a mismatch and
   // answers with SET_TRACKING.
@@ -1435,11 +1523,27 @@ async function updateTabState(tabId, mutate) {
 
 function setTabDevice(tabId, deviceName) {
   return updateTabState(tabId, (st) => {
-    if (st.deviceName === deviceName) return;
+    if (st.deviceName === deviceName && st.deviceNames.length === 0) return;
     st.deviceName = deviceName;
+    // One output ends multi-output mode.
+    st.deviceNames = [];
     // "pending" until the offscreen document reports for the new name
     // (it always reports first after a change).
-    st.deviceStatus = unresolvedDeviceStatus(st);
+    resetDeviceReport(st);
+  });
+}
+
+// Multi-output: the tab plays on every named device. A list with no usable
+// name changes nothing (the app sends nothing for an empty selection, and a
+// garbled message must not silence the tab). deviceName is left alone so a
+// later SET_TAB_DEVICE or the app's switch back to single restores it.
+function setTabDevices(tabId, deviceNames) {
+  const names = normalizeNames(deviceNames);
+  if (names.length === 0) return Promise.resolve(null);
+  return updateTabState(tabId, (st) => {
+    if (sameNames(st.deviceNames, names)) return;
+    st.deviceNames = names;
+    resetDeviceReport(st);
   });
 }
 
@@ -1509,6 +1613,11 @@ function handleNativeMessage(msg) {
       // Otherwise it is stored and START_CAPTURE carries it.
       setTabDevice(tabId, typeof msg.deviceName === 'string' ? msg.deviceName : '')
         .catch(logError('SET_TAB_DEVICE'));
+      break;
+    case 'SET_TAB_DEVICES':
+      // Same path as SET_TAB_DEVICE: SET_STATE makes the offscreen document
+      // add and remove outputs now, or START_CAPTURE carries the list.
+      setTabDevices(tabId, msg.deviceNames).catch(logError('SET_TAB_DEVICES'));
       break;
     case 'TOGGLE_PLAYBACK':
       runTogglePlayback(tabId);

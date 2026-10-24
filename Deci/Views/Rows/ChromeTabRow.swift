@@ -88,10 +88,10 @@ struct ChromeTabRow: View {
                     devices: devices,
                     deviceIconOverrides: [:],
                     selectedDeviceUID: currentDeviceUID ?? defaultDeviceUID ?? "",
-                    selectedDeviceUIDs: [],
+                    selectedDeviceUIDs: tab.selectedDeviceUIDs,
                     isFollowingDefault: tab.deviceName == nil,
                     defaultDeviceUID: defaultDeviceUID,
-                    deviceSelectionMode: .single,
+                    deviceSelectionMode: tab.deviceSelectionMode,
                     boost: tab.boost,
                     isEQExpanded: isEQExpanded,
                     isEnabled: tab.isControlled,
@@ -108,8 +108,12 @@ struct ChromeTabRow: View {
                         let deviceName = devices.first(where: { $0.uid == deviceUID })?.name
                         chromeManager.setTabDevice(tabId: tab.id, deviceName: deviceName)
                     },
-                    onDevicesSelected: { _ in },
-                    onDeviceModeChange: { _ in },
+                    onDevicesSelected: { deviceUIDs in
+                        chromeManager.setTabDevices(tabId: tab.id, deviceUIDs: deviceUIDs)
+                    },
+                    onDeviceModeChange: { mode in
+                        chromeManager.setTabDeviceSelectionMode(tabId: tab.id, to: mode)
+                    },
                     onSelectFollowDefault: { 
                         chromeManager.setTabDevice(tabId: tab.id, deviceName: nil)
                     },
@@ -145,8 +149,11 @@ struct ChromeTabRow: View {
         }
         .onAppear {
             localEQSettings = tab.eqSettings
+            syncOutputDevices()
             if isPopupVisible { startSimulatedVUMeter() }
         }
+        .onChange(of: devices) { _, _ in syncOutputDevices() }
+        .onChange(of: defaultDeviceUID) { _, _ in syncOutputDevices() }
         .onDisappear {
             levelPoller.stop()
         }
@@ -175,13 +182,18 @@ struct ChromeTabRow: View {
                 .font(.system(size: 9))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .lineLimit(1)
+        } else if let note = Self.multiOutputNote(for: tab, supportsMultiDevice: chromeManager.supportsMultiDevice) {
+            Text(note.text)
+                .font(.system(size: 9))
+                .foregroundStyle(DesignTokens.Colors.textTertiary)
+                .lineLimit(1)
         } else if tab.control == .page || tab.control == .armed, tab.deviceName != nil {
             // In-page control cannot pick an output; the stored device waits for a capture.
             Text("Click Deci in Chrome to use this output")
                 .font(.system(size: 9))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .lineLimit(1)
-        } else if tab.deviceName != nil {
+        } else if tab.deviceName != nil || !tab.deviceNames.isEmpty {
             // The device guard hides a stale problem right after the user went back to the default.
             switch tab.deviceStatus {
             case .notFound:
@@ -204,6 +216,50 @@ struct ChromeTabRow: View {
             case .defaultOutput, .pending, .routed:
                 EmptyView()
             }
+        }
+    }
+
+    /// Hands the manager the output devices the picker shows, so it can turn UIDs into the names the extension
+    /// matches on. Cheap to repeat: the manager ignores a list it already has.
+    private func syncOutputDevices() {
+        chromeManager.updateOutputDevices(devices, defaultDeviceUID: defaultDeviceUID)
+    }
+
+    /// The caption a multi-output tab can need instead of the single-output ones.
+    enum MultiOutputNote: Equatable {
+        /// Multi is picked with several devices, but the extension predates SET_TAB_DEVICES and plays on one.
+        case reloadExtension
+        /// The outputs are stored, but the page is not captured, so nothing routes yet.
+        case clickToUse
+        /// No chosen output exists: the tab plays on the default.
+        case allNotFound
+        /// This many chosen outputs exist no more; the others still play.
+        case someNotFound(Int)
+
+        var text: String {
+            switch self {
+            case .reloadExtension: "Reload the Deci extension for multiple outputs"
+            case .clickToUse: "Click Deci in Chrome to use these outputs"
+            case .allNotFound: "Outputs not found, using default"
+            case .someNotFound(let count): count == 1 ? "1 output not found" : "\(count) outputs not found"
+            }
+        }
+    }
+
+    /// The multi-output caption for a tab, or nil when the single-output captions apply. Pure. A tab that cannot
+    /// be controlled yet is not covered: its own caption wins.
+    static func multiOutputNote(for tab: ChromeTab, supportsMultiDevice: Bool) -> MultiOutputNote? {
+        guard tab.isControlled else { return nil }
+        if tab.deviceSelectionMode == .multi, !supportsMultiDevice, tab.selectedDeviceUIDs.count > 1 {
+            return .reloadExtension
+        }
+        guard !tab.deviceNames.isEmpty else { return nil }
+        guard tab.control == .capture else { return .clickToUse }
+        switch tab.deviceStatus {
+        case .notFound: return .allNotFound
+        case .routed: return tab.missingDeviceNames.isEmpty ? nil : .someNotFound(tab.missingDeviceNames.count)
+        // noAccess has its own button, pending and default say nothing yet.
+        case .noAccess, .pending, .defaultOutput: return nil
         }
     }
 

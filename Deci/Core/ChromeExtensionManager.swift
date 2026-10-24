@@ -36,8 +36,22 @@ final class ChromeExtensionManager: NSObject {
     /// True when per-tab device choices exist that the extension cannot resolve yet
     /// because device names are unreadable.
     var needsDeviceAccess: Bool {
-        !deviceAccess && chromeTabs.contains { !($0.deviceName ?? "").isEmpty }
+        !deviceAccess && chromeTabs.contains { !($0.deviceName ?? "").isEmpty || !$0.deviceNames.isEmpty }
     }
+
+    /// True while the connected extension says it understands SET_TAB_DEVICES (TAB_LIST `multiDevice`, extension 1.8.0
+    /// and later). An older extension never says, and is sent the single SET_TAB_DEVICE only.
+    private(set) var supportsMultiDevice = false
+
+    /// The output devices of every captured tab that plays on two or more of them at once; empty when none does.
+    /// Read-only for the UI, assigned only when the set really changes (see `refreshMultiOutputs`).
+    private(set) var multiOutputDeviceUIDs: Set<String> = []
+
+    /// The output devices the UI last reported (`updateOutputDevices`): what a UID means, in list order. Not observed.
+    @ObservationIgnored private var outputDevices: [AudioDevice] = []
+    @ObservationIgnored private var defaultOutputUID: String?
+    /// Every device name seen so far by UID, so a picked device that was unplugged since keeps its name.
+    @ObservationIgnored private var nameByUID: [String: String] = [:]
 
     /// How long GET_TABS may go unanswered before the extension counts as disconnected.
     static let connectionTimeout: TimeInterval = 2.5
@@ -107,16 +121,21 @@ final class ChromeExtensionManager: NSObject {
                 if parsed.deviceAccess {
                     devicePermissionRequested = false
                 }
+                // Only an extension that says so understands SET_TAB_DEVICES; an older one omits the marker.
+                let multiCapable = json["multiDevice"] as? Bool ?? false
+                if supportsMultiDevice != multiCapable {
+                    supportsMultiDevice = multiCapable
+                }
                 answerTrackingEcho(parsed.tracking)
 
                 let now = Date()
                 let previous = chromeTabs
-                let newTabs = Self.merge(
+                let newTabs = adoptingExtensionMultiState(Self.merge(
                     existing: previous,
                     incoming: Self.visibleTabs(parsed.tabs, tracking: tracking),
                     pendingUntil: pendingUntil,
                     now: now
-                )
+                ))
                 pendingUntil = pendingUntil.filter { $0.value > now }
 
                 // A new song usually means a new duration, so refresh media state right away.
@@ -130,6 +149,7 @@ final class ChromeExtensionManager: NSObject {
                 if newTabs != self.chromeTabs {
                     self.chromeTabs = newTabs
                 }
+                refreshMultiOutputs()
             } else if type == "MEDIA_STATE", let tabId = json["tabId"] as? Int {
                 let paused = json["paused"] as? Bool ?? false
                 let currentTime = (json["currentTime"] as? NSNumber)?.doubleValue ?? 0
@@ -215,9 +235,25 @@ final class ChromeExtensionManager: NSObject {
             tab.isIncognito = raw["incognito"] as? Bool ?? false
             tab.control = ChromeTabControl(wireValue: raw["control"] as? String, captured: raw["captured"] as? Bool ?? false)
             tab.deviceStatus = ChromeTabDeviceStatus(wireValue: raw["deviceStatus"] as? String)
+            tab.deviceNames = nameList(raw["deviceNames"])
+            tab.missingDeviceNames = nameList(raw["deviceMissing"])
             tabs.append(tab)
         }
         return (tabs, incognitoAllowed, deviceAccess, echo)
+    }
+
+    /// The most output names read from one tab. The extension keeps at most 8; this only bounds a hostile message.
+    private static let maxDeviceNames = 16
+
+    /// A list of output names off the wire: strings only, no empties, no repeats, in order. Anything else is no list.
+    private static func nameList(_ value: Any?) -> [String] {
+        guard let raw = value as? [Any] else { return [] }
+        var names: [String] = []
+        for case let name as String in raw where !name.isEmpty && !names.contains(name) {
+            names.append(name)
+            if names.count == maxDeviceNames { break }
+        }
+        return names
     }
 
     /// The tabs the user wants to see: none when tabs are off, no incognito ones when
@@ -233,7 +269,10 @@ final class ChromeExtensionManager: NSObject {
     /// for a tab with a local change inside its pending window (the extension has not seen
     /// it yet). Media state (paused, position) only ever comes from MEDIA_STATE messages,
     /// so it is carried over from the existing tab. `deviceStatus` is extension-owned
-    /// state with no local counterpart, so it is always adopted, pending or not.
+    /// state with no local counterpart, so it is always adopted, pending or not. The output list
+    /// (`deviceNames`, `missingDeviceNames`) follows the device choice: local while pending, the
+    /// extension's after. The picker's own state (`deviceSelectionMode`, `selectedDeviceUIDs`) exists
+    /// only here and is always carried over.
     static func merge(
         existing: [ChromeTab],
         incoming: [ChromeTab],
@@ -252,14 +291,19 @@ final class ChromeExtensionManager: NSObject {
                 tab.favIconUrl = old.favIconUrl
             }
 
+            tab.deviceSelectionMode = old.deviceSelectionMode
+            tab.selectedDeviceUIDs = old.selectedDeviceUIDs
+
             if let until = pendingUntil[tab.id], until > now {
                 tab.volume = old.volume
                 tab.boost = old.boost
                 tab.isMuted = old.isMuted
                 tab.eqSettings = old.eqSettings
                 tab.deviceName = old.deviceName
+                tab.deviceNames = old.deviceNames
+                tab.missingDeviceNames = old.missingDeviceNames
                 // A status for a device the user has already moved away from is stale.
-                if fresh.deviceName != old.deviceName {
+                if fresh.deviceName != old.deviceName || fresh.deviceNames != old.deviceNames {
                     tab.deviceStatus = old.deviceStatus
                 }
             } else if !old.eqSettings.isEnabled, fresh.eqSettings.bandGains.allSatisfy({ $0 == 0 }) {
@@ -341,6 +385,7 @@ final class ChromeExtensionManager: NSObject {
         let visible = Self.visibleTabs(chromeTabs, tracking: tracking)
         if visible != chromeTabs {
             chromeTabs = visible
+            refreshMultiOutputs()
         }
         // A new wish deserves a fresh answer to the next mismatching TAB_LIST.
         trackingMismatchAnswered = false
@@ -435,23 +480,204 @@ final class ChromeExtensionManager: NSObject {
         }
     }
 
+    /// Puts the tab on one output (nil = follow the system default). Ends any multi-output list the tab was playing.
     func setTabDevice(tabId: Int, deviceName: String?) {
         if let index = chromeTabs.firstIndex(where: { $0.id == tabId }) {
-            chromeTabs[index].deviceName = deviceName
+            var tab = chromeTabs[index]
+            tab.deviceName = deviceName
+            // The list is over: the extension drops it on this message.
+            tab.deviceNames = []
+            tab.missingDeviceNames = []
             // The old status belongs to the old device; show "pending" until the extension reports.
-            chromeTabs[index].deviceStatus = (deviceName ?? "").isEmpty ? .defaultOutput : .pending
+            tab.deviceStatus = (deviceName ?? "").isEmpty ? .defaultOutput : .pending
+            chromeTabs[index] = tab
             markPending(tabId)
+            // Both messages are last-wins per tab but batched apart, so a list queued just before would otherwise
+            // be sent after this one and win.
+            pendingMessages["SET_TAB_DEVICES_\(tabId)"] = nil
             queueMessage([
                 "type": "SET_TAB_DEVICE",
                 "tabId": tabId,
                 "deviceName": deviceName ?? ""
             ])
-            // Without device names the extension cannot honour the choice. Open the
-            // permission page once instead of leaving the user to find the button.
-            if let deviceName, !deviceName.isEmpty, !deviceAccess, !devicePermissionRequested {
-                openDevicePermission()
+            requestDevicePermissionIfNeeded(for: deviceName)
+            refreshMultiOutputs()
+        }
+    }
+
+    /// Without device names the extension cannot honour the choice. Open the
+    /// permission page once instead of leaving the user to find the button.
+    private func requestDevicePermissionIfNeeded(for deviceName: String?) {
+        if let deviceName, !deviceName.isEmpty, !deviceAccess, !devicePermissionRequested {
+            openDevicePermission()
+        }
+    }
+
+    // MARK: Multi-output
+
+    /// Tells the manager which output devices exist (in the order the picker lists them) and which one is the system
+    /// default. The manager maps UIDs to the names the extension matches on, seeds a tab's first flip to Multi, and
+    /// works out `multiOutputDeviceUIDs` from it. Cheap to repeat: nothing changes unless the list or the default does.
+    func updateOutputDevices(_ devices: [AudioDevice], defaultDeviceUID: String?) {
+        let sameList = devices.count == outputDevices.count
+            && zip(devices, outputDevices).allSatisfy { $0.uid == $1.uid && $0.name == $1.name }
+        guard !sameList || defaultDeviceUID != defaultOutputUID else { return }
+
+        outputDevices = devices
+        defaultOutputUID = defaultDeviceUID
+        for device in devices { nameByUID[device.uid] = device.name }
+
+        // A list adopted before the devices were known has no UIDs yet; they can be read off its names now.
+        var tabs = chromeTabs
+        var changed = false
+        for index in tabs.indices {
+            let tab = tabs[index]
+            guard tab.deviceSelectionMode == .multi, tab.selectedDeviceUIDs.isEmpty, !tab.deviceNames.isEmpty else { continue }
+            let uids = outputUIDs(forNames: tab.deviceNames)
+            if !uids.isEmpty {
+                tabs[index].selectedDeviceUIDs = uids
+                changed = true
             }
         }
+        if changed { chromeTabs = tabs }
+        refreshMultiOutputs()
+    }
+
+    /// Puts the tab on every ticked output at once. The tab is in multi mode from here on. An empty selection, or one
+    /// that names no known device, is recorded for the picker but sends nothing: the tab keeps playing where it is.
+    /// An extension that does not know SET_TAB_DEVICES gets a plain SET_TAB_DEVICE for the first ticked device in
+    /// list order, so the tab still reacts (on one output) instead of ignoring the tick.
+    func setTabDevices(tabId: Int, deviceUIDs: Set<String>) {
+        guard let index = chromeTabs.firstIndex(where: { $0.id == tabId }) else { return }
+        let names = outputNames(forUIDs: deviceUIDs)
+
+        var tab = chromeTabs[index]
+        tab.deviceSelectionMode = .multi
+        tab.selectedDeviceUIDs = deviceUIDs
+
+        guard let first = names.first else {
+            if tab != chromeTabs[index] { chromeTabs[index] = tab }
+            return
+        }
+        guard supportsMultiDevice else {
+            chromeTabs[index] = tab
+            setTabDevice(tabId: tabId, deviceName: first)
+            return
+        }
+
+        // The single choice (`deviceName`) stays: it is what flipping back to single restores.
+        tab.deviceNames = names
+        tab.missingDeviceNames = []
+        tab.deviceStatus = .pending
+        chromeTabs[index] = tab
+        markPending(tabId)
+        pendingMessages["SET_TAB_DEVICE_\(tabId)"] = nil
+        queueMessage([
+            "type": "SET_TAB_DEVICES",
+            "tabId": tabId,
+            "deviceNames": names
+        ])
+        for name in names { requestDevicePermissionIfNeeded(for: name) }
+        refreshMultiOutputs()
+    }
+
+    /// Flips the tab between one output and several. The first flip to Multi ticks the device the tab plays on now (the
+    /// default when it follows the default or its device is gone) and sends nothing: the tab does not move until a
+    /// second device is ticked. Flipping back keeps the selection for next time and, when a list was playing, puts the
+    /// tab back on its single choice.
+    func setTabDeviceSelectionMode(tabId: Int, to mode: DeviceSelectionMode) {
+        guard let index = chromeTabs.firstIndex(where: { $0.id == tabId }),
+              chromeTabs[index].deviceSelectionMode != mode else { return }
+        switch mode {
+        case .multi:
+            var tab = chromeTabs[index]
+            tab.deviceSelectionMode = .multi
+            if tab.selectedDeviceUIDs.isEmpty {
+                tab.selectedDeviceUIDs = seedSelection(for: tab)
+            }
+            chromeTabs[index] = tab
+        case .single:
+            chromeTabs[index].deviceSelectionMode = .single
+            if !chromeTabs[index].deviceNames.isEmpty {
+                setTabDevice(tabId: tabId, deviceName: chromeTabs[index].deviceName)
+            }
+        }
+        refreshMultiOutputs()
+    }
+
+    /// What the first flip to Multi ticks: the device the tab is on, else the system default.
+    private func seedSelection(for tab: ChromeTab) -> Set<String> {
+        if let name = tab.deviceName, !name.isEmpty,
+           let device = outputDevices.first(where: { $0.name == name }) {
+            return [device.uid]
+        }
+        if let uid = defaultOutputUID, !uid.isEmpty { return [uid] }
+        return []
+    }
+
+    /// The names of the ticked devices as the extension matches them: device-list order, one per name. A ticked device
+    /// that left the list keeps the name it had (so a list holding it still names it), after the listed ones in UID
+    /// order. A UID never seen is skipped.
+    private func outputNames(forUIDs uids: Set<String>) -> [String] {
+        var names: [String] = []
+        for device in outputDevices where uids.contains(device.uid) && !names.contains(device.name) {
+            names.append(device.name)
+        }
+        let listed = Set(outputDevices.map(\.uid))
+        for uid in uids.subtracting(listed).sorted() {
+            if let name = nameByUID[uid], !names.contains(name) { names.append(name) }
+        }
+        return names
+    }
+
+    /// The devices the names stand for in the current list (the first device of each name).
+    private func outputUIDs(forNames names: [String]) -> Set<String> {
+        Set(names.compactMap { name in outputDevices.first(where: { $0.name == name })?.uid })
+    }
+
+    /// A tab the extension already plays on a list of outputs, that this side has no multi record of (first sight, or
+    /// the app restarted while Chrome kept going), is shown as multi with the devices those names are.
+    private func adoptingExtensionMultiState(_ tabs: [ChromeTab]) -> [ChromeTab] {
+        tabs.map { tab in
+            guard tab.deviceSelectionMode == .single, !tab.deviceNames.isEmpty else { return tab }
+            var adopted = tab
+            adopted.deviceSelectionMode = .multi
+            if adopted.selectedDeviceUIDs.isEmpty {
+                adopted.selectedDeviceUIDs = outputUIDs(forNames: tab.deviceNames)
+            }
+            return adopted
+        }
+    }
+
+    /// Recomputes `multiOutputDeviceUIDs` and assigns it only when it differs, so readers are not woken by
+    /// a volume change or a new song title. Called after every change to `chromeTabs` that could move it.
+    private func refreshMultiOutputs() {
+        let next = Self.multiOutputUIDs(tabs: chromeTabs, devices: outputDevices)
+        if next != multiOutputDeviceUIDs {
+            multiOutputDeviceUIDs = next
+        }
+    }
+
+    /// The devices of every tab that plays on two or more outputs. Pure.
+    ///
+    /// Only a captured tab counts (Chrome plays any other as it always did), and only while its outputs are not known
+    /// to have failed (`notFound` and `noAccess` mean it fell back to the default output, `default` that it has no
+    /// list). Names the extension could not match do not count; fewer than two left means one output, not multi.
+    /// A name no device in `devices` carries adds nothing to the set, but still counts as an output.
+    static func multiOutputUIDs(tabs: [ChromeTab], devices: [AudioDevice]) -> Set<String> {
+        var uids = Set<String>()
+        for tab in tabs where tab.control == .capture {
+            switch tab.deviceStatus {
+            case .notFound, .noAccess, .defaultOutput: continue
+            case .pending, .routed: break
+            }
+            let names = Set(tab.deviceNames).subtracting(tab.missingDeviceNames)
+            guard names.count >= 2 else { continue }
+            for name in names {
+                if let device = devices.first(where: { $0.name == name }) { uids.insert(device.uid) }
+            }
+        }
+        return uids
     }
 
     /// Asks the extension to open the page with the one-time mic prompt that unlocks
@@ -517,7 +743,10 @@ final class ChromeExtensionManager: NSObject {
         if next != connectionState {
             connectionState = next
             // Tabs from a dead connection cannot be controlled; drop them until Chrome answers again.
-            if next == .disconnected { chromeTabs = [] }
+            if next == .disconnected {
+                chromeTabs = []
+                refreshMultiOutputs()
+            }
         }
     }
 
@@ -665,4 +894,13 @@ struct ChromeTab: Identifiable, Equatable {
     var deviceName: String? = nil
     /// Owned by the extension: never set locally, always adopted from TAB_LIST.
     var deviceStatus: ChromeTabDeviceStatus = .defaultOutput
+    /// The outputs the tab plays on in multi-output mode, as the extension has them; empty for a tab on one output
+    /// (`deviceName`). Set locally the moment the user ticks devices, then adopted from TAB_LIST.
+    var deviceNames: [String] = []
+    /// The names in `deviceNames` the extension could not match to an output. Extension-owned.
+    var missingDeviceNames: [String] = []
+    /// Which picker the row shows. Exists only in Deci: the extension has no such thing, only `deviceNames`.
+    var deviceSelectionMode: DeviceSelectionMode = .single
+    /// The devices ticked in multi mode. Kept when flipping back to single, like the engine keeps it. Exists only in Deci.
+    var selectedDeviceUIDs: Set<String> = []
 }
