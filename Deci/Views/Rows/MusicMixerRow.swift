@@ -5,8 +5,8 @@ import SwiftUI
 /// 10-band EQ, all acting on the audio the player makes inside Deci through `MusicMixerState`.
 ///
 /// It reads as one more app in the apps list: Deci's own name and icon (`MusicPlayerIdentity`), laid out exactly like
-/// `AppRow`. Built like `ChromeTabRow` underneath, with the device picker in single mode: music has one output, not a
-/// set of them.
+/// `AppRow`. Built like `ChromeTabRow` underneath, with the same device picker in Single or Multi mode: Multi plays the
+/// music on several outputs at once.
 struct MusicMixerRow: View {
     let mixer: MusicMixerState
     /// What the row calls itself, in the name, the tooltip and the accessibility labels.
@@ -80,7 +80,7 @@ struct MusicMixerRow: View {
                         .lineLimit(1)
                         .help(name)
 
-                    if mixer.selectedDeviceUID != nil && mixer.outputDeviceUID == nil {
+                    if mixer.isChosenDeviceMissing {
                         Text("Output not found, using default")
                             .font(.system(size: 9))
                             .foregroundStyle(DesignTokens.Colors.textTertiary)
@@ -96,18 +96,18 @@ struct MusicMixerRow: View {
                     devices: devices,
                     deviceIconOverrides: deviceIconOverrides,
                     selectedDeviceUID: routedDeviceUID ?? defaultDeviceUID ?? "",
-                    selectedDeviceUIDs: [],
+                    selectedDeviceUIDs: mixer.selectedDeviceUIDs,
                     isFollowingDefault: routedDeviceUID == nil,
                     defaultDeviceUID: defaultDeviceUID,
-                    deviceSelectionMode: .single,
+                    deviceSelectionMode: mixer.deviceSelectionMode,
                     boost: mixer.boost,
                     isEQExpanded: isEQExpanded,
                     onVolumeChange: { mixer.setVolume($0) },
                     onMuteChange: { mixer.setMuted($0) },
                     onBoostChange: { mixer.setBoost($0) },
                     onDeviceSelected: { mixer.selectDevice(uid: $0) },
-                    onDevicesSelected: { _ in },
-                    onDeviceModeChange: { _ in },
+                    onDevicesSelected: { mixer.setSelectedDeviceUIDs($0) },
+                    onDeviceModeChange: { mixer.setDeviceSelectionMode($0) },
                     onSelectFollowDefault: { mixer.followDefaultDevice() },
                     onEQToggle: onEQToggle
                 )

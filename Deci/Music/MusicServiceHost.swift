@@ -142,8 +142,10 @@ final class MusicServiceHost {
         service?.settingsDidReset()
     }
 
-    /// Quit path: stops playback and flushes held-back cookies, if the service was ever created.
+    /// Quit path: stops playback and flushes held-back cookies, if the service was ever created, and frees the output
+    /// aggregate the mixer made for playing on several devices.
     func shutdown() {
         service?.stop()
+        mixer?.shutdown()
     }
 }
