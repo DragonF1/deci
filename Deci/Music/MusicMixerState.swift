@@ -83,12 +83,23 @@ final class MusicMixerState: InProcessAudioSink {
     /// The output device the user picked. Kept even while it is unplugged: it is their intent, and it returns with it.
     /// nil follows the system default output.
     private(set) var selectedDeviceUID: String?
-    /// The device the engine is actually told to use: the selected one while it is connected, otherwise nil (default).
+    /// The device the music is anchored on: the selected one while it is connected, otherwise nil (default). In Multi
+    /// mode it is the first, in sorted UID order, of the ticked devices that are connected: the one whose AutoEQ profile
+    /// and device volume the music follows, as a multi-device app tap does. Not what the engine is told while two or more
+    /// devices play: that is the aggregate.
     private(set) var outputDeviceUID: String?
     /// True once an engine was attached. Stays true if that engine goes away: the state is only meaningful per app run.
     private(set) var hasEngine = false
     /// The name of the AutoEQ profile in effect on the device in use, for the player's output label. nil when none.
     private(set) var autoEQProfileName: String?
+    /// Whether the music plays on one output (the chosen device, else the default) or on several at once.
+    private(set) var deviceSelectionMode: DeviceSelectionMode = .single
+    /// The devices ticked for Multi mode. Kept while they are unplugged and while the mode is Single: it is the user's
+    /// intent, and it returns with the devices.
+    private(set) var selectedDeviceUIDs: Set<String> = []
+    /// The devices the music plays on while it uses two or more, through the aggregate. Empty in every other case, so a
+    /// view can light the devices in use. Assigned only when it really changes.
+    private(set) var multiOutputDeviceUIDs: Set<String> = []
 
     /// The volume and mute the watchtime pings report, as the web player's 0 to 100 slider: the row's slider
     /// position, boost left out.
@@ -107,8 +118,24 @@ final class MusicMixerState: InProcessAudioSink {
     /// Device volumes as the engine last reported them, for the same reason.
     @ObservationIgnored private var reportedDeviceVolumes: [String: Float] = [:]
     @ObservationIgnored private var autoEQTask: Task<Void, Never>?
+    @ObservationIgnored private let aggregates: any MusicOutputAggregating
+    /// The aggregate the player is pointed at while two or more devices play, with the stack it was built for.
+    @ObservationIgnored private var liveAggregate: (stack: MusicOutputStack, aggregate: MusicOutputAggregate)?
+    /// The ticked devices that are connected, while in Multi mode.
+    @ObservationIgnored private var multiAvailableUIDs: Set<String> = []
+    /// The last selection that was not empty. Unticking every device keeps the music where it is rather than dropping it
+    /// onto the default output, which could be the speakers; the engine's multi-device tap does the same.
+    @ObservationIgnored private var heldSelectionUIDs: Set<String> = []
+    /// Set on quit: no aggregate is made after it.
+    @ObservationIgnored private var isShutDown = false
 
-    init(settings: SettingsManager, environment: any MusicMixerEnvironment) {
+    /// `aggregates` makes the output aggregate; tests pass a fake.
+    init(
+        settings: SettingsManager,
+        environment: any MusicMixerEnvironment,
+        aggregates: any MusicOutputAggregating = CoreAudioMusicOutputAggregates()
+    ) {
+        self.aggregates = aggregates
         self.settings = settings
         self.environment = environment
         loudnessCompensationOn = environment.loudnessCompensationEnabled
@@ -120,6 +147,9 @@ final class MusicMixerState: InProcessAudioSink {
         boost = settings.getBoost(for: key) ?? .x1
         eqSettings = settings.getEQSettings(for: key)
         selectedDeviceUID = settings.getDeviceRouting(for: key)
+        deviceSelectionMode = settings.getDeviceSelectionMode(for: key) ?? .single
+        selectedDeviceUIDs = settings.getSelectedDeviceUIDs(for: key) ?? []
+        heldSelectionUIDs = selectedDeviceUIDs
 
         // The first gain jumps straight to the stored value, so a stored mute or low volume never leaks a loud start.
         chain.setTargetGain(effectiveGain, snap: true)
@@ -131,11 +161,22 @@ final class MusicMixerState: InProcessAudioSink {
         refreshAutoEQ()
     }
 
+    /// A mixer that is dropped frees its aggregate, so none is ever left in the system's device list.
+    isolated deinit {
+        if let live = liveAggregate { aggregates.destroy(live.aggregate) }
+    }
+
     // MARK: - Derived
 
     var isFollowingDefault: Bool { selectedDeviceUID == nil }
 
     /// The device the music comes out of: the one it is routed to, otherwise the system default output.
+    ///
+    /// AutoEQ policy for Multi mode, mirroring what `AudioEngine` and `ProcessTapController` do for a multi-device app
+    /// tap: the music is one stream copied to every device, so one device's AutoEQ profile and device volume apply to all
+    /// of them. That device is the first of the stack in sorted UID order (`outputDeviceUID`), not the clock device. The
+    /// other devices' profiles are not looked at, so a primary without a profile plays flat, and the manual EQ is
+    /// untouched.
     var effectiveDeviceUID: String? {
         outputDeviceUID ?? reportedDefaultUID ?? environment.defaultOutputDeviceUID
     }
@@ -153,8 +194,14 @@ final class MusicMixerState: InProcessAudioSink {
     /// hidden ones.
     var outputDevices: [AudioDevice] { environment.visibleOutputDevices }
 
-    /// A device was chosen but is not connected: the music plays on the default output until it comes back.
-    var isChosenDeviceMissing: Bool { selectedDeviceUID != nil && outputDeviceUID == nil }
+    /// A device was chosen but is not connected (in Multi mode: none of the ticked ones is): the music plays on the
+    /// default output until it comes back.
+    var isChosenDeviceMissing: Bool {
+        switch deviceSelectionMode {
+        case .single: selectedDeviceUID != nil && outputDeviceUID == nil
+        case .multi: !selectedDeviceUIDs.isEmpty && outputDeviceUID == nil
+        }
+    }
 
     /// What the player's output control says: the device the music comes out of and the EQ profile on it.
     var outputLabel: String {
@@ -212,6 +259,35 @@ final class MusicMixerState: InProcessAudioSink {
         deviceChoiceChanged()
     }
 
+    /// Switches between one output and several. Entering Multi with nothing ticked ticks the device the music plays on,
+    /// so the picker opens with it checked and the music keeps playing there. Going back to Single plays on the device
+    /// chosen before (or the default) and keeps the ticked devices for the next time.
+    func setDeviceSelectionMode(_ mode: DeviceSelectionMode) {
+        guard mode != deviceSelectionMode else { return }
+        deviceSelectionMode = mode
+        settings.setDeviceSelectionMode(for: Self.settingsKey, to: mode)
+        if mode == .multi { seedMultiSelection() }
+        deviceChoiceChanged()
+    }
+
+    /// Sets the ticked devices for Multi mode. Saved at once; the music follows when the mode is Multi. A device that is
+    /// not connected stays ticked and joins when it returns. Unticking every device keeps the music where it is.
+    func setSelectedDeviceUIDs(_ uids: Set<String>) {
+        guard uids != selectedDeviceUIDs else { return }
+        storeSelection(uids)
+        guard deviceSelectionMode == .multi else { return }
+        deviceChoiceChanged()
+    }
+
+    /// Quit path: puts the player back on the default output and destroys the aggregate. Nothing is built afterwards.
+    func shutdown() {
+        guard !isShutDown else { return }
+        isShutDown = true
+        if let engine, liveAggregate != nil { point(engine, at: nil) }
+        retireLiveAggregate()
+        publishMultiOutput()
+    }
+
     /// Back to the system default output.
     func followDefaultDevice() {
         selectedDeviceUID = nil
@@ -247,11 +323,69 @@ final class MusicMixerState: InProcessAudioSink {
         pushLevel()
     }
 
+    /// Points the player where the music should come out and keeps the aggregate in step with it. Two or more connected
+    /// devices in Multi mode get one stacked aggregate, kept while the set of devices is the same; one device is used
+    /// directly; none leaves the default output. A new aggregate is given to the player before the old one is destroyed,
+    /// so the player is never left on a device that is gone.
     private func pushOutputDevice() {
-        guard let engine else { return }
-        if let pushed = pushedDeviceUID, pushed == outputDeviceUID { return }
-        pushedDeviceUID = .some(outputDeviceUID)
-        engine.setOutputDevice(uid: outputDeviceUID)
+        guard let engine, !isShutDown else { return }
+        var target = outputDeviceUID
+        var retired: MusicOutputAggregate?
+        if let stack = wantedStack() {
+            if let live = liveAggregate, live.stack == stack {
+                target = live.aggregate.uid
+            } else {
+                let made = aggregates.makeAggregate(for: stack)
+                retired = liveAggregate?.aggregate
+                liveAggregate = made.map { (stack: stack, aggregate: $0) }
+                // An aggregate that could not be made leaves the music on the clock device alone rather than silent.
+                target = made?.uid ?? stack.clockDeviceUID
+            }
+        } else {
+            retired = liveAggregate?.aggregate
+            liveAggregate = nil
+        }
+        point(engine, at: target)
+        if let retired { aggregates.destroy(retired) }
+        publishMultiOutput()
+    }
+
+    /// The stack to play on: the connected ticked devices when there are two or more, in Multi mode.
+    private func wantedStack() -> MusicOutputStack? {
+        guard deviceSelectionMode == .multi else { return nil }
+        return MusicOutputStack.plan(for: multiAvailableUIDs, isBluetooth: { aggregates.isBluetooth(deviceUID: $0) })
+    }
+
+    /// Tells the engine where to play, unless it was told already.
+    private func point(_ engine: any PlaybackEngine, at target: String?) {
+        if let pushed = pushedDeviceUID, pushed == target { return }
+        pushedDeviceUID = .some(target)
+        engine.setOutputDevice(uid: target)
+    }
+
+    private func retireLiveAggregate() {
+        guard let live = liveAggregate else { return }
+        liveAggregate = nil
+        aggregates.destroy(live.aggregate)
+    }
+
+    /// The devices the music plays on through the aggregate. Written only when it differs, so views that read it are not
+    /// woken by a rebuild that changed nothing.
+    private func publishMultiOutput() {
+        let inUse = liveAggregate.map { Set($0.stack.subDeviceUIDs) } ?? []
+        if inUse != multiOutputDeviceUIDs { multiOutputDeviceUIDs = inUse }
+    }
+
+    /// Ticks the device the music plays on when Multi starts with nothing ticked. A selection saved earlier is left alone.
+    private func seedMultiSelection() {
+        guard selectedDeviceUIDs.isEmpty, let playingOn = effectiveDeviceUID else { return }
+        storeSelection([playingOn])
+    }
+
+    private func storeSelection(_ uids: Set<String>) {
+        selectedDeviceUIDs = uids
+        if !uids.isEmpty { heldSelectionUIDs = uids }
+        settings.setSelectedDeviceUIDs(for: Self.settingsKey, to: uids)
     }
 
     // MARK: - InProcessAudioSink
@@ -303,6 +437,9 @@ final class MusicMixerState: InProcessAudioSink {
         boost = .x1
         eqSettings = .flat
         selectedDeviceUID = nil
+        deviceSelectionMode = .single
+        selectedDeviceUIDs = []
+        heldSelectionUIDs = []
         pushGain()
         chain.setEQ(.flat)
         chain.setAutoEQPreampEnabled(environment.autoEQPreampEnabled)
@@ -334,12 +471,21 @@ final class MusicMixerState: InProcessAudioSink {
         updateLoudness()
     }
 
-    /// The selected device when it is connected, otherwise nil: an unknown UID would send the audio nowhere.
+    /// The selected device when it is connected, otherwise nil: an unknown UID would send the audio nowhere. In Multi mode
+    /// the ticked devices that are connected, and the first of them in sorted UID order as the anchor.
     private func resolveOutputDevice() {
-        if let selected = selectedDeviceUID, environment.outputDevices.contains(where: { $0.uid == selected }) {
-            outputDeviceUID = selected
-        } else {
-            outputDeviceUID = nil
+        let connected = Set(environment.outputDevices.map(\.uid))
+        switch deviceSelectionMode {
+        case .single:
+            multiAvailableUIDs = []
+            if let selected = selectedDeviceUID, connected.contains(selected) {
+                outputDeviceUID = selected
+            } else {
+                outputDeviceUID = nil
+            }
+        case .multi:
+            multiAvailableUIDs = (selectedDeviceUIDs.isEmpty ? heldSelectionUIDs : selectedDeviceUIDs).intersection(connected)
+            outputDeviceUID = multiAvailableUIDs.min()
         }
     }
 
