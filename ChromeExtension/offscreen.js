@@ -22,6 +22,10 @@ const DEVICE_CHANGE_DEBOUNCE_MS = 300;
 const FIRST_ROUTE_TIMEOUT_MS = 1500; // a start never waits longer than this for its sink
 const DEVICE_CALL_TIMEOUT_MS = 4000; // a hung enumerateDevices/setSinkId must not stall the queue
 const MAX_SINKS = 8; // outputs one tab can play on at once (background.js has the same cap)
+// The default 'interactive' hint gives WebAudio Chrome's smallest output buffer (a few ms), so the
+// render thread crackles whenever the Mac is loaded or swapping. 'playback' trades a few tens of ms
+// of latency for a buffer large enough to ride out those stalls; a captured tab is not interactive.
+const CONTEXT_OPTIONS = { latencyHint: 'playback' };
 
 const LIMITER = { threshold: -1, knee: 0, ratio: 20, attack: 0.003, release: 0.25 };
 
@@ -192,7 +196,7 @@ async function startCapture(msg) {
       video: false
     });
     if (pendingStarts.get(tabId) !== token) throw new Error('capture superseded');
-    ctx = new AudioContext();
+    ctx = new AudioContext(CONTEXT_OPTIONS);
     await ctx.resume();
     if (pendingStarts.get(tabId) !== token) throw new Error('capture superseded');
   } catch (err) {
@@ -462,7 +466,7 @@ async function addChain(tabId, entry) {
   let ctx = null;
   let stream = null;
   try {
-    ctx = new AudioContext();
+    ctx = new AudioContext(CONTEXT_OPTIONS);
     stream = entry.stream.clone();
     const chain = buildChain(ctx, stream, true, entry.state, false);
     entry.chains.push(chain);
