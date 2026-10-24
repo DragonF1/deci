@@ -38,6 +38,14 @@ struct MenuBarPopupView: View {
     /// Memoized sorted output devices - only recomputed when device list or default changes
     @State private var sortedDevices: [AudioDevice] = []
 
+    /// Every output device a multi-device route plays on: the engine's app taps, the music row and
+    /// Chrome tabs routed to several outputs. The device list lights these besides the default.
+    private var outputDevicesInUse: Set<String> {
+        audioEngine.outputDevicesInUse
+            .union(musicHost.mixer?.multiOutputDeviceUIDs ?? [])
+            .union(chromeManager.multiOutputDeviceUIDs)
+    }
+
     /// Memoized sorted input devices
     @State private var sortedInputDevices: [AudioDevice] = []
 
@@ -599,7 +607,7 @@ struct MenuBarPopupView: View {
                     DeviceRow(
                         device: device,
                         isDefault: device.id == deviceVolumeMonitor.defaultDeviceID,
-                        isInUse: audioEngine.outputDevicesInUse.contains(device.uid),
+                        isInUse: outputDevicesInUse.contains(device.uid),
                         volume: deviceVolumeMonitor.volumes[device.id] ?? 1.0,
                         isMuted: deviceVolumeMonitor.muteStates[device.id] ?? false,
                         volumeBackend: deviceVolumeMonitor.cachedOutputVolumeBackend(for: device.id),
