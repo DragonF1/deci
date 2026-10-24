@@ -1,12 +1,14 @@
 /*
  * Deci Audio Companion: offscreen document.
  * Owns one Web Audio graph (a "chain") per output of a captured tab:
- *   source > gain > 10 x BiquadFilter (EQ) > limiter > trim > destination
+ *   source > align > gain > 10 x BiquadFilter (EQ) > limiter > trim > destination
  * A tab on one output has one chain. A tab in multi-output mode has one chain
  * per distinct output, each in its own AudioContext with its own setSinkId and
  * its own source node from the same tab capture (the first chain reads the
  * capture stream itself, the others read clones of it). Volume, mute and EQ
- * are applied to every chain alike. The destination of each chain is routed
+ * are applied to every chain alike. The outputs differ in latency (a Bluetooth
+ * headset is a couple of hundred ms behind a wired one), so the align delay of
+ * each chain is set to make them sound together (see alignChains). The destination of each chain is routed
  * with AudioContext.setSinkId (resolved by device name, re-resolved on
  * 'devicechange'). Only handles messages with target 'offscreen'; reports to
  * the service worker with target 'background'. See background.js for the
@@ -25,6 +27,17 @@ const DEVICE_MISSING_GRACE_MS = 4000; // a planned output gone from the device l
 const RESUME_THROTTLE_MS = 2000; // a context Chrome keeps suspending is woken by its statechange handler this often at most
 const MAX_EVENT_RESUMES = 5; // wakes in a row that did not hold before the handler gives up (a routing pass tries again)
 const MAX_SINKS = 8; // outputs one tab can play on at once (background.js has the same cap)
+const ALIGN_INTERVAL_MS = 1000; // how often the outputs of a multi-output tab are lined up
+const ALIGN_TOLERANCE_SECONDS = 0.025; // a delay is only changed when it is off by more than this (a Bluetooth latency wobbles)
+const ALIGN_MAX_SECONDS = 1; // the longest delay an align node holds; a wider spread between outputs is not trusted
+const ALIGN_FIRST_TICKS = 2; // passes in a row that must want the same delay before the first correction after a chain connects
+const ALIGN_TICKS = 3; // the same for every correction after that
+const ALIGN_MIN_GAP_SECONDS = 5; // least audio time between two corrections of one chain (each one dips it)
+const ALIGN_UNKNOWN_GRACE_SECONDS = 3; // a running chain without a reported latency holds the pass back this long after it connects
+const DIP_SECONDS = 0.03; // a change that would click (a delay step, a source swap) is made this long into a trim dip
+const DIP_TIME_CONSTANT = 0.004; // setTargetAtTime time constant of the dip and of the return
+const SWAP_SLACK_SECONDS = 0.002; // a source swap goes ahead once the audio clock is this close to the bottom of its dip
+const MAX_SWAP_WAITS = 4; // times a swap waits for a lagging audio clock before it goes ahead anyway
 // The default 'interactive' hint gives WebAudio Chrome's smallest output buffer (a few ms), so the
 // render thread crackles whenever the Mac is loaded or swapping. 'playback' trades a few tens of ms
 // of latency for a buffer large enough to ride out those stalls; a captured tab is not interactive.
@@ -45,15 +58,22 @@ const TRIM_GAIN = Math.pow(10, -MAKEUP_DB / 20);
 
 // tabId -> { stream, chains, state, deviceGen, deviceQueue, reportedStatus, starting }
 //   chains: one per output; empty only briefly when the floor's rebuild fails (the next pass rebuilds):
-//     { ctx, stream, ownsStream, source, gain, filters, limiter, trim, sinkId, name, routed, connected,
-//       tornDown, graceTimer, graceExpired, resumeTimer, resumeStreak, resumeDeferred }
+//     { ctx, stream, ownsStream, source, align, gain, filters, limiter, trim, sinkId, name, routed, connected,
+//       tornDown, graceTimer, graceExpired, resumeTimer, resumeStreak, resumeDeferred,
+//       alignDelay, dipEnd, refreshTimer, connectedAt, alignWant, alignVotes, alignedAt }
 //     sinkId is the output the chain's context plays on ('' = system default);
 //     name is the output name that last routed it; ownsStream is true for a clone that dies with the chain;
-//     tornDown marks a chain we closed ourselves; graceTimer/graceExpired track a missing output (see
-//     reconcileChains); resumeTimer/resumeStreak/resumeDeferred throttle the statechange wake (see eventResume).
+//     source is null for a clone until connectChain makes it; tornDown marks a chain we closed ourselves;
+//     graceTimer/graceExpired track a missing output (see reconcileChains);
+//     resumeTimer/resumeStreak/resumeDeferred throttle the statechange wake (see eventResume);
+//     alignDelay is the delay asked of align, dipEnd the context time its trim dip is over, refreshTimer a pending
+//     source swap (see setAlignDelay, refreshSource); connectedAt is the context time it was last connected at,
+//     alignWant/alignVotes the delay a correction is waiting on and the passes in a row that wanted it, alignedAt
+//     the context time of the last correction, null since it connected (see nudgeAlign).
 //   starting is true until startCapture has connected the first chain.
 const captures = new Map();
 const pendingStarts = new Map(); // tabId -> token of the newest in-flight start
+let alignTimer = null; // the pending alignment pass, only while some capture has 2 or more chains
 
 function clampVolume(value) {
   const n = Number(value);
@@ -106,8 +126,11 @@ function teardownChain(chain) {
   clearGrace(chain);
   clearTimeout(chain.resumeTimer);
   chain.resumeTimer = null;
+  clearTimeout(chain.refreshTimer);
+  chain.refreshTimer = null;
   if (chain.ownsStream) stopTracks(chain.stream);
-  for (const node of [chain.source, chain.gain, ...chain.filters, chain.limiter, chain.trim]) {
+  for (const node of [chain.source, chain.align, chain.gain, ...chain.filters, chain.limiter, chain.trim]) {
+    if (!node) continue; // a clone has no source until it is connected
     try { node.disconnect(); } catch (e) { /* not connected */ }
   }
   chain.ctx.close().catch(() => {});
@@ -118,6 +141,7 @@ function teardown(entry) {
   const chains = entry.chains;
   entry.chains = [];
   for (const chain of chains) teardownChain(chain);
+  syncAlign();
 }
 
 function stopCapture(tabId) {
@@ -143,8 +167,12 @@ function onTrackEnded(tabId, entry) {
 // routed: the chain may be heard on the output it is on. The first chain is,
 // since it starts on the default output; an extra chain is not until its
 // output is set (see trySetSink).
+//
+// The first chain has its source from the start. A clone (ownsStream) gets its source in connectChain, so it
+// only exists once the output is set and the chain is about to be heard.
 function buildChain(ctx, stream, ownsStream, state, routed) {
-  const source = ctx.createMediaStreamSource(stream);
+  const source = ownsStream ? null : ctx.createMediaStreamSource(stream);
+  const align = ctx.createDelay(ALIGN_MAX_SECONDS);
   const gain = ctx.createGain();
   gain.gain.value = targetGain(state);
 
@@ -169,7 +197,8 @@ function buildChain(ctx, stream, ownsStream, state, routed) {
   const trim = ctx.createGain();
   trim.gain.value = TRIM_GAIN;
 
-  source.connect(gain);
+  if (source) source.connect(align);
+  align.connect(gain);
   let prev = gain;
   for (const filter of filters) {
     prev.connect(filter);
@@ -179,12 +208,25 @@ function buildChain(ctx, stream, ownsStream, state, routed) {
   limiter.connect(trim);
 
   const chain = {
-    ctx, stream, ownsStream, source, gain, filters, limiter, trim, sinkId: '', name: '', routed, connected: false,
-    tornDown: false, graceTimer: null, graceExpired: false, resumeTimer: null, resumeStreak: 0, resumeDeferred: false
+    ctx, stream, ownsStream, source, align, gain, filters, limiter, trim, sinkId: '', name: '', routed, connected: false,
+    tornDown: false, graceTimer: null, graceExpired: false, resumeTimer: null, resumeStreak: 0, resumeDeferred: false,
+    alignDelay: 0, dipEnd: 0, refreshTimer: null, connectedAt: 0, alignWant: null, alignVotes: 0, alignedAt: null
   };
   // Chrome stops a context on its own at times (a device error, a headset changing profile).
-  ctx.addEventListener('statechange', () => eventResume(chain));
+  ctx.addEventListener('statechange', () => onChainState(chain));
+  // The output restarted without going through trySetSink (a setSinkId that timed out and landed later, Chrome
+  // moving a default-output context to a new default device): the same stale backlog. A swap already pending
+  // covers this one too.
+  ctx.addEventListener('sinkchange', () => refreshSource(chain));
   return chain;
+}
+
+// A context changed state. One that stopped is woken (eventResume); one that is running again has a backlog in
+// its source from the stop, which refreshSource replaces.
+function onChainState(chain) {
+  const running = chain.ctx.state === 'running';
+  eventResume(chain);
+  if (running) refreshSource(chain);
 }
 
 // Wakes a context that is not running, unless we closed it. Best effort.
@@ -222,11 +264,202 @@ function eventResume(chain) {
   }, RESUME_THROTTLE_MS);
 }
 
-// Lets a chain be heard. Idempotent.
+// Lets a chain be heard. Idempotent. A clone gets its source here (see buildChain). If the source cannot be
+// made the chain stays silent and the next routing pass tries again.
 function connectChain(chain) {
   if (chain.connected || chain.tornDown) return;
+  if (!chain.source) {
+    try {
+      const source = chain.ctx.createMediaStreamSource(chain.stream);
+      source.connect(chain.align);
+      chain.source = source;
+    } catch (err) {
+      console.warn('Deci offscreen: attaching the source of an extra output failed:', err);
+      return;
+    }
+  }
   chain.trim.connect(chain.ctx.destination);
   chain.connected = true;
+  chain.connectedAt = chain.ctx.currentTime;
+  chain.alignedAt = null; // the first correction after it connects is quicker (see nudgeAlign)
+  clearVotes(chain);
+}
+
+// Dips a chain's trim to near silence, for a change that would click if it were heard. It starts once a dip still
+// running is over, and returns the context time at which the trim is down and the change can be made. Nothing else
+// automates the trim (setState does the gain and the EQ), so the only dip it can meet is another one.
+function dipTrim(chain) {
+  const start = Math.max(chain.ctx.currentTime, chain.dipEnd);
+  chain.trim.gain.setTargetAtTime(0, start, DIP_TIME_CONSTANT);
+  chain.dipEnd = start + DIP_SECONDS;
+  return chain.dipEnd;
+}
+
+// A source node buffers its stream in a FIFO of its own (about 180 ms). Once the node has been pulled, any stop in
+// the pulling (the context suspended, its output restarted by setSinkId) leaves a backlog there that is never
+// trimmed and plays as extra delay for good. A new source starts empty, so a heard chain swaps its source for a
+// new one under a trim dip. A chain nobody hears has not been pulled, so it keeps its source. One swap at a time:
+// a trigger while one is pending is covered by it.
+function refreshSource(chain) {
+  if (!chain.connected || chain.tornDown || !chain.source || chain.refreshTimer || chain.ctx.state === 'closed') return;
+  waitToSwap(chain, dipTrim(chain), 0);
+}
+
+// The swap is timed on the wall clock but the dip runs on the audio clock, which can lag it (a slow device start, a
+// suspend, a render stall). A swap that fires before the audio clock is down in the dip waits out the rest of it, up
+// to MAX_SWAP_WAITS times, so it is made under the dip; a context that is not running has no dip to wait for. The
+// trim comes back no earlier than the end of the dip, whatever the clocks say: a restore that sorted before a
+// dip queued behind another one would leave the trim at 0.
+function waitToSwap(chain, step, waits) {
+  const ctx = chain.ctx;
+  chain.refreshTimer = setTimeout(() => {
+    chain.refreshTimer = null;
+    if (chain.tornDown) return;
+    if (ctx.state === 'running' && waits < MAX_SWAP_WAITS && ctx.currentTime < step - SWAP_SLACK_SECONDS) {
+      waitToSwap(chain, step, waits + 1);
+      return;
+    }
+    try {
+      const next = ctx.createMediaStreamSource(chain.stream);
+      next.connect(chain.align);
+      const old = chain.source;
+      chain.source = next;
+      old.disconnect();
+    } catch (err) {
+      console.warn('Deci offscreen: swapping the source failed:', err);
+    }
+    // A later dip (a delay change queued meanwhile) brings the trim back itself.
+    if (chain.dipEnd === step) chain.trim.gain.setTargetAtTime(TRIM_GAIN, Math.max(ctx.currentTime, step), DIP_TIME_CONSTANT);
+  }, Math.max(0, (step - ctx.currentTime) * 1000));
+}
+
+// ---------------------------------------------------------------------------
+// Output alignment
+// ---------------------------------------------------------------------------
+
+// Seconds from a chain's graph to its speaker; 0 when unknown (the context is not running, or Chrome has not
+// reported an output latency yet).
+function chainLatency(chain) {
+  const out = chain.ctx.outputLatency;
+  if (chain.ctx.state !== 'running' || !Number.isFinite(out) || out <= 0) return 0;
+  return (chain.ctx.baseLatency || 0) + out;
+}
+
+// Sets the delay at the head of a chain. A heard chain dips its trim around the step so it does not click, a
+// chain nobody hears yet is set directly. The trim comes back even if the step throws.
+function setAlignDelay(chain, seconds) {
+  const value = Math.min(ALIGN_MAX_SECONDS, Math.max(0, seconds));
+  if (value === chain.alignDelay) return;
+  if (!chain.connected) {
+    chain.align.delayTime.value = value;
+    chain.alignDelay = value;
+    return;
+  }
+  const step = dipTrim(chain);
+  try {
+    chain.align.delayTime.setValueAtTime(value, step);
+    chain.alignDelay = value;
+  } finally {
+    chain.trim.gain.setTargetAtTime(TRIM_GAIN, Math.max(chain.ctx.currentTime, step), DIP_TIME_CONSTANT);
+  }
+}
+
+function clearVotes(chain) {
+  chain.alignWant = null;
+  chain.alignVotes = 0;
+}
+
+// Whether a chain makes sound: heard, and its context running. A suspended or closed context, or a chain held for
+// a missing output, is silent whatever its latency says.
+function isHeard(chain) {
+  return chain.connected && !chain.tornDown && !chain.graceTimer && chain.ctx.state === 'running';
+}
+
+// Moves a chain's delay toward the delay it is wanted at, once the want has held. A correction dips the chain, and
+// the reported latency wobbles (it comes in steps, and a Bluetooth sink can move by more than the tolerance), so
+// nothing moves for a want that is within ALIGN_TOLERANCE_SECONDS of the delay in place, nor until the same want
+// (within the tolerance) has come up on ALIGN_TICKS passes in a row (ALIGN_FIRST_TICKS for the first correction
+// after the chain connects), nor within ALIGN_MIN_GAP_SECONDS of the last correction of this chain.
+function nudgeAlign(chain, want) {
+  if (Math.abs(want - chain.alignDelay) <= ALIGN_TOLERANCE_SECONDS) {
+    clearVotes(chain);
+    return;
+  }
+  if (chain.alignWant !== null && Math.abs(want - chain.alignWant) <= ALIGN_TOLERANCE_SECONDS) {
+    chain.alignVotes++;
+  } else {
+    chain.alignWant = want;
+    chain.alignVotes = 1;
+  }
+  const first = chain.alignedAt === null;
+  const now = chain.ctx.currentTime;
+  if (chain.alignVotes < (first ? ALIGN_FIRST_TICKS : ALIGN_TICKS)) return;
+  if (!first && now - chain.alignedAt < ALIGN_MIN_GAP_SECONDS) return;
+  chain.alignedAt = now;
+  clearVotes(chain);
+  setAlignDelay(chain, want);
+}
+
+// One alignment pass over a capture. The faster outputs are delayed to match the slowest: a chain's delay is the
+// largest latency among the capture's heard chains minus its own (see nudgeAlign for when it is moved). Only
+// chains that make sound take part. A running chain that has not reported a latency holds the whole pass back for
+// ALIGN_UNKNOWN_GRACE_SECONDS after it connects, and is left out after that rather than freezing the others; the
+// pass is also skipped when the spread is more than ALIGN_MAX_SECONDS. With fewer than 2 chains that report a
+// latency there is nothing to line up with, and the delays go back to 0. A capture down to one chain does it at once.
+function alignChains(entry) {
+  const chains = entry.chains;
+  if (chains.length < 2) {
+    for (const chain of chains) {
+      clearVotes(chain);
+      setAlignDelay(chain, 0);
+    }
+    return;
+  }
+  const heard = chains.filter(isHeard);
+  const latency = new Map(heard.map((chain) => [chain, chainLatency(chain)]));
+  const skip = () => chains.forEach(clearVotes); // a skipped pass breaks every run of agreeing ones
+  if (heard.some((chain) => latency.get(chain) === 0 && chain.ctx.currentTime - chain.connectedAt < ALIGN_UNKNOWN_GRACE_SECONDS)) {
+    skip();
+    return;
+  }
+  const known = heard.filter((chain) => latency.get(chain) > 0);
+  if (known.length < 2) {
+    for (const chain of chains) nudgeAlign(chain, 0);
+    return;
+  }
+  const target = Math.max(...known.map((chain) => latency.get(chain)));
+  if (target - Math.min(...known.map((chain) => latency.get(chain))) > ALIGN_MAX_SECONDS) {
+    skip();
+    return;
+  }
+  for (const chain of known) nudgeAlign(chain, target - latency.get(chain));
+}
+
+function alignSafely(tabId, entry) {
+  try {
+    alignChains(entry);
+  } catch (err) {
+    console.warn(`Deci offscreen: aligning the outputs of tab ${tabId} failed:`, err);
+  }
+}
+
+function alignTick() {
+  alignTimer = null;
+  for (const [tabId, entry] of captures) alignSafely(tabId, entry);
+  syncAlign();
+}
+
+// Keeps the alignment timer in step with the captures: pending while one has 2 or more chains, stopped when none
+// does. A self-rescheduling setTimeout, not an interval. When it stops, a chain left alone with a delay gets it
+// reset here, since no tick is coming to do it.
+function syncAlign() {
+  if ([...captures.values()].some((entry) => entry.chains.length >= 2)) {
+    if (!alignTimer) alignTimer = setTimeout(alignTick, ALIGN_INTERVAL_MS);
+    return;
+  }
+  clearTimeout(alignTimer);
+  alignTimer = null;
+  for (const [tabId, entry] of captures) alignSafely(tabId, entry);
 }
 
 async function startCapture(msg) {
@@ -507,6 +740,7 @@ async function trySetSink(chain, sinkId) {
     await withTimeout(chain.ctx.setSinkId(sinkId), DEVICE_CALL_TIMEOUT_MS, 'setSinkId');
     chain.sinkId = sinkId;
     chain.routed = true;
+    refreshSource(chain); // the move restarted the output, so what the source buffered meanwhile is stale
     return true;
   } catch (err) {
     console.warn(`Deci offscreen: setSinkId ${JSON.stringify(sinkId)} failed:`, err);
@@ -518,15 +752,29 @@ async function trySetSink(chain, sinkId) {
   }
 }
 
+// A context for the output sinkId ('' = the default). One for a known output is built on it, which skips starting
+// on the default device and the restart a later setSinkId costs. If the constructor throws, the plain one is used;
+// trySetSink still checks where the context really plays.
+function newContext(sinkId) {
+  if (sinkId) {
+    try {
+      return new AudioContext({ ...CONTEXT_OPTIONS, sinkId });
+    } catch (err) {
+      console.warn(`Deci offscreen: AudioContext on ${JSON.stringify(sinkId)} failed, starting on the default output:`, err);
+    }
+  }
+  return new AudioContext(CONTEXT_OPTIONS);
+}
+
 // Adds a chain for one more output: a new context fed by a clone of the
 // capture stream. The chain is registered at once (so SET_STATE reaches it)
-// and stays silent until its output is set. Returns null when it could not be
-// built or started.
-async function addChain(tabId, entry) {
+// and stays silent until its output is set. sinkId is that output, when it is
+// already known. Returns null when it could not be built or started.
+async function addChain(tabId, entry, sinkId = '') {
   let ctx = null;
   let stream = null;
   try {
-    ctx = new AudioContext(CONTEXT_OPTIONS);
+    ctx = newContext(sinkId);
     stream = entry.stream.clone();
     const chain = buildChain(ctx, stream, true, entry.state, false);
     entry.chains.push(chain);
@@ -663,7 +911,7 @@ async function reconcileChains(tabId, entry, plan, isCurrent) {
   }
   for (const id of diff.add) {
     if (!isCurrent()) return null;
-    const chain = await addChain(tabId, entry);
+    const chain = await addChain(tabId, entry, id);
     if (!isCurrent()) return null;
     if (!chain) {
       failed.push(nameOf(id));
@@ -799,6 +1047,7 @@ async function applyOutput(tabId, entry, gen) {
     await resolveOutput(tabId, entry, gen);
   } finally {
     await ensureAudible(tabId, entry, gen);
+    syncAlign(); // chains came or went
   }
 }
 
