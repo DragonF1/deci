@@ -4,6 +4,9 @@ import SwiftUI
 /// The bars of the spectrum, drawn: 28 horizontal bars from the start of the song at the top to the end at the bottom.
 /// The accent runs down them from the top as the song plays, with a soft edge into the white below.
 /// The accent is the animated part, so a new song's colour glides in with the rest of the column.
+///
+/// The bars are drawn by a layer of their own (`MusicSpectrumLayerView`), which follows the driver's polls without a
+/// SwiftUI update; what is passed here is the picture as SwiftUI has it, which the layer shows until a song is playing.
 struct MusicSpectrumCanvas: View, Animatable {
     /// The level of each bar.
     let levels: [Double]
@@ -17,6 +20,12 @@ struct MusicSpectrumCanvas: View, Animatable {
     var fixedWidth: Double?
     /// The box's height: it stretches to fill the column, never under the design's.
     var height: Double = MusicSpectrum.boxHeight
+    /// The driver whose polls the layer follows for this song, or nil for a picture that does not move.
+    var live: MusicSpectrumLive?
+    /// `progress` was read while the driver's polls ran: the layer takes it for a snapshot the polls have moved past.
+    var progressIsLive = false
+    /// A change in `progress` is slid (the song is paused and Reduce Motion is off), not jumped.
+    var glides = false
 
     var hue: Double
     var saturation: Double
@@ -29,6 +38,9 @@ struct MusicSpectrumCanvas: View, Animatable {
         barsOpacity: Double = 1,
         fixedWidth: Double? = nil,
         height: Double = MusicSpectrum.boxHeight,
+        live: MusicSpectrumLive? = nil,
+        progressIsLive: Bool = false,
+        glides: Bool = false,
         accent: MusicTint
     ) {
         self.levels = levels
@@ -37,6 +49,9 @@ struct MusicSpectrumCanvas: View, Animatable {
         self.barsOpacity = barsOpacity
         self.fixedWidth = fixedWidth
         self.height = height
+        self.live = live
+        self.progressIsLive = progressIsLive
+        self.glides = glides
         hue = accent.hue
         saturation = accent.saturation
         brightness = accent.brightness
@@ -52,53 +67,25 @@ struct MusicSpectrumCanvas: View, Animatable {
     }
 
     var body: some View {
-        let accent = Color(hue: hue, saturation: saturation, brightness: brightness)
-        let thickness = MusicSpectrum.barThickness(height: height)
-        let played = accent.opacity(barsOpacity)
-        let unplayed = Color.white.opacity(unplayedOpacity * barsOpacity)
-        Canvas { [height, progress] context, size in
-            let edge = MusicSpectrum.fillEdge(height: height)
-            let edgeY = MusicSpectrum.fillEdgeY(progress: progress, height: height)
-            for (index, level) in levels.enumerated() {
-                let width = fixedWidth ?? MusicSpectrum.width(forLevel: level)
-                let rect = CGRect(
-                    x: (size.width - width) / 2,
-                    y: MusicSpectrum.barY(index, height: height),
-                    width: width,
-                    height: thickness
-                )
-                let path = Path(roundedRect: rect, cornerRadius: thickness / 2)
-                if rect.maxY <= edgeY - edge / 2 {
-                    context.fill(path, with: .color(played))
-                } else if rect.minY >= edgeY + edge / 2 {
-                    context.fill(path, with: .color(unplayed))
-                } else {
-                    // A bar in the soft edge: the accent above it, the white below.
-                    context.fill(path, with: .linearGradient(
-                        Gradient(colors: [played, unplayed]),
-                        startPoint: CGPoint(x: rect.midX, y: edgeY - edge / 2),
-                        endPoint: CGPoint(x: rect.midX, y: edgeY + edge / 2)
-                    ))
-                }
-            }
-        }
+        MusicSpectrumLayer(
+            style: MusicSpectrumStyle(
+                hue: hue,
+                saturation: saturation,
+                brightness: brightness,
+                barsOpacity: barsOpacity,
+                unplayedOpacity: unplayedOpacity,
+                height: height,
+                fixedWidth: fixedWidth
+            ),
+            levels: levels,
+            progress: progress,
+            progressIsLive: progressIsLive,
+            glides: glides,
+            live: live
+        )
         .frame(width: MusicSpectrum.boxWidth, height: height)
         .accessibilityHidden(true)
     }
-}
-
-/// The canvas's position, animated apart from the accent inside it: a seek while paused slides the fill, and the polls
-/// that move it 30 times a second while a song plays never cut short a colour glide on the canvas.
-private struct MusicSpectrumProgressLayer<Content: View>: View, Animatable {
-    var progress: Double
-    @ViewBuilder let content: (Double) -> Content
-
-    var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
-    }
-
-    var body: some View { content(progress) }
 }
 
 /// The player column's spectrum, which is also its progress bar: click or drag to seek (the seek lands on release),
@@ -130,11 +117,44 @@ struct MusicSpectrumView: View {
 
     private var canSeek: Bool { state.showsProgress && duration > 0 }
 
+    /// The driver's fill while its polls run. Not observed (the layer follows the polls directly); `isLive` is, so this
+    /// is read again when the polls start and stop.
+    private var spectrumProgress: Double? { spectrum.isLive ? spectrum.progress : nil }
+
     /// How far along the song is: the live poll while it runs, else the player's own position.
     private var progress: Double {
         Self.shownProgress(
-            showsProgress: state.showsProgress, player: player, spectrumProgress: spectrum.progress, observed: isPopupVisible
+            showsProgress: state.showsProgress,
+            player: player,
+            spectrumProgress: spectrumProgress,
+            observed: isPopupVisible
         )
+    }
+
+    /// Whether `progress` is the poll's value, which the polls move past without SwiftUI hearing of it. The layer then
+    /// holds it for no news about the fill (see `MusicSpectrumLayerView`).
+    private var progressIsLive: Bool {
+        Self.isLiveProgress(showsProgress: state.showsProgress, player: player, spectrumProgress: spectrumProgress)
+    }
+
+    /// Whether a change in the fill is slid: a seek while paused. Playing, the driver's polls glide it instead.
+    private var glides: Bool { state == .paused && !reduceMotion }
+
+    /// What VoiceOver says: the driver's whole percent while its polls run (observed, so it changes once a percent, not
+    /// 30 times a second), else the percent of the player's own position.
+    private var spokenPercent: Int {
+        spectrumProgress != nil ? spectrum.spokenPercent : Int((progress * 100).rounded())
+    }
+
+    /// The driver the layer follows: only for a song on the bars, never the empty state's flat ones.
+    private var live: MusicSpectrumLive? {
+        guard !state.isEmptyLayout, let videoId = track?.videoId else { return nil }
+        return MusicSpectrumLive(driver: spectrum, videoId: videoId)
+    }
+
+    /// Whether the fill `shownProgress` gives is the live poll's.
+    static func isLiveProgress(showsProgress: Bool, player: MusicPlayer?, spectrumProgress: Double?) -> Bool {
+        showsProgress && player != nil && spectrumProgress != nil
     }
 
     /// The fill's position. `observed` false (the popup is hidden) reads the player's position without subscribing to
@@ -152,26 +172,19 @@ struct MusicSpectrumView: View {
         return spectrum.bars(for: track?.videoId ?? "")
     }
 
-    /// How long a seek while paused slides the fill. Playing, the driver's polls glide it instead.
-    private static let pausedSeekGlide: TimeInterval = 0.35
-
     var body: some View {
-        MusicSpectrumProgressLayer(progress: progress) { shown in
-            MusicSpectrumCanvas(
-                levels: levels,
-                progress: shown,
-                unplayedOpacity: unplayedOpacity,
-                barsOpacity: state.barsOpacity,
-                fixedWidth: state.isEmptyLayout ? MusicPlayerColumnState.emptyBarWidth : nil,
-                height: height,
-                accent: accent
-            )
-        }
-        // Only adds an animation where none was asked for, so it never overrides another one.
-        .transaction(value: progress) { transaction in
-            guard state == .paused, !reduceMotion, transaction.animation == nil else { return }
-            transaction.animation = .easeOut(duration: Self.pausedSeekGlide)
-        }
+        MusicSpectrumCanvas(
+            levels: levels,
+            progress: progress,
+            unplayedOpacity: unplayedOpacity,
+            barsOpacity: state.barsOpacity,
+            fixedWidth: state.isEmptyLayout ? MusicPlayerColumnState.emptyBarWidth : nil,
+            height: height,
+            live: live,
+            progressIsLive: progressIsLive,
+            glides: glides,
+            accent: accent
+        )
         .frame(maxHeight: .infinity, alignment: .top)
         .onGeometryChange(for: Double.self) { max($0.size.height, MusicSpectrum.boxHeight) } action: { height = $0 }
         .overlay { preview }
@@ -185,7 +198,7 @@ struct MusicSpectrumView: View {
         .gesture(seekGesture)
         .accessibilityElement()
         .accessibilityLabel("Playback position")
-        .accessibilityValue(canSeek ? "\(Int((progress * 100).rounded())) percent" : "")
+        .accessibilityValue(canSeek ? "\(spokenPercent) percent" : "")
         .accessibilityAdjustableAction { direction in
             guard canSeek, let service, let player else { return }
             switch direction {

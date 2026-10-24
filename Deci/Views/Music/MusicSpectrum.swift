@@ -96,6 +96,32 @@ nonisolated enum MusicSpectrum {
         return -edge / 2 + progress * (height + edge)
     }
 
+    // MARK: - Colour
+
+    /// The sRGB of a hue, saturation and brightness, each 0...1: the colour SwiftUI's `Color(hue:saturation:brightness:)`
+    /// makes, for drawing with Core Graphics. A hue of 1 is the same as 0 (red); a value out of range is held to it, and
+    /// one that is not a number counts as 0.
+    static func rgb(hue: Double, saturation: Double, brightness: Double) -> (red: Double, green: Double, blue: Double) {
+        func unit(_ value: Double) -> Double { value.isFinite ? min(max(value, 0), 1) : 0 }
+        let saturation = unit(saturation)
+        let brightness = unit(brightness)
+        let hue = hue.isFinite ? hue - hue.rounded(.down) : 0
+        let sector = hue * 6
+        let whole = sector.rounded(.down)
+        let fraction = sector - whole
+        let low = brightness * (1 - saturation)
+        let falling = brightness * (1 - saturation * fraction)
+        let rising = brightness * (1 - saturation * (1 - fraction))
+        switch Int(whole) % 6 {
+        case 0: return (brightness, rising, low)
+        case 1: return (falling, brightness, low)
+        case 2: return (low, brightness, rising)
+        case 3: return (low, falling, brightness)
+        case 4: return (rising, low, brightness)
+        default: return (brightness, low, falling)
+        }
+    }
+
     // MARK: - The glide
 
     /// The share of the way left that one poll covers: a seek settles in about a third of a second at 30 polls a
@@ -110,6 +136,36 @@ nonisolated enum MusicSpectrum {
         let gap = target - shown
         guard abs(gap) > glideSnap else { return target }
         return shown + gap * glideRate
+    }
+
+    /// How long a seek while paused slides the fill. Playing, the driver's polls glide it instead.
+    static let pausedSeekGlide: TimeInterval = 0.35
+
+    /// A move of the fill's edge of this many points or less is not slid: it is too small to see.
+    static let glideMinimumDistance = 1.0
+
+    /// Whether moving the fill from `from` to `to` in a box `height` high is worth a slide.
+    static func glideIsVisible(from: Double, to: Double, height: Double = boxHeight) -> Bool {
+        abs(fillEdgeY(progress: to, height: height) - fillEdgeY(progress: from, height: height)) > glideMinimumDistance
+    }
+
+    /// The ease-out curve of the paused seek's slide (the cubic Bezier through (0, 0), (0.58, 1) that SwiftUI's
+    /// `.easeOut` and Core Animation's ease-out share): how much of the way is done `t` of the way through the time,
+    /// both 0...1. Quick at first, slowing into the end.
+    static func easedOut(_ t: Double) -> Double {
+        guard t.isFinite else { return 1 }
+        guard t > 0 else { return 0 }
+        guard t < 1 else { return 1 }
+        // x(s) = 3(1 - s)^2 s x1 + 3(1 - s) s^2 x2 + s^3 with x1 = 0, x2 = 0.58; solved for s by bisection.
+        func x(_ s: Double) -> Double { 3 * (1 - s) * s * s * 0.58 + s * s * s }
+        func y(_ s: Double) -> Double { 3 * (1 - s) * s * s + s * s * s }
+        var low = 0.0
+        var high = 1.0
+        for _ in 0..<32 {
+            let middle = (low + high) / 2
+            if x(middle) < t { low = middle } else { high = middle }
+        }
+        return y((low + high) / 2)
     }
 
     // MARK: - Seeking
@@ -157,6 +213,19 @@ nonisolated enum MusicSpectrum {
     /// One poll of the pulse: a step toward `target`, quick on the way up and slow on the way down.
     static func smoothed(current: Double, target: Double) -> Double {
         current + (target - current) * (target > current ? attack : release)
+    }
+}
+
+/// What the bars look like, as far as the eye can tell: each bar's width in half points (the step the drawing rounds
+/// to) and the middle of the soft edge in quarter points. Two frames that are equal draw the same picture to within a
+/// quarter point, so the layer redraws only when the frame changes, not on every poll.
+nonisolated struct MusicSpectrumFrame: Equatable, Sendable {
+    let widths: [Int]
+    let edge: Int
+
+    init(levels: [Double], progress: Double, height: Double, fixedWidth: Double?) {
+        widths = levels.map { Int(((fixedWidth ?? MusicSpectrum.width(forLevel: $0)) * 2).rounded()) }
+        edge = Int((MusicSpectrum.fillEdgeY(progress: progress, height: height) * 4).rounded())
     }
 }
 
@@ -233,6 +302,11 @@ nonisolated struct MusicSpectrumMemory: Equatable, Sendable {
 
 /// Polls the live level while the Music popup is on screen and a song plays, writes it into the song's bars and pulses
 /// the bar under the playhead. Where the numbers come from is injected, so a poll is tested without audio.
+///
+/// The numbers a poll changes (the bars, the pulse, the fill) are 30 a second and are not observed: a view that read
+/// them would run the popup's whole SwiftUI update, and a layout of its window, 30 times a second. The layer that draws
+/// the spectrum listens instead (`addFrameListener`), and a poll tells it only when something that shows has changed.
+/// SwiftUI still hears the rare things: `isActive` and `isLive`.
 @MainActor
 @Observable
 final class MusicSpectrumDriver {
@@ -253,21 +327,48 @@ final class MusicSpectrumDriver {
     static let interval: TimeInterval = 1.0 / 30.0
 
     @ObservationIgnored var sources: Sources
-    private(set) var memory: MusicSpectrumMemory
+    @ObservationIgnored private(set) var memory: MusicSpectrumMemory
     /// The level of the bar under the playhead, smoothed; nil while the bars rest.
-    private(set) var pulse: Double?
-    private(set) var pulseIndex = 0
+    @ObservationIgnored private(set) var pulse: Double?
+    @ObservationIgnored private(set) var pulseIndex = 0
     /// How far along the song the fill shows, as of the last poll: the live position, reached by a glide after a seek.
     /// nil while the bars rest.
-    private(set) var progress: Double?
+    @ObservationIgnored private(set) var progress: Double?
     private(set) var isActive = false
+    /// Whether `progress` has a value. Observed, and written only when it flips, so a view that needs to know when the
+    /// polls start and stop deciding the fill hears that and nothing else.
+    private(set) var isLive = false
+    /// How far along the song is in whole percent, for what VoiceOver says. Observed, and written only when the percent
+    /// changes: about once in 1.8 s of a three minute song, not 30 times a second.
+    private(set) var spokenPercent = 0
 
     @ObservationIgnored private var pulseVideoId: String?
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var frameListeners: [Int: @MainActor () -> Void] = [:]
+    @ObservationIgnored private var nextListenerToken = 0
 
     init(sources: Sources = .none, memory: MusicSpectrumMemory = MusicSpectrumMemory()) {
         self.sources = sources
         self.memory = memory
+    }
+
+    /// How many layers are listening.
+    var frameListenerCount: Int { frameListeners.count }
+
+    /// Calls `listener` after every poll that changed what shows, and when the bars go to rest. Returns the token that
+    /// takes it off again.
+    func addFrameListener(_ listener: @escaping @MainActor () -> Void) -> Int {
+        nextListenerToken += 1
+        frameListeners[nextListenerToken] = listener
+        return nextListenerToken
+    }
+
+    func removeFrameListener(_ token: Int) {
+        frameListeners[token] = nil
+    }
+
+    private func notifyFrame() {
+        for listener in Array(frameListeners.values) { listener() }
     }
 
     /// Starts or stops polling. Stopping leaves the bars at rest.
@@ -292,13 +393,17 @@ final class MusicSpectrumDriver {
 
     /// The bars rest: no pulse, no live position.
     func rest() {
+        let changed = pulse != nil || progress != nil
         pulse = nil
         progress = nil
         pulseVideoId = nil
+        if isLive { isLive = false }
+        if changed { notifyFrame() }
     }
 
     /// One poll.
     func tick() {
+        let before = (progress: progress, pulse: pulse, index: pulseIndex)
         let heard = sources.level()
         let duration = sources.duration()
         guard let videoId = sources.videoId(), duration.isFinite, duration > 0 else {
@@ -313,6 +418,9 @@ final class MusicSpectrumDriver {
         } else {
             progress = fraction
         }
+        if !isLive { isLive = true }
+        let percent = Int((fraction * 100).rounded())
+        if spokenPercent != percent { spokenPercent = percent }
         let index = MusicSpectrumTrack.slice(atProgress: fraction)
         let mapped = MusicSpectrum.level(forRMS: heard)
 
@@ -330,6 +438,10 @@ final class MusicSpectrumDriver {
             pulse = MusicSpectrum.smoothed(current: current, target: target)
         } else {
             pulse = mapped
+        }
+        // What shows is the fill, the pulse and the bar the pulse is on; a capture moves nothing else the eye can see.
+        if progress != before.progress || pulse != before.pulse || pulseIndex != before.index {
+            notifyFrame()
         }
     }
 

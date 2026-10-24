@@ -146,7 +146,7 @@ struct MusicPlayerColumn: View {
                         .foregroundStyle(Color.white.opacity(0.60))
                         .lineLimit(1)
                 } else {
-                    MusicMarquee(isPlaying: player?.isPlaying ?? false) {
+                    MusicMarquee(isPlaying: player?.isPlaying ?? false, isInteractive: true) {
                         MusicArtistLine(
                             artist: track.artist,
                             links: track.artistLinks,

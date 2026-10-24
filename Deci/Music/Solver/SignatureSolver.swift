@@ -54,6 +54,29 @@ struct SolverScripts: Sendable, Equatable {
     }
 }
 
+/// The solver scripts, read from disk the first time they are asked for and kept, so building a new context for the next
+/// song costs no file reads. The three scripts are about 390 KB; each lookup in the bundle searches the Resources
+/// directories and opens a file, which a play after the idle timeout paid every time. A read that fails is not kept,
+/// so the next play tries again.
+final class SolverScriptsCache: Sendable {
+    private let load: @Sendable () throws -> SolverScripts
+    private let stored = OSAllocatedUnfairLock<SolverScripts?>(initialState: nil)
+
+    init(load: @escaping @Sendable () throws -> SolverScripts) {
+        self.load = load
+    }
+
+    /// The scripts, loaded on the first call. Asks from several threads load once: the others wait for the first.
+    func scripts() throws -> SolverScripts {
+        try stored.withLock { current in
+            if let current { return current }
+            let loaded = try load()
+            current = loaded
+            return loaded
+        }
+    }
+}
+
 // MARK: - JavaScriptCore session
 
 /// A JavaScriptCore context with the solver scripts loaded. Not Sendable: it is created, used
@@ -238,6 +261,10 @@ final class JSChallengeSolver: ChallengeSolving {
 
     private let thread: JSSolverThread<SolverSession>
     private let cache: PlayerCache
+    private let builds = OSAllocatedUnfairLock(initialState: 0)
+
+    /// How many contexts this solver has built. A context serves every solve until it has been idle for `idleTimeout`.
+    var sessionsBuilt: Int { builds.withLock { $0 } }
 
     /// A live context holds about 40 MB and a warm rebuild from the cached player takes about
     /// 100 ms, so it goes soon after the last solve instead of lingering through the song.
@@ -249,8 +276,12 @@ final class JSChallengeSolver: ChallengeSolving {
         scripts: @escaping @Sendable () throws -> SolverScripts = { try SolverScripts.bundled() }
     ) {
         self.cache = cache
+        let scriptsCache = SolverScriptsCache(load: scripts)
+        let builds = builds
         thread = JSSolverThread(name: "com.abraham.Deci.music-solver", idleTimeout: idleTimeout) {
-            try SolverSession(scripts: try scripts())
+            let session = try SolverSession(scripts: try scriptsCache.scripts())
+            builds.withLock { $0 += 1 }
+            return session
         }
     }
 

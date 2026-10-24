@@ -87,7 +87,7 @@ struct MusicShelfView: View {
 }
 
 /// The dimmed cover with a speaker on the row or tile that is in the player. The speaker
-/// animates while audio plays and holds still while paused.
+/// animates while audio plays and holds still while paused (`MusicSpeakerView`).
 struct MusicPlayingOverlay: View {
     let isPlaying: Bool
     var circular = false
@@ -98,10 +98,7 @@ struct MusicPlayingOverlay: View {
     var body: some View {
         ZStack {
             Color.black.opacity(0.45)
-            Image(systemName: "speaker.wave.2.fill")
-                .font(.system(size: symbolSize, weight: .semibold))
-                .foregroundStyle(.white)
-                .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isPlaying)
+            MusicSpeaker(isPlaying: isPlaying, symbolSize: symbolSize)
         }
         .clipShape(MusicCoverShape(circular: circular, radius: radius))
         .accessibilityHidden(true)

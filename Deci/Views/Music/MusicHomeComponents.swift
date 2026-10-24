@@ -157,39 +157,6 @@ struct MusicStateIconCircle: View {
     }
 }
 
-/// A faint ring with an arc of a quarter turn that goes round once per 0.8 s. It has no accessibility label of its
-/// own: the card or row that holds it says what is loading.
-struct MusicSpinner: View {
-    var size: CGFloat = 18
-    var lineWidth: CGFloat = 2
-    /// The turning arc, and the ring it runs on. The usual pair reads on the dark popup; the play button's dark
-    /// spinner asks for its own.
-    var color: Color = .primary
-    var track: Color = MusicStyle.Palette.sliderTrack
-
-    private static let period: TimeInterval = 0.8
-
-    /// Flips once on appear; the repeating linear animation does the turning, with no redraw of the view per frame.
-    @State private var isTurning = false
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(track, lineWidth: lineWidth)
-            Circle()
-                .trim(from: 0, to: 0.25)
-                .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .rotationEffect(.degrees(isTurning ? 360 : 0))
-                .animation(.linear(duration: Self.period).repeatForever(autoreverses: false), value: isTurning)
-        }
-        // The ring sits inside its box, as drawn: its diameter is three quarters of the box.
-        .frame(width: size * 0.75, height: size * 0.75)
-        .frame(width: size, height: size)
-        .onAppear { isTurning = true }
-        .accessibilityHidden(true)
-    }
-}
-
 /// A spinner on a state card.
 struct MusicLoadingCard: View {
     var body: some View {

@@ -4,10 +4,18 @@ import SwiftUI
 /// A line that scrolls when it is wider than its room, with the menu bar chip's hold, speed and gap: it holds at its
 /// start, then scrolls left until a second copy stands where the first began, and again. Unlike the chip it does not
 /// rest between runs: it is only drawn while the window is open, when the user is looking at it. It runs only while
-/// the song plays and Reduce Motion is off; otherwise a line that does not fit is cut off as before. Anything inside,
-/// buttons included, keeps working while it moves.
+/// the song plays and Reduce Motion is off; otherwise a line that does not fit is cut off as before. Buttons inside
+/// keep working while it moves when the marquee is `isInteractive`.
+///
+/// While it runs, the line is a hosting view of its own that Core Animation slides on the render server
+/// (`MusicMarqueeView`): the app does nothing per frame and the SwiftUI tree is not touched, so the popup's window does
+/// not lay out, redraw or re-resolve its tracking areas every frame for it. Only while the pointer is over an
+/// `isInteractive` line does a display link move it by frame, so its buttons are where they show.
 struct MusicMarquee<Content: View>: View {
     let isPlaying: Bool
+    /// The line holds something to click (the artist names). A line with nothing to click lets every click through to
+    /// the view behind it, which carries the tooltip and the menu.
+    var isInteractive = false
     @ViewBuilder let content: Content
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -15,8 +23,6 @@ struct MusicMarquee<Content: View>: View {
     @Environment(\.musicPopupIsVisible) private var isPopupVisible
     @State private var textWidth: CGFloat = 0
     @State private var roomWidth: CGFloat = 0
-    /// When the marquee started; nil while it is off.
-    @State private var runStart: Date?
 
     private var scrolls: Bool { textWidth > roomWidth + 0.5 }
 
@@ -26,24 +32,15 @@ struct MusicMarquee<Content: View>: View {
         // spills out of its column and the room reads as wide as the line.
         Group {
             if runs {
-                TimelineView(.animation(paused: runStart == nil)) { context in
-                    let offset = runStart.map {
-                        MusicChipMotion.marqueeOffset(
-                            elapsed: MusicChipMotion.marqueeLoopElapsed(
-                                context.date.timeIntervalSince($0), textWidth: textWidth
-                            ),
-                            textWidth: textWidth
-                        )
-                    } ?? 0
-                    HStack(spacing: MusicChipMotion.marqueeGap) {
-                        content.fixedSize()
-                        content.fixedSize().accessibilityHidden(true)
-                    }
-                    .offset(x: offset)
+                // The line in its room, unseen, gives the view its height; the moving line lies over it.
+                content
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                    .clipped()
-                    .mask { edgeFade(leading: offset < 0) }
-                }
+                    .hidden()
+                    .overlay {
+                        MusicMarqueeTrack(content: content, textWidth: textWidth, isInteractive: isInteractive)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .contentShape(Rectangle())
             } else {
                 content
                     .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -55,21 +52,5 @@ struct MusicMarquee<Content: View>: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { textWidth = $0 }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { roomWidth = $0 }
-        .task(id: runs ? textWidth : -1) {
-            runStart = runs ? .now : nil
-        }
-    }
-
-    /// Fades the end of the line, and its start too while the text is off its start, so letters slide out instead of
-    /// being cut.
-    private func edgeFade(leading: Bool) -> some View {
-        let fade = MusicChipMotion.edgeFadeWidth
-        return HStack(spacing: 0) {
-            LinearGradient(colors: [leading ? .clear : .black, .black], startPoint: .leading, endPoint: .trailing)
-                .frame(width: fade)
-            Color.black
-            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-                .frame(width: fade)
-        }
     }
 }

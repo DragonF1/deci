@@ -152,4 +152,13 @@ struct MusicPlayerObservedTimeTests {
         #expect(MusicSpectrumView.shownProgress(showsProgress: false, player: player, spectrumProgress: 0.6, observed: true) == 0)
         #expect(MusicSpectrumView.shownProgress(showsProgress: true, player: nil, spectrumProgress: 0.6, observed: true) == 0)
     }
+
+    @Test("The fill is the poll's only when the poll is what is shown")
+    func liveProgressFlag() {
+        let (player, _) = playing(duration: 100)
+        #expect(MusicSpectrumView.isLiveProgress(showsProgress: true, player: player, spectrumProgress: 0.6))
+        #expect(!MusicSpectrumView.isLiveProgress(showsProgress: true, player: player, spectrumProgress: nil))
+        #expect(!MusicSpectrumView.isLiveProgress(showsProgress: false, player: player, spectrumProgress: 0.6))
+        #expect(!MusicSpectrumView.isLiveProgress(showsProgress: true, player: nil, spectrumProgress: 0.6))
+    }
 }

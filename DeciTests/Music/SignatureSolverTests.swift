@@ -345,6 +345,66 @@ struct JSChallengeSolverTests {
         }
     }
 
+    // MARK: Scripts and contexts across plays
+
+    private nonisolated final class Loads: @unchecked Sendable {
+        private let count = OSAllocatedUnfairLock(initialState: 0)
+        var value: Int { count.withLock { $0 } }
+        func bump() { count.withLock { $0 += 1 } }
+    }
+
+    @Test("A play soon after another reuses the context: one context, one read of the scripts")
+    func contextReusedWithinIdleTimeout() async throws {
+        let cache = PlayerCache(directory: makeTemporaryDirectory("deci-solver"))
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        let loads = Loads()
+        let solver = JSChallengeSolver(cache: cache, idleTimeout: 60, scripts: { loads.bump(); return FakeSolverScripts.scripts })
+        _ = try await solver.solve(request()) { "RAW" }
+        let second = try await solver.solve(request(n: ["again"])) { Issue.record("should be warm"); return "RAW" }
+        #expect(second.n == ["again": "n|preprocessed_player|again"])
+        #expect(solver.sessionsBuilt == 1)
+        #expect(loads.value == 1)
+    }
+
+    @Test("The scripts are read once however many contexts the idle timeout makes the solver build")
+    func scriptsReadOnce() async throws {
+        let cache = PlayerCache(directory: makeTemporaryDirectory("deci-solver"))
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        let loads = Loads()
+        let solver = JSChallengeSolver(cache: cache, idleTimeout: 0.1, scripts: { loads.bump(); return FakeSolverScripts.scripts })
+        let first = try await solver.solve(request()) { "RAW" }
+        try await Task.sleep(for: .milliseconds(500))
+        let second = try await solver.solve(request(n: ["again"])) { Issue.record("should be warm"); return "RAW" }
+        try await Task.sleep(for: .milliseconds(500))
+        let third = try await solver.solve(request(sig: ["S"], n: [])) { Issue.record("should be warm"); return "RAW" }
+        // Three plays, three contexts (each one dropped while the song played), the scripts read from disk the once.
+        #expect(solver.sessionsBuilt == 3)
+        #expect(loads.value == 1)
+        // The answers are the ones a fresh read gives.
+        #expect(first.sig == ["A": "sig|player|A"] && first.n == ["B": "n|player|B"])
+        #expect(second.n == ["again": "n|preprocessed_player|again"])
+        #expect(third.sig == ["S": "sig|preprocessed_player|S"])
+    }
+
+    @Test("A failed read of the scripts is not remembered: the next play reads them again")
+    func failedReadRetried() async throws {
+        let cache = PlayerCache(directory: makeTemporaryDirectory("deci-solver"))
+        defer { try? FileManager.default.removeItem(at: cache.directory) }
+        let loads = Loads()
+        let solver = JSChallengeSolver(cache: cache, idleTimeout: 60, scripts: {
+            loads.bump()
+            if loads.value == 1 { throw MusicError.solver("missing resource x.js") }
+            return FakeSolverScripts.scripts
+        })
+        await #expect(throws: MusicError.solver("missing resource x.js")) {
+            _ = try await solver.solve(self.request()) { "RAW" }
+        }
+        let solutions = try await solver.solve(request()) { "RAW" }
+        #expect(solutions.n == ["B": "n|player|B"])
+        #expect(loads.value == 2)
+        #expect(solver.sessionsBuilt == 1)
+    }
+
     @Test("The solver thread has the stack JavaScript recursion needs")
     func deepJavaScriptRecursion() async throws {
         let scripts = SolverScripts(meriyah: "", astring: "", helper: FakeSolverScripts.recursiveHelper)
@@ -352,5 +412,63 @@ struct JSChallengeSolverTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let solutions = try await solver.solve(request(sig: [], n: ["x"])) { "RAW" }
         #expect(solutions.n == ["x": "8000"])
+    }
+}
+
+@Suite("SolverScriptsCache")
+struct SolverScriptsCacheTests {
+    private nonisolated final class Loads: @unchecked Sendable {
+        private let count = OSAllocatedUnfairLock(initialState: 0)
+        var value: Int { count.withLock { $0 } }
+        func bump() { count.withLock { $0 += 1 } }
+    }
+
+    @Test("The first ask loads, every later ask hands back the same scripts without loading")
+    func loadsOnce() throws {
+        let loads = Loads()
+        let cache = SolverScriptsCache { loads.bump(); return FakeSolverScripts.scripts }
+        #expect(loads.value == 0)
+        let first = try cache.scripts()
+        let second = try cache.scripts()
+        #expect(first == FakeSolverScripts.scripts)
+        #expect(second == first)
+        #expect(loads.value == 1)
+    }
+
+    @Test("A load that throws throws again and is tried again; one that then works is kept")
+    func failureNotKept() throws {
+        let loads = Loads()
+        let cache = SolverScriptsCache {
+            loads.bump()
+            if loads.value < 3 { throw MusicError.solver("missing resource x.js") }
+            return FakeSolverScripts.scripts
+        }
+        #expect(throws: MusicError.solver("missing resource x.js")) { _ = try cache.scripts() }
+        #expect(throws: MusicError.solver("missing resource x.js")) { _ = try cache.scripts() }
+        #expect(loads.value == 2)
+        #expect(try cache.scripts() == FakeSolverScripts.scripts)
+        #expect(try cache.scripts() == FakeSolverScripts.scripts)
+        #expect(loads.value == 3)
+    }
+
+    @Test("Asks from many threads at once load once")
+    func concurrentAsks() async throws {
+        let loads = Loads()
+        let cache = SolverScriptsCache { loads.bump(); return FakeSolverScripts.scripts }
+        try await withThrowingTaskGroup(of: Bool.self) { group in
+            for _ in 0..<16 {
+                group.addTask { try cache.scripts() == FakeSolverScripts.scripts }
+            }
+            for try await same in group { #expect(same) }
+        }
+        #expect(loads.value == 1)
+    }
+
+    @Test("The bundled scripts come through the cache unchanged")
+    func bundledThroughCache() throws {
+        let direct = try SolverScripts.bundled()
+        let cache = SolverScriptsCache { try SolverScripts.bundled() }
+        #expect(try cache.scripts() == direct)
+        #expect(try cache.scripts() == direct)
     }
 }
