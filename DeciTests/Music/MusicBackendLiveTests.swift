@@ -105,6 +105,26 @@ struct MusicBackendLiveTests {
         #expect(harness.youtube.requests.isEmpty)
     }
 
+    @Test("Album search returns the parsed albums with the albums filter")
+    func searchAlbums() async throws {
+        let harness = makeHarness(signedIn: true)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.youtube.update { $0.searchBody = (try? MusicFixtures.data("search-albums.json")) ?? Data() }
+        let albums = try await harness.backend.searchAlbums("alpha")
+        #expect(albums.map(\.title) == ["Alpha Album", "Beta Single", "Delta EP", "Zeta Album"])
+        #expect(albums.allSatisfy { $0.kind == .album })
+        let body = FakeYouTube.jsonBody(try #require(harness.youtube.requests(path: "/youtubei/v1/search").first))
+        #expect(body["params"] as? String == InnerTubeClient.albumsSearchParams)
+    }
+
+    @Test("Album search while signed out fails before any network request")
+    func searchAlbumsSignedOut() async {
+        let harness = makeHarness(signedIn: false)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        await #expect(throws: MusicError.signedOut) { _ = try await harness.backend.searchAlbums("some band") }
+        #expect(harness.youtube.requests.isEmpty)
+    }
+
     @Test("Radio returns the first queue page, seed first, with its continuation")
     func radio() async throws {
         let harness = makeHarness(signedIn: true)

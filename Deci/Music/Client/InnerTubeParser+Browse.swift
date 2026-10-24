@@ -410,6 +410,43 @@ extension InnerTubeParser {
         return parts.isEmpty ? "Artist" : parts.joined(separator: " \u{2022} ")
     }
 
+    // MARK: - Album search
+
+    /// The albums of a search made with the albums filter, in the order YouTube lists them. Singles and EPs are albums
+    /// too. Songs, artists, playlists, greyed-out rows, rows with no title and rows whose id is not an album's ("MPRE")
+    /// are left out, and an album listed twice keeps its first place.
+    static func searchAlbums(from data: Data) throws -> [MusicCollection] {
+        let root = try jsonObject(data, what: "album search response")
+        var rows: [[String: Any]] = []
+        collect("musicResponsiveListItemRenderer", in: root, into: &rows)
+        var seen = Set<String>()
+        return rows.compactMap(albumResult(from:)).filter { seen.insert($0.browseId).inserted }
+    }
+
+    /// An album row has no video; its destination is the row's own browse endpoint. The second line keeps YouTube's own
+    /// kind, artist and year ("Album \u{2022} M83 \u{2022} 2011"), the artists in it are links, and the largest cover is
+    /// kept. The play button over the cover names the album's audio playlist.
+    private static func albumResult(from row: [String: Any]) -> MusicCollection? {
+        guard !isGreyedOut(row), string(path(row, "playlistItemData", "videoId")) == nil,
+              let browse = path(row, "navigationEndpoint", "browseEndpoint") as? [String: Any],
+              string(browse["browseId"])?.hasPrefix("MPRE") == true
+        else { return nil }
+        let columns = flexColumnRuns(of: row)
+        let subtitleRuns = columns.count > 1 ? columns[1] : []
+        guard let title = text(of: columns.first ?? []),
+              case .collection(let album)? = collection(
+                  browse,
+                  title: title,
+                  subtitle: bulletSegments(of: subtitleRuns).compactMap(text(of:)).joined(separator: " \u{2022} "),
+                  thumbnail: pickThumbnail(row["thumbnail"], near: nil),
+                  artistLinks: artistLinks(in: subtitleRuns),
+                  audioPlaylistId: albumPlaylistId(in: row)
+              ),
+              album.kind == .album
+        else { return nil }
+        return album
+    }
+
     // MARK: - Tiles and rows
 
     /// One tile or row as Deci shows it. Nil for what Deci cannot open: podcasts, episodes (and the
@@ -508,7 +545,9 @@ extension InnerTubeParser {
     /// The playlist of an album's songs, behind the play button over its cover ("OLAK5uy_..."). A radio or mix id, a
     /// blank one, or a tile with no play button gives nil, so no save is offered on a guess.
     private static func albumPlaylistId(in tile: [String: Any]) -> String? {
-        let target = path(tile, "thumbnailOverlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint") as? [String: Any]
+        // A tile keeps its play button in `thumbnailOverlay`, a row in `overlay`.
+        let target = (path(tile, "thumbnailOverlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint")
+            ?? path(tile, "overlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer", "playNavigationEndpoint")) as? [String: Any]
         let endpoint = (target?["watchPlaylistEndpoint"] ?? target?["watchEndpoint"]) as? [String: Any]
         guard let id = string(endpoint?["playlistId"]), id.hasPrefix("OLAK") else { return nil }
         return id

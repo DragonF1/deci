@@ -113,6 +113,11 @@ final class MusicBrowseStore {
         library[section] ?? .idle
     }
 
+    /// What a library list holds once it has loaded; nil while it is idle, loading or failed.
+    func loadedLibrary(_ section: MusicLibrarySection) -> [MusicCollection]? {
+        if case .loaded(let items) = libraryState(section) { items } else { nil }
+    }
+
     func pageState(_ browseId: String) -> Load<MusicBrowsePage> {
         pages[browseId] ?? .idle
     }

@@ -369,6 +369,8 @@ protocol MusicBackend: Sendable {
     func search(_ query: String) async throws -> [MusicTrack]
     /// Artists matching `query`, for the Artists shelf over the search results.
     func searchArtists(_ query: String) async throws -> [MusicCollection]
+    /// Albums (singles and EPs too) matching `query`, for the Albums section of the search results.
+    func searchAlbums(_ query: String) async throws -> [MusicCollection]
     /// The song or video YouTube Music names as the Top result of an unfiltered search, or nil when the top result is
     /// something else (an artist, album or playlist). The songs filter leaves out uploaded videos, so this is how one
     /// typed by name is found.

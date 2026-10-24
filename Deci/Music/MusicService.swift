@@ -37,6 +37,10 @@ final class MusicService {
     /// The artists the search found, best match first, for the shelf above the songs. Never more than
     /// `maxArtistResults`; empty when the artists search found none or failed.
     private(set) var artistResults: [MusicCollection] = []
+    /// The albums the search found: the owner's own matching albums and playlists first, then the public albums, best
+    /// match first. The public ones never pass `maxAlbumResults`; empty when none matched or the albums search failed
+    /// and the library held nothing.
+    private(set) var albumResults: [MusicCollection] = []
     private(set) var isSearching = false
     /// One short human line for the UI; never contains cookies or URLs.
     private(set) var lastError: String?
@@ -116,6 +120,8 @@ final class MusicService {
 
     /// How many artists the search shelf shows: one row of tiles, not a second list.
     static let maxArtistResults = 6
+    /// How many public albums the search lists: one row of tiles, like the artists.
+    static let maxAlbumResults = 6
     /// Previous restarts the track instead of going back once it has played this long.
     private static let restartThreshold: TimeInterval = 3
     /// Consecutive tracks that may fail before playback stops with an error.
@@ -353,6 +359,7 @@ final class MusicService {
         session = nil
         results = []
         artistResults = []
+        albumResults = []
         query = ""
         lastError = nil
         authState = .signedOut
@@ -459,6 +466,7 @@ final class MusicService {
         stopPlayback(reportFinal: false)
         results = []
         artistResults = []
+        albumResults = []
         query = ""
         lastError = nil
         authState = .signedIn
@@ -599,6 +607,7 @@ final class MusicService {
         guard !trimmed.isEmpty else {
             results = []
             artistResults = []
+            albumResults = []
             isSearching = false
             searchTask = nil
             return
@@ -613,26 +622,30 @@ final class MusicService {
     /// What the search asks for besides the songs, as it arrives.
     private enum SearchExtra: Sendable {
         case artists([MusicCollection])
+        case albums([MusicCollection])
         case topTrack(MusicTrack?)
         case graceEnded
     }
 
-    /// Songs, artists and the Top result are asked for at the same time. They land together, so the shelf never pops in
-    /// above songs the owner is already reading, and the Top result never takes the first place from under them. Only
-    /// the songs decide success: if they fail the search fails as before and the rest is dropped; if only the artists
-    /// or the Top result fail, the songs show without them. Once the songs are in, the artists and the Top result get
-    /// `artistGrace` more between them to arrive; a slower request is cancelled and the songs show without it, so they
-    /// never wait out its timeout.
+    /// Songs, artists, albums and the Top result are asked for at the same time. They land together, so a shelf never
+    /// pops in above songs the owner is already reading, and the Top result never takes the first place from under them.
+    /// Only the songs decide success: if they fail the search fails as before and the rest is dropped; if only the
+    /// artists, the albums or the Top result fail, the songs show without them. Once the songs are in, the other three
+    /// get `artistGrace` more between them to arrive; a slower request is cancelled and the songs show without it, so
+    /// they never wait out its timeout. The owner's matching albums come from the library as it is when the search
+    /// lands: nothing is asked of the network for them, and a library not loaded yet adds none.
     private func runSearch(_ term: String, generation: Int) async {
         let backend = self.backend
         // Not `async let`: that is awaited when the scope ends, which would keep the songs back for as long as
         // the extra requests live. These tasks are cancelled instead, and hand over what they found by a stream.
         let (arrivals, arrive) = AsyncStream.makeStream(of: SearchExtra.self)
         let artistsTask = Task { arrive.yield(.artists(await Self.searchArtistsQuietly(term, through: backend))) }
+        let albumsTask = Task { arrive.yield(.albums(await Self.searchAlbumsQuietly(term, through: backend))) }
         let topTask = Task { arrive.yield(.topTrack(await Self.searchTopResultQuietly(term, through: backend))) }
         var timer: Task<Void, Never>?
         defer {
             artistsTask.cancel()
+            albumsTask.cancel()
             topTask.cancel()
             timer?.cancel()
         }
@@ -645,14 +658,18 @@ final class MusicService {
                     arrive.yield(.graceEnded)
                 } catch {}
             }
-            // Both extras, or the end of the grace, whichever comes first. A cancelled search ends the wait.
+            // All three extras, or the end of the grace, whichever comes first. A cancelled search ends the wait.
             var artists: [MusicCollection] = []
+            var albums: [MusicCollection] = []
             var topTrack: MusicTrack?
-            var waiting = 2
+            var waiting = 3
             for await arrived in arrivals {
                 switch arrived {
                 case .artists(let list):
                     artists = list
+                    waiting -= 1
+                case .albums(let list):
+                    albums = list
                     waiting -= 1
                 case .topTrack(let track):
                     topTrack = track
@@ -665,6 +682,7 @@ final class MusicService {
             guard generation == searchGeneration, !Task.isCancelled else { return }
             results = Self.withTopTrack(topTrack, in: found)
             artistResults = Array(artists.prefix(Self.maxArtistResults))
+            albumResults = MusicSearchAlbums.resolve(query: term, library: loadedAlbumLibrary(), found: albums)
             isSearching = false
             MusicMemoryLog.log("search")
         } catch {
@@ -692,6 +710,29 @@ final class MusicService {
             }
             return []
         }
+    }
+
+    /// The albums for a search, or none when the request fails: like the artists they are a bonus, so they never show an
+    /// error, and a failure logs the error kind only.
+    private static func searchAlbumsQuietly(_ term: String, through backend: any MusicBackend) async -> [MusicCollection] {
+        do {
+            return try await backend.searchAlbums(term)
+        } catch {
+            if !isCancellation(error) {
+                logger.info("album search failed: \(logDescription(of: error), privacy: .public)")
+            }
+            return []
+        }
+    }
+
+    /// The library lists an album search looks in, as far as they have loaded. Opening Library loads them; a search
+    /// never does.
+    private func loadedAlbumLibrary() -> [MusicLibrarySection: [MusicCollection]] {
+        var lists: [MusicLibrarySection: [MusicCollection]] = [:]
+        for section in MusicSearchAlbums.librarySections {
+            if let items = browse.loadedLibrary(section) { lists[section] = items }
+        }
+        return lists
     }
 
     /// The Top result's track for a search, or none when the request fails: like the artists it is a bonus, so it

@@ -25,6 +25,8 @@ actor InnerTubeClient {
     static let songsSearchParams = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
     /// The "Artists" filter of YouTube Music search.
     static let artistsSearchParams = "EgWKAQIgAWoMEA4QChADEAQQCRAF"
+    /// The "Albums" filter of YouTube Music search.
+    static let albumsSearchParams = "EgWKAQIYAWoMEA4QChADEAQQCRAF"
     static let sessionLifetime: TimeInterval = 6 * 60 * 60
 
     private static let emptyPage = MusicQueuePage(tracks: [], continuation: nil)
@@ -199,6 +201,19 @@ actor InnerTubeClient {
         let artists = try InnerTubeParser.searchArtists(from: data)
         Self.log.info("artist search returned \(artists.count) rows")
         return artists
+    }
+
+    /// Albums (singles and EPs too) matching `query`, for the Albums section of the search results. Same guards as
+    /// `search`; only the count is logged, never the query or a title.
+    func searchAlbums(_ query: String) async throws -> [MusicCollection] {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let session = try await sessionOrFallback()
+        let data = try await post("search", session: session, body: ["query": trimmed, "params": Self.albumsSearchParams])
+        let albums = try InnerTubeParser.searchAlbums(from: data)
+        Self.log.info("album search returned \(albums.count) rows")
+        return albums
     }
 
     /// The track YouTube Music names as the Top result of an unfiltered search, nil when the top result is not a song or

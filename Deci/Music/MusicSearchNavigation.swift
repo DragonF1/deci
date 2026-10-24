@@ -11,11 +11,11 @@ nonisolated enum MusicSearchPanel: Equatable {
     case pressReturn
     /// A search is running and has nothing to show yet.
     case searching
-    /// The search came back with no songs or artists.
+    /// The search came back with no songs, albums or artists.
     case noResults
     /// The search failed.
     case failed
-    /// Artists and songs to list.
+    /// Songs, albums and artists to list.
     case results
 
     static func resolve(
@@ -34,14 +34,21 @@ nonisolated enum MusicSearchPanel: Equatable {
     /// What a card of this panel says; nil for the results, which are a list.
     var message: String? {
         switch self {
-        case .invite: "Search YouTube Music for songs and artists."
+        case .invite: "Search YouTube Music for songs, albums and artists."
         case .pressReturn: "Press Return to search."
         case .searching: "Searching..."
-        case .noResults: "No songs or artists found."
+        case .noResults: "No songs, albums or artists found."
         case .failed: "Search failed. Press Return to try again."
         case .results: nil
         }
     }
+}
+
+/// The blocks the global results are made of, in the order they are listed.
+nonisolated enum MusicSearchSection: Equatable {
+    case songs
+    case albums
+    case artists
 }
 
 /// Where the browse column is: a tab, how many pages are open on it and the one on top. A search field is opened at one
@@ -120,9 +127,19 @@ final class MusicSearchNavigation {
         service.lyrics.isPanelOpen && service.lyrics.track != nil
     }
 
-    /// The search found songs or artists.
+    /// What the results list, top to bottom: the songs (the Top result first), the albums (the owner's first), then the
+    /// artists. A block with nothing in it is left out.
+    var sections: [MusicSearchSection] {
+        var sections: [MusicSearchSection] = []
+        if !service.results.isEmpty { sections.append(.songs) }
+        if !service.albumResults.isEmpty { sections.append(.albums) }
+        if !service.artistResults.isEmpty { sections.append(.artists) }
+        return sections
+    }
+
+    /// The search found songs, albums or artists.
     var hasResults: Bool {
-        !service.results.isEmpty || !service.artistResults.isEmpty
+        !sections.isEmpty
     }
 
     /// Search results show while there is a query and a search for it is running, has results, or came back

@@ -123,6 +123,9 @@ actor FakeMusicBackend: MusicBackend {
     private var topResults: [String: Deci.MusicTrack] = [:]
     private var topResultErrors: [String: any Error] = [:]
     private var topResultGates: [String: MusicTestGate] = [:]
+    private var albumSearchResults: [String: [MusicCollection]] = [:]
+    private var albumSearchErrors: [String: any Error] = [:]
+    private var albumSearchGates: [String: MusicTestGate] = [:]
     private var streams: [String: ResolvedStream] = [:]
     private var resolveErrors: [String: any Error] = [:]
     private var resolveGates: [String: MusicTestGate] = [:]
@@ -215,6 +218,7 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var searchedQueries: [String] = []
     private(set) var searchedArtistQueries: [String] = []
     private(set) var searchedTopResultQueries: [String] = []
+    private(set) var searchedAlbumsQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
     private(set) var reportAttempts: [Report] = []
     private(set) var signInCookies: [[StoredCookie]] = []
@@ -263,6 +267,11 @@ actor FakeMusicBackend: MusicBackend {
     func setTopResult(_ query: String, track: Deci.MusicTrack?) { topResults[query] = track }
     func setTopResultError(_ query: String, _ error: any Error) { topResultErrors[query] = error }
     func setTopResultGate(_ query: String, _ gate: MusicTestGate) { topResultGates[query] = gate }
+
+    /// The albums the albums filter finds for `query`. A query with none scripted finds none.
+    func setAlbums(_ query: String, results: [MusicCollection]) { albumSearchResults[query] = results }
+    func setAlbumsError(_ query: String, _ error: any Error) { albumSearchErrors[query] = error }
+    func setAlbumsGate(_ query: String, _ gate: MusicTestGate) { albumSearchGates[query] = gate }
     func setStream(_ stream: ResolvedStream) { streams[stream.videoId] = stream }
     func setResolveError(_ videoId: String, _ error: any Error) { resolveErrors[videoId] = error }
     func clearResolveError(_ videoId: String) { resolveErrors[videoId] = nil }
@@ -613,6 +622,13 @@ actor FakeMusicBackend: MusicBackend {
         if let gate = topResultGates[query] { await gate.wait() }
         if let error = topResultErrors[query] { throw error }
         return topResults[query]
+    }
+
+    func searchAlbums(_ query: String) async throws -> [MusicCollection] {
+        searchedAlbumsQueries.append(query)
+        if let gate = albumSearchGates[query] { await gate.wait() }
+        if let error = albumSearchErrors[query] { throw error }
+        return albumSearchResults[query] ?? []
     }
 
     func resolve(videoId: String) async throws -> ResolvedStream {

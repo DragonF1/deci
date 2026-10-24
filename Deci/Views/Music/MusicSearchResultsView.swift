@@ -2,8 +2,8 @@
 import SwiftUI
 
 /// The YouTube Music results, which take the right column's content in place while the header's field has words in it:
-/// the songs, then the artists as a row of round tiles. Before Return it asks for it; while a search runs it draws
-/// skeleton rows. Clearing the field or Esc gives the screen under it back, and an artist opened from here puts these
+/// the songs, then the albums as a row of covers (the owner's own first), then the artists as a row of round tiles.
+/// Before Return it asks for it; while a search runs it draws skeleton rows. Clearing the field or Esc gives the screen under it back, and an artist opened from here puts these
 /// aside and returns to them with Back.
 struct MusicSearchResultsView: View {
     let service: MusicService
@@ -40,47 +40,79 @@ struct MusicSearchResultsView: View {
         case .pressReturn, .noResults:
             MusicStateCard(message: panel.message ?? "", minHeight: Self.stateCardHeight)
         case .results:
-            songsAndArtists
+            sections
         }
     }
 
     private static let stateCardHeight: CGFloat = 56
 
-    /// The songs as rows, then the artists as a row of tiles.
-    private var songsAndArtists: some View {
-        let nowPlayingId = service.player.nowPlaying?.videoId
-        return VStack(alignment: .leading, spacing: MusicBrowseLayout.homeSectionGap) {
-            if !service.results.isEmpty {
-                VStack(alignment: .leading, spacing: MusicBrowseLayout.topSongsTitleGap) {
-                    MusicSectionHeader(title: "Songs")
-                    VStack(spacing: 0) {
-                        ForEach(Array(service.results.enumerated()), id: \.element.id) { index, track in
-                            MusicSongRow(
-                                track: track,
-                                isCurrent: nowPlayingId == track.videoId,
-                                isPlaying: nowPlayingId == track.videoId && service.player.isPlaying
-                            ) {
-                                service.play(track)
-                            }
-                            .musicRowHairline(index > 0)
-                        }
-                    }
+    /// The blocks in the order the navigation lists them; one with nothing in it is not there.
+    private var sections: some View {
+        VStack(alignment: .leading, spacing: MusicBrowseLayout.homeSectionGap) {
+            ForEach(navigation.sections, id: \.self) { section in
+                switch section {
+                case .songs: songs
+                case .albums: albums
+                case .artists: artists
                 }
             }
-            if !service.artistResults.isEmpty {
-                VStack(alignment: .leading, spacing: MusicBrowseLayout.tileTitleGap) {
-                    MusicSectionHeader(title: "Artists")
-                    MusicHorizontalShelf(spacing: MusicSearchArtistTile.gap) {
-                        ForEach(Array(service.artistResults.enumerated()), id: \.offset) { _, artist in
-                            MusicSearchArtistTile(
-                                collection: artist,
-                                isPinned: collectionPin?.isPinned(artist) == true
-                            ) {
-                                navigation.openArtist(artist)
-                            }
-                            .musicCollectionMenu(artist)
-                        }
+        }
+    }
+
+    private var songs: some View {
+        let nowPlayingId = service.player.nowPlaying?.videoId
+        return VStack(alignment: .leading, spacing: MusicBrowseLayout.topSongsTitleGap) {
+            MusicSectionHeader(title: "Songs")
+            VStack(spacing: 0) {
+                ForEach(Array(service.results.enumerated()), id: \.element.id) { index, track in
+                    MusicSongRow(
+                        track: track,
+                        isCurrent: nowPlayingId == track.videoId,
+                        isPlaying: nowPlayingId == track.videoId && service.player.isPlaying
+                    ) {
+                        service.play(track)
                     }
+                    .musicRowHairline(index > 0)
+                }
+            }
+        }
+    }
+
+    /// Covers with the title and YouTube's second line (kind, artist, year); one opens through the same path as an
+    /// artist, so the results step aside and Back returns to them.
+    private var albums: some View {
+        VStack(alignment: .leading, spacing: MusicBrowseLayout.tileTitleGap) {
+            MusicSectionHeader(title: "Albums")
+            MusicHorizontalShelf {
+                ForEach(Array(service.albumResults.enumerated()), id: \.offset) { _, album in
+                    MusicCoverTile(
+                        title: album.title,
+                        subtitle: MusicHomeText.subtitle(album.subtitle),
+                        thumbnailURL: album.thumbnailURL,
+                        size: MusicBrowseLayout.shelfTile,
+                        placeholder: album.kind.placeholderSymbol,
+                        isPinned: collectionPin?.isPinned(album) == true
+                    ) {
+                        navigation.openCollection(album)
+                    }
+                    .musicCollectionMenu(album)
+                }
+            }
+        }
+    }
+
+    private var artists: some View {
+        VStack(alignment: .leading, spacing: MusicBrowseLayout.tileTitleGap) {
+            MusicSectionHeader(title: "Artists")
+            MusicHorizontalShelf(spacing: MusicSearchArtistTile.gap) {
+                ForEach(Array(service.artistResults.enumerated()), id: \.offset) { _, artist in
+                    MusicSearchArtistTile(
+                        collection: artist,
+                        isPinned: collectionPin?.isPinned(artist) == true
+                    ) {
+                        navigation.openArtist(artist)
+                    }
+                    .musicCollectionMenu(artist)
                 }
             }
         }
@@ -134,10 +166,12 @@ struct MusicSearchArtistTile: View {
 
 // MARK: - Loading
 
-/// What the results look like while the search runs: a "Songs" label and four song rows, then an "Artists" label and a
-/// row of round photos, all as faint bars. It reads as one "Searching" element.
+/// What the results look like while the search runs: a "Songs" label and four song rows, then an "Albums" label and a
+/// row of covers, then an "Artists" label and a row of round photos, all as faint bars. It reads as one "Searching"
+/// element.
 private struct MusicSearchSkeleton: View {
     private static let rowCount = 4
+    private static let albumCount = 4
     private static let artistCount = 4
 
     private static let fill = Color.white.opacity(0.07)
@@ -151,6 +185,18 @@ private struct MusicSearchSkeleton: View {
                 ForEach(0..<Self.rowCount, id: \.self) { index in
                     MusicSkeletonSongRow(index: index)
                 }
+            }
+            VStack(alignment: .leading, spacing: MusicBrowseLayout.tileTitleGap) {
+                bar(width: 44, height: 10)
+                    .padding(.horizontal, MusicStyle.Spacing.page)
+                HStack(spacing: MusicBrowseLayout.tileGap) {
+                    ForEach(0..<Self.albumCount, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: MusicStyle.Radius.art, style: .continuous)
+                            .fill(Self.fill)
+                            .frame(width: MusicBrowseLayout.shelfTile, height: MusicBrowseLayout.shelfTile)
+                    }
+                }
+                .padding(.horizontal, MusicStyle.Spacing.page)
             }
             VStack(alignment: .leading, spacing: MusicBrowseLayout.tileTitleGap) {
                 bar(width: 44, height: 10)
