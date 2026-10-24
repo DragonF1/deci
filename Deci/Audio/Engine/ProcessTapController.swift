@@ -529,6 +529,53 @@ final class ProcessTapController: ProcessTapControlling {
         return taps?.first?[kAudioSubTapDriftCompensationKey] as? Bool ?? false
     }
 
+    /// IO buffer frames for a tap aggregate. The HAL default (512 frames, about 11 ms) leaves the IO proc
+    /// no slack: under CPU or memory pressure it misses its deadline, the aggregate reports an IO
+    /// discontinuity (an audible crackle) and the tap can go dead. A Bluetooth output already adds 150 ms
+    /// or more of latency, so it gets the largest buffer; other outputs keep the added latency near 20 ms.
+    /// Clamped to the range the aggregate allows (a WH-1000XM5 aggregate allows 14...1024, built-in
+    /// speakers 15...4096).
+    static func ioBufferFrames(anyBluetooth: Bool, allowed: ClosedRange<UInt32>?) -> UInt32 {
+        let wanted: UInt32 = anyBluetooth ? 2048 : 1024
+        guard let allowed else { return wanted }
+        return min(max(wanted, allowed.lowerBound), allowed.upperBound)
+    }
+
+    /// Sets the aggregate's IO buffer size before its IO proc starts. The property is per process, so other
+    /// apps on the same output keep their own. A failure is logged and the HAL default stays.
+    private func applyIOBufferFrameSize(aggregateID: AudioObjectID, outputUIDs: [String]) {
+        let anyBluetooth = outputUIDs.contains { uid in
+            let subDevices = audioDeviceID(for: uid)?.aggregateSubDeviceUIDs() ?? [uid]
+            return subDevices.contains { audioDeviceID(for: $0)?.isBluetoothDevice() == true }
+        }
+
+        var rangeAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSizeRange,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var range = AudioValueRange()
+        var rangeSize = UInt32(MemoryLayout<AudioValueRange>.size)
+        var allowed: ClosedRange<UInt32>?
+        if AudioObjectGetPropertyData(aggregateID, &rangeAddress, 0, nil, &rangeSize, &range) == noErr,
+           range.mMinimum > 0, range.mMinimum <= range.mMaximum {
+            allowed = UInt32(range.mMinimum)...UInt32(range.mMaximum)
+        }
+
+        var frames = Self.ioBufferFrames(anyBluetooth: anyBluetooth, allowed: allowed)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyBufferFrameSize,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let err = AudioObjectSetPropertyData(aggregateID, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &frames)
+        if err == noErr {
+            logger.notice("IO buffer \(frames) frames for \(self.app.name, privacy: .public) (bluetooth=\(anyBluetooth))")
+        } else {
+            logger.warning("IO buffer \(frames) frames refused for \(self.app.name, privacy: .public): \(err)")
+        }
+    }
+
     private func buildAggregateDescription(outputUIDs: [String], tapUUID: UUID, tapDeviceUID: String?, name: String) -> [String: Any] {
         precondition(!outputUIDs.isEmpty, "Must have at least one output device")
 
@@ -826,6 +873,7 @@ final class ProcessTapController: ProcessTapControlling {
             cleanupPartialActivation()
             throw NSError(domain: "ProcessTapController", code: -1, userInfo: [NSLocalizedDescriptionKey: "Aggregate device not ready within timeout"])
         }
+        applyIOBufferFrameSize(aggregateID: primaryResources.aggregateDeviceID, outputUIDs: targetDeviceUIDs)
 
         logger.debug("Created aggregate device #\(self.primaryResources.aggregateDeviceID)")
 
@@ -1408,6 +1456,7 @@ final class ProcessTapController: ProcessTapControlling {
             secondaryResources.destroy()
             throw CrossfadeError.deviceNotReady
         }
+        applyIOBufferFrameSize(aggregateID: secondaryResources.aggregateDeviceID, outputUIDs: outputUIDs)
 
         logger.debug("[CROSSFADE] Created secondary aggregate #\(self.secondaryResources.aggregateDeviceID)")
 
@@ -1653,6 +1702,7 @@ final class ProcessTapController: ProcessTapControlling {
             newResources.destroy()
             throw CrossfadeError.deviceNotReady
         }
+        applyIOBufferFrameSize(aggregateID: newResources.aggregateDeviceID, outputUIDs: outputUIDs)
 
         // If the new proc fails to create or start, hand the primary role back to the old proc,
         // or it keeps running as "stale" and outputs silence forever.
