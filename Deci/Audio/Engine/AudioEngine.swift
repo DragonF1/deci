@@ -28,10 +28,17 @@ final class AudioEngine {
     /// list is not observable, so views reading this redraw only when the engine refreshes it.
     private(set) var multiRouteDeviceUIDs: Set<String> = []
 
-    /// Output device UIDs the popup marks as in use besides the system default. The one place that
-    /// unions every source of multi-device playback, so a new source (the music player, Chrome
-    /// tabs) adds its own devices here and the device list needs no change. Today the only source
-    /// is the per-app taps in `multiRouteDeviceUIDs`.
+    /// Bundle ids of the apps whose tap plays on more than one device. Stored for the same reason as
+    /// `multiRouteDeviceUIDs`. Chrome's tab outputs read it: when the Chrome app is fanned out here, a tab must not
+    /// be fanned out again by the extension.
+    private(set) var multiRouteBundleIDs: Set<String> = []
+
+    /// Called with the new `multiRouteBundleIDs` whenever the set changes.
+    var onMultiRouteBundleIDsChange: (@MainActor (Set<String>) -> Void)?
+
+    /// Output device UIDs the engine's own taps play on through a multi-device route. The popup
+    /// unions this with the music row's and Chrome tabs' multi-output devices (see
+    /// `MenuBarPopupView.outputDevicesInUse`) to light the device list.
     var outputDevicesInUse: Set<String> {
         multiRouteDeviceUIDs
     }
@@ -871,15 +878,21 @@ final class AudioEngine {
         refreshMultiRouteDeviceUIDs()
     }
 
-    /// Recomputes `multiRouteDeviceUIDs` from the live taps. Call after any change to `taps` or to
-    /// a tap's devices. Assigns only on a real change so views reading the set do not redraw for nothing.
+    /// Recomputes `multiRouteDeviceUIDs` and `multiRouteBundleIDs` from the live taps. Call after any change to
+    /// `taps` or to a tap's devices. Assigns only on a real change so views reading the sets do not redraw for nothing.
     private func refreshMultiRouteDeviceUIDs() {
         var uids: Set<String> = []
+        var bundleIDs: Set<String> = []
         for tap in taps.values where tap.currentDeviceUIDs.count > 1 {
             uids.formUnion(tap.currentDeviceUIDs)
+            if let bundleID = tap.app.bundleID { bundleIDs.insert(bundleID) }
         }
         if uids != multiRouteDeviceUIDs {
             multiRouteDeviceUIDs = uids
+        }
+        if bundleIDs != multiRouteBundleIDs {
+            multiRouteBundleIDs = bundleIDs
+            onMultiRouteBundleIDsChange?(bundleIDs)
         }
     }
 
@@ -1122,7 +1135,7 @@ final class AudioEngine {
 
         // Switch tap if needed
         guard let targetUID = appDeviceRouting[app.id] else { return }
-        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: [targetUID], isFollowsDefault: followsDefault.contains(app.id))
+        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: [targetUID], isFollowsDefault: tapSourceFollowsDefault(app.id))
         if let tap = taps[app.id] {
             Task {
                 do {
@@ -1228,6 +1241,13 @@ final class AudioEngine {
         return volumeState.getSelectedDeviceUIDs(for: pid).contains(where: isOutputConnected)
     }
 
+    /// Whether the app's tap is the stream-specific one on the default device. A multi app on a route of its own stays in
+    /// `followsDefault` but never follows a default change, so a tap tied to the default device would go stale; it gets
+    /// the stereo mixdown instead.
+    private func tapSourceFollowsDefault(_ pid: pid_t) -> Bool {
+        followsDefault.contains(pid) && !isOnOwnMultiRoute(pid)
+    }
+
     /// Gets the selected device UIDs for multi-mode
     func getSelectedDeviceUIDs(for app: AudioApp) -> Set<String> {
         volumeState.getSelectedDeviceUIDs(for: app.id)
@@ -1286,7 +1306,7 @@ final class AudioEngine {
             // Tap exists - update devices
             if tap.currentDeviceUIDs != deviceUIDs {
                 do {
-                    let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs, isFollowsDefault: followsDefault.contains(app.id))
+                    let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs, isFollowsDefault: tapSourceFollowsDefault(app.id))
                     try await tap.updateDevices(to: deviceUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID)
                     applyTapOutputState(to: tap, for: app.id, deviceUIDs: deviceUIDs)
                     logger.debug("Updated \(app.name) to \(deviceUIDs.count) device(s)")
@@ -1306,7 +1326,7 @@ final class AudioEngine {
         guard taps[app.id] == nil else { return }
         guard permission.status == .authorized else { return }
 
-        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs, isFollowsDefault: followsDefault.contains(app.id))
+        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: deviceUIDs, isFollowsDefault: tapSourceFollowsDefault(app.id))
         do {
             let tap = try tapFactory(app, deviceUIDs, preferredTapSourceUID)
             applyTapOutputState(to: tap, for: app.id, deviceUIDs: deviceUIDs)
@@ -1431,7 +1451,7 @@ final class AudioEngine {
             // If a tap already exists but is on the wrong device (e.g., app reappeared
             // after the default changed while it was absent), switch it.
             if let existingTap = taps[app.id], existingTap.currentDeviceUIDs != [deviceUID] {
-                let preferredSource = preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID], isFollowsDefault: followsDefault.contains(app.id))
+                let preferredSource = preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID], isFollowsDefault: tapSourceFollowsDefault(app.id))
                 Task {
                     do {
                         try await existingTap.switchDevice(to: deviceUID, preferredTapSourceDeviceUID: preferredSource)
@@ -1471,7 +1491,7 @@ final class AudioEngine {
         guard taps[app.id] == nil else { return }
         guard permission.status == .authorized else { return }
 
-        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID], isFollowsDefault: followsDefault.contains(app.id))
+        let preferredTapSourceUID = preferredTapSourceDeviceUID(forOutputUIDs: [deviceUID], isFollowsDefault: tapSourceFollowsDefault(app.id))
         do {
             let tap = try tapFactory(app, [deviceUID], preferredTapSourceUID)
             applyTapOutputState(to: tap, for: app.id, deviceUIDs: [deviceUID])
@@ -1688,7 +1708,7 @@ final class AudioEngine {
                 // Source device is dead, skip crossfade
                 for (tap, remainingUIDs) in multiModeTapsToUpdate {
                     do {
-                        let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: remainingUIDs, isFollowsDefault: self.followsDefault.contains(tap.app.id))
+                        let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: remainingUIDs, isFollowsDefault: self.tapSourceFollowsDefault(tap.app.id))
                         try await tap.updateDevices(to: remainingUIDs, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: true)
                         self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: remainingUIDs)
                         self.logger.debug("Removed \(deviceName) from \(tap.app.name) multi-device output")

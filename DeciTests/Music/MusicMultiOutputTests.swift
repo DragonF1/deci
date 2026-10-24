@@ -433,6 +433,66 @@ struct MusicMultiOutputTests {
         #expect(rig.state.multiOutputDeviceUIDs.isEmpty, "it does not play on two devices")
     }
 
+    @Test("a stack that failed to build is not built again while the stack stays the same")
+    func failedStackIsNotRetried() {
+        let rig = Rig(devices: ["a", "b"], defaultUID: "a")
+        rig.aggregates.failsToMake = true
+        rig.playOn(["a", "b"])
+        #expect(rig.aggregates.stacks.count == 1)
+
+        // Every try waits on the main thread for the aggregate to come up, so the same stack is not tried on each event.
+        rig.state.outputDevicesChanged()
+        rig.connect(["a", "b"])
+        rig.state.defaultDeviceChanged(uid: "b")
+        rig.state.setSelectedDeviceUIDs(["a", "b", "gone"])
+
+        #expect(rig.aggregates.stacks.count == 1)
+        #expect(rig.engine.outputDevices.last == .some("a"), "it keeps playing on the clock device")
+        #expect(rig.state.multiOutputDeviceUIDs.isEmpty)
+    }
+
+    @Test("a stack that failed to build is tried again once the devices make a different stack")
+    func failedStackRetriesOnAChange() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
+        rig.aggregates.failsToMake = true
+        rig.playOn(["a", "b"])
+        rig.aggregates.failsToMake = false
+
+        rig.state.setSelectedDeviceUIDs(["a", "b", "c"])
+
+        #expect(rig.aggregates.stacks.last == MusicOutputStack(subDeviceUIDs: ["a", "b", "c"]))
+        #expect(rig.engine.outputDevices.last == .some("agg-1"))
+        #expect(rig.state.multiOutputDeviceUIDs == ["a", "b", "c"])
+    }
+
+    @Test("a stack that failed to build is tried again when its devices went away and came back")
+    func failedStackRetriesAfterAnAbsence() {
+        let rig = Rig(devices: ["a", "b"], defaultUID: "a")
+        rig.aggregates.failsToMake = true
+        rig.playOn(["a", "b"])
+        rig.connect(["a"])  // down to one device: played directly, no stack wanted
+        rig.aggregates.failsToMake = false
+
+        rig.connect(["a", "b"])
+
+        #expect(rig.aggregates.stacks.count == 2)
+        #expect(rig.engine.outputDevices.last == .some("agg-1"))
+        #expect(rig.state.multiOutputDeviceUIDs == ["a", "b"])
+    }
+
+    @Test("a stack that failed once and then built is rebuilt normally after the next change")
+    func successAfterFailureClearsTheMemory() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
+        rig.aggregates.failsToMake = true
+        rig.playOn(["a", "b"])
+        rig.aggregates.failsToMake = false
+        rig.state.setSelectedDeviceUIDs(["a", "b", "c"])  // built
+        rig.connect(["a", "b"])                           // c drops: [a, b] is a different stack than the live one
+
+        #expect(rig.aggregates.stacks.last == MusicOutputStack(subDeviceUIDs: ["a", "b"]))
+        #expect(rig.engine.outputDevices.last == .some("agg-2"), "[a, b] failed before but nothing remembers that now")
+    }
+
     @Test("with no player attached nothing is built, and the aggregate comes when the player is attached")
     func waitsForThePlayer() {
         let rig = Rig(devices: ["a", "b"], defaultUID: "a", attach: false, prepare: {

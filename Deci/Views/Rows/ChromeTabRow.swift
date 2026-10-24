@@ -95,6 +95,8 @@ struct ChromeTabRow: View {
                     boost: tab.boost,
                     isEQExpanded: isEQExpanded,
                     isEnabled: tab.isControlled,
+                    // A tab already in Multi keeps the toggle, so it can be flipped back.
+                    showModeToggle: chromeManager.allowsTabMultiDevice || tab.deviceSelectionMode == .multi,
                     onVolumeChange: { newVolume in
                         chromeManager.setTabVolume(tabId: tab.id, volume: newVolume)
                     },
@@ -182,7 +184,7 @@ struct ChromeTabRow: View {
                 .font(.system(size: 9))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .lineLimit(1)
-        } else if let note = Self.multiOutputNote(for: tab, supportsMultiDevice: chromeManager.supportsMultiDevice) {
+        } else if let note = Self.multiOutputNote(for: tab, supportsMultiDevice: chromeManager.supportsMultiDevice, engineFansOutChrome: chromeManager.engineFansOutChrome) {
             Text(note.text)
                 .font(.system(size: 9))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
@@ -235,6 +237,8 @@ struct ChromeTabRow: View {
         case allNotFound
         /// This many chosen outputs exist no more; the others still play.
         case someNotFound(Int)
+        /// The engine's Chrome row already plays on several outputs, so this tab's own ticks are not played.
+        case chromeRowFansOut
 
         var text: String {
             switch self {
@@ -242,16 +246,19 @@ struct ChromeTabRow: View {
             case .clickToUse: "Click Deci in Chrome to use these outputs"
             case .allNotFound: "Outputs not found, using default"
             case .someNotFound(let count): count == 1 ? "1 output not found" : "\(count) outputs not found"
+            case .chromeRowFansOut: "Plays on the outputs of the Chrome row"
             }
         }
     }
 
     /// The multi-output caption for a tab, or nil when the single-output captions apply. Pure. A tab that cannot
     /// be controlled yet is not covered: its own caption wins.
-    static func multiOutputNote(for tab: ChromeTab, supportsMultiDevice: Bool) -> MultiOutputNote? {
+    static func multiOutputNote(for tab: ChromeTab, supportsMultiDevice: Bool, engineFansOutChrome: Bool = false) -> MultiOutputNote? {
         guard tab.isControlled else { return nil }
-        if tab.deviceSelectionMode == .multi, !supportsMultiDevice, tab.selectedDeviceUIDs.count > 1 {
-            return .reloadExtension
+        if tab.deviceSelectionMode == .multi, tab.selectedDeviceUIDs.count > 1 {
+            // Whoever plays the tab on several outputs, the tab's own ticks are not what is heard.
+            if engineFansOutChrome { return .chromeRowFansOut }
+            if !supportsMultiDevice { return .reloadExtension }
         }
         guard !tab.deviceNames.isEmpty else { return nil }
         guard tab.control == .capture else { return .clickToUse }

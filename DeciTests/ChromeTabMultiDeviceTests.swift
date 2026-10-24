@@ -607,6 +607,144 @@ struct ChromeTabMultiDeviceTests {
         #expect(manager.multiOutputDeviceUIDs == ["uid-speakers", "uid-hdmi"])
     }
 
+    // MARK: - The engine already fans Chrome out
+
+    // When the Chrome app row plays on two or more devices, the engine's tap mirrors everything Chrome
+    // renders to each of them. A tab the extension also sinks to several devices would play twice on each, so
+    // the tab is held to one device while that lasts. The ticks stay recorded, for when the row is single again.
+
+    @Test("while the engine fans Chrome out, a multi tick plays on one device and keeps the selection")
+    func fanOutCollapsesTheTick() {
+        let (manager, sent) = makeManager()
+        manager.setEngineFansOutChrome(true)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-headphones", "uid-speakers"])
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICES").isEmpty)
+        let single = sent.messages(ofType: "SET_TAB_DEVICE")
+        #expect(single.count == 1)
+        // First of the ticked devices in list order, like the old-extension fallback.
+        #expect(single.first?["deviceName"] as? String == "Speakers")
+        #expect(tab(manager).deviceSelectionMode == .multi)
+        #expect(tab(manager).selectedDeviceUIDs == ["uid-headphones", "uid-speakers"])
+        #expect(tab(manager).deviceNames.isEmpty)
+        #expect(manager.multiOutputDeviceUIDs.isEmpty, "the tab plays on one output, so no multi route is lit")
+    }
+
+    @Test("while the engine fans Chrome out, a single tick still goes out as a list of one")
+    func fanOutLeavesOneTickAlone() {
+        let (manager, sent) = makeManager()
+        manager.setEngineFansOutChrome(true)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-hdmi"])
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICES").first?["deviceNames"] as? [String] == ["HDMI"])
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").isEmpty)
+    }
+
+    @Test("without the engine fanning Chrome out, a multi tick is still sent as a list")
+    func noFanOutKeepsTheList() {
+        let (manager, sent) = makeManager()
+        manager.setEngineFansOutChrome(false)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-headphones", "uid-speakers"])
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICES").first?["deviceNames"] as? [String] == ["Speakers", "Headphones"])
+    }
+
+    @Test("the engine starting to fan Chrome out pulls a tab that plays on several devices back to one")
+    func fanOutStartingCollapsesAPlayingList() {
+        let (manager, sent) = makeManager(tabs: [tabJSON(deviceNames: ["Speakers", "HDMI"], deviceStatus: "routed")])
+        #expect(manager.multiOutputDeviceUIDs == ["uid-speakers", "uid-hdmi"])
+
+        manager.setEngineFansOutChrome(true)
+        manager.flushMessages()
+
+        let single = sent.messages(ofType: "SET_TAB_DEVICE")
+        #expect(single.count == 1)
+        #expect(single.first?["deviceName"] as? String == "Speakers")
+        #expect(sent.messages(ofType: "SET_TAB_DEVICES").isEmpty)
+        #expect(tab(manager).deviceNames.isEmpty)
+        #expect(tab(manager).deviceSelectionMode == .multi)
+        #expect(tab(manager).selectedDeviceUIDs == ["uid-speakers", "uid-hdmi"])
+        #expect(manager.multiOutputDeviceUIDs.isEmpty)
+    }
+
+    @Test("the engine stopping fanning Chrome out puts the ticked devices back on the tab")
+    func fanOutEndingRestoresTheList() {
+        let (manager, sent) = makeManager(tabs: [tabJSON(deviceNames: ["Speakers", "HDMI"], deviceStatus: "routed")])
+        manager.setEngineFansOutChrome(true)
+        manager.flushMessages()
+        sent.messages.removeAll()
+
+        manager.setEngineFansOutChrome(false)
+        manager.flushMessages()
+
+        let multi = sent.messages(ofType: "SET_TAB_DEVICES")
+        #expect(multi.count == 1)
+        #expect(multi.first?["deviceNames"] as? [String] == ["Speakers", "HDMI"])
+        #expect(tab(manager).deviceNames == ["Speakers", "HDMI"])
+        #expect(manager.multiOutputDeviceUIDs == ["uid-speakers", "uid-hdmi"])
+    }
+
+    @Test("a tab on one device is left alone when the engine starts or stops fanning Chrome out")
+    func fanOutChangesLeaveSingleTabsAlone() {
+        let (manager, sent) = makeManager(tabs: [tabJSON(deviceName: "Headphones")])
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)  // seeded with one device, nothing is playing on several
+        sent.messages.removeAll()
+
+        manager.setEngineFansOutChrome(true)
+        manager.setEngineFansOutChrome(false)
+        manager.flushMessages()
+
+        #expect(sent.messages.isEmpty)
+    }
+
+    @Test("a tab that went back to single while the engine fanned Chrome out stays single when it stops")
+    func fanOutEndingDoesNotReviveASingleTab() {
+        let (manager, sent) = makeManager(tabs: [tabJSON(deviceNames: ["Speakers", "HDMI"], deviceStatus: "routed")])
+        manager.setEngineFansOutChrome(true)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        manager.flushMessages()
+        sent.messages.removeAll()
+
+        manager.setEngineFansOutChrome(false)
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICES").isEmpty)
+        #expect(tab(manager).deviceSelectionMode == .single)
+    }
+
+    @Test("telling the manager the same fan-out state twice sends nothing the second time")
+    func fanOutIsIdempotent() {
+        let (manager, sent) = makeManager(tabs: [tabJSON(deviceNames: ["Speakers", "HDMI"], deviceStatus: "routed")])
+        manager.setEngineFansOutChrome(true)
+        manager.flushMessages()
+        sent.messages.removeAll()
+
+        manager.setEngineFansOutChrome(true)
+        manager.flushMessages()
+
+        #expect(sent.messages.isEmpty)
+    }
+
+    @Test("a tab may use several outputs only when the extension can and the engine is not already doing it")
+    func allowsTabMultiDeviceNeedsBoth() {
+        let (current, _) = makeManager(multiDevice: true)
+        #expect(current.allowsTabMultiDevice)
+        current.setEngineFansOutChrome(true)
+        #expect(!current.allowsTabMultiDevice)
+        #expect(current.supportsMultiDevice, "the capability itself is untouched")
+        current.setEngineFansOutChrome(false)
+        #expect(current.allowsTabMultiDevice)
+
+        let (old, _) = makeManager(multiDevice: false)
+        #expect(!old.allowsTabMultiDevice)
+    }
+
     // MARK: - Row captions
 
     private func captionTab(
@@ -672,5 +810,25 @@ struct ChromeTabMultiDeviceTests {
     @Test("unreadable device names use the existing permission button, not a multi caption")
     func captionNoAccessIsLeftToTheButton() {
         #expect(ChromeTabRow.multiOutputNote(for: captionTab(status: .noAccess), supportsMultiDevice: true) == nil)
+    }
+
+    @Test("a multi tab says it follows the Chrome row while the engine fans Chrome out")
+    func captionFanOut() {
+        let tab = captionTab(names: [], status: .routed)
+        #expect(ChromeTabRow.multiOutputNote(for: tab, supportsMultiDevice: true, engineFansOutChrome: true) == .chromeRowFansOut)
+        #expect(ChromeTabRow.multiOutputNote(for: tab, supportsMultiDevice: true, engineFansOutChrome: false) == nil)
+        // It outranks the reload hint: an extension that cannot do several outputs is not the problem now.
+        #expect(ChromeTabRow.multiOutputNote(for: tab, supportsMultiDevice: false, engineFansOutChrome: true) == .chromeRowFansOut)
+        #expect(ChromeTabRow.MultiOutputNote.chromeRowFansOut.text == "Plays on the outputs of the Chrome row")
+    }
+
+    @Test("the fan-out caption needs a controlled multi tab with several ticks")
+    func captionFanOutScope() {
+        let oneTick = captionTab(selected: ["uid-speakers"], names: [])
+        #expect(ChromeTabRow.multiOutputNote(for: oneTick, supportsMultiDevice: true, engineFansOutChrome: true) == nil)
+        let single = captionTab(mode: .single, selected: [], names: [], status: .routed)
+        #expect(ChromeTabRow.multiOutputNote(for: single, supportsMultiDevice: true, engineFansOutChrome: true) == nil)
+        let uncontrolled = captionTab(control: .none, names: [])
+        #expect(ChromeTabRow.multiOutputNote(for: uncontrolled, supportsMultiDevice: true, engineFansOutChrome: true) == nil)
     }
 }

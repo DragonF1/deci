@@ -109,8 +109,8 @@ struct EngineHarness {
             deviceProvider: deviceMonitor,
             processMonitor: processMonitor,
             deviceVolumeMonitor: deviceVolume,
-            tapFactory: { app, uids, _ in
-                let tap = RecordingProcessTapController(app: app, deviceUIDs: uids)
+            tapFactory: { app, uids, source in
+                let tap = RecordingProcessTapController(app: app, deviceUIDs: uids, preferredTapSource: source)
                 probes.record(tap)
                 return tap
             },

@@ -206,6 +206,10 @@ struct DeciApp: App {
         settings.onChromeYTMusicAutoSwitchChange = { enabled in
             ChromeExtensionManager.shared.setYTMusicAutoSwitch(enabled)
         }
+        // When the engine plays the Chrome row on several outputs, tabs are held to one so nothing plays twice.
+        engine.onMultiRouteBundleIDsChange = { bundleIDs in
+            ChromeExtensionManager.shared.setEngineFansOutChrome(bundleIDs.contains(ChromeExtensionInstaller.chromeBundleID))
+        }
 
         // Media keys / HUD services — instantiated at app scope so the tap
         // and HUD panel outlive popup open/close cycles.

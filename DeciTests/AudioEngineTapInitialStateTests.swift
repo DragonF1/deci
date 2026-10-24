@@ -59,6 +59,11 @@ final class RecordingProcessTapController: ProcessTapControlling {
     private(set) var currentDeviceUIDs: [String]
     var currentDeviceUID: String? { currentDeviceUIDs.first }
     var tapSourceDeviceUID: String? = nil
+    /// The tap source the engine asked for, in call order: at creation (when the factory passes it on),
+    /// then on every `switchDevice` and `updateDevices`. nil is a stereo mixdown tap.
+    private(set) var tapSourceRequests: [String?]
+    /// The latest tap source the engine asked for; nil when none was asked for or it was a mixdown.
+    var latestTapSource: String? { tapSourceRequests.last ?? nil }
 
     // Process-list rebuilds (syncTapProcesses). Recorded outside `events` so the
     // ordering assertions in the initial-state suite stay about activation only.
@@ -78,9 +83,10 @@ final class RecordingProcessTapController: ProcessTapControlling {
     /// Models a rebuilt aggregate coming up with default output state (unity, unmuted).
     var recreateResetsOutputState = false
 
-    init(app: AudioApp, deviceUIDs: [String]) {
+    init(app: AudioApp, deviceUIDs: [String], preferredTapSource: String? = nil) {
         self.app = app
         self.currentDeviceUIDs = deviceUIDs
+        self.tapSourceRequests = [preferredTapSource]
     }
 
     func activate(initial: TapInitialState) throws {
@@ -112,10 +118,12 @@ final class RecordingProcessTapController: ProcessTapControlling {
     }
 
     func switchDevice(to newDeviceUID: String, preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws {
+        tapSourceRequests.append(preferredTapSourceDeviceUID)
         currentDeviceUIDs = [newDeviceUID]
     }
 
     func updateDevices(to newDeviceUIDs: [String], preferredTapSourceDeviceUID: String?, sourceDeviceDead: Bool) async throws {
+        tapSourceRequests.append(preferredTapSourceDeviceUID)
         currentDeviceUIDs = newDeviceUIDs
     }
 

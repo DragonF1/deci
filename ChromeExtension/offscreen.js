@@ -125,7 +125,10 @@ function onTrackEnded(tabId, entry) {
 // (so nothing is heard before its output is chosen). Synchronous on purpose:
 // the chain starts from the entry's state as it is now and is registered by the
 // caller before anything can await, so a SET_STATE can never miss it.
-function buildChain(ctx, stream, ownsStream, state) {
+// routed: the chain may be heard on the output it is on. The first chain is,
+// since it starts on the default output; an extra chain is not until its
+// output is set (see trySetSink).
+function buildChain(ctx, stream, ownsStream, state, routed) {
   const source = ctx.createMediaStreamSource(stream);
   const gain = ctx.createGain();
   gain.gain.value = targetGain(state);
@@ -160,7 +163,7 @@ function buildChain(ctx, stream, ownsStream, state) {
   prev.connect(limiter);
   limiter.connect(trim);
 
-  return { ctx, stream, ownsStream, source, gain, filters, limiter, trim, sinkId: '', connected: false };
+  return { ctx, stream, ownsStream, source, gain, filters, limiter, trim, sinkId: '', routed, connected: false };
 }
 
 // Lets a chain be heard. Idempotent.
@@ -204,7 +207,7 @@ async function startCapture(msg) {
 
   // The first chain plays the capture stream itself and starts on the default
   // output; routing then moves it to the chosen output (or keeps it).
-  const first = buildChain(ctx, stream, false, state);
+  const first = buildChain(ctx, stream, false, state, true);
   const entry = {
     stream, chains: [first], state,
     deviceGen: 0, deviceQueue: Promise.resolve(), reportedStatus: null
@@ -228,8 +231,12 @@ async function startCapture(msg) {
   }
   // Stopped, ended or replaced meanwhile: that path already tore it down.
   if (captures.get(tabId) !== entry) throw new Error('capture stopped while starting');
-  // Whatever routing has not finished plays on the default output until it does.
-  for (const chain of entry.chains) connectChain(chain);
+  // Whatever routing has not finished plays on the default output until it
+  // does, on the first chain only: an extra chain with no output yet stays
+  // silent, or it would double the tab on the default output.
+  for (const chain of entry.chains) {
+    if (chain.routed) connectChain(chain);
+  }
 }
 
 function setState(msg) {
@@ -427,14 +434,18 @@ function withTimeout(promise, ms, what) {
   ]).finally(() => clearTimeout(timer));
 }
 
-// Moves a chain's context to an output. Resolves true when it plays there.
-// On failure the chain's sinkId is re-read from the context, so it reflects
+// Moves a chain's context to an output. Resolves true when it plays there,
+// and marks the chain routed. On failure the chain's sinkId is re-read from the context, so it reflects
 // where the context really plays (a timed-out call may still land later).
 async function trySetSink(chain, sinkId) {
-  if (chain.sinkId === sinkId) return true;
+  if (chain.sinkId === sinkId) {
+    chain.routed = true;
+    return true;
+  }
   try {
     await withTimeout(chain.ctx.setSinkId(sinkId), DEVICE_CALL_TIMEOUT_MS, 'setSinkId');
     chain.sinkId = sinkId;
+    chain.routed = true;
     return true;
   } catch (err) {
     console.warn(`Deci offscreen: setSinkId ${JSON.stringify(sinkId)} failed:`, err);
@@ -453,7 +464,7 @@ async function addChain(tabId, entry) {
   try {
     ctx = new AudioContext();
     stream = entry.stream.clone();
-    const chain = buildChain(ctx, stream, true, entry.state);
+    const chain = buildChain(ctx, stream, true, entry.state, false);
     entry.chains.push(chain);
     await withTimeout(ctx.resume(), DEVICE_CALL_TIMEOUT_MS, 'resume');
     return chain;
@@ -472,8 +483,10 @@ async function addChain(tabId, entry) {
 }
 
 // Brings the entry's chains in line with the plan: keeps chains already on a
-// planned output, re-points surplus ones, adds chains for outputs still
-// missing and closes what is left. Always leaves at least one chain. Gives up
+// planned output, closes the surplus ones that have no use, then re-points
+// the others and adds chains for outputs still missing. The closing comes
+// first so a slow move or add never leaves an old output playing next to the
+// new one. Always leaves at least one chain. Gives up
 // (returns null) as soon as the apply is superseded or the capture stopped;
 // every step leaves the chains consistent, so the next apply starts from the
 // truth. Otherwise returns the names of planned outputs that could not be set up.
@@ -486,6 +499,19 @@ async function reconcileChains(tabId, entry, plan, isCurrent) {
   const wantedIds = plan.sinks.map((sink) => sink.sinkId);
   const nameOf = (id) => (plan.sinks.find((sink) => sink.sinkId === id) || {}).name || '';
   const diff = diffSinks(entry.chains.map((chain) => chain.sinkId), wantedIds);
+
+  // Close the surplus first. With nothing planned, one chain stays to play on
+  // the default output.
+  const doomed = diff.remove.slice();
+  if (wantedIds.length === 0 && doomed.length > 0) {
+    doomed.splice(doomed.includes('') ? doomed.indexOf('') : 0, 1);
+  }
+  for (const id of doomed) {
+    const chain = entry.chains.find((c) => c.sinkId === id);
+    if (!chain) continue;
+    entry.chains = entry.chains.filter((c) => c !== chain);
+    teardownChain(chain);
+  }
 
   for (const { from, to } of diff.move) {
     const chain = entry.chains.find((c) => c.sinkId === from);
@@ -514,7 +540,7 @@ async function reconcileChains(tabId, entry, plan, isCurrent) {
     }
   }
 
-  // Chains that are not on a planned output: surplus ones, or ones whose move failed.
+  // Chains that are not on a planned output: ones whose move failed, or a chain kept for the default output.
   const planned = new Set(wantedIds);
   const keepers = entry.chains.filter((chain) => planned.has(chain.sinkId));
   let others = entry.chains.filter((chain) => !planned.has(chain.sinkId));

@@ -18,6 +18,8 @@ struct AppRowControls: View {
     /// When false, everything except the mute button is dimmed and inert (Chrome tabs that
     /// Deci has not captured yet can only be muted).
     var isEnabled: Bool = true
+    /// False hides the Single/Multi toggle in the device picker (a Chrome tab while the Chrome row already fans out).
+    var showModeToggle: Bool = true
     let onVolumeChange: (Float) -> Void
     let onMuteChange: (Bool) -> Void
     let onBoostChange: (BoostLevel) -> Void
@@ -130,7 +132,7 @@ struct AppRowControls: View {
                 onDeviceSelected: onDeviceSelected,
                 onDevicesSelected: onDevicesSelected,
                 onSelectFollowDefault: onSelectFollowDefault,
-                showModeToggle: true,
+                showModeToggle: showModeToggle,
                 triggerWidth: 0,
                 triggerStyle: .iconOnly
             )

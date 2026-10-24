@@ -43,6 +43,16 @@ final class ChromeExtensionManager: NSObject {
     /// and later). An older extension never says, and is sent the single SET_TAB_DEVICE only.
     private(set) var supportsMultiDevice = false
 
+    /// True while the engine's own Chrome row plays on two or more outputs. Its tap mirrors everything Chrome renders to
+    /// each of them, so a tab the extension also sinks to several outputs would play twice on each. Set through
+    /// `setEngineFansOutChrome`, never by the extension.
+    private(set) var engineFansOutChrome = false
+
+    /// Whether a tab may play on several outputs at once: the extension can do it and the engine is not already doing it
+    /// for the whole Chrome row. The picker's Multi option and the tab's note read this; `supportsMultiDevice` stays the
+    /// capability alone.
+    var allowsTabMultiDevice: Bool { supportsMultiDevice && !engineFansOutChrome }
+
     /// The output devices of every captured tab that plays on two or more of them at once; empty when none does.
     /// Read-only for the UI, assigned only when the set really changes (see `refreshMultiOutputs`).
     private(set) var multiOutputDeviceUIDs: Set<String> = []
@@ -543,10 +553,27 @@ final class ChromeExtensionManager: NSObject {
         refreshMultiOutputs()
     }
 
+    /// Tells the manager whether the engine's Chrome row plays on several outputs (see `engineFansOutChrome`). While it
+    /// does, a tab on several outputs is pulled back to its first one, the ticks kept for later; when it stops, such a
+    /// tab gets its ticked outputs back. Cheap to repeat: nothing is sent unless the state changes.
+    func setEngineFansOutChrome(_ fansOut: Bool) {
+        guard fansOut != engineFansOutChrome else { return }
+        engineFansOutChrome = fansOut
+        for tab in chromeTabs where tab.deviceSelectionMode == .multi {
+            if fansOut {
+                guard tab.deviceNames.count > 1 else { continue }
+                setTabDevice(tabId: tab.id, deviceName: tab.deviceNames.first)
+            } else if supportsMultiDevice, tab.selectedDeviceUIDs.count > 1, tab.deviceNames.count < 2 {
+                setTabDevices(tabId: tab.id, deviceUIDs: tab.selectedDeviceUIDs)
+            }
+        }
+    }
+
     /// Puts the tab on every ticked output at once. The tab is in multi mode from here on. An empty selection, or one
     /// that names no known device, is recorded for the picker but sends nothing: the tab keeps playing where it is.
     /// An extension that does not know SET_TAB_DEVICES gets a plain SET_TAB_DEVICE for the first ticked device in
-    /// list order, so the tab still reacts (on one output) instead of ignoring the tick.
+    /// list order, so the tab still reacts (on one output) instead of ignoring the tick. So does a tab with several
+    /// ticks while the engine fans the Chrome row out, which already plays everything on all of them.
     func setTabDevices(tabId: Int, deviceUIDs: Set<String>) {
         guard let index = chromeTabs.firstIndex(where: { $0.id == tabId }) else { return }
         let names = outputNames(forUIDs: deviceUIDs)
@@ -559,7 +586,7 @@ final class ChromeExtensionManager: NSObject {
             if tab != chromeTabs[index] { chromeTabs[index] = tab }
             return
         }
-        guard supportsMultiDevice else {
+        guard supportsMultiDevice, !(engineFansOutChrome && names.count > 1) else {
             chromeTabs[index] = tab
             setTabDevice(tabId: tabId, deviceName: first)
             return

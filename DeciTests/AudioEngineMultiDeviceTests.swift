@@ -516,6 +516,107 @@ struct AudioEngineMultiDeviceTests {
         #expect(tap.currentDeviceUIDs == [speakers.uid], "with a device of its own the app no longer follows the default")
     }
 
+    // MARK: - Tap source of a multi app
+
+    // A follow-default app is captured with a stream-specific tap on the default device. That tap
+    // goes stale when the default changes, which a multi route of its own never follows, so such an
+    // app needs the stereo mixdown tap (no tap source) even though it stays in the follow-default set.
+
+    @Test("An app switched from following the default to Multi with the default ticked gets a mixdown tap")
+    func multiSwitchGetsAMixdownTap() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = harness.launch(app)
+        #expect(tap.latestTapSource == harness.device.uid, "while it follows the default it is tapped on the default device")
+
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [harness.device.uid, headphones.uid])
+        harness.engine.setDeviceSelectionMode(for: app, to: .multi)
+
+        let routed = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid, harness.device.uid] }
+        #expect(routed)
+        #expect(tap.latestTapSource == nil, "a multi route must not keep a tap tied to the default device")
+    }
+
+    @Test("A multi app created while it was in the follow-default set gets a mixdown tap")
+    func multiCreateGetsAMixdownTap() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        // With no default yet the engine marks the app as following it but cannot make a tap.
+        harness.deviceVolume.defaultDeviceUID = nil
+        harness.probes.alivePIDs.insert(app.id)
+        harness.probes.liveObjectIDs.formUnion(app.processObjectIDs)
+        harness.publish([app])
+        #expect(harness.tap(for: app.id) == nil)
+        #expect(harness.engine.isFollowingDefault(for: app))
+        harness.deviceVolume.defaultDeviceUID = harness.device.uid
+
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [harness.device.uid, headphones.uid])
+        harness.engine.setDeviceSelectionMode(for: app, to: .multi)
+
+        let created = await waitUntil { harness.tap(for: app.id) != nil }
+        #expect(created)
+        #expect(harness.tap(for: app.id)?.tapSourceRequests == [nil], "the tap is made as a mixdown from the start")
+    }
+
+    @Test("Losing one device of a route that includes the default keeps the tap a mixdown")
+    func disconnectKeepsTheMixdownTap() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = harness.launch(app)
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [harness.device.uid, headphones.uid])
+        harness.engine.setDeviceSelectionMode(for: app, to: .multi)
+        let routed = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid, harness.device.uid] }
+        #expect(routed)
+
+        disconnect(headphones, in: harness)
+
+        let dropped = await waitUntil { tap.currentDeviceUIDs == [harness.device.uid] }
+        #expect(dropped)
+        #expect(tap.latestTapSource == nil)
+    }
+
+    @Test("A fallback multi app gets the default as its tap source, and the next default after a change")
+    func fallbackMultiAppKeepsTheDefaultTapSource() async {
+        let harness = EngineHarness(extraDevices: [speakers])  // the headphones are away
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid])
+        #expect(tap.currentDeviceUIDs == [harness.device.uid])
+        #expect(tap.tapSourceRequests == [harness.device.uid], "on the fallback it is an ordinary follow-default app")
+
+        harness.deviceVolume.defaultDeviceUID = speakers.uid  // the mock's default does not move by itself
+        harness.engine.setDefaultOutputDevice(speakers.id)
+
+        let followed = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(followed)
+        #expect(tap.latestTapSource == speakers.uid)
+    }
+
+    @Test("A fallback multi app that gets the default ticked along with another device becomes a mixdown")
+    func tickingTheDefaultOnAFallbackAppGivesAMixdownTap() async {
+        let harness = EngineHarness(extraDevices: [speakers])  // the headphones are away
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid])
+        #expect(tap.latestTapSource == harness.device.uid)
+
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [speakers.uid, harness.device.uid])
+
+        let routed = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid, harness.device.uid] }
+        #expect(routed)
+        #expect(tap.latestTapSource == nil, "with a route of its own the app is no longer tied to the default")
+    }
+
+    @Test("A multi app whose route returns to the fallback is tapped on the default again")
+    func routeBackToTheFallbackTapsTheDefault() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid])
+        disconnect(headphones, in: harness)
+        let fellBack = await waitUntil { tap.currentDeviceUIDs == [harness.device.uid] }
+        #expect(fellBack)
+
+        #expect(tap.latestTapSource == harness.device.uid, "on the fallback the tap follows the default")
+    }
+
     // MARK: - Inactive apps flipped to Multi
 
     private let inactiveID = "com.deci.tests.Inactive"
@@ -668,6 +769,37 @@ struct AudioEngineMultiDeviceTests {
         let cleared = await waitUntil { harness.engine.multiRouteDeviceUIDs.isEmpty }
         #expect(cleared)
         #expect(tap.currentDeviceUIDs == [harness.device.uid])
+    }
+
+    @Test("The apps on a multi route are reported by bundle id, and the callback fires on each change only")
+    func multiRouteBundleIDsFollowTheRoute() async {
+        let harness = makeHarness()
+        var reported: [Set<String>] = []
+        harness.engine.onMultiRouteBundleIDsChange = { reported.append($0) }
+        #expect(harness.engine.multiRouteBundleIDs.isEmpty)
+
+        launchMulti(harness, harness.makeApp(pid: 100, ids: [1], bundleID: "com.deci.tests.Fan"), uids: [headphones.uid, harness.device.uid])
+        #expect(harness.engine.multiRouteBundleIDs == ["com.deci.tests.Fan"])
+        #expect(reported == [["com.deci.tests.Fan"]])
+
+        // Another app that plays on one device changes nothing.
+        harness.launch(harness.makeApp(pid: 200, ids: [2], bundleID: "com.deci.tests.Quiet"))
+        #expect(harness.engine.multiRouteBundleIDs == ["com.deci.tests.Fan"])
+        #expect(reported.count == 1)
+
+        disconnect(headphones, in: harness)
+        let cleared = await waitUntil { harness.engine.multiRouteBundleIDs.isEmpty }
+        #expect(cleared)
+        #expect(reported == [["com.deci.tests.Fan"], []])
+    }
+
+    @Test("An app without a bundle id adds nothing to the multi route bundle ids")
+    func multiRouteWithoutABundleID() {
+        let harness = makeHarness()
+        launchMulti(harness, harness.makeApp(ids: [1], bundleID: nil), uids: [headphones.uid, harness.device.uid])
+
+        #expect(!harness.engine.multiRouteDeviceUIDs.isEmpty)
+        #expect(harness.engine.multiRouteBundleIDs.isEmpty)
     }
 
     @Test("Hiding the app drops its devices from the in-use set")

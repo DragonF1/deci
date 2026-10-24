@@ -121,6 +121,9 @@ final class MusicMixerState: InProcessAudioSink {
     @ObservationIgnored private let aggregates: any MusicOutputAggregating
     /// The aggregate the player is pointed at while two or more devices play, with the stack it was built for.
     @ObservationIgnored private var liveAggregate: (stack: MusicOutputStack, aggregate: MusicOutputAggregate)?
+    /// The stack the last build failed for, while it is still the one wanted. Each build waits on the main thread for
+    /// the aggregate to come up, so the same stack is not tried again on every device event; it is once it changes.
+    @ObservationIgnored private var failedStack: MusicOutputStack?
     /// The ticked devices that are connected, while in Multi mode.
     @ObservationIgnored private var multiAvailableUIDs: Set<String> = []
     /// The last selection that was not empty. Unticking every device keeps the music where it is rather than dropping it
@@ -334,16 +337,20 @@ final class MusicMixerState: InProcessAudioSink {
         if let stack = wantedStack() {
             if let live = liveAggregate, live.stack == stack {
                 target = live.aggregate.uid
+            } else if stack == failedStack {
+                target = stack.clockDeviceUID
             } else {
                 let made = aggregates.makeAggregate(for: stack)
                 retired = liveAggregate?.aggregate
                 liveAggregate = made.map { (stack: stack, aggregate: $0) }
+                failedStack = made == nil ? stack : nil
                 // An aggregate that could not be made leaves the music on the clock device alone rather than silent.
                 target = made?.uid ?? stack.clockDeviceUID
             }
         } else {
             retired = liveAggregate?.aggregate
             liveAggregate = nil
+            failedStack = nil
         }
         point(engine, at: target)
         if let retired { aggregates.destroy(retired) }
