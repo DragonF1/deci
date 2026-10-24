@@ -167,6 +167,39 @@ struct MusicSearchDebounceTests {
         #expect(await r.searched == ["daft", "daft"])
     }
 
+    @Test("Return on the words already being searched does not start the search over")
+    func returnDuringTheSameSearch() async {
+        let r = DebounceRig(delay: Self.short)
+        let gate = MusicTestGate()
+        await r.backend.setSearch("daft", results: [MusicSamples.track("s1")])
+        await r.backend.setSearchGate("daft", gate)
+        r.type("daft")
+        #expect(await r.eventually { await r.searched == ["daft"] })
+        #expect(r.service.isSearching)
+
+        r.nav.submit()
+        await r.letTimersRun()
+        #expect(await r.searched == ["daft"])
+        #expect(r.service.isSearching)
+
+        await gate.open()
+        await r.service.searchTask?.value
+        #expect(r.service.results.map(\.videoId) == ["s1"])
+        #expect(await r.searched == ["daft"])
+    }
+
+    @Test("Return after a failed search sends the same words again")
+    func returnRetriesAfterAFailure() async {
+        let r = DebounceRig(delay: Self.never)
+        await r.backend.setSearchError("daft", MusicError.http(503))
+        await r.search("daft")
+        #expect(r.service.lastError != nil)
+        #expect(r.nav.panel == .failed)
+
+        await r.search("daft")
+        #expect(await r.searched == ["daft", "daft"])
+    }
+
     // MARK: - Clearing and blanks
 
     @Test("clearing the field before the wait is over cancels the search")
@@ -203,6 +236,46 @@ struct MusicSearchDebounceTests {
         r.type("daft")
 
         #expect(await r.eventually { await r.searched == ["daft", "daft"] })
+    }
+
+    @Test("resetting the fields forgets the last search, so the same words search again")
+    func resetForgetsTheLastSearch() async {
+        let r = DebounceRig(delay: Self.short)
+        await r.search("daft")
+
+        // A sign-out empties the query itself before the view resets the fields, so no edit is seen.
+        r.service.query = ""
+        r.nav.resetFields()
+        #expect(r.nav.submittedQuery == nil)
+
+        r.type("daft")
+        #expect(await r.eventually { await r.searched == ["daft", "daft"] })
+    }
+
+    @Test("emptying the field forgets the answer, so the same words typed again are not shown as No results")
+    func emptyingForgetsTheAnswer() async {
+        let r = DebounceRig(delay: Self.never)
+        await r.search("zzz")
+        #expect(r.nav.panel == .noResults)
+
+        r.type("")
+        #expect(r.nav.submittedQuery == nil)
+        r.type("zzz")
+        #expect(r.nav.isSearchPending)
+        #expect(r.nav.panel == .searching)
+    }
+
+    @Test("emptying the field forgets a failure too, so retyped words do not flash the failed card")
+    func emptyingForgetsTheFailure() async {
+        let r = DebounceRig(delay: Self.never)
+        await r.backend.setSearchError("zzz", MusicError.http(503))
+        await r.search("zzz")
+        #expect(r.nav.panel == .failed)
+
+        r.type("")
+        r.type("zzz")
+        #expect(r.nav.isSearchPending)
+        #expect(r.nav.panel == .searching)
     }
 
     @Test("words that are only whitespace do not search")

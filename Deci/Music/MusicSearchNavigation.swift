@@ -98,6 +98,9 @@ final class MusicSearchNavigation {
     @ObservationIgnored private let searchDelay: Duration
     /// The trimmed words of the search last sent, by Return or by typing. Typing the same words again sends nothing.
     @ObservationIgnored private var lastSearchedQuery = ""
+    /// The pages `startScopedLoad` asked for since the filter got its words. They were never opened, so nothing closes
+    /// them: they are dropped when the filter empties or closes, and the next one fetches them fresh.
+    @ObservationIgnored private var scopedLoads: Set<String> = []
 
     @ObservationIgnored private let service: MusicService
     /// Where a menu pick's rating outcome shows: the notice line while the Music popup is open, else the HUD, as for the
@@ -194,8 +197,11 @@ final class MusicSearchNavigation {
             isSearching: service.isSearching,
             hasFailed: service.lastError != nil
         )
-        // Words that are about to be searched on their own do not ask for Return.
-        return panel == .pressReturn && isSearchPending ? .searching : panel
+        // Words that are about to be searched on their own do not ask for Return, nor show an answer to older words.
+        switch panel {
+        case .pressReturn, .noResults, .failed: return isSearchPending ? .searching : panel
+        case .invite, .searching, .results: return panel
+        }
     }
 
     // MARK: - Search field
@@ -278,16 +284,30 @@ final class MusicSearchNavigation {
     }
 
     /// Asks for the page of `scopedLoadTarget` through the store's own loader, once: a page that is loading, loaded or
-    /// failed is left alone. Run on every edit and when the artist page lands.
+    /// failed is left alone until the filter empties or closes, which drops it, so a failed page is asked for again at
+    /// the next start. Run on every edit and when the artist page lands.
     func startScopedLoad() {
+        guard !browseFilterTerms.isEmpty else { return endScopedLoads() }
         guard let target = scopedLoadTarget, service.browse.pageState(target) == .idle else { return }
+        scopedLoads.insert(target)
         service.browse.reloadPage(target)
     }
 
-    /// The page a scoped search asked for is still on its way, so an empty answer is not final yet.
+    /// The filter emptied or closed: the pages it asked for are dropped, except one that is open on the path.
+    private func endScopedLoads() {
+        guard !scopedLoads.isEmpty else { return }
+        service.browse.dropPages(scopedLoads)
+        scopedLoads.removeAll()
+    }
+
+    /// The page a scoped search needs is not here yet, so an empty answer is not final: it is on its way, or about to be
+    /// asked for (the view starts it a frame after the target appears).
     var isScopedLoadPending: Bool {
-        guard let target = scopedLoadTarget, case .loading = service.browse.pageState(target) else { return false }
-        return true
+        guard let target = scopedLoadTarget else { return false }
+        switch service.browse.pageState(target) {
+        case .idle, .loading: return true
+        case .loaded, .failed: return false
+        }
     }
 
     /// The loaded page under `browseId`, or nil while it is idle, loading or failed.
@@ -373,7 +393,9 @@ final class MusicSearchNavigation {
     func clearField() {
         switch scope {
         case .global: dropQuery()
-        case .library, .playlist, .album, .artist, .history: filterQuery = ""
+        case .library, .playlist, .album, .artist, .history:
+            filterQuery = ""
+            endScopedLoads()
         case .queue: queueQuery = ""
         case .none: break
         }
@@ -384,6 +406,9 @@ final class MusicSearchNavigation {
         hidesResults = false
         closePanels()
         cancelPendingSearch()
+        // The same words are already on their way (typed, then Return): they are not started over. After a failure
+        // nothing is in flight, so Return retries.
+        guard !(trimmedQuery == lastSearchedQuery && service.isSearching) else { return }
         sendSearch()
     }
 
@@ -396,6 +421,7 @@ final class MusicSearchNavigation {
         guard !trimmedQuery.isEmpty else {
             cancelPendingSearch()
             lastSearchedQuery = ""
+            submittedQuery = nil
             if service.isSearching || hasResults { service.search() }
             return
         }
@@ -455,6 +481,7 @@ final class MusicSearchNavigation {
         if filterAnchor != nil, filterAnchor != anchor {
             filterAnchor = nil
             filterQuery = ""
+            endScopedLoads()
         }
         if searchAnchor != nil, searchAnchor != anchor, !isHidingResults {
             searchAnchor = nil
@@ -465,9 +492,13 @@ final class MusicSearchNavigation {
     /// Every field closes and forgets its words (a tab was picked, or the session ended).
     func resetFields() {
         cancelPendingSearch()
+        // After a sign-out the query is already empty and no edit is seen, so what the last search left is forgotten here.
+        lastSearchedQuery = ""
+        submittedQuery = nil
         searchAnchor = nil
         filterAnchor = nil
         filterQuery = ""
+        endScopedLoads()
         isQueueFieldOpen = false
         queueQuery = ""
         dropQuery()
@@ -632,6 +663,7 @@ final class MusicSearchNavigation {
         guard isFieldOpen else { return false }
         if browseScope.isLocal {
             if filterQuery.isEmpty { filterAnchor = nil } else { filterQuery = "" }
+            endScopedLoads()
         } else if service.query.isEmpty {
             searchAnchor = nil
         } else {

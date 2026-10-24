@@ -11,6 +11,8 @@ struct MusicSearchField: View {
     var isLoading = false
     /// Return. Nil for a field that filters as you type.
     var onSubmit: (() -> Void)?
+    /// Whether the field is still open, read when the focus ask is repeated: a field Escape is closing is not asked again.
+    var isOpen: () -> Bool = { true }
     let onClear: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -55,12 +57,12 @@ struct MusicSearchField: View {
         )
         // Typing starts the moment the field opens. Asked for as the view appears, focus finds no text field in the
         // window yet (SwiftUI then drops the ask), so it is asked for a run loop turn later, and once more if that ask
-        // was dropped too.
+        // was dropped too. A field that goes away meanwhile ends the task (the sleep throws) and is not asked again.
         .task {
-            try? await Task.sleep(for: .milliseconds(1))
+            do { try await Task.sleep(for: .milliseconds(1)) } catch { return }
             isFocused = true
-            try? await Task.sleep(for: .milliseconds(120))
-            if !isFocused { isFocused = true }
+            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+            if !isFocused, isOpen() { isFocused = true }
         }
     }
 }

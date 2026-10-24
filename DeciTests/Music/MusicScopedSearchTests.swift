@@ -165,6 +165,16 @@ struct MusicArtistSearchTests {
         #expect(MusicArtistSearch.resolve(page: page, songsPage: nil, terms: ["love"]).isEmpty == false)
     }
 
+    @Test("the songs are of the ones loaded while the full list or the page has more to load")
+    func partial() {
+        let page = artistPage(top: [song("t1", "Love Story")])
+        let whole = MusicSamples.page("VLsongs", tracks: [song("l1", "Love Me")])
+        let more = MusicSamples.page("VLsongs", tracks: [song("l1", "Love Me")], continuation: "more")
+        #expect(MusicArtistSearch.resolve(page: page, songsPage: whole, terms: ["love"]).isPartial == false)
+        #expect(MusicArtistSearch.resolve(page: page, songsPage: nil, terms: ["love"]).isPartial == false)
+        #expect(MusicArtistSearch.resolve(page: page, songsPage: more, terms: ["love"]).isPartial)
+    }
+
     @Test("a song of the Top songs plays in the artist page, one only the full list holds plays in that list")
     func playPage() {
         let page = artistPage(top: [song("t1", "Love Story")])
@@ -180,10 +190,11 @@ struct MusicArtistSearchTests {
 @MainActor
 @Suite("MusicLikedSongs")
 struct MusicLikedSongsTests {
-    private func page(_ titles: [String]) -> MusicBrowsePage {
+    private func page(_ titles: [String], continuation: String? = nil) -> MusicBrowsePage {
         MusicSamples.page(
             "VLLM",
             tracks: titles.enumerated().map { MusicSamples.track("v\($0.offset)", title: $0.element) },
+            continuation: continuation,
             title: "Liked music"
         )
     }
@@ -214,6 +225,18 @@ struct MusicLikedSongsTests {
         #expect(MusicLikedSongs.resolve(page: nil, terms: ["night"]).isEmpty)
         #expect(MusicLikedSongs.resolve(page: page(["Day"]), terms: ["night"]).isEmpty)
         #expect(MusicLikedSongs.resolve(page: page([]), terms: ["night"]).showAllTitle == nil)
+    }
+
+    @Test("a Liked music with more to load says the link counts the songs loaded")
+    func partialLink() {
+        let titles = (1...8).map { "Night \($0)" }
+        let partial = MusicLikedSongs.resolve(page: page(titles, continuation: "more"), terms: ["night"])
+        #expect(partial.isPartial)
+        #expect(partial.showAllTitle == "Show all 8 songs loaded")
+        let whole = MusicLikedSongs.resolve(page: page(titles), terms: ["night"])
+        #expect(whole.isPartial == false)
+        #expect(whole.showAllTitle == "Show all 8 songs")
+        #expect(MusicLikedSongs.resolve(page: nil, terms: ["night"]).isPartial == false)
     }
 
     @Test("the link counts a hundred matches, not the five shown")
@@ -321,7 +344,7 @@ struct MusicSearchArtistScopeTests {
         #expect(h.nav.artistSearch?.songs.map(\.videoId) == ["t1", "l1"])
     }
 
-    @Test("the first words start the full songs list, once, and later words and a cleared field do not ask again")
+    @Test("the first words start the full songs list, once, and later words do not ask again; a cleared field starts it fresh")
     func loadsTheListOnce() async {
         let h = ScopedHarness()
         await h.setSongsList([h.song("l1", "Love Me")])
@@ -336,10 +359,15 @@ struct MusicSearchArtistScopeTests {
         h.type("lo")
         h.type("lov")
         #expect(await h.until { h.isLoaded(ScopedHarness.songsId) })
-        h.nav.clearField()
         h.type("love")
         h.type("love me")
         #expect(await h.backend.pageCalls == ["UCa", ScopedHarness.songsId])
+
+        // The list was dropped with the words, so the next words fetch it again.
+        h.nav.clearField()
+        h.type("love")
+        #expect(await h.until { h.isLoaded(ScopedHarness.songsId) })
+        #expect(await h.backend.pageCalls == ["UCa", ScopedHarness.songsId, ScopedHarness.songsId])
     }
 
     @Test("results grow live while the list is still arriving")
@@ -376,6 +404,70 @@ struct MusicSearchArtistScopeTests {
         #expect(await h.until { h.isLoaded("UCa") })
         #expect(h.nav.scopedLoadTarget == ScopedHarness.songsId)
         h.nav.startScopedLoad()
+        #expect(await h.until { h.isLoaded(ScopedHarness.songsId) })
+        #expect(h.nav.artistSearch?.songs.map(\.videoId) == ["t1", "l1"])
+    }
+
+    @Test("the list counts as on its way once the artist page names it, before its load has started")
+    func pendingBeforeTheLoadStarts() async {
+        let h = ScopedHarness()
+        let gate = MusicTestGate()
+        await h.backend.setPageGate("UCa", gate)
+        await h.backend.setPage(MusicSamples.page("UCa", tracks: [h.song("t1", "Love Story")], title: "Aria", allSongsBrowseId: ScopedHarness.songsId))
+        h.browse.open(MusicSamples.collection("UCa", kind: .artist, title: "Aria", subtitle: "Artist"))
+        h.nav.reconcile()
+        h.nav.openField()
+        h.type("zzz")
+        #expect(h.nav.isScopedLoadPending == false)
+
+        await gate.open()
+        #expect(await h.until { h.isLoaded("UCa") })
+        #expect(h.browse.pageState(ScopedHarness.songsId) == .idle)
+        #expect(h.nav.isScopedLoadPending)
+        h.nav.startScopedLoad()
+        #expect(h.nav.isScopedLoadPending)
+        #expect(await h.until { h.isLoaded(ScopedHarness.songsId) })
+        #expect(h.nav.isScopedLoadPending == false)
+    }
+
+    @Test("the full songs list is dropped when the artist field empties or closes; the artist page stays")
+    func listDroppedWithTheField() async {
+        let h = ScopedHarness()
+        await h.setSongsList([h.song("l1", "Love Me")])
+        await h.openArtist(top: [h.song("t1", "Love Story")])
+        h.nav.openField()
+        h.type("love")
+        #expect(await h.until { h.isLoaded(ScopedHarness.songsId) })
+
+        h.type("")
+        #expect(h.browse.pageState(ScopedHarness.songsId) == .idle)
+        #expect(h.isLoaded("UCa"))
+
+        h.type("love")
+        #expect(await h.until { h.isLoaded(ScopedHarness.songsId) })
+        _ = h.nav.escape()
+        _ = h.nav.escape()
+        #expect(h.nav.isFieldOpen == false)
+        #expect(h.browse.pageState(ScopedHarness.songsId) == .idle)
+        #expect(h.isLoaded("UCa"))
+    }
+
+    @Test("a failed list is tried once per start, and again the next time the field gets words")
+    func failedListIsTriedAgainAtTheNextStart() async {
+        let h = ScopedHarness()
+        await h.backend.setPageError(ScopedHarness.songsId, MusicError.http(503))
+        await h.openArtist(top: [h.song("t1", "Love Story")])
+        h.nav.openField()
+        h.type("l")
+        #expect(await h.until { if case .failed = h.browse.pageState(ScopedHarness.songsId) { true } else { false } })
+        h.type("lo")
+        h.type("lov")
+        #expect(await h.backend.pageCalls == ["UCa", ScopedHarness.songsId])
+
+        await h.backend.setPageError(ScopedHarness.songsId, nil)
+        await h.setSongsList([h.song("l1", "Love Me")])
+        h.nav.clearField()
+        h.type("love")
         #expect(await h.until { h.isLoaded(ScopedHarness.songsId) })
         #expect(h.nav.artistSearch?.songs.map(\.videoId) == ["t1", "l1"])
     }
@@ -477,10 +569,87 @@ struct MusicSearchLibrarySongsTests {
         h.type("ni")
         h.type("night")
         #expect(await h.until { h.isLoaded(ScopedHarness.likedId) })
-        h.nav.clearField()
         h.type("night drive")
         #expect(await h.backend.pageCalls == [ScopedHarness.likedId])
         #expect(await h.backend.searchedQueries.isEmpty)
+    }
+
+    /// Ways a Library filter ends or empties; each has to let go of the Liked music page it loaded.
+    enum Ending: String, CaseIterable {
+        case clearButton, typedEmpty, escape, escapeTwice, columnMoved, reset
+    }
+
+    @Test("Liked music loaded for the filter is dropped when the filter empties or closes, and the next one fetches it fresh", arguments: Ending.allCases)
+    func dropsLikedWithTheFilter(ending: Ending) async {
+        let h = ScopedHarness()
+        await liked(h, ["Night Drive"])
+        h.nav.select(.library)
+        h.nav.openField()
+        h.type("night")
+        #expect(await h.until { h.isLoaded(ScopedHarness.likedId) })
+
+        switch ending {
+        case .clearButton: h.nav.clearField()
+        case .typedEmpty: h.type("")
+        case .escape: _ = h.nav.escape()
+        case .escapeTwice:
+            _ = h.nav.escape()
+            _ = h.nav.escape()
+        case .columnMoved:
+            h.browse.open(MusicSamples.collection("VLPL1", kind: .playlist))
+            h.nav.reconcile()
+        case .reset: h.nav.resetFields()
+        }
+        #expect(h.browse.pageState(ScopedHarness.likedId) == .idle)
+
+        // A song liked since shows the next time: the page is fetched again.
+        await liked(h, ["Night Drive", "Night Fever"])
+        h.nav.select(.library)
+        h.nav.openField()
+        h.type("night")
+        #expect(await h.until { h.isLoaded(ScopedHarness.likedId) })
+        #expect(h.nav.likedSongs?.matched == 2)
+    }
+
+    @Test("a Liked music page that is open on the path is not dropped when its filter closes")
+    func keepsLikedOnThePath() async {
+        let h = ScopedHarness()
+        await liked(h, likedTitles(7))
+        h.nav.select(.library)
+        h.nav.openField()
+        h.type("night")
+        #expect(await h.until { h.isLoaded(ScopedHarness.likedId) })
+        h.nav.showAllLikedSongs()
+        h.nav.reconcile()
+
+        #expect(h.nav.escape())
+        #expect(h.nav.escape())
+        #expect(h.isLoaded(ScopedHarness.likedId))
+        #expect(h.service.browse.path.map(\.browseId) == [ScopedHarness.likedId])
+
+        // Back closes it, and a closed page is dropped as before.
+        h.browse.back()
+        #expect(h.browse.pageState(ScopedHarness.likedId) == .idle)
+    }
+
+    @Test("a failed Liked music load is tried once per start, not on every keystroke, and again at the next start")
+    func failedLoadIsTriedAgainAtTheNextStart() async {
+        let h = ScopedHarness()
+        await h.backend.setPageError(ScopedHarness.likedId, MusicError.http(503))
+        h.nav.select(.library)
+        h.nav.openField()
+        h.type("n")
+        #expect(await h.until { if case .failed = h.browse.pageState(ScopedHarness.likedId) { true } else { false } })
+        h.type("ni")
+        h.type("nig")
+        #expect(await h.backend.pageCalls == [ScopedHarness.likedId])
+
+        await h.backend.setPageError(ScopedHarness.likedId, nil)
+        await liked(h, ["Night Drive"])
+        h.nav.clearField()
+        h.type("n")
+        #expect(await h.until { h.isLoaded(ScopedHarness.likedId) })
+        #expect(await h.backend.pageCalls == [ScopedHarness.likedId, ScopedHarness.likedId])
     }
 
     @Test("the Songs block is up to five matches of Liked music, and counts all of them")
@@ -542,6 +711,20 @@ struct MusicSearchLibrarySongsTests {
         let some = MusicLibraryFilter.resolve(section: .playlists, loaded: loaded, hasMore: [], terms: ["focus"])
         #expect(some.isEmpty == false)
         #expect(h.nav.libraryHasNoMatch(some) == false)
+    }
+
+    @Test("a Liked music with more to load says its songs are the loaded ones")
+    func partialLiked() async {
+        let h = ScopedHarness()
+        await h.backend.setPage(MusicSamples.page(
+            ScopedHarness.likedId, tracks: (1...7).map { h.song("v\($0)", "Night \($0)") }, continuation: "more", title: "Liked music"
+        ))
+        h.nav.select(.library)
+        h.nav.openField()
+        h.type("night")
+        #expect(await h.until { h.isLoaded(ScopedHarness.likedId) })
+        #expect(h.nav.likedSongs?.isPartial == true)
+        #expect(h.nav.likedSongs?.showAllTitle == "Show all 7 songs loaded")
     }
 
     @Test("Show all opens Liked music with the words as its filter, field open")
@@ -685,5 +868,20 @@ struct MusicScopedCopyTests {
     func showAll() {
         #expect(MusicSearchCopy.showAllSongs(count: 12) == "Show all 12 songs")
         #expect(MusicSearchCopy.showAllSongs(count: 6) == "Show all 6 songs")
+    }
+
+    @Test("the Show all link of a partly loaded Liked music says the songs are the loaded ones")
+    func showAllPartial() {
+        #expect(MusicSearchCopy.showAllSongs(count: 12, isPartial: true) == "Show all 12 songs loaded")
+        #expect(MusicSearchCopy.showAllSongs(count: 12, isPartial: false) == "Show all 12 songs")
+    }
+
+    @Test("a no-results block over partly loaded songs says only the loaded ones were searched")
+    func noResultsPartial() {
+        let whole = MusicSearchCopy.noResults(noun: .song, query: "zzz", place: "this artist", beyond: "Aria")
+        #expect(whole.detail == "Try another word, or look beyond Aria.")
+        let partial = MusicSearchCopy.noResults(noun: .song, query: "zzz", place: "this artist", beyond: "Aria", isPartial: true)
+        #expect(partial.title == whole.title)
+        #expect(partial.detail == "Only the songs loaded so far were searched. Try another word, or look beyond Aria.")
     }
 }

@@ -547,6 +547,33 @@ struct MusicBrowseStoreTests {
         #expect(await h.backend.pageCalls.sorted() == ["MPREb2", "MPREb2", "VLPL1"])
     }
 
+    @Test("dropPages forgets pages nobody opened, loaded or still loading, and keeps one that is on the path")
+    func dropPagesKeepsThePath() async {
+        let h = StoreHarness()
+        let open = MusicSamples.collection("VLPL1")
+        h.store.open(open)
+        h.store.reloadPage("VLPL2")
+        #expect(await h.until { loadedPage(h.store, "VLPL1") != nil && loadedPage(h.store, "VLPL2") != nil })
+        let gate = MusicTestGate()
+        await h.backend.setPageGate("VLPL3", gate)
+        h.store.reloadPage("VLPL3")
+        #expect(h.store.pageState("VLPL3") == .loading)
+
+        h.store.dropPages(["VLPL1", "VLPL2", "VLPL3"])
+
+        #expect(loadedPage(h.store, "VLPL1") != nil)
+        #expect(h.store.pageState("VLPL2") == .idle)
+        #expect(h.store.pageState("VLPL3") == .idle)
+        // A late answer for a dropped page lands nowhere.
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(h.store.pageState("VLPL3") == .idle)
+
+        // Once it is closed it is dropped like any page.
+        h.store.back()
+        #expect(h.store.pageState("VLPL1") == .idle)
+    }
+
     @Test("A failed page shows a message, and opening it again reloads it without pushing it twice")
     func pageFailureThenReopen() async {
         let h = StoreHarness()

@@ -41,12 +41,15 @@ struct MusicRightColumnHeader: View {
                     openRow(tabs: MusicHeaderTab.allCases, field: field, fieldMinWidth: MusicPopupMetrics.openFieldMinWidth)
                     openRow(tabs: [navigation?.headerTab ?? .home], field: field, fieldMinWidth: nil)
                 }
+                // The branch itself never fades, or the tabs in it would cross-fade with the other branch's.
+                .transition(.identity)
             } else {
                 HStack(spacing: 0) {
                     tabs(MusicHeaderTab.allCases)
                     Spacer(minLength: 8)
                     trailing
                 }
+                .transition(.identity)
             }
         }
         .frame(height: MusicPopupMetrics.headerHeight)
@@ -243,6 +246,7 @@ struct MusicNavigationSearchField: View {
             text: Binding(get: { navigation.fieldQuery }, set: { navigation.fieldQuery = $0 }),
             isLoading: scope == .global && service.isSearching,
             onSubmit: scope == .global ? { navigation.submit() } : nil,
+            isOpen: { navigation.isFieldOpen },
             onClear: { navigation.clearField() }
         )
     }

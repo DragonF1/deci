@@ -13,6 +13,8 @@ struct MusicArtistSearch {
     let songs: [MusicTrack]
     /// The matching albums and playlists of every shelf, each once.
     let collections: [MusicCollection]
+    /// A page of songs has more to load, so the songs found are of the ones loaded.
+    let isPartial: Bool
 
     private let page: MusicBrowsePage
     private let songsPage: MusicBrowsePage?
@@ -38,7 +40,8 @@ struct MusicArtistSearch {
                 found.append(collection)
             }
         }
-        return MusicArtistSearch(songs: songs, collections: found, page: page, songsPage: songsPage)
+        let isPartial = page.continuation != nil || songsPage?.continuation != nil
+        return MusicArtistSearch(songs: songs, collections: found, isPartial: isPartial, page: page, songsPage: songsPage)
     }
 
     /// The page a tap on `track` plays in: the artist page for a song of its Top songs, as a tap on the page does, else
@@ -60,17 +63,19 @@ struct MusicLikedSongs {
     let matched: Int
     /// Liked music as loaded; a tap plays in it. Nil until it has loaded.
     let page: MusicBrowsePage?
+    /// Liked music has more songs to load, so the count is of the ones loaded.
+    let isPartial: Bool
 
     var isEmpty: Bool { matched == 0 }
 
     /// The link that opens Liked music with the words applied; nil when the block lists every match.
     var showAllTitle: String? {
-        matched > Self.cap ? MusicSearchCopy.showAllSongs(count: matched) : nil
+        matched > Self.cap ? MusicSearchCopy.showAllSongs(count: matched, isPartial: isPartial) : nil
     }
 
     static func resolve(page: MusicBrowsePage?, terms: [String]) -> MusicLikedSongs {
         let found = MusicLocalSearch.filter(page?.tracks ?? [], terms: terms)
-        return MusicLikedSongs(songs: Array(found.prefix(cap)), matched: found.count, page: page)
+        return MusicLikedSongs(songs: Array(found.prefix(cap)), matched: found.count, page: page, isPartial: page?.continuation != nil)
     }
 }
 

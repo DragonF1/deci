@@ -149,7 +149,8 @@ struct MusicLibraryView: View {
                     noun: section.noun,
                     query: navigation.filterQuery,
                     place: "your library",
-                    beyond: "your library"
+                    beyond: "your library",
+                    isPartial: navigation.likedSongs?.isPartial ?? false
                 )
                 MusicNoResultsBlock(title: copy.title, detail: copy.detail) {
                     navigation.searchYouTubeMusicInstead()

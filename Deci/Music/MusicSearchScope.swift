@@ -102,9 +102,11 @@ nonisolated enum MusicSearchCopy {
         return isPartial ? line + " LOADED" : line
     }
 
-    /// The link over the Library filter's Songs block when Liked music holds more matches than it shows.
-    static func showAllSongs(count: Int) -> String {
-        "Show all \(max(count, 0)) \(MusicSearchNoun.song.word(count: count))"
+    /// The link over the Library filter's Songs block when Liked music holds more matches than it shows. When Liked music
+    /// is only partly loaded the count is of what is loaded, and says so.
+    static func showAllSongs(count: Int, isPartial: Bool = false) -> String {
+        let link = "Show all \(max(count, 0)) \(MusicSearchNoun.song.word(count: count))"
+        return isPartial ? link + " loaded" : link
     }
 
     /// The line under the filtered queue: "Clear or press esc to show all 4 songs".
@@ -116,12 +118,20 @@ nonisolated enum MusicSearchCopy {
     static let quotedLimit = 30
 
     /// The title and the line under it of a filter that found nothing. `place` is where it looked ("this playlist",
-    /// "your library", "the queue"); `beyond` is what to look past ("Late Night Drive", "your library").
-    static func noResults(noun: MusicSearchNoun, query: String, place: String, beyond: String) -> (title: String, detail: String) {
+    /// "your library", "the queue"); `beyond` is what to look past ("Late Night Drive", "your library"). With
+    /// `isPartial` the songs it looked in were only the ones loaded, and the line says so.
+    static func noResults(
+        noun: MusicSearchNoun,
+        query: String,
+        place: String,
+        beyond: String,
+        isPartial: Bool = false
+    ) -> (title: String, detail: String) {
         let quoted = quoted(query)
+        let detail = "Try another word, or look beyond \(beyond)."
         return (
             "No \(noun.word(count: 2)) match \u{201C}\(quoted)\u{201D} in \(place)",
-            "Try another word, or look beyond \(beyond)."
+            isPartial ? "Only the songs loaded so far were searched. " + detail : detail
         )
     }
 

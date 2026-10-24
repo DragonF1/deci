@@ -39,7 +39,8 @@ struct MusicArtistSearchView: View {
                 noun: .song,
                 query: navigation.filterQuery,
                 place: "this artist",
-                beyond: service.browse.path.last?.title ?? "this artist"
+                beyond: service.browse.path.last?.title ?? "this artist",
+                isPartial: search.isPartial
             )
             MusicNoResultsBlock(title: copy.title, detail: copy.detail) {
                 navigation.searchYouTubeMusicInstead()

@@ -820,6 +820,12 @@ final class MusicBrowseStore {
         for collection in closed { drop(collection.browseId) }
     }
 
+    /// Drops pages that were loaded without being opened (a search asked for them), with the guard `drop` has: one that
+    /// is on the path stays.
+    func dropPages(_ browseIds: some Sequence<String>) {
+        for browseId in browseIds { drop(browseId) }
+    }
+
     /// A closed page is dropped unless it is still further down the path, so opening it again
     /// fetches it fresh (a song just liked shows in Liked music) and closed pages do not pile up.
     private func drop(_ browseId: String) {
