@@ -6,6 +6,16 @@ import AppKit
 @Suite("MenuBarPopupController", .serialized)
 @MainActor
 struct MenuBarPopupControllerTests {
+    /// Makes a status item for a test and gives it its own autosave name right away.
+    /// A new item is named "Item-0", the test host shares com.abraham.Deci with the installed
+    /// app, and removing it deleted the Mixer's saved spot so the icon came back hidden at the far left.
+    private func makeTestStatusItem(title: String) -> NSStatusItem {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.autosaveName = "DeciTest-\(UUID().uuidString)"
+        item.button?.setAccessibilityTitle(title)
+        return item
+    }
+
     @Test("toggle is a no-op when no matching status item exists")
     func noMatchingItem() {
         // Use a deliberately unique accessibility title so no real status item
@@ -23,8 +33,7 @@ struct MenuBarPopupControllerTests {
     @Test("findStatusItem locates the matching status item by accessibility title")
     func findLocatesMatching() {
         let title = "FineTuneTest-Match-\(UUID().uuidString)"
-        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.setAccessibilityTitle(title)
+        let statusItem = makeTestStatusItem(title: title)
         defer { NSStatusBar.system.removeStatusItem(statusItem) }
 
         // Materialize the button window so KVC has a fully-formed window to walk.
@@ -39,8 +48,7 @@ struct MenuBarPopupControllerTests {
     @Test("findStatusItem ignores items with non-matching accessibility titles")
     func findIgnoresNonMatching() {
         let otherTitle = "FineTuneTest-Other-\(UUID().uuidString)"
-        let other = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        other.button?.setAccessibilityTitle(otherTitle)
+        let other = makeTestStatusItem(title: otherTitle)
         defer { NSStatusBar.system.removeStatusItem(other) }
         _ = other.button?.window?.windowNumber
 
@@ -57,12 +65,32 @@ struct MenuBarPopupControllerTests {
         // exercises the full discovery + event-construction path so a regression
         // (nil event, missing window, KVC failure) surfaces as a crash or early return.
         let title = "FineTuneTest-Smoke-\(UUID().uuidString)"
-        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.setAccessibilityTitle(title)
+        let statusItem = makeTestStatusItem(title: title)
         defer { NSStatusBar.system.removeStatusItem(statusItem) }
         _ = statusItem.button?.window?.windowNumber
 
         let controller = MenuBarPopupController(accessibilityTitle: title)
         controller.toggle()  // must not crash
+    }
+
+    @Test("making and removing a test status item leaves the app's Item-0 defaults alone")
+    func removalLeavesItemZeroDefaultsAlone() {
+        // Read only: the installed app's Mixer item is autosaved as "Item-0" in this same
+        // UserDefaults domain, so these keys are never written here.
+        let keys = [
+            "NSStatusItem Preferred Position Item-0",
+            "NSStatusItem Visible Item-0",
+            "NSStatusItem VisibleCC Item-0",
+        ]
+        func snapshot() -> [Int?] {
+            keys.map { UserDefaults.standard.object(forKey: $0) as? Int }
+        }
+        let before = snapshot()
+
+        let statusItem = makeTestStatusItem(title: "FineTuneTest-Defaults-\(UUID().uuidString)")
+        _ = statusItem.button?.window?.windowNumber
+        NSStatusBar.system.removeStatusItem(statusItem)
+
+        #expect(snapshot() == before)
     }
 }
