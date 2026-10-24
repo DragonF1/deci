@@ -4,8 +4,9 @@ import SwiftUI
 /// The hover card of the Now playing chip: a compact One UI style media card on the song's cover, shown in its own
 /// floating panel under the Music menu bar item while the mouse rests on the chip. It reads the player the Music popup
 /// reads (nothing is copied), is dark whatever the Mixer wears, and is built when the card opens and gone when it
-/// closes. Its numbers move with the player's own half second position ticks; the only clock of its own is the wave's
-/// ripple, which runs while the song plays and stops when it pauses (or with Reduce Motion on).
+/// closes. Its numbers move with the player's own half second position ticks, and it has no clock of its own: the
+/// wave's ripple is a Core Animation loop that the render server plays while the song plays (it stops when the song
+/// pauses, with Reduce Motion on, and when the card is hidden), so the card does nothing per display frame.
 ///
 /// `onOpenPlayer` hides the card and opens the full Music popover, for the lyrics and save buttons: the lyrics and the
 /// playlist picker live in the popover's right column. A click on the chip opens the popover too, so the card has no
@@ -232,7 +233,7 @@ private struct MusicCardProgress: View {
     let position: TimeInterval
     let duration: TimeInterval
     let canSeek: Bool
-    /// The ripple runs while this is true and freezes where it is when it is not.
+    /// The ripple runs while this is true and holds where it is when it is not.
     let isPlaying: Bool
     let tint: MusicTint
     let onSeek: (TimeInterval) -> Void
@@ -269,72 +270,38 @@ private struct MusicCardProgress: View {
     private var wave: some View {
         let shown = progress
         let playheadX = MusicWave.playheadX(progress: shown, width: width)
-        let gradient = Gradient(colors: MusicWave.gradientTints(for: tint).map(\.solid))
-        return TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !isPlaying || reduceMotion)) { timeline in
-            let phase = reduceMotion ? 0 : MusicWave.ripplePhase(at: timeline.date.timeIntervalSinceReferenceDate)
-            Canvas { context, size in
-                let base = MusicWave.baselineY
-                let head = MusicWave.playheadX(progress: shown, width: size.width)
-
-                // The unplayed part: a thin line from the knob to the end.
-                var rest = Path()
-                rest.move(to: CGPoint(x: head, y: base))
-                rest.addLine(to: CGPoint(x: max(size.width - MusicWave.inset, head), y: base))
-                context.stroke(rest, with: .color(Color.white.opacity(0.25)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
-
-                // The played part: the curve filled down to the baseline, in the gradient.
-                let samples = MusicWave.profile(levels: levels, progress: shown, width: size.width, phase: phase)
-                guard let first = samples.first, let last = samples.last else { return }
-                let shading = GraphicsContext.Shading.linearGradient(
-                    gradient,
-                    startPoint: CGPoint(x: MusicWave.inset, y: 0),
-                    endPoint: CGPoint(x: max(head, MusicWave.inset + 1), y: 0)
-                )
-                var curve = Path()
-                curve.move(to: CGPoint(x: first.x, y: base))
-                for sample in samples {
-                    curve.addLine(to: CGPoint(x: sample.x, y: base - sample.height))
-                }
-                curve.addLine(to: CGPoint(x: last.x, y: base))
-                curve.closeSubpath()
-                context.fill(curve, with: shading)
-
-                var line = Path()
-                line.move(to: CGPoint(x: first.x, y: base))
-                line.addLine(to: CGPoint(x: last.x, y: base))
-                context.stroke(line, with: shading, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        // Core Animation runs the ripple (`MusicWaveLayerView`); this view only says what to draw and whether it moves.
+        return MusicWaveLayer(levels: levels, progress: shown, tint: tint, isPlaying: isPlaying, reduceMotion: reduceMotion)
+            .overlay(alignment: .topLeading) {
+                Circle()
+                    .fill(tint.solid)
+                    .overlay(Circle().strokeBorder(Color.white, lineWidth: 2.5))
+                    .frame(width: MusicWave.knobDiameter, height: MusicWave.knobDiameter)
+                    .shadow(color: tint.solid.opacity(0.75), radius: 5)
+                    .offset(x: playheadX - MusicWave.knobDiameter / 2, y: MusicWave.baselineY - MusicWave.knobDiameter / 2)
+                    .allowsHitTesting(false)
             }
-        }
-        .overlay(alignment: .topLeading) {
-            Circle()
-                .fill(tint.solid)
-                .overlay(Circle().strokeBorder(Color.white, lineWidth: 2.5))
-                .frame(width: MusicWave.knobDiameter, height: MusicWave.knobDiameter)
-                .shadow(color: tint.solid.opacity(0.75), radius: 5)
-                .offset(x: playheadX - MusicWave.knobDiameter / 2, y: MusicWave.baselineY - MusicWave.knobDiameter / 2)
-                .allowsHitTesting(false)
-        }
-        .contentShape(Rectangle())
-        .onGeometryChange(for: Double.self) { $0.size.width } action: { width = $0 }
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .updating($dragX) { value, state, _ in state = value.location.x }
-                .onEnded { value in
-                    guard canSeek else { return }
-                    onSeek(MusicWave.seekTime(atX: value.location.x, duration: duration, width: width))
+            .contentShape(Rectangle())
+            .onGeometryChange(for: Double.self) { $0.size.width } action: { width = $0 }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .updating($dragX) { value, state, _ in state = value.location.x }
+                    .onEnded { value in
+                        guard canSeek else { return }
+                        onSeek(MusicWave.seekTime(atX: value.location.x, duration: duration, width: width))
+                    }
+            )
+            .accessibilityElement()
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(canSeek ? "\(Int((MusicTimeFormat.progress(current: position, duration: duration) * 100).rounded())) percent" : "")
+            .accessibilityAdjustableAction { direction in
+                guard canSeek else { return }
+                switch direction {
+                case .increment: onSeek(min(duration, position + 10))
+                case .decrement: onSeek(max(0, position - 10))
+                @unknown default: break
                 }
-        )
-        .accessibilityElement()
-        .accessibilityLabel("Playback position")
-        .accessibilityValue(canSeek ? "\(Int((MusicTimeFormat.progress(current: position, duration: duration) * 100).rounded())) percent" : "")
-        .accessibilityAdjustableAction { direction in
-            guard canSeek else { return }
-            switch direction {
-            case .increment: onSeek(min(duration, position + 10))
-            case .decrement: onSeek(max(0, position - 10))
-            @unknown default: break
             }
-        }
     }
 
     private func time(_ seconds: TimeInterval) -> some View {
