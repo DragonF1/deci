@@ -599,6 +599,7 @@ struct MenuBarPopupView: View {
                     DeviceRow(
                         device: device,
                         isDefault: device.id == deviceVolumeMonitor.defaultDeviceID,
+                        isInUse: audioEngine.outputDevicesInUse.contains(device.uid),
                         volume: deviceVolumeMonitor.volumes[device.id] ?? 1.0,
                         isMuted: deviceVolumeMonitor.muteStates[device.id] ?? false,
                         volumeBackend: deviceVolumeMonitor.cachedOutputVolumeBackend(for: device.id),

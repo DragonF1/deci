@@ -20,6 +20,9 @@ import SwiftUI
 struct DeviceRow: View {
     let device: AudioDevice
     let isDefault: Bool
+    /// True while an app's multi-device route plays on this device. Lights the badge like the
+    /// default does, but changes nothing else: only the default gets the default-only behavior.
+    let isInUse: Bool
     let volume: Float
     let isMuted: Bool
     /// The device's volume backend. Determines which slider ↔ value mapping to use.
@@ -64,6 +67,9 @@ struct DeviceRow: View {
     /// Default slider position to restore when unmuting from 0 (50%)
     private let defaultUnmuteVolume: Double = 0.5
 
+    /// The badge is lit for the default device and for any device a multi route plays on.
+    var isBadgeSelected: Bool { isDefault || isInUse }
+
     private var displayIcon: NSImage? {
         DeviceIconResolver.displayIcon(
             overrideSymbol: iconOverrideSymbol,
@@ -75,6 +81,7 @@ struct DeviceRow: View {
     init(
         device: AudioDevice,
         isDefault: Bool,
+        isInUse: Bool = false,
         volume: Float,
         isMuted: Bool,
         volumeBackend: VolumeControlTier = .hardware,
@@ -98,6 +105,7 @@ struct DeviceRow: View {
     ) {
         self.device = device
         self.isDefault = isDefault
+        self.isInUse = isInUse
         self.volume = volume
         self.isMuted = isMuted
         self.volumeBackend = volumeBackend
@@ -145,7 +153,7 @@ struct DeviceRow: View {
             // Selection is now signalled by accent-colored gradient on the
             // badge plus bold device name; the row-level gesture in `body`
             // handles tap-to-set-default.
-            DeviceBadge(icon: displayIcon, isSelected: isDefault)
+            DeviceBadge(icon: displayIcon, isSelected: isBadgeSelected)
 
             // Device name + optional AutoEQ profile subtitle + AutoEQ picker
             HStack(spacing: DesignTokens.Spacing.xs) {

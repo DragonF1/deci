@@ -23,6 +23,19 @@ final class AudioEngine {
 
     private var taps: [pid_t: any ProcessTapControlling] = [:]
 
+    /// Output device UIDs that carry a multi-device route: the union of the devices of every live
+    /// tap that plays on more than one. Stored (not computed from `taps`) because a tap's device
+    /// list is not observable, so views reading this redraw only when the engine refreshes it.
+    private(set) var multiRouteDeviceUIDs: Set<String> = []
+
+    /// Output device UIDs the popup marks as in use besides the system default. The one place that
+    /// unions every source of multi-device playback, so a new source (the music player, Chrome
+    /// tabs) adds its own devices here and the device list needs no change. Today the only source
+    /// is the per-app taps in `multiRouteDeviceUIDs`.
+    var outputDevicesInUse: Set<String> {
+        multiRouteDeviceUIDs
+    }
+
     /// Factory for creating tap controllers. Overridable for testing.
     private let tapFactory: @MainActor (AudioApp, [String], String?) throws -> any ProcessTapControlling
 
@@ -607,6 +620,7 @@ final class AudioEngine {
         if let tap = taps.removeValue(forKey: app.id) {
             tap.invalidate()
         }
+        refreshMultiRouteDeviceUIDs()
         appDeviceRouting.removeValue(forKey: app.id)
         followsDefault.remove(app.id)
         appliedPIDs.remove(app.id)
@@ -729,6 +743,7 @@ final class AudioEngine {
             tap.invalidate()
         }
         taps.removeAll()
+        refreshMultiRouteDeviceUIDs()
         logger.info("AudioEngine stopped")
     }
 
@@ -847,6 +862,21 @@ final class AudioEngine {
         } else {
             tap.currentDeviceVolume = 1.0
             tap.isDeviceMuted = false
+        }
+
+        // Every tap device change ends here, so this is where the in-use set follows it.
+        refreshMultiRouteDeviceUIDs()
+    }
+
+    /// Recomputes `multiRouteDeviceUIDs` from the live taps. Call after any change to `taps` or to
+    /// a tap's devices. Assigns only on a real change so views reading the set do not redraw for nothing.
+    private func refreshMultiRouteDeviceUIDs() {
+        var uids: Set<String> = []
+        for tap in taps.values where tap.currentDeviceUIDs.count > 1 {
+            uids.formUnion(tap.currentDeviceUIDs)
+        }
+        if uids != multiRouteDeviceUIDs {
+            multiRouteDeviceUIDs = uids
         }
     }
 
@@ -1130,9 +1160,44 @@ final class AudioEngine {
 
         guard previousMode != mode else { return }
 
+        if mode == .multi {
+            seedMultiSelection(for: app)
+        }
+
         Task {
             await updateTapForCurrentMode(for: app)
         }
+    }
+
+    /// Ticks the device(s) the app is playing on when it enters multi mode with no selection, so the
+    /// dropdown opens with the current output checked and the tap keeps playing there. A selection
+    /// already in memory or saved by an earlier session is left alone. Writes synchronously, so
+    /// the picker sees the seed in the same update that shows the mode change.
+    private func seedMultiSelection(for app: AudioApp) {
+        guard getSelectedDeviceUIDs(for: app).isEmpty else { return }
+        if let saved = volumeState.loadSavedSelectedDeviceUIDs(for: app.id, identifier: app.persistenceIdentifier),
+           !saved.isEmpty {
+            return
+        }
+
+        let playingOn: [String]
+        if let tap = taps[app.id], !tap.currentDeviceUIDs.isEmpty {
+            playingOn = tap.currentDeviceUIDs
+        } else if let deviceUID = singleModeDeviceUID(for: app) {
+            playingOn = [deviceUID]
+        } else {
+            return
+        }
+        volumeState.setSelectedDeviceUIDs(for: app.id, to: Set(playingOn), identifier: app.persistenceIdentifier)
+    }
+
+    /// The device a single-mode app plays on: the system default while it follows the default,
+    /// else its routed device, else the default.
+    private func singleModeDeviceUID(for app: AudioApp) -> String? {
+        if isFollowingDefault(for: app), let defaultUID = deviceVolumeMonitor.defaultDeviceUID {
+            return defaultUID
+        }
+        return appDeviceRouting[app.id] ?? deviceVolumeMonitor.defaultDeviceUID
     }
 
     /// Gets the selected device UIDs for multi-mode
@@ -1161,16 +1226,15 @@ final class AudioEngine {
         let deviceUIDs: [String]
         switch mode {
         case .single:
-            if isFollowingDefault(for: app), let defaultUID = deviceVolumeMonitor.defaultDeviceUID {
-                deviceUIDs = [defaultUID]
-            } else if let deviceUID = appDeviceRouting[app.id] {
-                deviceUIDs = [deviceUID]
-            } else if let defaultUID = deviceVolumeMonitor.defaultDeviceUID {
-                deviceUIDs = [defaultUID]
-            } else {
+            guard let deviceUID = singleModeDeviceUID(for: app) else {
                 logger.warning("No device available for \(app.name) in single mode")
                 return
             }
+            // Default changes skipped this app while it was multi, so catch its routing up.
+            if isFollowingDefault(for: app) {
+                appDeviceRouting[app.id] = deviceUID
+            }
+            deviceUIDs = [deviceUID]
 
         case .multi:
             let selectedUIDs = getSelectedDeviceUIDs(for: app).sorted()
@@ -1217,6 +1281,7 @@ final class AudioEngine {
             )
             try tap.activate(initial: initial)
             taps[app.id] = tap
+            refreshMultiRouteDeviceUIDs()
 
             // Catalog AutoEQ may not have been cached yet — kick off async resolve.
             if initial.autoEQProfile == nil {
@@ -1378,6 +1443,7 @@ final class AudioEngine {
             )
             try tap.activate(initial: initial)
             taps[app.id] = tap
+            refreshMultiRouteDeviceUIDs()
 
             // Catalog AutoEQ may not have been cached yet — kick off async resolve.
             // Imported profiles always hit the synchronous path above.
@@ -1455,11 +1521,14 @@ final class AudioEngine {
     }
 
     /// Routes all followsDefault apps to the given device UID and switches their taps.
+    /// Apps in multi mode keep their own device set: they stay in followsDefault (so switching back
+    /// to single mode follows the default again) but are never moved here.
     /// Early-exits if all apps are already routed to the target (avoids unnecessary tap switches).
     private func routeFollowsDefaultApps(to targetUID: String) {
-        guard !followsDefault.allSatisfy({ appDeviceRouting[$0] == targetUID }) else { return }
+        let movable = followsDefault.filter { volumeState.getDeviceSelectionMode(for: $0) != .multi }
+        guard !movable.allSatisfy({ appDeviceRouting[$0] == targetUID }) else { return }
 
-        for pid in followsDefault {
+        for pid in movable {
             appDeviceRouting[pid] = targetUID
         }
 
@@ -1468,7 +1537,7 @@ final class AudioEngine {
         // app would resume on the old device (appliedPIDs blocks any later re-route).
         var tapsToSwitch: [(app: AudioApp, tap: any ProcessTapControlling)] = []
         for pid in taps.keys.sorted() {
-            guard followsDefault.contains(pid), let tap = taps[pid] else { continue }
+            guard movable.contains(pid), let tap = taps[pid] else { continue }
             tapsToSwitch.append((tap.app, tap))
         }
         guard !tapsToSwitch.isEmpty else { return }
@@ -1605,6 +1674,10 @@ final class AudioEngine {
         // Iterate over taps for consistency with handleDeviceDisconnected
         for tap in taps.values {
             let app = tap.app
+
+            // A multi app plays on its own device set; the single-device routing left in settings
+            // from before it was switched to multi must not collapse it onto the reconnected device.
+            guard volumeState.getDeviceSelectionMode(for: app.id) != .multi else { continue }
 
             // Skip apps that are PERSISTED as following default - they don't have explicit device preferences
             // Note: in-memory followsDefault may include temporarily displaced apps, so check persisted state
@@ -2059,6 +2132,7 @@ final class AudioEngine {
             tap.invalidate()
             logger.debug("Cleaned up stale tap for PID \(pid)")
         }
+        refreshMultiRouteDeviceUIDs()
         appDeviceRouting.removeValue(forKey: pid)
         followsDefault.remove(pid)
         appliedPIDs.remove(pid)  // Allow re-initialization if app resumes
@@ -2429,6 +2503,7 @@ final class AudioEngine {
     /// to prevent orphaned IO procs from accumulating (issue #176).
     private func recreateTap(for pid: pid_t, cooldown: TimeInterval = 20, now: Date = Date()) async {
         guard let oldTap = taps.removeValue(forKey: pid) else { return }
+        refreshMultiRouteDeviceUIDs()
         cancelProcessRebuild(for: pid)
         let deviceUIDs = oldTap.currentDeviceUIDs
         await oldTap.invalidateAsync()
