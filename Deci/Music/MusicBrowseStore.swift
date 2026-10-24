@@ -510,7 +510,8 @@ final class MusicBrowseStore {
             continuation: more.continuation == token ? nil : more.continuation,
             shelves: page.shelves,
             isEditable: page.isEditable,
-            audioPlaylistId: page.audioPlaylistId
+            audioPlaylistId: page.audioPlaylistId,
+            allSongsBrowseId: page.allSongsBrowseId
         ))
     }
 
@@ -540,7 +541,8 @@ final class MusicBrowseStore {
             continuation: page.continuation,
             shelves: page.shelves,
             isEditable: page.isEditable,
-            audioPlaylistId: page.audioPlaylistId
+            audioPlaylistId: page.audioPlaylistId,
+            allSongsBrowseId: page.allSongsBrowseId
         ))
         return true
     }
@@ -568,9 +570,11 @@ final class MusicBrowseStore {
         browseId == Self.likedMusic.browseId
     }
 
-    /// The sort of this playlist: the one picked, else where it rests.
+    /// The sort of this playlist: the one picked, else where it rests. A pick the page's menu does not offer rests
+    /// instead, so Plays picked on an artist's songs never follows the same id opened as a plain playlist.
     func sort(for browseId: String) -> MusicPlaylistSort {
-        sorts[browseId] ?? restingSort(for: browseId)
+        if let picked = sorts[browseId], sortOptions(for: browseId).contains(picked.field) { return picked }
+        return restingSort(for: browseId)
     }
 
     /// Whether the sort puts the songs in another order than YouTube lists them. Only then do all the songs have to be
@@ -586,12 +590,25 @@ final class MusicBrowseStore {
         loadingAllTracks.contains(browseId) && needsReorder(browseId)
     }
 
-    /// Picks a sort option for a playlist: a new option sorts ascending (Date added, newest first), the same one
-    /// again flips the direction, and Playlist order is stored as a pick too, so a playlist that rests on Date added
-    /// stays in YouTube's order once the user asks for it. A sort that reorders first loads every remaining page of
-    /// songs (up to `sortTrackCap`), and the list waits for them.
+    /// Whether the page is an artist's list of all their songs, as the collection that opened it says. The latest one
+    /// opened on the path counts, and a page that is not on it is a plain playlist.
+    func isArtistSongs(_ browseId: String) -> Bool {
+        path.last { $0.browseId == browseId }?.isArtistSongs ?? false
+    }
+
+    /// The options the page's sort menu offers: an artist's songs list has Popular, Album and Plays, any other
+    /// playlist and Liked music the usual ones.
+    func sortOptions(for browseId: String) -> [MusicSortField] {
+        MusicSortField.options(artistSongs: isArtistSongs(browseId))
+    }
+
+    /// Picks a sort option for a playlist: a new option sorts ascending (Date added, newest first; Plays, most played
+    /// first), the same one again flips the direction, and Playlist order is stored as a pick too, so a playlist that
+    /// rests on Date added stays in YouTube's order once the user asks for it. An option the page's menu does not offer
+    /// is ignored. A sort that reorders first loads every remaining page of songs (up to `sortTrackCap`), and the
+    /// list waits for them.
     func pickSort(_ field: MusicSortField, for browseId: String) {
-        guard Self.canSort(browseId) else { return }
+        guard Self.canSort(browseId), sortOptions(for: browseId).contains(field) else { return }
         sorts[browseId] = sort(for: browseId).picking(field)
         sortedPages[browseId] = nil
         loadAllTracksIfReordering(browseId)
@@ -613,7 +630,8 @@ final class MusicBrowseStore {
             continuation: nil,
             shelves: page.shelves,
             isEditable: page.isEditable,
-            audioPlaylistId: page.audioPlaylistId
+            audioPlaylistId: page.audioPlaylistId,
+            allSongsBrowseId: page.allSongsBrowseId
         )
         sortedPages[browseId] = (sort, sorted)
         return sorted

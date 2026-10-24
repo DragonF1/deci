@@ -186,7 +186,8 @@ extension InnerTubeParser {
                     thumbnailURL: track.thumbnailURL ?? cover,
                     artistLinks: ownArtist ? track.artistLinks : artist.links,
                     albumBrowseId: track.albumBrowseId ?? browseId,
-                    playlistSetVideoId: track.playlistSetVideoId
+                    playlistSetVideoId: track.playlistSetVideoId,
+                    plays: track.plays
                 )
             }
         }
@@ -203,8 +204,23 @@ extension InnerTubeParser {
             continuation: rows.flatMap { continuationToken(in: $0, items: $0["contents"] as? [[String: Any]] ?? []) },
             shelves: shelves,
             isEditable: isEditablePlaylist(root: root, browseId: browseId, rows: rowRenderers),
-            audioPlaylistId: audioPlaylistId
+            audioPlaylistId: audioPlaylistId,
+            allSongsBrowseId: header.isArtist ? rows.flatMap(allSongsBrowseId(in:)) : nil
         )
+    }
+
+    /// The artist's list of all their songs, which the Top songs header links to: the page its title run opens, else the
+    /// shelf's bottom endpoint or its more button. Only a playlist counts, and a bare playlist id gets the "VL" its page
+    /// is browsed by.
+    private static func allSongsBrowseId(in shelf: [String: Any]) -> String? {
+        let title = path(runs(shelf["title"]).first, "navigationEndpoint", "browseEndpoint")
+        let bottom = path(shelf, "bottomEndpoint", "browseEndpoint")
+        let more = path(shelf, "moreContentButton", "buttonRenderer", "navigationEndpoint", "browseEndpoint")
+        for case let browse as [String: Any] in [title, bottom, more] {
+            guard collectionKind(of: browse) == .playlist, let id = string(browse["browseId"]) else { continue }
+            return id.hasPrefix("VL") ? id : "VL" + id
+        }
+        return nil
     }
 
     /// The rows after a page's first track list.

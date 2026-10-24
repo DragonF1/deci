@@ -134,6 +134,15 @@ struct MusicPagePillsTests {
         #expect(MusicPagePills.menuItems(kind: .artist, home: nil).isEmpty)
     }
 
+    @Test("an artist's songs list leaves the Pin to Home entry out, since a pinned tile would reopen it as a plain playlist")
+    func artistSongsHaveNoPin() {
+        #expect(MusicPagePills.menuItems(kind: .playlist, home: .canPin, isArtistSongs: true).isEmpty)
+        #expect(MusicPagePills.menuItems(kind: .playlist, home: .pinned, isArtistSongs: true).isEmpty)
+        // Every other page is as it was.
+        #expect(MusicPagePills.menuItems(kind: .playlist, home: .canPin, isArtistSongs: false) == [.pinHome(.canPin)])
+        #expect(MusicPagePills.menuItems(kind: .playlist, home: .canPin) == [.pinHome(.canPin)])
+    }
+
     @Test("a page with a Home entry shows the round menu button")
     func homeEntryShowsMenuButton() {
         for kind in [MusicPageKind.album, .playlist, .artist] {
@@ -177,6 +186,92 @@ struct MusicSortNoteTests {
         #expect(MusicSortNote.limitText(2000) == "First 2000 songs")
         #expect(MusicSortNote.limitText(2) == "First 2 songs")
         #expect(MusicSortNote.limitText(1) == "First song")
+    }
+}
+
+@MainActor
+@Suite("MusicTopSongsHeader")
+struct MusicTopSongsHeaderTests {
+    private func artistPage(
+        title: String = "Daft Punk",
+        allSongs: String? = "VLOLAK5uy_allsongs",
+        thumbnail: URL? = nil
+    ) -> MusicBrowsePage {
+        MusicBrowsePage(
+            browseId: "UCdaft", title: title, subtitle: nil, thumbnailURL: thumbnail,
+            tracks: [MusicSamples.track("a")], continuation: nil, shelves: [], allSongsBrowseId: allSongs
+        )
+    }
+
+    @Test("the header says Top songs and the link says Show all")
+    func words() {
+        #expect(MusicTopSongsHeader.title == "Top songs")
+        #expect(MusicTopSongsHeader.linkTitle == "Show all")
+    }
+
+    @Test("an artist page that names its full list of songs gets a link that opens it as an artist's songs list")
+    func opener() throws {
+        let thumbnail = URL(string: "https://img.example.test/daft.jpg")
+        let opener = try #require(MusicTopSongsHeader.opener(for: artistPage(thumbnail: thumbnail), kind: .artist))
+        #expect(opener.browseId == "VLOLAK5uy_allsongs")
+        #expect(opener.kind == .playlist)
+        #expect(opener.isArtistSongs)
+        #expect(opener.title == "Daft Punk songs")
+        #expect(opener.thumbnailURL == thumbnail)
+        #expect(MusicPageKind.resolve(kind: opener.kind, browseId: opener.browseId) == .playlist)
+    }
+
+    @Test("an artist page with no full list gets no link")
+    func noId() {
+        #expect(MusicTopSongsHeader.opener(for: artistPage(allSongs: nil), kind: .artist) == nil)
+        #expect(MusicTopSongsHeader.opener(for: artistPage(allSongs: ""), kind: .artist) == nil)
+    }
+
+    @Test("only an artist page has the link, whatever id another page carries")
+    func artistOnly() {
+        for kind in [MusicPageKind.album, .playlist, .liked] {
+            #expect(MusicTopSongsHeader.opener(for: artistPage(), kind: kind) == nil)
+        }
+    }
+
+    @Test("the title is the artist's name and 'songs', trimmed, and just Songs when the page has no name")
+    func titles() throws {
+        let padded = try #require(MusicTopSongsHeader.opener(for: artistPage(title: "  Daft Punk \n"), kind: .artist))
+        #expect(padded.title == "Daft Punk songs")
+        let unnamed = try #require(MusicTopSongsHeader.opener(for: artistPage(title: "  "), kind: .artist))
+        #expect(unnamed.title == "Songs")
+        let empty = try #require(MusicTopSongsHeader.opener(for: artistPage(title: ""), kind: .artist))
+        #expect(empty.title == "Songs")
+    }
+
+    @Test("a name with special characters comes through whole")
+    func specialCharacters() throws {
+        let opener = try #require(MusicTopSongsHeader.opener(for: artistPage(title: "Beyonc\u{00E9} \u{1F3B5} AC/DC"), kind: .artist))
+        #expect(opener.title == "Beyonc\u{00E9} \u{1F3B5} AC/DC songs")
+    }
+}
+
+@MainActor
+@Suite("MusicPageHeroText shown title")
+struct MusicPageShownTitleTests {
+    @Test("an artist's songs list shows the title of the link that opened it, not the generic title of the list")
+    func artistSongsTitle() {
+        let opener = MusicSamples.collection("VLOLAK5uy_x", title: "Daft Punk songs", isArtistSongs: true)
+        #expect(MusicPageHeroText.shownTitle(pageTitle: "Songs", opener: opener) == "Daft Punk songs")
+    }
+
+    @Test("a blank title on the link falls back to the page's own")
+    func blankFallsBack() {
+        let opener = MusicSamples.collection("VLOLAK5uy_x", title: "  ", isArtistSongs: true)
+        #expect(MusicPageHeroText.shownTitle(pageTitle: "Songs", opener: opener) == "Songs")
+    }
+
+    @Test("every other page keeps the title YouTube gave it, whatever its collection says")
+    func otherPagesUnchanged() {
+        let playlist = MusicSamples.collection("VLPL1", title: "Tile name")
+        #expect(MusicPageHeroText.shownTitle(pageTitle: "Page name", opener: playlist) == "Page name")
+        let album = MusicSamples.collection("MPREb_x", kind: .album, title: "Tile name")
+        #expect(MusicPageHeroText.shownTitle(pageTitle: "Page name", opener: album) == "Page name")
     }
 }
 

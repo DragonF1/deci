@@ -23,6 +23,9 @@ struct MusicTrack: Sendable, Hashable, Identifiable {
     /// playlist items. Public playlists carry it too, so whether the user may edit the playlist is the page's
     /// `isEditable`, not this.
     var playlistSetVideoId: String?
+    /// How many times the song was played, as the row's "2B plays" says. Only an artist page's rows and some search
+    /// and home rows carry it; nil elsewhere, which sorts last.
+    var plays: Int?
 
     var id: String { videoId }
 }
@@ -188,6 +191,9 @@ struct MusicCollection: Sendable, Hashable, Identifiable {
     /// An album's playlist of songs ("OLAK5uy_..."), the id a whole-album save adds from. Only an album tile that
     /// carries one has it; nil elsewhere.
     var audioPlaylistId: String?
+    /// Whether this opens an artist's list of all their songs (the "Show all" of the Top songs), which sorts by Popular,
+    /// Album and Plays. The route carries it because an album's "OLAK5uy_" playlist has the same kind of id.
+    var isArtistSongs = false
 
     var id: String { browseId }
 }
@@ -255,6 +261,9 @@ struct MusicBrowsePage: Sendable, Equatable {
     /// An album's audio playlist ("OLAK5uy_..."), the playlist its automix is asked of. Nil on every other page, and on
     /// an album whose rows name none.
     var audioPlaylistId: String?
+    /// An artist page's list of all their songs ("VL..."), which the Top songs header links to. Nil on every other
+    /// page, and on an artist page whose Top songs header names none.
+    var allSongsBrowseId: String?
 
     /// The playlist a mix page ("RD..." with or without the "VL" prefix) is, or nil for any other id. A curated
     /// "RDCLAK5uy_" playlist is a playlist, not a mix.

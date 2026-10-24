@@ -150,17 +150,19 @@ struct MusicPageMoreMenu: View {
 /// The sort keys as menu entries, with a mark on the picked one that shows its direction. Picking it again flips it.
 private struct MusicSortMenuItems: View {
     let sort: MusicPlaylistSort
+    var artistSongs = false
     let onPick: (MusicSortField) -> Void
 
     var body: some View {
-        ForEach(MusicSortField.allCases) { field in
+        ForEach(MusicSortField.options(artistSongs: artistSongs)) { field in
+            let label = field.label(onArtistSongs: artistSongs)
             Button {
                 onPick(field)
             } label: {
                 if field == sort.field {
-                    Label(field.label, systemImage: MusicSortChip.menuSymbol(for: sort))
+                    Label(label, systemImage: MusicSortChip.menuSymbol(for: sort))
                 } else {
-                    Text(field.label)
+                    Text(label)
                 }
             }
         }
@@ -171,12 +173,14 @@ private struct MusicSortMenuItems: View {
 /// tells it, like "Sort: Date added" with a down arrow for a playlist at rest, or "Sort: Playlist order" with none.
 struct MusicSortChipView: View {
     let sort: MusicPlaylistSort
+    /// Whether the page is an artist's songs list, whose menu has Popular, Album and Plays.
+    var artistSongs = false
     let onPick: (MusicSortField) -> Void
 
     var body: some View {
-        let chip = MusicSortChip.resolve(sort)
+        let chip = MusicSortChip.resolve(sort, artistSongs: artistSongs)
         Menu {
-            MusicSortMenuItems(sort: sort, onPick: onPick)
+            MusicSortMenuItems(sort: sort, artistSongs: artistSongs, onPick: onPick)
         } label: {
             HStack(spacing: 4) {
                 if let symbol = chip.directionSymbol {

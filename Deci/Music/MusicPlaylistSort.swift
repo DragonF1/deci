@@ -12,6 +12,8 @@ enum MusicSortField: String, CaseIterable, Identifiable, Sendable {
     case artist
     case album
     case duration
+    /// How many times the song was played. Only an artist's songs list offers it: a playlist's rows carry no count.
+    case plays
 
     var id: String { rawValue }
 
@@ -23,7 +25,25 @@ enum MusicSortField: String, CaseIterable, Identifiable, Sendable {
         case .artist: "Artist"
         case .album: "Album"
         case .duration: "Duration"
+        case .plays: "Plays"
         }
+    }
+
+    /// What a playlist's and Liked music's sort menu offers, in order: every option but Plays.
+    static let playlistOptions: [MusicSortField] = [.dateAdded, .playlistOrder, .title, .artist, .album, .duration]
+
+    /// What an artist's songs list offers, in order. Its Playlist order reads Popular, since YouTube lists an artist's
+    /// songs by how popular they are.
+    static let artistSongsOptions: [MusicSortField] = [.playlistOrder, .album, .plays]
+
+    /// The sort menu's options for a playlist, or for an artist's songs list.
+    static func options(artistSongs: Bool) -> [MusicSortField] {
+        artistSongs ? artistSongsOptions : playlistOptions
+    }
+
+    /// The menu's name for the option: Playlist order is Popular on an artist's songs list.
+    func label(onArtistSongs artistSongs: Bool) -> String {
+        artistSongs && self == .playlistOrder ? "Popular" : label
     }
 }
 
@@ -45,11 +65,12 @@ struct MusicPlaylistSort: Equatable, Sendable {
     var isPlaylistOrder: Bool { field == .playlistOrder }
 
     /// What picking `picked` in the sort menu gives: a new option starts ascending, except Date added, which starts
-    /// with the newest song first; the same option again flips the direction, and Playlist order has no direction.
+    /// with the newest song first, and Plays, which starts with the most played; the same option again flips the
+    /// direction, and Playlist order has no direction.
     func picking(_ picked: MusicSortField) -> MusicPlaylistSort {
         if picked == .playlistOrder { return .playlistOrder }
         if picked == field { return MusicPlaylistSort(field: field, ascending: !ascending) }
-        return MusicPlaylistSort(field: picked, ascending: picked != .dateAdded)
+        return MusicPlaylistSort(field: picked, ascending: picked != .dateAdded && picked != .plays)
     }
 
     /// Whether this sort puts a playlist's songs in another order than YouTube lists them, so the songs have to be
@@ -59,7 +80,7 @@ struct MusicPlaylistSort: Equatable, Sendable {
         switch field {
         case .playlistOrder: false
         case .dateAdded: ascending == newestFirst
-        case .title, .artist, .album, .duration: true
+        case .title, .artist, .album, .duration, .plays: true
         }
     }
 
@@ -117,6 +138,7 @@ struct MusicPlaylistSort: Equatable, Sendable {
         case .artist: Self.text(track.artist)
         case .album: Self.text(track.album)
         case .duration: track.durationSeconds.map(Key.number)
+        case .plays: track.plays.map(Key.number)
         }
     }
 

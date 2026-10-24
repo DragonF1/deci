@@ -727,11 +727,14 @@ nonisolated enum MusicSamples {
         artist: String = "Artist",
         seconds: Int? = 200,
         albumBrowseId: String? = nil,
-        setVideoId: String? = nil
+        setVideoId: String? = nil,
+        album: String? = nil,
+        plays: Int? = nil
     ) -> Deci.MusicTrack {
-        var track = Deci.MusicTrack(videoId: id, title: title, artist: artist, album: nil, durationSeconds: seconds, thumbnailURL: nil)
+        var track = Deci.MusicTrack(videoId: id, title: title, artist: artist, album: album, durationSeconds: seconds, thumbnailURL: nil)
         track.albumBrowseId = albumBrowseId
         track.playlistSetVideoId = setVideoId
+        track.plays = plays
         return track
     }
 
@@ -749,7 +752,8 @@ nonisolated enum MusicSamples {
         title: String? = nil,
         subtitle: String = "Playlist",
         artistLinks: [MusicArtistLink] = [],
-        audioPlaylistId: String? = nil
+        audioPlaylistId: String? = nil,
+        isArtistSongs: Bool = false
     ) -> MusicCollection {
         MusicCollection(
             browseId: browseId,
@@ -758,7 +762,8 @@ nonisolated enum MusicSamples {
             subtitle: subtitle,
             thumbnailURL: nil,
             artistLinks: artistLinks,
-            audioPlaylistId: audioPlaylistId
+            audioPlaylistId: audioPlaylistId,
+            isArtistSongs: isArtistSongs
         )
     }
 
@@ -777,7 +782,8 @@ nonisolated enum MusicSamples {
         title: String = "Page",
         shelves: [MusicShelf] = [],
         isEditable: Bool = false,
-        audioPlaylistId: String? = nil
+        audioPlaylistId: String? = nil,
+        allSongsBrowseId: String? = nil
     ) -> MusicBrowsePage {
         MusicBrowsePage(
             browseId: browseId,
@@ -788,7 +794,8 @@ nonisolated enum MusicSamples {
             continuation: continuation,
             shelves: shelves,
             isEditable: isEditable,
-            audioPlaylistId: audioPlaylistId
+            audioPlaylistId: audioPlaylistId,
+            allSongsBrowseId: allSongsBrowseId
         )
     }
 

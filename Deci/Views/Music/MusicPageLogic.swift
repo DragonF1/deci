@@ -108,13 +108,35 @@ enum MusicPagePills {
     }
 
     /// The page's menu: the Home pin. `home` is nil where Home cannot hold the page (Liked Music, which belongs to
-    /// the account and has no cover of its own), and that pin is then left out.
-    static func menuItems(kind: MusicPageKind, home: MusicHomePinState?) -> [MusicPageMenuItem] {
+    /// the account and has no cover of its own), and that pin is then left out. So is the pin of an artist's songs
+    /// list, which a pinned tile would reopen as a plain playlist.
+    static func menuItems(kind: MusicPageKind, home: MusicHomePinState?, isArtistSongs: Bool = false) -> [MusicPageMenuItem] {
         var items: [MusicPageMenuItem] = []
-        if kind != .liked, let home {
+        if kind != .liked, !isArtistSongs, let home {
             items.append(.pinHome(home))
         }
         return items
+    }
+}
+
+/// The "Top songs" header of an artist's page and its "Show all" link to the artist's list of all their songs.
+enum MusicTopSongsHeader {
+    static let title = "Top songs"
+    static let linkTitle = "Show all"
+
+    /// What the link opens: the artist's songs list, marked as such and titled "<Artist> songs". Nil, so no link, when
+    /// the page is not an artist's or names no such list.
+    static func opener(for page: MusicBrowsePage, kind: MusicPageKind) -> MusicCollection? {
+        guard kind == .artist, let browseId = page.allSongsBrowseId, !browseId.isEmpty else { return nil }
+        let name = page.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return MusicCollection(
+            browseId: browseId,
+            kind: .playlist,
+            title: name.isEmpty ? "Songs" : "\(name) songs",
+            subtitle: "",
+            thumbnailURL: page.thumbnailURL,
+            isArtistSongs: true
+        )
     }
 }
 
@@ -152,6 +174,14 @@ struct MusicPageHeroText: Equatable {
     static let madeByYou = "Made by you"
 
     private static let separator = " \u{00B7} "
+
+    /// The title a page's header shows: an artist's songs list takes the title of the link that opened it ("Daft Punk
+    /// songs"), which names the artist whatever the list calls itself; every other page keeps its own.
+    static func shownTitle(pageTitle: String, opener: MusicCollection) -> String {
+        guard opener.isArtistSongs else { return pageTitle }
+        let title = opener.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? pageTitle : title
+    }
 
     /// YouTube's second line has a bullet between its parts; the design has a middle dot.
     static func dotted(_ text: String?) -> String? {

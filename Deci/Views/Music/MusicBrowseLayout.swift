@@ -96,9 +96,10 @@ nonisolated struct MusicSortChip: Equatable {
     /// An arrow for a key with a direction, to tell which way it runs; nil for Playlist order, which has none.
     let directionSymbol: String?
 
-    static func resolve(_ sort: MusicPlaylistSort) -> MusicSortChip {
+    /// `artistSongs` is an artist's songs list, where Playlist order reads Popular.
+    static func resolve(_ sort: MusicPlaylistSort, artistSongs: Bool = false) -> MusicSortChip {
         MusicSortChip(
-            label: "Sort: " + sort.field.label,
+            label: "Sort: " + sort.field.label(onArtistSongs: artistSongs),
             directionSymbol: sort.isPlaylistOrder ? nil : (sort.ascending ? "arrow.up" : "arrow.down")
         )
     }

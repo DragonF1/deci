@@ -14,9 +14,10 @@ struct MusicPlaylistSortTests {
         title: String = "Song",
         artist: String = "Artist",
         album: String? = nil,
-        seconds: Int? = 200
+        seconds: Int? = 200,
+        plays: Int? = nil
     ) -> MusicTrack {
-        MusicTrack(videoId: id, title: title, artist: artist, album: album, durationSeconds: seconds, thumbnailURL: nil)
+        MusicTrack(videoId: id, title: title, artist: artist, album: album, durationSeconds: seconds, thumbnailURL: nil, plays: plays)
     }
 
     private func ids(_ tracks: [MusicTrack]) -> [String] { tracks.map(\.videoId) }
@@ -27,10 +28,26 @@ struct MusicPlaylistSortTests {
 
     // MARK: - Choosing
 
-    @Test("the options are Date added, Playlist order, Title, Artist, Album and Duration, in that order")
+    @Test("a playlist's options are Date added, Playlist order, Title, Artist, Album and Duration, in that order")
     func options() {
-        #expect(MusicSortField.allCases == [.dateAdded, .playlistOrder, .title, .artist, .album, .duration])
-        #expect(MusicSortField.allCases.map(\.label) == ["Date added", "Playlist order", "Title", "Artist", "Album", "Duration"])
+        #expect(MusicSortField.playlistOptions == [.dateAdded, .playlistOrder, .title, .artist, .album, .duration])
+        #expect(MusicSortField.playlistOptions.map(\.label) == ["Date added", "Playlist order", "Title", "Artist", "Album", "Duration"])
+        #expect(MusicSortField.options(artistSongs: false) == MusicSortField.playlistOptions)
+        #expect(MusicSortField.playlistOptions.map { $0.label(onArtistSongs: false) } == MusicSortField.playlistOptions.map(\.label))
+    }
+
+    @Test("an artist's songs offer Popular, Album and Plays, in that order, and Popular is YouTube's own order")
+    func artistSongsOptions() {
+        #expect(MusicSortField.artistSongsOptions == [.playlistOrder, .album, .plays])
+        #expect(MusicSortField.options(artistSongs: true) == MusicSortField.artistSongsOptions)
+        #expect(MusicSortField.artistSongsOptions.map { $0.label(onArtistSongs: true) } == ["Popular", "Album", "Plays"])
+        #expect(MusicSortField.plays.label == "Plays")
+    }
+
+    @Test("Plays is a sort key, but no playlist's menu offers it")
+    func playsOnlyOnArtistSongs() {
+        #expect(MusicSortField.allCases.contains(.plays))
+        #expect(!MusicSortField.playlistOptions.contains(.plays))
     }
 
     @Test("Playlist order is the order YouTube lists, and a bare sort is that order")
@@ -62,6 +79,23 @@ struct MusicPlaylistSortTests {
     func pickingResetsDirection() {
         let sort = MusicPlaylistSort(field: .title, ascending: false).picking(.artist)
         #expect(sort == MusicPlaylistSort(field: .artist, ascending: true))
+    }
+
+    @Test("Plays starts with the most played song first, and picking it again flips it")
+    func pickingPlays() {
+        var sort = MusicPlaylistSort.playlistOrder.picking(.plays)
+        #expect(sort == MusicPlaylistSort(field: .plays, ascending: false))
+        sort = sort.picking(.plays)
+        #expect(sort == MusicPlaylistSort(field: .plays, ascending: true))
+        sort = sort.picking(.plays)
+        #expect(!sort.ascending)
+    }
+
+    @Test("picking Album after Plays starts ascending, and picking Popular puts YouTube's order back")
+    func pickingBetweenArtistSongsOptions() {
+        let plays = MusicPlaylistSort(field: .plays, ascending: false)
+        #expect(plays.picking(.album) == MusicPlaylistSort(field: .album, ascending: true))
+        #expect(plays.picking(.playlistOrder) == .playlistOrder)
     }
 
     @Test("Date added starts newest first, unlike the other options, and picking it again flips it")
@@ -300,6 +334,42 @@ struct MusicPlaylistSortTests {
         let lengths = [track("a", seconds: nil), track("b", seconds: 100), track("c", seconds: 50), track("d", seconds: nil)]
         #expect(sorted(.duration, lengths) == ["c", "b", "a", "d"])
         #expect(sorted(.duration, ascending: false, lengths) == ["b", "c", "a", "d"])
+    }
+
+    // MARK: - Plays
+
+    @Test("Plays runs from the most played song down by default, and the other way ascending")
+    func playsOrder() {
+        let list = [track("a", plays: 5_000), track("b", plays: 2_000_000_000), track("c", plays: 271_000_000), track("d", plays: 12)]
+        #expect(sorted(.plays, ascending: false, list) == ["b", "c", "a", "d"])
+        #expect(sorted(.plays, ascending: true, list) == ["d", "a", "c", "b"])
+    }
+
+    @Test("songs with no play count go last in both directions, in the order they had")
+    func playsMissingLast() {
+        let list = [track("a", plays: nil), track("b", plays: 100), track("c", plays: nil), track("d", plays: 900), track("e", plays: 0)]
+        #expect(sorted(.plays, ascending: false, list) == ["d", "b", "e", "a", "c"])
+        #expect(sorted(.plays, ascending: true, list) == ["e", "b", "d", "a", "c"])
+    }
+
+    @Test("songs with the same play count keep the order they had, in both directions")
+    func playsTiesKeepOrder() {
+        let list = [track("a", plays: 7), track("b", plays: 9), track("c", plays: 7), track("d", plays: 9)]
+        #expect(sorted(.plays, ascending: false, list) == ["b", "d", "a", "c"])
+        #expect(sorted(.plays, ascending: true, list) == ["a", "c", "b", "d"])
+    }
+
+    @Test("Plays reorders the songs in any list, so a playlist has to be whole before it shows")
+    func playsReorders() {
+        #expect(MusicPlaylistSort(field: .plays, ascending: false).reorders(newestFirst: false))
+        #expect(MusicPlaylistSort(field: .plays, ascending: true).reorders(newestFirst: true))
+    }
+
+    @Test("a list where no song has a play count stays in its order")
+    func playsAllMissing() {
+        let list = [track("a"), track("b"), track("c")]
+        #expect(sorted(.plays, ascending: false, list) == ["a", "b", "c"])
+        #expect(sorted(.plays, ascending: true, list) == ["a", "b", "c"])
     }
 
     @Test("an empty list and a single song come back as they are")

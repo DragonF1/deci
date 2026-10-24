@@ -170,6 +170,29 @@ struct MusicSortChipTests {
         #expect(MusicSortChip.menuSymbol(for: .dateAddedNewestFirst) == "arrow.down")
         #expect(MusicSortChip.menuSymbol(for: oldestFirst) == "arrow.up")
     }
+
+    @Test("an artist's songs list calls YouTube's order Popular, with no arrow")
+    func artistSongsAtRest() {
+        #expect(MusicSortChip.resolve(.playlistOrder, artistSongs: true) == MusicSortChip(label: "Sort: Popular", directionSymbol: nil))
+    }
+
+    @Test("an artist's songs list names Plays and Album with the arrow of their direction")
+    func artistSongsPicked() {
+        let plays = MusicPlaylistSort(field: .plays, ascending: false)
+        let album = MusicPlaylistSort(field: .album, ascending: true)
+        #expect(MusicSortChip.resolve(plays, artistSongs: true) == MusicSortChip(label: "Sort: Plays", directionSymbol: "arrow.down"))
+        #expect(MusicSortChip.resolve(plays.picking(.plays), artistSongs: true) == MusicSortChip(label: "Sort: Plays", directionSymbol: "arrow.up"))
+        #expect(MusicSortChip.resolve(album, artistSongs: true) == MusicSortChip(label: "Sort: Album", directionSymbol: "arrow.up"))
+    }
+
+    @Test("any other page still calls it Playlist order, and the menu marks Popular with a check")
+    func otherPagesKeepTheirWords() {
+        #expect(MusicSortChip.resolve(.playlistOrder, artistSongs: false) == MusicSortChip.resolve(.playlistOrder))
+        #expect(MusicSortChip.resolve(.playlistOrder, artistSongs: false).label == "Sort: Playlist order")
+        #expect(MusicSortChip.resolve(title, artistSongs: false) == MusicSortChip.resolve(title))
+        #expect(MusicSortChip.menuSymbol(for: .playlistOrder) == "checkmark")
+        #expect(MusicSortChip.menuSymbol(for: MusicPlaylistSort(field: .plays, ascending: false)) == "arrow.down")
+    }
 }
 
 @Suite("MusicPageBackLabel")

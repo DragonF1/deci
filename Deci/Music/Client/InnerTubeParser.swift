@@ -178,7 +178,7 @@ enum InnerTubeParser {
         let subtitle = parseSubtitle(columns.count > 1 ? columns[1] : [])
         // Playlist and album rows keep the length in a fixed column and the album in a later flex
         // column (the third, or the fourth after a play count on an artist page); search rows carry
-        // both in the second column instead.
+        // both in the second column instead. The play count, where a row shows one, sits in a column of its own.
         let fixed = (renderer["fixedColumns"] as? [[String: Any]])?.first
         let fixedRuns = runs(path(fixed, "musicResponsiveListItemFixedColumnRenderer", "text"))
         let laterColumnAlbum = columns.dropFirst(2).first(where: isAlbumSegment)
@@ -193,8 +193,41 @@ enum InnerTubeParser {
             thumbnailURL: thumbnailURL(in: renderer),
             artistLinks: subtitle.artistLinks,
             albumBrowseId: subtitle.albumBrowseId ?? laterColumnAlbum.flatMap(albumBrowseId(in:)) ?? options.albumBrowseId,
-            playlistSetVideoId: options.setVideoId ?? string(path(renderer, "playlistItemData", "playlistSetVideoId"))
+            playlistSetVideoId: options.setVideoId ?? string(path(renderer, "playlistItemData", "playlistSetVideoId")),
+            plays: playCount(in: columns)
         )
+    }
+
+    /// The play count a row shows after its title: a column of its own ("2B plays"), or one part of a column that has
+    /// bullets between its parts.
+    private static func playCount(in columns: [[[String: Any]]]) -> Int? {
+        for column in columns.dropFirst() {
+            for segment in bulletSegments(of: column) {
+                if let plays = text(of: segment).flatMap(playCount(from:)) { return plays }
+            }
+        }
+        return nil
+    }
+
+    /// The number in a play count such as "2B plays", "271M plays", "1.2K plays", "1,234 plays" or "1 play". The word
+    /// "plays" must follow, so a view count ("2B views"), a length or a bare number is never taken, and so must a
+    /// number YouTube would not write (a comma that does not split thousands, a decimal with no K, M or B, a number
+    /// too large to hold). A fraction past the thousandth, millionth or billionth of the suffix is dropped.
+    static func playCount(from text: String) -> Int? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let match = trimmed.wholeMatch(of: /(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?([KMB])?\s+plays?/.ignoresCase()) else {
+            return nil
+        }
+        let scale = ["K": 1_000, "M": 1_000_000, "B": 1_000_000_000][match.3?.uppercased() ?? ""] ?? 1
+        let fraction = match.2.map(String.init) ?? ""
+        guard fraction.isEmpty || scale > 1, let whole = Int(match.1.replacingOccurrences(of: ",", with: "")) else {
+            return nil
+        }
+        let places = String(scale).count - 1
+        let fractional = Int(String((fraction + String(repeating: "0", count: places)).prefix(places))) ?? 0
+        let (scaled, scaledOverflow) = whole.multipliedReportingOverflow(by: scale)
+        let (total, totalOverflow) = scaled.addingReportingOverflow(fractional)
+        return scaledOverflow || totalOverflow ? nil : total
     }
 
     static func videoId(in renderer: [String: Any], titleRuns: [[String: Any]]) -> String? {

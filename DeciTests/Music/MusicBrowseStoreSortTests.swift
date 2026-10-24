@@ -54,6 +54,27 @@ private struct SortHarness {
         _ = await until { loadedPage(browseId) != nil }
     }
 
+    /// An artist's songs list of four songs over two pages, opened as `isArtistSongs` says: "a" (100 plays, album
+    /// "Zeta") first, then "b" (no plays, album "alpha"), "c" (5,000 plays, no album) and "d" (100 plays, album "Beta").
+    func openSongsList(_ browseId: String = "VLOLAK5uy_songs", isArtistSongs: Bool = true) async {
+        await backend.setPage(MusicSamples.page(
+            browseId,
+            tracks: [MusicSamples.track("a", title: "Delta", album: "Zeta", plays: 100)],
+            continuation: "t1"
+        ))
+        await backend.setMoreTracks(
+            browseId: browseId, continuation: "t1",
+            tracks: [
+                MusicSamples.track("b", title: "alpha", album: "alpha", plays: nil),
+                MusicSamples.track("c", title: "Charlie", album: nil, plays: 5_000),
+                MusicSamples.track("d", title: "Bravo", album: "Beta", plays: 100)
+            ],
+            next: nil
+        )
+        store.open(MusicSamples.collection(browseId, isArtistSongs: isArtistSongs))
+        _ = await until { loadedPage(browseId) != nil }
+    }
+
     func loadedPage(_ browseId: String) -> MusicBrowsePage? {
         if case .loaded(let page)? = store.pages[browseId] { page } else { nil }
     }
@@ -1093,5 +1114,211 @@ struct MusicBrowseStoreSortTests {
 
         #expect(h.store.removeTrack(setVideoId: "s2", from: "VLPL1"))
         #expect(h.shownIds("VLPL1") == ["c", "a"])
+    }
+
+    // MARK: - An artist's songs list
+
+    @Test("a normal playlist, a playlist the user made and Liked music offer exactly the options they always did")
+    func normalPlaylistOptions() async {
+        let h = SortHarness()
+        await h.openLongPlaylist()
+        await h.openLongPlaylist("VLPL2", isEditable: true)
+
+        let expected: [MusicSortField] = [.dateAdded, .playlistOrder, .title, .artist, .album, .duration]
+        #expect(h.store.sortOptions(for: "VLPL1") == expected)
+        #expect(h.store.sortOptions(for: "VLPL2") == expected)
+        #expect(h.store.sortOptions(for: MusicBrowseStore.likedMusic.browseId) == expected)
+        #expect(!h.store.isArtistSongs("VLPL1"))
+        #expect(!h.store.isArtistSongs("VLPL2"))
+        #expect(!h.store.isArtistSongs(MusicBrowseStore.likedMusic.browseId))
+    }
+
+    @Test("an artist's songs list offers Popular, Album and Plays, and nothing else")
+    func artistSongsOptions() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        #expect(h.store.isArtistSongs("VLOLAK5uy_songs"))
+        #expect(h.store.sortOptions(for: "VLOLAK5uy_songs") == [.playlistOrder, .album, .plays])
+        #expect(MusicBrowseStore.canSort("VLOLAK5uy_songs"))
+    }
+
+    @Test("the marker travels with the opened collection: the same OLAK5uy_ id opened as a plain playlist is not one")
+    func markerIsNotGuessedFromTheId() async {
+        let h = SortHarness()
+        await h.openSongsList(isArtistSongs: false)
+        #expect(!h.store.isArtistSongs("VLOLAK5uy_songs"))
+        #expect(h.store.sortOptions(for: "VLOLAK5uy_songs") == MusicSortField.playlistOptions)
+    }
+
+    @Test("a page that is not on the path is not an artist's songs list, nor is one after back or reset")
+    func markerFollowsThePath() async {
+        let h = SortHarness()
+        #expect(!h.store.isArtistSongs("VLOLAK5uy_songs"))
+        #expect(h.store.sortOptions(for: "VLOLAK5uy_songs") == MusicSortField.playlistOptions)
+
+        await h.openSongsList()
+        #expect(h.store.isArtistSongs("VLOLAK5uy_songs"))
+        h.store.back()
+        #expect(!h.store.isArtistSongs("VLOLAK5uy_songs"))
+
+        h.store.open(MusicSamples.collection("VLOLAK5uy_songs", isArtistSongs: true))
+        #expect(h.store.isArtistSongs("VLOLAK5uy_songs"))
+        h.store.reset()
+        #expect(!h.store.isArtistSongs("VLOLAK5uy_songs"))
+    }
+
+    @Test("an artist's songs list rests on Popular, which is YouTube's order: it loads nothing and shows the page as it is")
+    func artistSongsRestOnPopular() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == .playlistOrder)
+        #expect(!h.store.needsReorder("VLOLAK5uy_songs"))
+        #expect(h.store.displayedPage("VLOLAK5uy_songs") == h.loadedPage("VLOLAK5uy_songs"))
+        #expect(h.store.loadingAllTracks.isEmpty)
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+    }
+
+    @Test("Plays loads every page first, then lists the most played first with the songs that have no count last")
+    func artistSongsPlays() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        let gate = MusicTestGate()
+        await h.backend.setMoreTracksGate(browseId: "VLOLAK5uy_songs", continuation: "t1", gate)
+
+        h.store.pickSort(.plays, for: "VLOLAK5uy_songs")
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == MusicPlaylistSort(field: .plays, ascending: false))
+        #expect(h.store.loadingAllTracks == ["VLOLAK5uy_songs"])
+        #expect(h.store.isOrderPending("VLOLAK5uy_songs"))
+        // Until everything is here the list keeps the order it has.
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a"])
+
+        await gate.open()
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["c", "a", "d", "b"])
+        #expect(h.store.displayedPage("VLOLAK5uy_songs")?.continuation == nil)
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1"])
+    }
+
+    @Test("picking Plays again flips it, so the least played come first and the songs with no count stay last")
+    func artistSongsPlaysFlip() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        h.store.pickSort(.plays, for: "VLOLAK5uy_songs")
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+
+        h.store.pickSort(.plays, for: "VLOLAK5uy_songs")
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == MusicPlaylistSort(field: .plays, ascending: true))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a", "d", "c", "b"])
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.count == 1)
+    }
+
+    @Test("Album sorts A to Z with the songs that have none last, and Popular puts YouTube's order back")
+    func artistSongsAlbumThenPopular() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        h.store.pickSort(.album, for: "VLOLAK5uy_songs")
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["b", "d", "a", "c"])
+
+        h.store.pickSort(.playlistOrder, for: "VLOLAK5uy_songs")
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == .playlistOrder)
+        #expect(!h.store.needsReorder("VLOLAK5uy_songs"))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a", "b", "c", "d"])
+    }
+
+    @Test("an artist's songs list ignores the options it does not offer: nothing changes and nothing loads")
+    func artistSongsRefusesOtherOptions() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        for field in [MusicSortField.dateAdded, .title, .artist, .duration] {
+            h.store.pickSort(field, for: "VLOLAK5uy_songs")
+        }
+        #expect(h.store.sorts["VLOLAK5uy_songs"] == nil)
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == .playlistOrder)
+        #expect(h.store.loadingAllTracks.isEmpty)
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a"])
+    }
+
+    @Test("Plays is not an option of a normal playlist: picking it changes nothing and loads nothing")
+    func plainPlaylistRefusesPlays() async {
+        let h = SortHarness()
+        await h.openLongPlaylist()
+        h.store.pickSort(.plays, for: "VLPL1")
+        #expect(h.store.sorts["VLPL1"] == nil)
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
+        #expect(h.store.loadingAllTracks.isEmpty)
+        await h.letLateWorkLand()
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+
+        // The options it has still work as they did.
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(await h.settled("VLPL1", count: 4))
+        #expect(h.shownIds("VLPL1") == ["b", "d", "c", "a"])
+    }
+
+    @Test("a pick made on an artist's songs list is kept when the page is closed and opened again, and reset forgets it")
+    func artistSongsPickIsRemembered() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        h.store.pickSort(.plays, for: "VLOLAK5uy_songs")
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+
+        h.store.back()
+        h.store.open(MusicSamples.collection("VLOLAK5uy_songs", isArtistSongs: true))
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == MusicPlaylistSort(field: .plays, ascending: false))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["c", "a", "d", "b"])
+
+        h.store.reset()
+        #expect(h.store.sorts.isEmpty)
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == .playlistOrder)
+    }
+
+    @Test("a Plays pick on an artist's songs does not follow the id opened as a plain playlist")
+    func artistSongsPickStaysOnItsPage() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        h.store.pickSort(.plays, for: "VLOLAK5uy_songs")
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+
+        // Back drops the page, so it opens fresh: its first page only, since Playlist order loads nothing extra.
+        h.store.back()
+        h.store.open(MusicSamples.collection("VLOLAK5uy_songs"))
+        #expect(await h.settled("VLOLAK5uy_songs", count: 1))
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == .playlistOrder)
+    }
+
+    @Test("the all songs id survives loading more songs, taking a song out and sorting")
+    func allSongsIdSurvivesRebuilds() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page(
+            "VLPL1",
+            tracks: [MusicSamples.track("a", title: "B", setVideoId: "s1", plays: 1)],
+            continuation: "t1",
+            allSongsBrowseId: "VLOLAK5uy_all"
+        ))
+        await h.backend.setMoreTracks(
+            browseId: "VLPL1", continuation: "t1",
+            tracks: [MusicSamples.track("b", title: "A", setVideoId: "s2", plays: 2), MusicSamples.track("c", title: "C", setVideoId: "s3")],
+            next: nil
+        )
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+        #expect(h.loadedPage("VLPL1")?.allSongsBrowseId == "VLOLAK5uy_all")
+
+        h.store.loadMoreTracks("VLPL1")
+        #expect(await h.until { h.loadedPage("VLPL1")?.tracks.count == 3 })
+        #expect(h.loadedPage("VLPL1")?.allSongsBrowseId == "VLOLAK5uy_all")
+
+        #expect(h.store.removeTrack(setVideoId: "s3", from: "VLPL1"))
+        #expect(h.loadedPage("VLPL1")?.allSongsBrowseId == "VLOLAK5uy_all")
+
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(h.shownIds("VLPL1") == ["b", "a"])
+        #expect(h.store.displayedPage("VLPL1")?.allSongsBrowseId == "VLOLAK5uy_all")
     }
 }

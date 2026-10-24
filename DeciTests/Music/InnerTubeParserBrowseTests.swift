@@ -85,6 +85,33 @@ struct InnerTubeParserBrowseTests {
         """
     }
 
+    /// An artist page whose one section is a "Top songs" shelf holding one song. `titleEndpoint` is the header title's
+    /// raw `browseEndpoint` object and `shelfExtra` raw members that follow the shelf's title (a bottom endpoint or a
+    /// more button). `columns` are the song's flex columns after its title, each a list of raw runs.
+    private func artistPageData(
+        titleEndpoint: String? = nil,
+        shelfExtra: String = "",
+        title: String = "One More Time",
+        columns: [[String]] = [[#"{"text":"Daft Punk"}"#]]
+    ) -> Data {
+        let endpoint = titleEndpoint.map { #","navigationEndpoint":\#($0)"# } ?? ""
+        let flex = ([[run(title)]] + columns).map {
+            #"{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[\#($0.joined(separator: ","))]}}}"#
+        }
+        let json = """
+        {"header":{"musicImmersiveHeaderRenderer":{"title":{"runs":[{"text":"Daft Punk"}]}}},\
+        "contents":{"singleColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":[\
+        {"musicShelfRenderer":{"title":{"runs":[{"text":"Top songs"\(endpoint)}]}\(shelfExtra),"contents":[\
+        {"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":"vid1"},"flexColumns":[\(flex.joined(separator: ","))]}}\
+        ]}}]}}}}]}}}
+        """
+        return Data(json.utf8)
+    }
+
+    private func allSongsId(_ data: Data) throws -> String? {
+        try InnerTubeParser.browsePage(from: data, browseId: "UCdaft").allSongsBrowseId
+    }
+
     // MARK: - Continuation tokens
 
     @Test("A query-style token carries the q: prefix, a body-style token goes through bare")
@@ -705,6 +732,82 @@ struct InnerTubeParserBrowseTests {
         #expect(related.first?.title == "Paul Young")
     }
 
+    // MARK: - Artist pages: all songs
+
+    @Test("Artist capture: the Top songs header names the artist's full list of songs")
+    func artistAllSongsFromCapture() throws {
+        let page = try InnerTubeParser.browsePage(from: fixture("browse-artist.json"), browseId: "UCuAXFkgsw1L7xaCfnd5JJOw")
+        #expect(page.allSongsBrowseId == "VLOLAK5uy_mYtM509QyBQ8g6U9moiAUud3rg6oswhHg")
+    }
+
+    @Test("Playlist, Liked music and album captures have no list of all songs")
+    func otherPagesHaveNoAllSongs() throws {
+        let playlist = try InnerTubeParser.browsePage(from: fixture("browse-playlist.json"), browseId: "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i")
+        let long = try InnerTubeParser.browsePage(from: fixture("browse-playlist-long.json"), browseId: "VLPLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI")
+        let liked = try InnerTubeParser.browsePage(from: fixture("browse-liked-music.json"), browseId: "VLLM")
+        let album = try InnerTubeParser.browsePage(from: fixture("browse-album.json"), browseId: "MPREb_Me5NUhDIBWQ")
+        #expect([playlist, long, liked, album].allSatisfy { $0.allSongsBrowseId == nil })
+    }
+
+    @Test("Hand-built: a Top songs header with no endpoint gives no list of all songs")
+    func allSongsWithoutEndpoint() throws {
+        #expect(try allSongsId(artistPageData()) == nil)
+    }
+
+    @Test("Hand-built: a Top songs header that opens an album, an artist or an unknown page gives none")
+    func allSongsNeedsAPlaylistEndpoint() throws {
+        let album = browseEndpoint("MPREb_album", pageType: "MUSIC_PAGE_TYPE_ALBUM")
+        let artist = browseEndpoint("UCother", pageType: "MUSIC_PAGE_TYPE_ARTIST")
+        let podcast = browseEndpoint("MPSPPLshow", pageType: "MUSIC_PAGE_TYPE_PODCAST_SHOW_DETAIL_PAGE")
+        let albumId = browseEndpoint("MPREb_album", pageType: nil)
+        for endpoint in [album, artist, podcast, albumId] {
+            #expect(try allSongsId(artistPageData(titleEndpoint: endpoint)) == nil)
+        }
+        // A playlist page type does not rescue an endpoint that names no id, and an artist page type beats a VL id.
+        #expect(try allSongsId(artistPageData(titleEndpoint: #"{"browseEndpoint":{}}"#)) == nil)
+        #expect(try allSongsId(artistPageData(titleEndpoint: browseEndpoint("VLPLx", pageType: "MUSIC_PAGE_TYPE_ARTIST"))) == nil)
+    }
+
+    @Test("Hand-built: a playlist endpoint is taken by its page type or by its VL id")
+    func allSongsPlaylistEndpoint() throws {
+        let typed = browseEndpoint("VLPLtyped", pageType: "MUSIC_PAGE_TYPE_PLAYLIST")
+        let untyped = browseEndpoint("VLPLuntyped", pageType: nil)
+        #expect(try allSongsId(artistPageData(titleEndpoint: typed)) == "VLPLtyped")
+        #expect(try allSongsId(artistPageData(titleEndpoint: untyped)) == "VLPLuntyped")
+    }
+
+    @Test("Hand-built: a playlist page type with a bare playlist id opens the VL page, as a mix tile does")
+    func allSongsBareId() throws {
+        let bare = browseEndpoint("OLAK5uy_bare", pageType: "MUSIC_PAGE_TYPE_PLAYLIST")
+        #expect(try allSongsId(artistPageData(titleEndpoint: bare)) == "VLOLAK5uy_bare")
+    }
+
+    @Test("Hand-built: the shelf's bottom endpoint, then its more button, stand in for a title with no endpoint")
+    func allSongsFallbacks() throws {
+        let bottom = browseEndpoint("VLPLbottom", pageType: "MUSIC_PAGE_TYPE_PLAYLIST")
+        let more = browseEndpoint("VLPLmore", pageType: "MUSIC_PAGE_TYPE_PLAYLIST")
+        let moreButton = #","moreContentButton":{"buttonRenderer":{"navigationEndpoint":\#(more)}}"#
+        #expect(try allSongsId(artistPageData(shelfExtra: #","bottomEndpoint":\#(bottom)"#)) == "VLPLbottom")
+        #expect(try allSongsId(artistPageData(shelfExtra: moreButton)) == "VLPLmore")
+        #expect(try allSongsId(artistPageData(shelfExtra: #","bottomEndpoint":\#(bottom)"# + moreButton)) == "VLPLbottom")
+    }
+
+    @Test("Hand-built: the title's endpoint wins over the fallbacks, and a title that is not a playlist yields to them")
+    func allSongsPrefersTheTitle() throws {
+        let title = browseEndpoint("VLPLtitle", pageType: "MUSIC_PAGE_TYPE_PLAYLIST")
+        let notPlaylist = browseEndpoint("MPREb_album", pageType: "MUSIC_PAGE_TYPE_ALBUM")
+        let bottom = browseEndpoint("VLPLbottom", pageType: "MUSIC_PAGE_TYPE_PLAYLIST")
+        let extra = #","bottomEndpoint":\#(bottom)"#
+        #expect(try allSongsId(artistPageData(titleEndpoint: title, shelfExtra: extra)) == "VLPLtitle")
+        #expect(try allSongsId(artistPageData(titleEndpoint: notPlaylist, shelfExtra: extra)) == "VLPLbottom")
+    }
+
+    @Test("Hand-built: a bottom endpoint that is not a playlist gives none")
+    func allSongsFallbackNeedsAPlaylist() throws {
+        let album = browseEndpoint("MPREb_album", pageType: "MUSIC_PAGE_TYPE_ALBUM")
+        #expect(try allSongsId(artistPageData(shelfExtra: #","bottomEndpoint":\#(album)"#)) == nil)
+    }
+
     // MARK: - Library
 
     @Test("Hand-built playlists grid: New playlist and a podcast show are dropped, Liked music is kept for the store to filter")
@@ -830,5 +933,114 @@ struct InnerTubeParserBrowseTests {
         let rows = try InnerTubeParser.searchTracks(from: fixture("search-songs.json"))
         #expect(rows.count == 6)
         #expect(rows.allSatisfy { !$0.videoId.isEmpty && !$0.title.isEmpty && $0.durationSeconds != nil })
+    }
+
+    // MARK: - Play counts
+
+    @Test("A play count reads K, M and B suffixes, decimals, commas and either case, as a whole number")
+    func playCountTable() {
+        let table: [(String, Int)] = [
+            ("2B plays", 2_000_000_000),
+            ("271M plays", 271_000_000),
+            ("1.2K plays", 1_200),
+            ("1.9B plays", 1_900_000_000),
+            ("1.23M plays", 1_230_000),
+            ("1,234 plays", 1_234),
+            ("12,345,678 plays", 12_345_678),
+            ("999 plays", 999),
+            ("1 play", 1),
+            ("0 plays", 0),
+            ("3k plays", 3_000),
+            ("3m PLAYS", 3_000_000),
+            ("2b Plays", 2_000_000_000),
+            ("  336M plays  ", 336_000_000),
+            ("7.6K\u{00A0}plays", 7_600),
+        ]
+        for (text, expected) in table {
+            #expect(InnerTubeParser.playCount(from: text) == expected, "\(text)")
+        }
+    }
+
+    @Test("Text that is not a play count gives none: view counts, bare numbers, lengths, words and odd numbers")
+    func notAPlayCount() {
+        let junk = [
+            "", " ", "plays", "play", "2B", "2B views", "1.2M views", "1 view", "3:05", "Song", "Artist",
+            "2B plays and more", "about 2B plays", "plays 2B", "-5 plays", "1.2.3K plays", "1,2 plays", "1,23 plays",
+            "1,2345 plays", ",5 plays", "K plays", "2T plays", "2 B plays", "1e3 plays", "NaN plays",
+            "99999999999999999999B plays",
+        ]
+        for text in junk {
+            #expect(InnerTubeParser.playCount(from: text) == nil, "\(text)")
+        }
+    }
+
+    @Test("Artist capture: the top songs carry the play counts of their third column")
+    func artistPlays() throws {
+        let page = try InnerTubeParser.browsePage(from: fixture("browse-artist.json"), browseId: "UCuAXFkgsw1L7xaCfnd5JJOw")
+        #expect(page.tracks.map(\.plays) == [2_000_000_000, 271_000_000])
+        // The play count is not the album, and the album is still found after it.
+        #expect(page.tracks.map(\.album) == ["Whenever You Need Somebody", "Whenever You Need Somebody"])
+    }
+
+    @Test("Album capture: the rebuilt rows keep the play counts of their third column")
+    func albumPlays() throws {
+        let page = try InnerTubeParser.browsePage(from: fixture("browse-album.json"), browseId: "MPREb_Me5NUhDIBWQ")
+        #expect(page.tracks.map(\.plays) == [1_100_000, 164_000, 123_000, 6_100_000])
+    }
+
+    @Test("Search capture: the rows keep the play count under their second line")
+    func searchPlays() throws {
+        let rows = try InnerTubeParser.searchTracks(from: fixture("search-songs.json"))
+        #expect(rows.map(\.plays) == [1_900_000_000, 1_900_000_000, 14_000, 7_600, 7_600, 3_400])
+    }
+
+    @Test("Playlist captures, whose rows show no play count, have none")
+    func playlistRowsHaveNoPlays() throws {
+        let playlist = try InnerTubeParser.browsePage(from: fixture("browse-playlist.json"), browseId: "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i")
+        let long = try InnerTubeParser.browsePage(from: fixture("browse-playlist-long.json"), browseId: "VLPLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI")
+        #expect((playlist.tracks + long.tracks).allSatisfy { $0.plays == nil })
+    }
+
+    @Test("Hand-built: a play count after a bullet in the artist column is read, and the artist is still the artist")
+    func playsAfterABullet() throws {
+        let page = try InnerTubeParser.browsePage(
+            from: artistPageData(columns: [[run("Daft Punk"), bullet, run("3.5M plays")]]),
+            browseId: "UCdaft"
+        )
+        #expect(page.tracks.first?.plays == 3_500_000)
+        #expect(page.tracks.first?.artist == "Daft Punk")
+    }
+
+    @Test("Hand-built: a play count in a column of its own is read, wherever the columns put it")
+    func playsInAnyLaterColumn() throws {
+        let page = try InnerTubeParser.browsePage(
+            from: artistPageData(columns: [[run("Daft Punk")], [run("Discovery")], [run("12K plays")]]),
+            browseId: "UCdaft"
+        )
+        #expect(page.tracks.first?.plays == 12_000)
+        #expect(page.tracks.first?.album == nil)
+    }
+
+    @Test("Hand-built: a view count is not a play count")
+    func viewsAreNotPlays() throws {
+        let page = try InnerTubeParser.browsePage(
+            from: artistPageData(columns: [[run("Daft Punk")], [run("1.2M views")]]),
+            browseId: "UCdaft"
+        )
+        #expect(page.tracks.first?.plays == nil)
+    }
+
+    @Test("Hand-built: a song whose title looks like a play count is not read as one")
+    func titleIsNotAPlayCount() throws {
+        let page = try InnerTubeParser.browsePage(from: artistPageData(title: "50 plays"), browseId: "UCdaft")
+        #expect(page.tracks.first?.title == "50 plays")
+        #expect(page.tracks.first?.plays == nil)
+    }
+
+    @Test("Hand-built: a row with no play count has none")
+    func rowWithoutPlays() throws {
+        let page = try InnerTubeParser.browsePage(from: artistPageData(), browseId: "UCdaft")
+        #expect(page.tracks.count == 1)
+        #expect(page.tracks.first?.plays == nil)
     }
 }

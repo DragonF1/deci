@@ -88,7 +88,7 @@ struct MusicPageView: View {
             coverURL: page.thumbnailURL ?? collection.thumbnailURL,
             text: MusicPageHeroText.resolve(
                 kind: kind,
-                title: page.title,
+                title: shownTitle(of: page),
                 subtitle: page.subtitle,
                 firstArtist: page.tracks.first?.artist,
                 isEditable: page.isEditable,
@@ -97,6 +97,11 @@ struct MusicPageView: View {
                 albumCount: MusicPageHeroText.albumCount(in: page.shelves)
             )
         )
+    }
+
+    /// The page's title as its header and buttons say it: an artist's songs list reads "<Artist> songs".
+    private func shownTitle(of page: MusicBrowsePage) -> String {
+        MusicPageHeroText.shownTitle(pageTitle: page.title, opener: collection)
     }
 
     // MARK: - Actions
@@ -122,13 +127,13 @@ struct MusicPageView: View {
     private func pillView(_ pill: MusicPagePill, page: MusicBrowsePage, items: [MusicPageMenuItem]) -> some View {
         switch pill {
         case .play:
-            MusicPlayPill(title: page.title) {
+            MusicPlayPill(title: shownTitle(of: page)) {
                 if let first = page.tracks.first { service.play(first, in: page) }
             }
         case .shuffle:
-            MusicShufflePill(title: page.title) { service.playShuffled(page) }
+            MusicShufflePill(title: shownTitle(of: page)) { service.playShuffled(page) }
         case .more:
-            MusicPageMoreMenu(title: page.title, items: items) { perform($0, page: page) }
+            MusicPageMoreMenu(title: shownTitle(of: page), items: items) { perform($0, page: page) }
         }
     }
 
@@ -139,7 +144,8 @@ struct MusicPageView: View {
         let pins = service.pinnedItems
         return MusicPagePills.menuItems(
             kind: kind,
-            home: MusicPinnedItem(page: page, opener: collection).map { pins.state(for: $0) }
+            home: MusicPinnedItem(page: page, opener: collection).map { pins.state(for: $0) },
+            isArtistSongs: collection.isArtistSongs
         )
     }
 
@@ -173,7 +179,7 @@ struct MusicPageView: View {
                     if kind == .liked {
                         MusicLikedSortView(sort: sort) { browse.pickSort($0, for: page.browseId) }
                     } else {
-                        MusicSortChipView(sort: sort) { browse.pickSort($0, for: page.browseId) }
+                        MusicSortChipView(sort: sort, artistSongs: collection.isArtistSongs) { browse.pickSort($0, for: page.browseId) }
                     }
                 }
             }
@@ -333,7 +339,12 @@ struct MusicPageView: View {
         let context = MusicTrackContext(pageBrowseId: page.browseId, pageTitle: page.title, pageIsEditable: page.isEditable)
         let nowPlayingId = service.player.nowPlaying?.videoId
         return VStack(alignment: .leading, spacing: MusicBrowseLayout.topSongsTitleGap) {
-            MusicSectionHeader(title: "Top songs")
+            let opener = MusicTopSongsHeader.opener(for: page, kind: kind)
+            MusicSectionHeader(
+                title: MusicTopSongsHeader.title,
+                linkTitle: opener == nil ? nil : MusicTopSongsHeader.linkTitle,
+                linkAction: opener.map { opener in { browse.open(opener) } }
+            )
             VStack(spacing: 0) {
                 ForEach(Array(page.tracks.enumerated()), id: \.offset) { index, track in
                     MusicSongRow(
