@@ -690,6 +690,9 @@ final class AudioEngine {
 
     func setDeviceSelectionModeForInactive(identifier: String, to mode: DeviceSelectionMode) {
         appListCoordinator.setDeviceSelectionModeForInactive(identifier: identifier, to: mode)
+        if mode == .multi {
+            seedInactiveMultiSelection(identifier: identifier)
+        }
     }
 
     func getSelectedDeviceUIDsForInactive(identifier: String) -> Set<String> {
@@ -1200,6 +1203,31 @@ final class AudioEngine {
         return appDeviceRouting[app.id] ?? deviceVolumeMonitor.defaultDeviceUID
     }
 
+    /// The inactive-app twin of `seedMultiSelection`: an inactive app flipped to multi with nothing
+    /// saved gets its pinned device ticked, or the system default while it follows the default or
+    /// its pin is away (it would launch on the default then). The flip is a settings write only,
+    /// so without this the selection stays empty until the user ticks something.
+    private func seedInactiveMultiSelection(identifier: String) {
+        guard (settingsManager.getSelectedDeviceUIDs(for: identifier) ?? []).isEmpty else { return }
+        let pinnedUID = settingsManager.getDeviceRouting(for: identifier).flatMap { isOutputConnected($0) ? $0 : nil }
+        guard let deviceUID = pinnedUID ?? deviceVolumeMonitor.defaultDeviceUID else { return }
+        appListCoordinator.setSelectedDeviceUIDsForInactive(identifier: identifier, to: [deviceUID])
+    }
+
+    /// Whether an output device is connected right now. Reads the list the disconnect fallback is
+    /// picked from, so it agrees with the monitor's connect and disconnect callbacks.
+    private func isOutputConnected(_ uid: String) -> Bool {
+        outputDevices.contains { $0.uid == uid }
+    }
+
+    /// Whether a multi app plays on a route of its own: it is in multi mode and at least one device
+    /// it selected is connected. A multi app with none left (or none picked) plays on the fallback,
+    /// the system default, and counts as an ordinary follow-default app until a device returns.
+    private func isOnOwnMultiRoute(_ pid: pid_t) -> Bool {
+        guard volumeState.getDeviceSelectionMode(for: pid) == .multi else { return false }
+        return volumeState.getSelectedDeviceUIDs(for: pid).contains(where: isOutputConnected)
+    }
+
     /// Gets the selected device UIDs for multi-mode
     func getSelectedDeviceUIDs(for app: AudioApp) -> Set<String> {
         volumeState.getSelectedDeviceUIDs(for: app.id)
@@ -1207,9 +1235,17 @@ final class AudioEngine {
 
     /// Sets the selected device UIDs for multi-mode.
     /// Triggers tap reconfiguration when in multi mode.
+    ///
+    /// This is the user's edit, and it wins: every connected device is ticked or not as the edit
+    /// says, and that is what plays and what is saved. The picker lists connected devices only, so
+    /// a device that is away can be neither ticked nor unticked there. The edit does not mention it,
+    /// so the saved selection keeps it and it rejoins when it returns.
     func setSelectedDeviceUIDs(for app: AudioApp, to uids: Set<String>) {
         let previousUIDs = volumeState.getSelectedDeviceUIDs(for: app.id)
-        volumeState.setSelectedDeviceUIDs(for: app.id, to: uids, identifier: app.persistenceIdentifier)
+        let awayUIDs = (settingsManager.getSelectedDeviceUIDs(for: app.persistenceIdentifier) ?? [])
+            .filter { !isOutputConnected($0) }
+        volumeState.setSelectedDeviceUIDs(for: app.id, to: uids, identifier: app.persistenceIdentifier, persist: false)
+        settingsManager.setSelectedDeviceUIDs(for: app.persistenceIdentifier, to: uids.union(awayUIDs))
 
         guard previousUIDs != uids,
               getDeviceSelectionMode(for: app) == .multi else { return }
@@ -1237,7 +1273,8 @@ final class AudioEngine {
             deviceUIDs = [deviceUID]
 
         case .multi:
-            let selectedUIDs = getSelectedDeviceUIDs(for: app).sorted()
+            // A selected device that is away cannot carry audio; handleDeviceConnected adds it back.
+            let selectedUIDs = getSelectedDeviceUIDs(for: app).filter(isOutputConnected).sorted()
             if selectedUIDs.isEmpty {
                 return
             }
@@ -1333,6 +1370,9 @@ final class AudioEngine {
                     // Filter to currently available devices, maintaining deterministic order
                     let availableUIDs = savedUIDs.filter { deviceMonitor.device(for: $0) != nil }
                         .sorted()  // Deterministic ordering
+                    // The live selection is what is connected; the saved one keeps the rest for when
+                    // they appear (handleDeviceConnected).
+                    volumeState.setSelectedDeviceUIDs(for: app.id, to: Set(availableUIDs), identifier: app.persistenceIdentifier, persist: false)
                     if !availableUIDs.isEmpty {
                         logger.debug("Restoring multi-device mode for \(app.name) with \(availableUIDs.count) device(s)")
                         ensureTapWithDevices(for: app, deviceUIDs: availableUIDs)
@@ -1521,11 +1561,12 @@ final class AudioEngine {
     }
 
     /// Routes all followsDefault apps to the given device UID and switches their taps.
-    /// Apps in multi mode keep their own device set: they stay in followsDefault (so switching back
-    /// to single mode follows the default again) but are never moved here.
+    /// Apps on a multi route of their own keep their device set: they stay in followsDefault (so
+    /// switching back to single mode follows the default again) but are never moved here. A multi
+    /// app with none of its devices connected is on the fallback and moves like a single app.
     /// Early-exits if all apps are already routed to the target (avoids unnecessary tap switches).
     private func routeFollowsDefaultApps(to targetUID: String) {
-        let movable = followsDefault.filter { volumeState.getDeviceSelectionMode(for: $0) != .multi }
+        let movable = followsDefault.filter { !isOnOwnMultiRoute($0) }
         guard !movable.allSatisfy({ appDeviceRouting[$0] == targetUID }) else { return }
 
         for pid in movable {
@@ -1554,6 +1595,15 @@ final class AudioEngine {
                 }
             }
         }
+    }
+
+    /// Takes a disconnected device out of a multi app's live selection. In memory only: the saved
+    /// selection keeps the device, so a Bluetooth drop does not remove it from the route for good and
+    /// `handleDeviceConnected` can put it back.
+    private func dropFromLiveSelection(_ deviceUID: String, for app: AudioApp) {
+        var selection = volumeState.getSelectedDeviceUIDs(for: app.id)
+        guard selection.remove(deviceUID) != nil else { return }
+        volumeState.setSelectedDeviceUIDs(for: app.id, to: selection, identifier: nil, persist: false)
     }
 
     /// Called when device disappears - updates routing and switches taps immediately
@@ -1598,16 +1648,16 @@ final class AudioEngine {
                 let remainingUIDs = tap.currentDeviceUIDs.filter { $0 != deviceUID }.sorted()
                 if !remainingUIDs.isEmpty {
                     multiModeTapsToUpdate.append((tap: tap, remainingUIDs: remainingUIDs))
-                    // Update in-memory selection to remove disconnected device (don't persist)
-                    var currentSelection = volumeState.getSelectedDeviceUIDs(for: app.id)
-                    currentSelection.remove(deviceUID)
-                    volumeState.setSelectedDeviceUIDs(for: app.id, to: currentSelection, identifier: nil)
+                    dropFromLiveSelection(deviceUID, for: app)
                     continue
                 }
                 // All devices gone in multi-mode, fall through to single-device fallback
             }
 
             // Single-device mode (or multi-mode with no remaining devices): switch to fallback
+            if mode == .multi {
+                dropFromLiveSelection(deviceUID, for: app)
+            }
             if let fallback = fallbackDevice {
                 appDeviceRouting[app.id] = fallback.uid
                 // Set to follow default in-memory (UI shows "System Audio")
@@ -1712,7 +1762,8 @@ final class AudioEngine {
             }
         }
 
-        // Second pass: restore multi-device apps that had this device in their selection
+        // Second pass: restore multi-device apps that had this device in their selection. This also
+        // takes an app back from the fallback when its only device returns.
         var multiModeTapsToUpdate: [any ProcessTapControlling] = []
         for tap in taps.values {
             let app = tap.app
@@ -1720,12 +1771,13 @@ final class AudioEngine {
             guard let persistedUIDs = settingsManager.getSelectedDeviceUIDs(for: app.persistenceIdentifier),
                   persistedUIDs.contains(deviceUID) else { continue }
             let currentUIDs = volumeState.getSelectedDeviceUIDs(for: app.id)
-            guard !currentUIDs.contains(deviceUID) else { continue }
+            guard !currentUIDs.contains(deviceUID) || !tap.currentDeviceUIDs.contains(deviceUID) else { continue }
 
-            // Add the reconnected device back to in-memory selection
+            // Add the reconnected device back to the live selection. The saved one never lost it,
+            // and writing the live one over it would drop any device that is still away.
             var updatedUIDs = currentUIDs
             updatedUIDs.insert(deviceUID)
-            volumeState.setSelectedDeviceUIDs(for: app.id, to: updatedUIDs, identifier: app.persistenceIdentifier)
+            volumeState.setSelectedDeviceUIDs(for: app.id, to: updatedUIDs, identifier: app.persistenceIdentifier, persist: false)
             multiModeTapsToUpdate.append(tap)
         }
 

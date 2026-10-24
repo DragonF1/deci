@@ -1,7 +1,8 @@
 // DeciTests/AudioEngineMultiDeviceTests.swift
 // Per-app multi-output routing: entering Multi seeds the selection from the device the app is
-// playing on, default-output changes and reconnects leave a multi route alone, and the engine
-// reports which output devices currently carry a multi-device route.
+// playing on, default-output changes and reconnects leave a multi route alone, a device that drops
+// and returns rejoins the route, a multi app with none of its devices left follows the default,
+// and the engine reports which output devices currently carry a multi-device route.
 
 import Testing
 import Foundation
@@ -42,6 +43,19 @@ struct AudioEngineMultiDeviceTests {
     /// them in the order they were scheduled, ahead of this test resuming from the sleep.
     private func drainEngineTasks() async {
         try? await Task.sleep(for: .milliseconds(60))
+    }
+
+    /// Takes `device` off the monitor and fires the disconnect callback, like an unplug or a
+    /// Bluetooth drop.
+    private func disconnect(_ device: AudioDevice, in harness: EngineHarness) {
+        harness.deviceMonitor.outputDevices.removeAll { $0.uid == device.uid }
+        harness.deviceMonitor.onDeviceDisconnected?(device.uid, device.name)
+    }
+
+    /// Puts `device` back on the monitor and fires the connect callback.
+    private func reconnect(_ device: AudioDevice, in harness: EngineHarness) {
+        harness.deviceMonitor.addOutputDevice(device)
+        harness.deviceMonitor.onDeviceConnected?(device.uid, device.name)
     }
 
     // MARK: - Seeding on entering Multi
@@ -268,6 +282,303 @@ struct AudioEngineMultiDeviceTests {
 
         let restored = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid] }
         #expect(restored)
+    }
+
+    // MARK: - A device that drops and returns
+
+    @Test("A device that drops and returns rejoins the multi route")
+    func blipRestoresTheRoute() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid, speakers.uid])
+
+        disconnect(headphones, in: harness)
+        let dropped = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(dropped)
+        reconnect(headphones, in: harness)
+
+        let restored = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid, self.speakers.uid] }
+        #expect(restored, "the tap should be rebuilt on the full set")
+        #expect(harness.engine.getSelectedDeviceUIDs(for: app) == [headphones.uid, speakers.uid])
+    }
+
+    @Test("A disconnect leaves the saved selection alone and only the live selection loses the device")
+    func disconnectKeepsTheSavedSelection() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid, speakers.uid])
+
+        disconnect(headphones, in: harness)
+        let dropped = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(dropped)
+
+        #expect(harness.settings.getSelectedDeviceUIDs(for: app.persistenceIdentifier) == [headphones.uid, speakers.uid])
+        #expect(harness.engine.getSelectedDeviceUIDs(for: app) == [speakers.uid])
+    }
+
+    @Test("Two outputs that both drop come back one by one")
+    func bothDevicesBlip() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid, speakers.uid])
+
+        disconnect(headphones, in: harness)
+        let oneLeft = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(oneLeft)
+        disconnect(speakers, in: harness)
+        let fellBack = await waitUntil { tap.currentDeviceUIDs == [harness.device.uid] }
+        #expect(fellBack, "with both devices gone the app plays on the default")
+        #expect(harness.settings.getSelectedDeviceUIDs(for: app.persistenceIdentifier) == [headphones.uid, speakers.uid])
+
+        reconnect(headphones, in: harness)
+        let firstBack = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid] }
+        #expect(firstBack)
+        reconnect(speakers, in: harness)
+        let bothBack = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid, self.speakers.uid] }
+        #expect(bothBack)
+    }
+
+    @Test("A device that was away at launch joins the route when it appears")
+    func lateDeviceJoinsTheRoute() async {
+        let harness = EngineHarness(extraDevices: [speakers])  // the headphones are away
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid, speakers.uid])
+        #expect(tap.currentDeviceUIDs == [speakers.uid])
+        #expect(harness.settings.getSelectedDeviceUIDs(for: app.persistenceIdentifier) == [headphones.uid, speakers.uid])
+
+        reconnect(headphones, in: harness)
+
+        let joined = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid, self.speakers.uid] }
+        #expect(joined)
+    }
+
+    @Test("Unticking a device in the picker is saved and a later blip of that device does not bring it back")
+    func untickPersists() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid, speakers.uid])
+
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [speakers.uid])
+        let unticked = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(unticked)
+        #expect(harness.settings.getSelectedDeviceUIDs(for: app.persistenceIdentifier) == [speakers.uid])
+
+        disconnect(headphones, in: harness)
+        reconnect(headphones, in: harness)
+        await drainEngineTasks()
+
+        #expect(tap.currentDeviceUIDs == [speakers.uid])
+        #expect(harness.engine.getSelectedDeviceUIDs(for: app) == [speakers.uid])
+    }
+
+    @Test("A tick made while a device is away keeps the away device saved, and it rejoins on return")
+    func tickWhileAwayKeepsTheAwayDevice() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid, speakers.uid])
+        disconnect(headphones, in: harness)
+        let dropped = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(dropped)
+
+        // The picker hands over what it shows: the connected devices only.
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [speakers.uid, harness.device.uid])
+        let ticked = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid, harness.device.uid] }
+        #expect(ticked)
+        #expect(harness.settings.getSelectedDeviceUIDs(for: app.persistenceIdentifier) == [headphones.uid, speakers.uid, harness.device.uid])
+        #expect(harness.engine.getSelectedDeviceUIDs(for: app) == [speakers.uid, harness.device.uid])
+
+        reconnect(headphones, in: harness)
+        let rejoined = await waitUntil {
+            tap.currentDeviceUIDs == [self.headphones.uid, self.speakers.uid, harness.device.uid]
+        }
+        #expect(rejoined)
+    }
+
+    @Test("An untick made while another device is away wins, and only the away device comes back")
+    func untickWhileAwayWins() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid, speakers.uid, harness.device.uid])
+        disconnect(headphones, in: harness)
+        let dropped = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid, harness.device.uid] }
+        #expect(dropped)
+
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [harness.device.uid])
+        let unticked = await waitUntil { tap.currentDeviceUIDs == [harness.device.uid] }
+        #expect(unticked)
+        #expect(harness.settings.getSelectedDeviceUIDs(for: app.persistenceIdentifier) == [headphones.uid, harness.device.uid])
+
+        reconnect(headphones, in: harness)
+        let rejoined = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid, harness.device.uid] }
+        #expect(rejoined, "the speakers were unticked by the user and must stay off")
+        #expect(harness.engine.getSelectedDeviceUIDs(for: app) == [headphones.uid, harness.device.uid])
+    }
+
+    @Test("Entering Multi with a saved device away starts on the rest, and the device joins when it appears")
+    func savedSelectionWithAnAwayDevice() async {
+        let harness = EngineHarness(extraDevices: [speakers])  // the headphones are away
+        let app = harness.makeApp(ids: [1])
+        let tap = harness.launch(app)
+        harness.settings.setSelectedDeviceUIDs(for: app.persistenceIdentifier, to: [headphones.uid, speakers.uid])
+
+        harness.engine.setDeviceSelectionMode(for: app, to: .multi)
+
+        let started = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(started, "a device that is away cannot be part of the route")
+        reconnect(headphones, in: harness)
+        let joined = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid, self.speakers.uid] }
+        #expect(joined)
+    }
+
+    // MARK: - A multi app with none of its devices left
+
+    @Test("A multi app whose devices are all away at launch follows the default")
+    func launchFallbackFollowsTheDefault() async {
+        let harness = EngineHarness(extraDevices: [speakers])  // the headphones are away
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid])
+        #expect(tap.currentDeviceUIDs == [harness.device.uid], "with its device away the app plays on the default")
+
+        harness.engine.setDefaultOutputDevice(speakers.id)
+
+        let followed = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(followed, "an app on the fallback follows the default like a single app")
+    }
+
+    @Test("A multi app that fell back to the default follows the next default change")
+    func disconnectFallbackFollowsTheDefault() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid])
+        disconnect(headphones, in: harness)
+        let fellBack = await waitUntil { tap.currentDeviceUIDs == [harness.device.uid] }
+        #expect(fellBack)
+
+        harness.engine.setDefaultOutputDevice(speakers.id)
+
+        let followed = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(followed)
+    }
+
+    @Test("A multi app that still has a device left stays on it when the default changes")
+    func partialRouteIgnoresDefaultChange() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = harness.launch(app)  // follows the default until it is switched to Multi
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [headphones.uid, harness.device.uid])
+        harness.engine.setDeviceSelectionMode(for: app, to: .multi)
+        let routed = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid, harness.device.uid] }
+        #expect(routed)
+        disconnect(headphones, in: harness)
+        let oneLeft = await waitUntil { tap.currentDeviceUIDs == [harness.device.uid] }
+        #expect(oneLeft)
+
+        harness.engine.setDefaultOutputDevice(speakers.id)
+        await drainEngineTasks()
+
+        #expect(tap.currentDeviceUIDs == [harness.device.uid], "the remaining device is the app's own, not a fallback")
+    }
+
+    @Test("A one-device route that fell back returns to its device, and stops following the default")
+    func fallbackReturnsToItsDevice() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid])
+        disconnect(headphones, in: harness)
+        let fellBack = await waitUntil { tap.currentDeviceUIDs == [harness.device.uid] }
+        #expect(fellBack)
+
+        reconnect(headphones, in: harness)
+        let back = await waitUntil { tap.currentDeviceUIDs == [self.headphones.uid] }
+        #expect(back, "the device the user picked should win over the fallback")
+        harness.engine.setDefaultOutputDevice(speakers.id)
+        await drainEngineTasks()
+
+        #expect(tap.currentDeviceUIDs == [headphones.uid], "back on its own device it ignores default changes again")
+    }
+
+    @Test("Ticking a device on an app that fell back starts its route there, and the away device stays saved")
+    func tickOnAFallbackAppStartsTheRoute() async {
+        let harness = makeHarness()
+        let app = harness.makeApp(ids: [1])
+        let tap = launchMulti(harness, app, uids: [headphones.uid])
+        disconnect(headphones, in: harness)
+        let fellBack = await waitUntil { tap.currentDeviceUIDs == [harness.device.uid] }
+        #expect(fellBack)
+
+        harness.engine.setSelectedDeviceUIDs(for: app, to: [speakers.uid])
+
+        let started = await waitUntil { tap.currentDeviceUIDs == [self.speakers.uid] }
+        #expect(started)
+        #expect(harness.settings.getSelectedDeviceUIDs(for: app.persistenceIdentifier) == [headphones.uid, speakers.uid])
+        harness.engine.setDefaultOutputDevice(harness.device.id)
+        await drainEngineTasks()
+        #expect(tap.currentDeviceUIDs == [speakers.uid], "with a device of its own the app no longer follows the default")
+    }
+
+    // MARK: - Inactive apps flipped to Multi
+
+    private let inactiveID = "com.deci.tests.Inactive"
+
+    @Test("An inactive app flipped to Multi is seeded with the device it is pinned to")
+    func inactiveSeedsFromItsPin() {
+        let harness = makeHarness()
+        harness.settings.setDeviceRouting(for: inactiveID, deviceUID: headphones.uid)
+
+        harness.engine.setDeviceSelectionModeForInactive(identifier: inactiveID, to: .multi)
+
+        #expect(harness.engine.getDeviceSelectionModeForInactive(identifier: inactiveID) == .multi)
+        #expect(harness.engine.getSelectedDeviceUIDsForInactive(identifier: inactiveID) == [headphones.uid])
+        #expect(harness.settings.getSelectedDeviceUIDs(for: inactiveID) == [headphones.uid])
+    }
+
+    @Test("An inactive app that follows the default is seeded with the default")
+    func inactiveSeedsFromTheDefault() {
+        let harness = makeHarness()
+
+        harness.engine.setDeviceSelectionModeForInactive(identifier: inactiveID, to: .multi)
+
+        #expect(harness.engine.getSelectedDeviceUIDsForInactive(identifier: inactiveID) == [harness.device.uid])
+    }
+
+    @Test("An inactive app pinned to a device that is away is seeded with the default")
+    func inactiveSeedSkipsAnAwayPin() {
+        let harness = EngineHarness(extraDevices: [speakers])  // the headphones are away
+        harness.settings.setDeviceRouting(for: inactiveID, deviceUID: headphones.uid)
+
+        harness.engine.setDeviceSelectionModeForInactive(identifier: inactiveID, to: .multi)
+
+        #expect(harness.engine.getSelectedDeviceUIDsForInactive(identifier: inactiveID) == [harness.device.uid])
+    }
+
+    @Test("An inactive app's saved selection is not overwritten when it is flipped to Multi")
+    func inactiveKeepsASavedSelection() {
+        let harness = makeHarness()
+        harness.settings.setSelectedDeviceUIDs(for: inactiveID, to: [headphones.uid, speakers.uid])
+
+        harness.engine.setDeviceSelectionModeForInactive(identifier: inactiveID, to: .multi)
+
+        #expect(harness.engine.getSelectedDeviceUIDsForInactive(identifier: inactiveID) == [headphones.uid, speakers.uid])
+    }
+
+    @Test("Flipping an inactive app to Single seeds nothing")
+    func inactiveSingleDoesNotSeed() {
+        let harness = makeHarness()
+
+        harness.engine.setDeviceSelectionModeForInactive(identifier: inactiveID, to: .single)
+
+        #expect(harness.settings.getSelectedDeviceUIDs(for: inactiveID) == nil)
+    }
+
+    @Test("With no pin and no default, an inactive app flipped to Multi stays unseeded")
+    func inactiveNoSeedWithoutADevice() {
+        let harness = makeHarness()
+        harness.deviceVolume.defaultDeviceUID = nil
+
+        harness.engine.setDeviceSelectionModeForInactive(identifier: inactiveID, to: .multi)
+
+        #expect(harness.engine.getDeviceSelectionModeForInactive(identifier: inactiveID) == .multi)
+        #expect(harness.engine.getSelectedDeviceUIDsForInactive(identifier: inactiveID).isEmpty)
     }
 
     // MARK: - Devices in use by a multi route
