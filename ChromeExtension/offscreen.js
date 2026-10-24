@@ -21,6 +21,9 @@ const PSEUDO_OUTPUT_IDS = ['default', 'communications'];
 const DEVICE_CHANGE_DEBOUNCE_MS = 300;
 const FIRST_ROUTE_TIMEOUT_MS = 1500; // a start never waits longer than this for its sink
 const DEVICE_CALL_TIMEOUT_MS = 4000; // a hung enumerateDevices/setSinkId must not stall the queue
+const DEVICE_MISSING_GRACE_MS = 4000; // a planned output gone from the device list keeps its chain this long
+const RESUME_THROTTLE_MS = 2000; // a context Chrome keeps suspending is woken by its statechange handler this often at most
+const MAX_EVENT_RESUMES = 5; // wakes in a row that did not hold before the handler gives up (a routing pass tries again)
 const MAX_SINKS = 8; // outputs one tab can play on at once (background.js has the same cap)
 // The default 'interactive' hint gives WebAudio Chrome's smallest output buffer (a few ms), so the
 // render thread crackles whenever the Mac is loaded or swapping. 'playback' trades a few tens of ms
@@ -40,11 +43,15 @@ const FULL_RANGE_DB = LIMITER.threshold + (0 - LIMITER.threshold) / LIMITER.rati
 const MAKEUP_DB = -FULL_RANGE_DB * 0.6;
 const TRIM_GAIN = Math.pow(10, -MAKEUP_DB / 20);
 
-// tabId -> { stream, chains, state, deviceGen, deviceQueue, reportedStatus }
-//   chains: one per output, never empty once a capture is registered:
-//     { ctx, stream, ownsStream, source, gain, filters, limiter, trim, sinkId, connected }
+// tabId -> { stream, chains, state, deviceGen, deviceQueue, reportedStatus, starting }
+//   chains: one per output; empty only briefly when the floor's rebuild fails (the next pass rebuilds):
+//     { ctx, stream, ownsStream, source, gain, filters, limiter, trim, sinkId, name, routed, connected,
+//       tornDown, graceTimer, graceExpired, resumeTimer, resumeStreak, resumeDeferred }
 //     sinkId is the output the chain's context plays on ('' = system default);
-//     ownsStream is true for a clone that dies with the chain.
+//     name is the output name that last routed it; ownsStream is true for a clone that dies with the chain;
+//     tornDown marks a chain we closed ourselves; graceTimer/graceExpired track a missing output (see
+//     reconcileChains); resumeTimer/resumeStreak/resumeDeferred throttle the statechange wake (see eventResume).
+//   starting is true until startCapture has connected the first chain.
 const captures = new Map();
 const pendingStarts = new Map(); // tabId -> token of the newest in-flight start
 
@@ -95,6 +102,10 @@ function stopTracks(stream) {
 
 // Releases one chain: its nodes, its context and, when it owns one, its stream.
 function teardownChain(chain) {
+  chain.tornDown = true; // our own close: the statechange handler must not revive it
+  clearGrace(chain);
+  clearTimeout(chain.resumeTimer);
+  chain.resumeTimer = null;
   if (chain.ownsStream) stopTracks(chain.stream);
   for (const node of [chain.source, chain.gain, ...chain.filters, chain.limiter, chain.trim]) {
     try { node.disconnect(); } catch (e) { /* not connected */ }
@@ -167,12 +178,53 @@ function buildChain(ctx, stream, ownsStream, state, routed) {
   prev.connect(limiter);
   limiter.connect(trim);
 
-  return { ctx, stream, ownsStream, source, gain, filters, limiter, trim, sinkId: '', routed, connected: false };
+  const chain = {
+    ctx, stream, ownsStream, source, gain, filters, limiter, trim, sinkId: '', name: '', routed, connected: false,
+    tornDown: false, graceTimer: null, graceExpired: false, resumeTimer: null, resumeStreak: 0, resumeDeferred: false
+  };
+  // Chrome stops a context on its own at times (a device error, a headset changing profile).
+  ctx.addEventListener('statechange', () => eventResume(chain));
+  return chain;
+}
+
+// Wakes a context that is not running, unless we closed it. Best effort.
+function wakeChain(chain) {
+  const state = chain.ctx.state;
+  if (chain.tornDown || state === 'running' || state === 'closed') return;
+  chain.ctx.resume().catch(() => {});
+}
+
+// The wake a routing pass gives a chain: the slow retry, and a fresh allowance for eventResume.
+function resumeChain(chain) {
+  chain.resumeStreak = 0;
+  wakeChain(chain);
+}
+
+// The wake for a context that just suspended. A device that keeps failing suspends the context again after
+// every wake, and each wake opens the output once more (a headset hears that as a drop), so this wakes at
+// most once per RESUME_THROTTLE_MS: a suspension inside the window is wakened when it ends. After
+// MAX_EVENT_RESUMES wakes in a row that did not hold it stops, until a routing pass or a calm window.
+function eventResume(chain) {
+  if (chain.tornDown || chain.ctx.state !== 'suspended') return;
+  if (chain.resumeTimer) {
+    chain.resumeDeferred = true;
+    return;
+  }
+  if (chain.resumeStreak >= MAX_EVENT_RESUMES) return;
+  chain.resumeStreak++;
+  wakeChain(chain);
+  chain.resumeTimer = setTimeout(() => {
+    chain.resumeTimer = null;
+    const again = chain.resumeDeferred && chain.ctx.state === 'suspended';
+    chain.resumeDeferred = false;
+    if (again) eventResume(chain);
+    else chain.resumeStreak = 0; // a whole window without a new suspension: calm again
+  }, RESUME_THROTTLE_MS);
 }
 
 // Lets a chain be heard. Idempotent.
 function connectChain(chain) {
-  if (chain.connected) return;
+  if (chain.connected || chain.tornDown) return;
   chain.trim.connect(chain.ctx.destination);
   chain.connected = true;
 }
@@ -214,7 +266,7 @@ async function startCapture(msg) {
   const first = buildChain(ctx, stream, false, state, true);
   const entry = {
     stream, chains: [first], state,
-    deviceGen: 0, deviceQueue: Promise.resolve(), reportedStatus: null
+    deviceGen: 0, deviceQueue: Promise.resolve(), reportedStatus: null, starting: true
   };
   const tracks = stream.getAudioTracks();
   if (tracks.length === 0 || tracks.every((t) => t.readyState === 'ended')) {
@@ -241,6 +293,7 @@ async function startCapture(msg) {
   for (const chain of entry.chains) {
     if (chain.routed) connectChain(chain);
   }
+  entry.starting = false;
 }
 
 function setState(msg) {
@@ -441,8 +494,12 @@ function withTimeout(promise, ms, what) {
 // Moves a chain's context to an output. Resolves true when it plays there,
 // and marks the chain routed. On failure the chain's sinkId is re-read from the context, so it reflects
 // where the context really plays (a timed-out call may still land later).
+// A context already running on that output is left alone: setSinkId would restart its stream.
 async function trySetSink(chain, sinkId) {
-  if (chain.sinkId === sinkId) {
+  const current = typeof chain.ctx.sinkId === 'string' ? chain.ctx.sinkId : chain.sinkId;
+  // A context Chrome stopped still reports its sink, so only a running one is taken at its word.
+  if (current === sinkId && chain.ctx.state === 'running') {
+    chain.sinkId = sinkId;
     chain.routed = true;
     return true;
   }
@@ -455,6 +512,9 @@ async function trySetSink(chain, sinkId) {
     console.warn(`Deci offscreen: setSinkId ${JSON.stringify(sinkId)} failed:`, err);
     if (typeof chain.ctx.sinkId === 'string') chain.sinkId = chain.ctx.sinkId;
     return false;
+  } finally {
+    // After the move, and only if it is still stopped: waking it first would open the old output for nothing.
+    resumeChain(chain);
   }
 }
 
@@ -486,23 +546,94 @@ async function addChain(tabId, entry) {
   }
 }
 
+function clearGrace(chain) {
+  clearTimeout(chain.graceTimer);
+  chain.graceTimer = null;
+  chain.graceExpired = false;
+}
+
+// Whether a chain that would be closed may stay open: its output is one the
+// tab still asks for (in plan.missing) and has been gone for less than
+// DEVICE_MISSING_GRACE_MS. A chain whose output was unticked has no claim, and
+// neither has one whose context Chrome already re-routed to the default output
+// (it would double the tab there).
+function canHold(chain, plan) {
+  return plan.missing.includes(chain.name) && !chain.graceExpired && chain.ctx.sinkId !== '';
+}
+
+// True while canHold. A headset flipping profile drops off the device list
+// and comes back, and closing and reopening its context each time can flip it
+// again. The first call starts the clock and, when it runs out, applies again
+// so the chain is closed even if nothing else happens.
+function inGrace(tabId, entry, chain, plan) {
+  if (!canHold(chain, plan)) return false;
+  if (!chain.graceTimer) {
+    chain.graceTimer = setTimeout(() => {
+      chain.graceTimer = null;
+      chain.graceExpired = true;
+      if (!chain.tornDown && captures.get(tabId) === entry) routeOutput(tabId, entry);
+    }, DEVICE_MISSING_GRACE_MS);
+  }
+  return true;
+}
+
+// A chain just set on an output (name, '' for the default): heard at once, and
+// no longer waiting out a missing device.
+function landChain(chain, name) {
+  chain.name = name;
+  clearGrace(chain);
+  connectChain(chain);
+}
+
 // Brings the entry's chains in line with the plan: keeps chains already on a
 // planned output, closes the surplus ones that have no use, then re-points
 // the others and adds chains for outputs still missing. The closing comes
 // first so a slow move or add never leaves an old output playing next to the
-// new one. Always leaves at least one chain. Gives up
+// new one. Always leaves at least one chain. A chain whose output went missing
+// from the device list is held for DEVICE_MISSING_GRACE_MS before it is closed
+// (see inGrace); under a fallback plan (labels unreadable, nothing matched) the
+// held chains are left exactly as they are, and a chain is never held while
+// another is moved onto the default output. A chain is heard as soon as it is set on its output, so a
+// superseded apply never leaves one routed but silent. Gives up
 // (returns null) as soon as the apply is superseded or the capture stopped;
 // every step leaves the chains consistent, so the next apply starts from the
 // truth. Otherwise returns the names of planned outputs that could not be set up.
 async function reconcileChains(tabId, entry, plan, isCurrent) {
   const failed = [];
-  for (const chain of entry.chains) {
+  for (const chain of entry.chains.slice()) {
+    if (chain.ctx.state === 'closed') {
+      // Chrome closed it, not us, and a closed context cannot come back: drop
+      // it, and the diff below builds a new chain on its output.
+      entry.chains = entry.chains.filter((c) => c !== chain);
+      teardownChain(chain);
+      continue;
+    }
+    resumeChain(chain);
     // A timed-out setSinkId may have landed since; trust the context.
     if (typeof chain.ctx.sinkId === 'string') chain.sinkId = chain.ctx.sinkId;
   }
   const wantedIds = plan.sinks.map((sink) => sink.sinkId);
   const nameOf = (id) => (plan.sinks.find((sink) => sink.sinkId === id) || {}).name || '';
+  for (const chain of entry.chains) {
+    // On a planned output: its device is here, so any grace period is over.
+    if (wantedIds.includes(chain.sinkId)) {
+      chain.name = nameOf(chain.sinkId);
+      clearGrace(chain);
+    }
+  }
+  // A fallback plan is no reason to touch a chain whose output is only missing for now (a headset whose
+  // labels blank during a profile flip): if every chain off the planned outputs can be held, hold them all
+  // and change nothing, so no setSinkId restarts a stream and nothing doubles on the default output.
+  if (plan.status !== 'routed') {
+    const off = entry.chains.filter((chain) => !wantedIds.includes(chain.sinkId));
+    if (off.length > 0 && off.every((chain) => canHold(chain, plan))) {
+      for (const chain of off) inGrace(tabId, entry, chain, plan);
+      return failed;
+    }
+  }
   const diff = diffSinks(entry.chains.map((chain) => chain.sinkId), wantedIds);
+  // Once a chain plays on the default output, no other chain is held next to it.
+  let onDefault = diff.move.some((move) => move.to === '') || diff.add.includes('');
 
   // Close the surplus first. With nothing planned, one chain stays to play on
   // the default output.
@@ -510,9 +641,14 @@ async function reconcileChains(tabId, entry, plan, isCurrent) {
   if (wantedIds.length === 0 && doomed.length > 0) {
     doomed.splice(doomed.includes('') ? doomed.indexOf('') : 0, 1);
   }
+  const held = new Set();
   for (const id of doomed) {
-    const chain = entry.chains.find((c) => c.sinkId === id);
+    const chain = entry.chains.find((c) => c.sinkId === id && !held.has(c));
     if (!chain) continue;
+    if (!onDefault && inGrace(tabId, entry, chain, plan)) {
+      held.add(chain);
+      continue;
+    }
     entry.chains = entry.chains.filter((c) => c !== chain);
     teardownChain(chain);
   }
@@ -521,9 +657,9 @@ async function reconcileChains(tabId, entry, plan, isCurrent) {
     const chain = entry.chains.find((c) => c.sinkId === from);
     if (!chain) continue;
     const ok = await trySetSink(chain, to);
+    if (ok) landChain(chain, nameOf(to)); // before the bail: a superseded apply must not leave it silent
     if (!isCurrent()) return null;
-    if (ok) connectChain(chain);
-    else failed.push(nameOf(to));
+    if (!ok) failed.push(nameOf(to));
   }
   for (const id of diff.add) {
     if (!isCurrent()) return null;
@@ -534,10 +670,9 @@ async function reconcileChains(tabId, entry, plan, isCurrent) {
       continue;
     }
     const ok = await trySetSink(chain, id);
+    if (ok) landChain(chain, nameOf(id));
     if (!isCurrent()) return null;
-    if (ok) {
-      connectChain(chain);
-    } else {
+    if (!ok) {
       entry.chains = entry.chains.filter((c) => c !== chain);
       teardownChain(chain);
       failed.push(nameOf(id));
@@ -558,24 +693,34 @@ async function reconcileChains(tabId, entry, plan, isCurrent) {
         entry.chains = entry.chains.filter((c) => c !== fallback);
         teardownChain(fallback);
         const fresh = await addChain(tabId, entry);
+        if (fresh) {
+          connectChain(fresh);
+          onDefault = true;
+        }
         if (!isCurrent()) return null;
-        if (fresh) connectChain(fresh);
       } else {
+        landChain(fallback, '');
+        onDefault = true;
         if (!isCurrent()) return null;
-        connectChain(fallback);
       }
     }
   }
   if (!isCurrent()) return null;
   for (const chain of others) {
+    if (!onDefault && inGrace(tabId, entry, chain, plan)) continue;
     entry.chains = entry.chains.filter((c) => c !== chain);
     teardownChain(chain);
   }
   if (entry.chains.length === 0) {
     // Defensive: a tab always has a chain, on the default output at worst.
     const fresh = await addChain(tabId, entry);
-    if (!isCurrent()) return null;
     if (fresh) connectChain(fresh);
+    if (!isCurrent()) return null;
+  }
+  // A chain routed on a planned output is heard, whatever an earlier superseded
+  // apply left undone (the keep path above never connects).
+  for (const chain of entry.chains) {
+    if (chain.routed && planned.has(chain.sinkId)) connectChain(chain);
   }
   return failed;
 }
@@ -584,7 +729,7 @@ async function reconcileChains(tabId, entry, plan, isCurrent) {
 // resolution of the same entry (deviceQueue) and gives up as soon as a newer
 // one was queued or the capture was stopped or replaced, so the latest always
 // wins.
-async function applyOutput(tabId, entry, gen) {
+async function resolveOutput(tabId, entry, gen) {
   const isCurrent = () => captures.get(tabId) === entry && entry.deviceGen === gen;
   if (!isCurrent()) return;
   const names = wantedNames(entry.state);
@@ -609,9 +754,52 @@ async function applyOutput(tabId, entry, gen) {
   const failed = await reconcileChains(tabId, entry, plan, isCurrent);
   if (failed === null || !isCurrent()) return;
   const planned = new Set(plan.sinks.map((sink) => sink.sinkId));
-  const routedCount = entry.chains.filter((chain) => planned.has(chain.sinkId)).length;
+  // Only a chain that is routed and heard counts as playing on its output.
+  const routedCount = entry.chains.filter((chain) =>
+    planned.has(chain.sinkId) && chain.routed && chain.connected).length;
   const { status, missing } = finalStatus(plan, routedCount, failed);
   reportStatus(tabId, entry, status, missing);
+}
+
+// A captured tab is muted locally, so a live capture must never be left with
+// nothing connected: it would play nowhere. Connects one chain on the default
+// output (building one if needed). Left alone while startCapture is still
+// choosing the first output, which connects the first chain itself, and by a
+// pass that a newer one superseded (gen), which would only move a chain to the
+// default output for the newer pass to move it back.
+async function ensureAudible(tabId, entry, gen) {
+  const alive = () => captures.get(tabId) === entry;
+  if (!alive() || entry.starting || entry.deviceGen !== gen) return;
+  const live = entry.chains.filter((chain) => chain.ctx.state !== 'closed');
+  if (live.some((chain) => chain.connected)) return;
+  try {
+    const chain = live.find((c) => c.sinkId === '') || live[0];
+    if (chain) {
+      if (await trySetSink(chain, '')) {
+        landChain(chain, '');
+        return;
+      }
+      if (!alive()) return;
+      // Release the chain that would not move, or it lingers silent next to the new one.
+      entry.chains = entry.chains.filter((c) => c !== chain);
+      teardownChain(chain);
+    }
+    if (!alive()) return;
+    const fresh = await addChain(tabId, entry);
+    if (fresh) landChain(fresh, '');
+  } catch (err) {
+    console.warn(`Deci offscreen: restoring the default output of tab ${tabId} failed:`, err);
+  }
+}
+
+// One routing pass, then the floor: it runs however the pass ended (done, given
+// up for a newer one, or failed).
+async function applyOutput(tabId, entry, gen) {
+  try {
+    await resolveOutput(tabId, entry, gen);
+  } finally {
+    await ensureAudible(tabId, entry, gen);
+  }
 }
 
 function routeOutput(tabId, entry) {
