@@ -1245,11 +1245,13 @@ struct MusicTrackActionsStoreTests {
 
     @Test("A newer outcome replaces the older line, and the older line's timer does not clear it")
     func outcomesReplaceEachOther() async {
-        let h = ActionsHarness(noticeDuration: .milliseconds(80))
+        // Wide margins: the check lands 200 ms past the older line's deadline and 400 ms before the
+        // newer one's, so a slow sleep under a loaded test run cannot reach either edge.
+        let h = ActionsHarness(noticeDuration: .seconds(1))
         h.store.post(.failed)
-        try? await Task.sleep(for: .milliseconds(50))
+        try? await Task.sleep(for: .milliseconds(600))
         h.store.post(.nothingPlaying)
-        try? await Task.sleep(for: .milliseconds(50))
+        try? await Task.sleep(for: .milliseconds(600))
 
         #expect(h.store.notice?.text == "Nothing is playing")
         #expect(await h.until { h.store.notice == nil })
