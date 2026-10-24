@@ -2,16 +2,20 @@
 import Foundation
 
 /// What the search field of the right column searches on the screen it sits on. Kept apart from the views so each
-/// screen is tested: Home and an artist page search YouTube Music; Library, a playlist (Liked music too), an album and
-/// Up next filter what is already loaded, live; Lyrics and Related have no search.
+/// screen is tested: Home searches YouTube Music; Library, a playlist (Liked music too), an album, an artist page,
+/// History and Up next search what is already loaded, live; Lyrics and Related have no search.
 nonisolated enum MusicSearchScope: Equatable {
-    /// Home and an artist page: search YouTube Music, sent with Return.
+    /// Home: search YouTube Music, sent with Return.
     case global
     /// Library, any of its segments.
     case library
     /// A playlist page or Liked music.
     case playlist
     case album
+    /// An artist page: its Top songs, its full songs list and its albums and playlists.
+    case artist
+    /// The History tab: the days already loaded.
+    case history
     case queue
     /// Lyrics and Related: no magnifier, no field.
     case none
@@ -23,6 +27,8 @@ nonisolated enum MusicSearchScope: Equatable {
         case .library: "Search your library"
         case .playlist: "Search in this playlist"
         case .album: "Search in this album"
+        case .artist: "Search this artist"
+        case .history: "Search your history"
         case .queue: "Search the queue"
         case .none: nil
         }
@@ -33,13 +39,13 @@ nonisolated enum MusicSearchScope: Equatable {
     /// Filters what is on screen as it is typed, with no network call.
     var isLocal: Bool {
         switch self {
-        case .library, .playlist, .album, .queue: true
+        case .library, .playlist, .album, .artist, .history, .queue: true
         case .global, .none: false
         }
     }
 
     /// The scope of the screen on top: Up next searches the queue, Lyrics and Related nothing, and browse depends on
-    /// the page open on top of the tab (an artist page searches YouTube Music like Home) or the tab itself.
+    /// the page open on top of the tab or the tab itself.
     @MainActor
     static func resolve(column: MusicRightColumn, tab: MusicBrowseStore.Tab, page: MusicPageKind?) -> MusicSearchScope {
         switch column {
@@ -52,12 +58,13 @@ nonisolated enum MusicSearchScope: Equatable {
                 switch page {
                 case .album: return .album
                 case .playlist, .liked: return .playlist
-                case .artist: return .global
+                case .artist: return .artist
                 }
             }
             switch tab {
             case .library: return .library
-            case .home, .history: return .global
+            case .home: return .global
+            case .history: return .history
             }
         }
     }
@@ -93,6 +100,11 @@ nonisolated enum MusicSearchCopy {
     static func countLine(matched: Int, total: Int, noun: MusicSearchNoun, isPartial: Bool) -> String {
         let line = "\(max(matched, 0)) OF \(max(total, 0)) \(noun.word(count: total).uppercased())"
         return isPartial ? line + " LOADED" : line
+    }
+
+    /// The link over the Library filter's Songs block when Liked music holds more matches than it shows.
+    static func showAllSongs(count: Int) -> String {
+        "Show all \(max(count, 0)) \(MusicSearchNoun.song.word(count: count))"
     }
 
     /// The line under the filtered queue: "Clear or press esc to show all 4 songs".

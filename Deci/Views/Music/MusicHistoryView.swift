@@ -4,9 +4,11 @@ import SwiftUI
 /// The History root: what the signed-in account listened to, one list per day (Today, Yesterday, This week...),
 /// newest first, more as the list reaches its end. Each day is a section title over hairline separated song rows,
 /// the same rows as the Quick picks list on Home. Opening the tab asks YouTube again while the list stays up, so a
-/// song played since shows at the top.
+/// song played since shows at the top. The header's field filters the days already loaded, live: a count line over the
+/// songs that match, the days left empty gone, and nothing is asked of YouTube.
 struct MusicHistoryView: View {
     let service: MusicService
+    let navigation: MusicSearchNavigation
 
     /// The days (by place in the list and title) that "See all" has opened past their first rows. Kept while the tab
     /// stays up; a reload that brings different days leaves their keys behind.
@@ -38,27 +40,64 @@ struct MusicHistoryView: View {
         case .failed(let message):
             MusicFailedCard(message: message) { browse.reloadHistory() }
         case .loaded(let shelves):
-            let listed = Self.days(in: shelves)
-            if listed.isEmpty {
-                emptyState
+            if let filter = navigation.historyFilter {
+                filtered(filter)
             } else {
-                ForEach(Array(listed.enumerated()), id: \.offset) { index, day in
-                    let key = Self.expansionKey(index: index, title: day.title)
-                    MusicHistoryDaySection(
-                        day: day,
-                        service: service,
-                        isExpanded: expandedDays.contains(key),
-                        toggle: { toggleDay(key) }
-                    )
-                    .onAppear {
-                        if index == listed.count - 1 { loadMore() }
+                let listed = Self.days(in: shelves)
+                if listed.isEmpty {
+                    emptyState
+                } else {
+                    ForEach(Array(listed.enumerated()), id: \.offset) { index, day in
+                        let key = Self.expansionKey(index: index, title: day.title)
+                        MusicHistoryDaySection(
+                            day: day,
+                            service: service,
+                            isExpanded: expandedDays.contains(key),
+                            toggle: { toggleDay(key) }
+                        )
+                        .onAppear {
+                            if index == listed.count - 1 { loadMore() }
+                        }
                     }
-                }
-                if browse.canLoadMoreHistory || browse.isLoadingMoreHistory {
-                    MusicLoadMoreFooter(isLoading: browse.isLoadingMoreHistory) { loadMore() }
+                    if browse.canLoadMoreHistory || browse.isLoadingMoreHistory {
+                        MusicLoadMoreFooter(isLoading: browse.isLoadingMoreHistory) { loadMore() }
+                    }
                 }
             }
         }
+    }
+
+    /// The days under the field's words: the count line, then each day with the songs that match, or, when none do, the
+    /// block that offers YouTube Music. It never asks for more days: the count line says it is of the ones loaded.
+    private func filtered(_ filter: MusicHistoryFilter) -> some View {
+        VStack(alignment: .leading, spacing: MusicBrowseLayout.listBarGap) {
+            MusicScopeLine(text: filter.countLine)
+            if filter.isEmpty {
+                let copy = MusicSearchCopy.noResults(
+                    noun: .song,
+                    query: navigation.filterQuery,
+                    place: "your history",
+                    beyond: "your history"
+                )
+                MusicNoResultsBlock(title: copy.title, detail: copy.detail) {
+                    navigation.searchYouTubeMusicInstead()
+                }
+            } else {
+                VStack(alignment: .leading, spacing: MusicBrowseLayout.homeSectionGap) {
+                    ForEach(Array(Self.days(in: filter.shelves).enumerated()), id: \.offset) { index, day in
+                        // Apart from the full list's keys: the same place means another day while filtered.
+                        let key = "filtered|" + Self.expansionKey(index: index, title: day.title)
+                        MusicHistoryDaySection(
+                            day: day,
+                            service: service,
+                            isExpanded: expandedDays.contains(key),
+                            toggle: { toggleDay(key) }
+                        )
+                    }
+                }
+            }
+        }
+        .environment(\.musicHighlightTerms, navigation.browseFilterTerms)
     }
 
     /// No days to show: still waiting on the next page, or it did not load, or there is no history.

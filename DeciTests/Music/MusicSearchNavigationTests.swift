@@ -1060,11 +1060,11 @@ struct MusicSearchNavigationShellTests {
         #expect(h.nav.showsHomeRefresh == false)
     }
 
-    @Test("the field on History searches YouTube Music: Return sends it, nothing filters the loaded days")
-    func historyFieldIsGlobal() {
+    @Test("the field on History searches the loaded days: nothing is sent to YouTube Music")
+    func historyFieldIsLocal() {
         let h = NavHarness()
         h.nav.select(.history)
-        #expect(h.nav.scope == .global)
+        #expect(h.nav.scope == .history)
         #expect(h.nav.isFieldOpen == false)
         h.nav.openField()
         #expect(h.nav.isFieldOpen)

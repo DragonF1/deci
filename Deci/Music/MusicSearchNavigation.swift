@@ -235,7 +235,7 @@ final class MusicSearchNavigation {
         get {
             switch scope {
             case .global: service.query
-            case .library, .playlist, .album: filterQuery
+            case .library, .playlist, .album, .artist, .history: filterQuery
             case .queue: queueQuery
             case .none: ""
             }
@@ -243,7 +243,9 @@ final class MusicSearchNavigation {
         set {
             switch scope {
             case .global: service.query = newValue
-            case .library, .playlist, .album: filterQuery = newValue
+            case .library, .playlist, .album, .artist, .history:
+                filterQuery = newValue
+                startScopedLoad()
             case .queue: queueQuery = newValue
             case .none: break
             }
@@ -254,6 +256,87 @@ final class MusicSearchNavigation {
     var browseFilterTerms: [String] {
         guard browseScope.isLocal, filterAnchor == currentAnchor else { return [] }
         return MusicLocalSearch.terms(of: filterQuery)
+    }
+
+    // MARK: - Scoped searches
+
+    /// The page a scoped search needs and has not asked for: Liked music for the Library filter, the artist's full songs
+    /// list for the artist field. Nil while the field has no words, while the artist page is still loading, or when the
+    /// screen asks for nothing more.
+    var scopedLoadTarget: String? {
+        guard !browseFilterTerms.isEmpty else { return nil }
+        switch browseScope {
+        case .library:
+            return MusicBrowseStore.likedMusic.browseId
+        case .artist:
+            guard let artist = service.browse.path.last,
+                  case .loaded(let page) = service.browse.pageState(artist.browseId) else { return nil }
+            return page.allSongsBrowseId
+        case .global, .playlist, .album, .history, .queue, .none:
+            return nil
+        }
+    }
+
+    /// Asks for the page of `scopedLoadTarget` through the store's own loader, once: a page that is loading, loaded or
+    /// failed is left alone. Run on every edit and when the artist page lands.
+    func startScopedLoad() {
+        guard let target = scopedLoadTarget, service.browse.pageState(target) == .idle else { return }
+        service.browse.reloadPage(target)
+    }
+
+    /// The page a scoped search asked for is still on its way, so an empty answer is not final yet.
+    var isScopedLoadPending: Bool {
+        guard let target = scopedLoadTarget, case .loading = service.browse.pageState(target) else { return false }
+        return true
+    }
+
+    /// The loaded page under `browseId`, or nil while it is idle, loading or failed.
+    private func loadedPage(_ browseId: String?) -> MusicBrowsePage? {
+        guard let browseId, case .loaded(let page) = service.browse.pageState(browseId) else { return nil }
+        return page
+    }
+
+    /// What the artist field finds on the artist page on top; nil while it has no words or the page has not loaded.
+    var artistSearch: MusicArtistSearch? {
+        let terms = browseFilterTerms
+        guard browseScope == .artist, !terms.isEmpty, let page = loadedPage(service.browse.path.last?.browseId) else { return nil }
+        return MusicArtistSearch.resolve(page: page, songsPage: loadedPage(page.allSongsBrowseId), terms: terms)
+    }
+
+    /// The artist results cover the artist page.
+    var showsArtistSearch: Bool {
+        artistSearch != nil
+    }
+
+    /// The Songs block over the filtered Library: the matches in Liked music, loaded or not yet. Nil without words.
+    var likedSongs: MusicLikedSongs? {
+        let terms = browseFilterTerms
+        guard browseScope == .library, !terms.isEmpty else { return nil }
+        return MusicLikedSongs.resolve(page: loadedPage(MusicBrowseStore.likedMusic.browseId), terms: terms)
+    }
+
+    /// The Library filter found nothing anywhere: not in the segment, and not among the songs of Liked music, which
+    /// are not given up on while they are still loading.
+    func libraryHasNoMatch(_ filter: MusicLibraryFilter) -> Bool {
+        guard filter.isEmpty, !isScopedLoadPending else { return false }
+        return likedSongs?.isEmpty ?? true
+    }
+
+    /// "Show all N songs": Liked music opens with the Library filter's words as its own filter, field open.
+    func showAllLikedSongs() {
+        let words = filterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard browseScope == .library, !words.isEmpty else { return }
+        openCollection(MusicBrowseStore.likedMusic)
+        filterAnchor = currentAnchor
+        filterQuery = words
+    }
+
+    /// History under the field's words: the days with the items that match; nil while it has no words or History has
+    /// not loaded.
+    var historyFilter: MusicHistoryFilter? {
+        let terms = browseFilterTerms
+        guard browseScope == .history, !terms.isEmpty, case .loaded(let shelves) = service.browse.history else { return nil }
+        return MusicHistoryFilter.resolve(shelves: shelves, terms: terms, isPartial: service.browse.canLoadMoreHistory)
     }
 
     /// The words Up next is filtered by right now.
@@ -280,7 +363,7 @@ final class MusicSearchNavigation {
             dropQuery()
             hidesResults = false
             searchAnchor = currentAnchor
-        case .library, .playlist, .album:
+        case .library, .playlist, .album, .artist, .history:
             filterQuery = ""
             filterAnchor = currentAnchor
         }
@@ -290,7 +373,7 @@ final class MusicSearchNavigation {
     func clearField() {
         switch scope {
         case .global: dropQuery()
-        case .library, .playlist, .album: filterQuery = ""
+        case .library, .playlist, .album, .artist, .history: filterQuery = ""
         case .queue: queueQuery = ""
         case .none: break
         }

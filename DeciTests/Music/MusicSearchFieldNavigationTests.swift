@@ -108,7 +108,11 @@ struct MusicSearchFieldScopeTests {
         h.nav.select(.home)
 
         h.openArtistPage()
-        #expect(h.nav.scope == .global)
+        #expect(h.nav.scope == .artist)
+        h.nav.select(.home)
+
+        h.nav.select(.history)
+        #expect(h.nav.scope == .history)
         h.nav.select(.home)
 
         h.playSomething()
@@ -135,7 +139,7 @@ struct MusicSearchFieldScopeTests {
         #expect(h.nav.scope.placeholder == "Search YouTube Music")
     }
 
-    @Test("the magnifier opens a field on Library, a playlist, Liked music, an album and an artist page")
+    @Test("the magnifier opens a field on Library, a playlist, Liked music, an album, an artist page and History")
     func opensOnEveryScreen() {
         let h = FieldNavHarness()
         h.nav.select(.library)
@@ -165,7 +169,12 @@ struct MusicSearchFieldScopeTests {
         h.openArtistPage()
         h.nav.openField()
         #expect(h.nav.isFieldOpen)
-        #expect(h.nav.scope.placeholder == "Search YouTube Music")
+        #expect(h.nav.scope.placeholder == "Search this artist")
+
+        h.nav.select(.history)
+        h.nav.openField()
+        #expect(h.nav.isFieldOpen)
+        #expect(h.nav.scope.placeholder == "Search your history")
     }
 
     @Test("the magnifier opens the Up next field, empty, with the queue placeholder")
@@ -419,20 +428,31 @@ struct MusicSearchFieldEscapeTests {
         }
     }
 
-    @Test("on an artist page Esc clears the YouTube Music words, then folds the field, and keeps the page")
-    func artistEscapeTwice() async {
+    @Test("on an artist page and on History Esc clears the filter, then folds the field, and keeps the page")
+    func artistAndHistoryEscapeTwice() {
         let h = FieldNavHarness()
         h.openArtistPage()
         h.nav.openField()
-        await h.search("alpha")
-        #expect(h.nav.showsSearchPanel)
+        h.type("night")
 
         #expect(h.nav.escape())
+        #expect(h.nav.filterQuery.isEmpty)
         #expect(h.service.query.isEmpty)
         #expect(h.nav.isFieldOpen)
         #expect(h.nav.escape())
         #expect(h.nav.isFieldOpen == false)
         #expect(h.path == ["UCa"])
+        #expect(h.nav.escape() == false)
+
+        h.nav.select(.history)
+        h.nav.openField()
+        h.type("night")
+        #expect(h.nav.escape())
+        #expect(h.nav.filterQuery.isEmpty)
+        #expect(h.nav.isFieldOpen)
+        #expect(h.nav.escape())
+        #expect(h.nav.isFieldOpen == false)
+        #expect(h.service.browse.tab == .history)
     }
 
     @Test("on Up next Esc clears the words, then folds the field, and only then closes Up next")
@@ -677,14 +697,16 @@ struct MusicSearchFieldResultsTests {
         #expect(h.nav.showsSearchPanel == false)
     }
 
-    @Test("an artist page's field searches YouTube Music, and its results cover the page")
-    func artistPageResults() async {
+    @Test("an artist page's field filters that artist: the YouTube Music results never cover the page")
+    func artistPageNeverShowsResults() async {
         let h = FieldNavHarness()
         h.openArtistPage()
         h.nav.openField()
+        h.type("alpha")
         #expect(h.nav.showsSearchPanel == false)
-        await h.search("alpha")
-        #expect(h.nav.showsSearchPanel)
+        #expect(h.nav.browseFilterTerms == ["alpha"])
+        #expect(h.service.query.isEmpty)
+        #expect(await h.backend.searchedQueries.isEmpty)
         #expect(h.path == ["UCa"])
     }
 
@@ -720,29 +742,6 @@ struct MusicSearchFieldResultsTests {
         #expect(h.nav.isFieldOpen)
         #expect(h.nav.fieldQuery == "alpha")
         #expect(h.service.results.count == 1)
-    }
-
-    @Test("from an artist page the results of its own field come back with Back, over the page")
-    func backReturnsToResultsOverAPage() async {
-        let h = FieldNavHarness()
-        let first = FieldNavHarness.artist("UCa")
-        let second = FieldNavHarness.artist("UCb")
-        h.openArtistPage("UCa")
-        h.nav.openField()
-        await h.search("alpha", artists: [second])
-        #expect(h.nav.showsSearchPanel)
-
-        h.nav.openArtist(second)
-        h.nav.reconcile()
-        #expect(h.path == [first.browseId, second.browseId])
-        #expect(h.nav.showsSearchPanel == false)
-        #expect(h.service.query == "alpha")
-
-        h.service.browse.back()
-        h.nav.reconcile()
-        #expect(h.path == [first.browseId])
-        #expect(h.nav.showsSearchPanel)
-        #expect(h.nav.isFieldOpen)
     }
 
     @Test("the results of a field are dropped when the path is left some other way than Back")

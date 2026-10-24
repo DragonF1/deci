@@ -127,6 +127,10 @@ struct MusicLibraryView: View {
     @ViewBuilder
     private func filtered(_ filter: MusicLibraryFilter) -> some View {
         VStack(spacing: 0) {
+            if let liked = navigation.likedSongs, !liked.isEmpty {
+                likedSongs(liked)
+                    .padding(.bottom, MusicBrowseLayout.homeSectionGap)
+            }
             MusicScopeLine(text: filter.countLine)
                 .padding(.bottom, MusicBrowseLayout.listBarGap)
             if filter.showsLiked {
@@ -140,7 +144,7 @@ struct MusicLibraryView: View {
                     browse.librarySection = MusicLibrarySection(noun: other.target)
                 }
             }
-            if filter.isEmpty {
+            if navigation.libraryHasNoMatch(filter) {
                 let copy = MusicSearchCopy.noResults(
                     noun: section.noun,
                     query: navigation.filterQuery,
@@ -154,6 +158,40 @@ struct MusicLibraryView: View {
             loadMoreFooter
         }
         .environment(\.musicHighlightTerms, terms)
+    }
+
+    /// The Songs block over the count line: up to five songs of Liked music that match, which play in Liked music, and the
+    /// link that opens Liked music with the same words when it holds more.
+    private func likedSongs(_ liked: MusicLikedSongs) -> some View {
+        let nowPlayingId = service.player.nowPlaying?.videoId
+        return VStack(alignment: .leading, spacing: MusicBrowseLayout.topSongsTitleGap) {
+            MusicSectionHeader(
+                title: "Songs",
+                linkTitle: liked.showAllTitle,
+                linkAction: liked.showAllTitle == nil ? nil : { navigation.showAllLikedSongs() }
+            )
+            VStack(spacing: 0) {
+                ForEach(Array(liked.songs.enumerated()), id: \.offset) { index, track in
+                    MusicSongRow(
+                        track: track,
+                        isCurrent: nowPlayingId == track.videoId,
+                        isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
+                        layout: .liked
+                    ) {
+                        if let page = liked.page { service.play(track, in: page) } else { service.play(track) }
+                    }
+                    .musicRowHairline(index > 0)
+                    .environment(
+                        \.musicTrackContext,
+                        MusicTrackContext(
+                            pageBrowseId: MusicBrowseStore.likedMusic.browseId,
+                            pageTitle: MusicBrowseStore.likedMusic.title,
+                            pageIsEditable: false
+                        )
+                    )
+                }
+            }
+        }
     }
 
     /// The saved albums as 70 pt covers, as many to a row as the column holds: four at the default size, three at the

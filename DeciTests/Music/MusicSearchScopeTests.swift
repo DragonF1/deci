@@ -9,17 +9,21 @@ import Testing
 @MainActor
 @Suite("MusicSearchScope")
 struct MusicSearchScopeTests {
-    @Test("Home searches YouTube Music, and so does an artist page, from any tab")
+    @Test("Home searches YouTube Music")
     func global() {
         #expect(MusicSearchScope.resolve(column: .browse, tab: .home, page: nil) == .global)
-        #expect(MusicSearchScope.resolve(column: .browse, tab: .home, page: .artist) == .global)
-        #expect(MusicSearchScope.resolve(column: .browse, tab: .library, page: .artist) == .global)
-        #expect(MusicSearchScope.resolve(column: .browse, tab: .history, page: .artist) == .global)
     }
 
-    @Test("History searches YouTube Music, not the loaded days")
+    @Test("an artist page searches that artist, from any tab")
+    func artist() {
+        #expect(MusicSearchScope.resolve(column: .browse, tab: .home, page: .artist) == .artist)
+        #expect(MusicSearchScope.resolve(column: .browse, tab: .library, page: .artist) == .artist)
+        #expect(MusicSearchScope.resolve(column: .browse, tab: .history, page: .artist) == .artist)
+    }
+
+    @Test("History searches the loaded days, and Up next and Lyrics still win over it")
     func history() {
-        #expect(MusicSearchScope.resolve(column: .browse, tab: .history, page: nil) == .global)
+        #expect(MusicSearchScope.resolve(column: .browse, tab: .history, page: nil) == .history)
         #expect(MusicSearchScope.resolve(column: .queue, tab: .history, page: nil) == .queue)
         #expect(MusicSearchScope.resolve(column: .lyrics, tab: .history, page: nil) == .none)
     }
@@ -58,6 +62,8 @@ struct MusicSearchScopeTests {
         #expect(MusicSearchScope.library.placeholder == "Search your library")
         #expect(MusicSearchScope.playlist.placeholder == "Search in this playlist")
         #expect(MusicSearchScope.album.placeholder == "Search in this album")
+        #expect(MusicSearchScope.artist.placeholder == "Search this artist")
+        #expect(MusicSearchScope.history.placeholder == "Search your history")
         #expect(MusicSearchScope.queue.placeholder == "Search the queue")
         #expect(MusicSearchScope.none.placeholder == nil)
     }
@@ -68,6 +74,8 @@ struct MusicSearchScopeTests {
         #expect(MusicSearchScope.library.showsMagnifier)
         #expect(MusicSearchScope.playlist.showsMagnifier)
         #expect(MusicSearchScope.album.showsMagnifier)
+        #expect(MusicSearchScope.artist.showsMagnifier)
+        #expect(MusicSearchScope.history.showsMagnifier)
         #expect(MusicSearchScope.queue.showsMagnifier)
         #expect(MusicSearchScope.none.showsMagnifier == false)
     }
@@ -79,6 +87,8 @@ struct MusicSearchScopeTests {
         #expect(MusicSearchScope.library.isLocal)
         #expect(MusicSearchScope.playlist.isLocal)
         #expect(MusicSearchScope.album.isLocal)
+        #expect(MusicSearchScope.artist.isLocal)
+        #expect(MusicSearchScope.history.isLocal)
         #expect(MusicSearchScope.queue.isLocal)
     }
 
