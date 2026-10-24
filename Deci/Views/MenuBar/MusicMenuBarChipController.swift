@@ -123,12 +123,10 @@ final class MusicMenuBarChipController {
 
     // MARK: - Apply
 
-    /// Brings the button in line with the settings and the player. While the full popover is open a change that alters
-    /// the item's width waits: FluidMenuBarExtra frames its window only when it opens, so a different width would shift
-    /// the item and leave the popover misaligned. The change is made when the popover closes (`ignoringPopup`). A change
-    /// that keeps the width (a title as wide as the last, a cover that arrives, a marquee) is made at once. A pause shows
-    /// at once too: the smaller pill sits in the middle of the item, and only the item's length waits for the close. A
-    /// play waits like a new title does, since its wider pill would not fit the item.
+    /// Brings the button in line with the settings and the player. The pill animates to a new title, a play or a pause
+    /// even while the full popover is open: FluidMenuBarExtra frames its window only when it opens, so the popover stays
+    /// where it is while the item grows or shrinks beside it. Only taking the chip off for the icon waits for the
+    /// popover to close (`ignoringPopup`).
     private func refresh(ignoringPopup: Bool = false) {
         guard !stopped else { return }
         let style = settings.appSettings.musicMenuBarStyle
@@ -175,14 +173,8 @@ final class MusicMenuBarChipController {
             reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         )
         let change = MusicChipMotion.change(from: applied, to: spec)
-        guard change != .none else {
-            releaseHold()
-            // A pause shown while the popover was open left the item at the wider length.
-            if ignoringPopup, let appliedPillWidth, let lengthAnimator, lengthAnimator.currentWidth != appliedPillWidth {
-                lengthAnimator.animate(to: appliedPillWidth, duration: MusicChipMotion.widthChangeDuration(reduceMotion: spec.reduceMotion))
-            }
-            return
-        }
+        releaseHold()
+        guard change != .none else { return }
         // Only a different title needs measuring: a play, a pause or a cover that arrives keeps the title on screen, so
         // its geometry stays. What the pill's width is follows from that and from whether the song plays.
         let geometry: MusicChipGeometry
@@ -193,15 +185,6 @@ final class MusicMenuBarChipController {
         }
         let pillWidth = MusicChipLayout.shownPillWidth(for: geometry, isPlaying: spec.isPlaying)
         let widthChanges = chipView == nil || appliedPillWidth != pillWidth
-        let popupOpen = !ignoringPopup && MusicPopupKeyWatcher.isPopupOpen
-        let fitsItem = change == .playback && pillWidth <= (lengthAnimator?.currentWidth ?? 0)
-        guard !popupOpen || !widthChanges || fitsItem else {
-            holdUntilPopupCloses()
-            return
-        }
-        // The pill shrank inside the item: its length follows when the popover closes.
-        let holdsLength = popupOpen && widthChanges
-        if holdsLength { holdUntilPopupCloses() } else { releaseHold() }
 
         let isInstall = chipView == nil
         if isInstall {
@@ -212,7 +195,7 @@ final class MusicMenuBarChipController {
 
         let duration = isInstall ? 0 : MusicChipMotion.widthChangeDuration(reduceMotion: spec.reduceMotion)
         chipView?.show(spec: spec, geometry: geometry, thumbnail: thumbnail, change: change, widthDuration: duration)
-        if !isInstall, widthChanges, !holdsLength {
+        if !isInstall, widthChanges {
             lengthAnimator?.animate(to: pillWidth, duration: duration)
         }
         // A thumb showing in the cover's place goes along with the pill as it grows or shrinks.
