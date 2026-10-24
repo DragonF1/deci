@@ -185,6 +185,14 @@ struct MusicSortChipTests {
         #expect(MusicSortChip.resolve(album, artistSongs: true) == MusicSortChip(label: "Sort: Album", directionSymbol: "arrow.up"))
     }
 
+    @Test("an artist's songs list names Release date, newest first with the down arrow")
+    func artistSongsReleaseDate() {
+        let newest = MusicPlaylistSort.playlistOrder.picking(.releaseDate)
+        #expect(MusicSortChip.resolve(newest, artistSongs: true) == MusicSortChip(label: "Sort: Release date", directionSymbol: "arrow.down"))
+        #expect(MusicSortChip.resolve(newest.picking(.releaseDate), artistSongs: true) == MusicSortChip(label: "Sort: Release date", directionSymbol: "arrow.up"))
+        #expect(MusicSortChip.menuSymbol(for: newest) == "arrow.down")
+    }
+
     @Test("any other page still calls it Playlist order, and the menu marks Popular with a check")
     func otherPagesKeepTheirWords() {
         #expect(MusicSortChip.resolve(.playlistOrder, artistSongs: false) == MusicSortChip.resolve(.playlistOrder))

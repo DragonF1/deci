@@ -381,6 +381,39 @@ actor InnerTubeClient {
         return page
     }
 
+    /// The albums of an artist's discography page ("MPAD..."), picked by `params`, over at most `maxDiscographyPages`
+    /// pages. A later page that fails keeps the albums already read, unless it signed out. Only counts are logged.
+    func discography(browseId: String, params: String?) async throws -> [MusicCollection] {
+        let id = browseId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { throw MusicError.parse("discography has no browse id") }
+        let data = try await browse(browseId: id, params: params)
+        var list = try InnerTubeParser.libraryPage(from: data)
+        var albums = list.items
+        var tokens = Set<String>()
+        var pages = 1
+        while let token = list.continuation, pages < Self.maxDiscographyPages, tokens.insert(token).inserted {
+            do {
+                guard let more = try await browseContinuation(token, browseId: id) else { break }
+                list = try InnerTubeParser.libraryContinuationPage(from: more)
+            } catch let error as MusicError where error == .signedOut {
+                throw error
+            } catch {
+                Self.log.info("discography continuation failed after \(albums.count) albums")
+                break
+            }
+            albums += list.items
+            pages += 1
+        }
+        if albums.isEmpty {
+            Self.log.warning("discography returned no albums")
+        } else {
+            Self.log.info("discography returned \(albums.count) albums over \(pages) pages")
+        }
+        return albums
+    }
+
+    private static let maxDiscographyPages = 5
+
     // MARK: - Song actions
 
     /// The playlists the user can add `videoId` to. YouTube Music does not send a flag for the ones that already hold the
@@ -509,10 +542,13 @@ actor InnerTubeClient {
         return id
     }
 
-    private func browse(browseId: String) async throws -> Data {
+    /// `params` go in the body only when there are some, exactly as the page that linked here sent them.
+    private func browse(browseId: String, params: String? = nil) async throws -> Data {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         let session = try await sessionOrFallback()
-        return try await post("browse", session: session, body: ["browseId": browseId])
+        var body: [String: Any] = ["browseId": browseId]
+        if let params { body["params"] = params }
+        return try await post("browse", session: session, body: body)
     }
 
     /// Old-style tokens go in the query next to the original `browseId` (what ytmusicapi sends);

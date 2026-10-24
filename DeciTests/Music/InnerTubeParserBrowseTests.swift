@@ -808,6 +808,170 @@ struct InnerTubeParserBrowseTests {
         #expect(try allSongsId(artistPageData(shelfExtra: #","bottomEndpoint":\#(album)"#)) == nil)
     }
 
+    // MARK: - Artist pages: discography links
+
+    /// A browse endpoint for a discography page with `params` (omitted when nil).
+    private func discographyEndpoint(_ id: String, params: String?, pageType: String? = "MUSIC_PAGE_TYPE_ARTIST_DISCOGRAPHY") -> String {
+        let params = params.map { #","params":"\#($0)""# } ?? ""
+        let config = pageType.map {
+            #","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"\#($0)"}}"#
+        } ?? ""
+        return #"{"browseEndpoint":{"browseId":"\#(id)"\#(params)\#(config)}}"#
+    }
+
+    /// One carousel shelf of an artist page whose header title run and more button open the given endpoints (raw
+    /// `{"browseEndpoint":...}` objects), with no tiles in it.
+    private func carousel(_ title: String, titleEndpoint: String? = nil, moreEndpoint: String? = nil) -> String {
+        let endpoint = titleEndpoint.map { #","navigationEndpoint":\#($0)"# } ?? ""
+        let more = moreEndpoint.map { #","moreContentButton":{"buttonRenderer":{"navigationEndpoint":\#($0)}}"# } ?? ""
+        return """
+        {"musicCarouselShelfRenderer":{"header":{"musicCarouselShelfBasicHeaderRenderer":{"title":{"runs":[{"text":"\(title)"\(endpoint)}]}\(more)}},"contents":[]}}
+        """
+    }
+
+    /// An artist page whose sections are the given raw JSON entries.
+    private func artistPage(sections: [String]) -> Data {
+        let json = """
+        {"header":{"musicImmersiveHeaderRenderer":{"title":{"runs":[{"text":"Daft Punk"}]}}},\
+        "contents":{"singleColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":[\
+        \(sections.joined(separator: ","))]}}}}]}}}
+        """
+        return Data(json.utf8)
+    }
+
+    private func links(_ data: Data) throws -> [MusicDiscographyLink] {
+        try InnerTubeParser.browsePage(from: data, browseId: "UCdaft").discographyLinks
+    }
+
+    @Test("Artist capture: the Albums and Singles shelves each name a discography page, params kept as they came")
+    func discographyLinksFromCapture() throws {
+        let page = try InnerTubeParser.browsePage(from: fixture("browse-artist.json"), browseId: "UCuAXFkgsw1L7xaCfnd5JJOw")
+        #expect(page.discographyLinks == [
+            MusicDiscographyLink(browseId: "MPADUCwZEU0wAwIyZb4x5G_KJp2w", params: "ggMIegYIARoCAQI%3D"),
+            MusicDiscographyLink(browseId: "MPADUCwZEU0wAwIyZb4x5G_KJp2w", params: "ggMIegYIAhoCAQI%3D"),
+        ])
+    }
+
+    @Test("Playlist, Liked music and album captures have no discography links")
+    func otherPagesHaveNoDiscographyLinks() throws {
+        let playlist = try InnerTubeParser.browsePage(from: fixture("browse-playlist.json"), browseId: "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i")
+        let album = try InnerTubeParser.browsePage(from: fixture("browse-album.json"), browseId: "MPREb_Me5NUhDIBWQ")
+        #expect(playlist.discographyLinks.isEmpty)
+        #expect(album.discographyLinks.isEmpty)
+    }
+
+    @Test("Hand-built: a shelf's discography page is taken from its title run")
+    func discographyLinkFromTitle() throws {
+        let data = artistPage(sections: [carousel("Albums", titleEndpoint: discographyEndpoint("MPADtitle", params: "P1"))])
+        #expect(try links(data) == [MusicDiscographyLink(browseId: "MPADtitle", params: "P1")])
+    }
+
+    @Test("Hand-built: with no endpoint on the title, the more button gives the discography page")
+    func discographyLinkFromMoreButton() throws {
+        let data = artistPage(sections: [carousel("Albums", moreEndpoint: discographyEndpoint("MPADmore", params: "P2"))])
+        #expect(try links(data) == [MusicDiscographyLink(browseId: "MPADmore", params: "P2")])
+    }
+
+    @Test("Hand-built: the title run is checked before the more button")
+    func discographyLinkPrefersTheTitle() throws {
+        let data = artistPage(sections: [carousel(
+            "Albums",
+            titleEndpoint: discographyEndpoint("MPADtitle", params: "PT"),
+            moreEndpoint: discographyEndpoint("MPADmore", params: "PM")
+        )])
+        #expect(try links(data) == [MusicDiscographyLink(browseId: "MPADtitle", params: "PT")])
+    }
+
+    @Test("Hand-built: a title that is not a discography page yields to the more button")
+    func discographyLinkSkipsOtherTitles() throws {
+        let album = discographyEndpoint("MPREb_album", params: nil, pageType: "MUSIC_PAGE_TYPE_ALBUM")
+        let data = artistPage(sections: [carousel("Albums", titleEndpoint: album, moreEndpoint: discographyEndpoint("MPADmore", params: "PM"))])
+        #expect(try links(data) == [MusicDiscographyLink(browseId: "MPADmore", params: "PM")])
+    }
+
+    @Test("Hand-built: a header that opens an album, an artist or a playlist gives no link")
+    func discographyLinkIgnoresOtherHeaders() throws {
+        let sections = [
+            carousel("Fans also like", titleEndpoint: discographyEndpoint("UCother", params: nil, pageType: "MUSIC_PAGE_TYPE_ARTIST")),
+            carousel("Playlists", moreEndpoint: discographyEndpoint("VLPLx", params: nil, pageType: "MUSIC_PAGE_TYPE_PLAYLIST")),
+            carousel("From the album", titleEndpoint: discographyEndpoint("MPREb_album", params: nil, pageType: "MUSIC_PAGE_TYPE_ALBUM")),
+            carousel("No endpoint at all"),
+        ]
+        #expect(try links(artistPage(sections: sections)).isEmpty)
+    }
+
+    @Test("Hand-built: an MPAD id counts as a discography page even with no page type, and a different page type does not")
+    func discographyLinkByIdPrefix() throws {
+        let untyped = discographyEndpoint("MPADuntyped", params: "PU", pageType: nil)
+        let wrongType = discographyEndpoint("MPADwrong", params: "PW", pageType: "MUSIC_PAGE_TYPE_PLAYLIST")
+        let notMPAD = discographyEndpoint("UCplain", params: nil, pageType: nil)
+        #expect(try links(artistPage(sections: [carousel("Albums", titleEndpoint: untyped)])) == [MusicDiscographyLink(browseId: "MPADuntyped", params: "PU")])
+        #expect(try links(artistPage(sections: [carousel("Albums", titleEndpoint: wrongType)])).isEmpty)
+        #expect(try links(artistPage(sections: [carousel("Albums", titleEndpoint: notMPAD)])).isEmpty)
+    }
+
+    @Test("Hand-built: params stay exactly as sent, percent signs included, and a missing one is nil")
+    func discographyLinkParamsVerbatim() throws {
+        let sections = [
+            carousel("Albums", titleEndpoint: discographyEndpoint("MPADa", params: "ggMIegYIARoCAQI%3D")),
+            carousel("Singles", titleEndpoint: discographyEndpoint("MPADa", params: nil)),
+        ]
+        #expect(try links(artistPage(sections: sections)) == [
+            MusicDiscographyLink(browseId: "MPADa", params: "ggMIegYIARoCAQI%3D"),
+            MusicDiscographyLink(browseId: "MPADa", params: nil),
+        ])
+    }
+
+    @Test("Hand-built: the same link twice is kept once, in the order it first came")
+    func discographyLinksAreDeduped() throws {
+        let first = discographyEndpoint("MPADa", params: "P1")
+        let second = discographyEndpoint("MPADa", params: "P2")
+        let sections = [
+            carousel("Albums", titleEndpoint: first, moreEndpoint: first),
+            carousel("Singles", titleEndpoint: second),
+            carousel("Albums again", moreEndpoint: first),
+        ]
+        #expect(try links(artistPage(sections: sections)) == [
+            MusicDiscographyLink(browseId: "MPADa", params: "P1"),
+            MusicDiscographyLink(browseId: "MPADa", params: "P2"),
+        ])
+    }
+
+    @Test("Hand-built: a discography endpoint without an id gives no link")
+    func discographyLinkNeedsAnId() throws {
+        let noId = #"{"browseEndpoint":{"params":"P","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ARTIST_DISCOGRAPHY"}}}}"#
+        #expect(try links(artistPage(sections: [carousel("Albums", titleEndpoint: noId)])).isEmpty)
+    }
+
+    @Test("Hand-built: the discography shelves still come back as shelves, since the endpoint is not a tile")
+    func discographyShelvesStayShelves() throws {
+        let tileEndpoint = browseEndpoint("MPREb_one", pageType: "MUSIC_PAGE_TYPE_ALBUM")
+        let albumTile = tile(title: "One", endpoint: tileEndpoint, subtitle: "Album \u{2022} 2013")
+        let shelf = """
+        {"musicCarouselShelfRenderer":{"header":{"musicCarouselShelfBasicHeaderRenderer":{"title":{"runs":[{"text":"Albums","navigationEndpoint":\(discographyEndpoint("MPADa", params: "P1"))}]}}},"contents":[\(albumTile)]}}
+        """
+        let page = try InnerTubeParser.browsePage(from: artistPage(sections: [shelf]), browseId: "UCdaft")
+        #expect(page.discographyLinks == [MusicDiscographyLink(browseId: "MPADa", params: "P1")])
+        #expect(page.shelves.map(\.title) == ["Albums"])
+        #expect(collections(in: page.shelves[0]).map(\.browseId) == ["MPREb_one"])
+        #expect(collections(in: page.shelves[0]).first?.releaseYear == 2013)
+    }
+
+    @Test("Hand-built discography grid: the albums come with their ids and the years of their subtitles")
+    func discographyGridParse() throws {
+        let one = tile(title: "Discovery", endpoint: browseEndpoint("MPREb_disc", pageType: "MUSIC_PAGE_TYPE_ALBUM"), subtitle: "Album \u{2022} 2001")
+        let two = tile(title: "Homework", endpoint: browseEndpoint("MPREb_home", pageType: "MUSIC_PAGE_TYPE_ALBUM"), subtitle: "Album \u{2022} 1997")
+        let three = tile(title: "Alive", endpoint: browseEndpoint("MPREb_alive", pageType: "MUSIC_PAGE_TYPE_ALBUM"), subtitle: "Live")
+        let json = """
+        {"contents":{"singleColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":[\
+        {"gridRenderer":{"items":[\(one),\(two),\(three)]}}]}}}}]}}}
+        """
+        let list = try InnerTubeParser.libraryPage(from: Data(json.utf8))
+        #expect(list.items.map(\.browseId) == ["MPREb_disc", "MPREb_home", "MPREb_alive"])
+        #expect(list.items.map(\.title) == ["Discovery", "Homework", "Alive"])
+        #expect(list.items.map(\.releaseYear) == [2001, 1997, nil])
+    }
+
     // MARK: - Library
 
     @Test("Hand-built playlists grid: New playlist and a podcast show are dropped, Liked music is kept for the store to filter")

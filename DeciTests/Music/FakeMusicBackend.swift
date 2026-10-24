@@ -86,6 +86,11 @@ actor FakeMusicBackend: MusicBackend {
         let continuation: String
     }
 
+    nonisolated struct DiscographyCall: Hashable, Sendable {
+        let browseId: String
+        let params: String?
+    }
+
     nonisolated struct AddToPlaylistCall: Hashable, Sendable {
         let videoId: String
         let playlistId: String
@@ -160,6 +165,9 @@ actor FakeMusicBackend: MusicBackend {
     private var moreTracksPages: [MoreTracksCall: MusicQueuePage] = [:]
     private var moreTracksErrors: [MoreTracksCall: any Error] = [:]
     private var moreTracksGates: [MoreTracksCall: MusicTestGate] = [:]
+    private var discographyLists: [DiscographyCall: [MusicCollection]] = [:]
+    private var discographyErrors: [DiscographyCall: any Error] = [:]
+    private var discographyGates: [DiscographyCall: MusicTestGate] = [:]
     private var playlistOptions: [String: [MusicPlaylistOption]] = [:]
     private var playlistOptionsErrors: [String: any Error] = [:]
     private var playlistOptionsGates: [String: MusicTestGate] = [:]
@@ -192,6 +200,7 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var moreLibraryCalls: [MoreLibraryCall] = []
     private(set) var pageCalls: [String] = []
     private(set) var moreTracksCalls: [MoreTracksCall] = []
+    private(set) var discographyCalls: [DiscographyCall] = []
     private(set) var playlistOptionsCalls: [String] = []
     private(set) var sourceOptionsCalls: [String] = []
     private(set) var addToPlaylistCalls: [AddToPlaylistCall] = []
@@ -346,6 +355,16 @@ actor FakeMusicBackend: MusicBackend {
     func setMoreTracksGate(browseId: String, continuation: String, _ gate: MusicTestGate?) {
         moreTracksGates[MoreTracksCall(browseId: browseId, continuation: continuation)] = gate
     }
+    /// The albums an artist's discography part answers with, keyed by its browse id and params.
+    func setDiscography(browseId: String, params: String?, _ albums: [MusicCollection]) {
+        discographyLists[DiscographyCall(browseId: browseId, params: params)] = albums
+    }
+    func setDiscographyError(browseId: String, params: String?, _ error: (any Error)?) {
+        discographyErrors[DiscographyCall(browseId: browseId, params: params)] = error
+    }
+    func setDiscographyGate(browseId: String, params: String?, _ gate: MusicTestGate?) {
+        discographyGates[DiscographyCall(browseId: browseId, params: params)] = gate
+    }
 
     // Song actions. The picker's list is scripted per video, or per source playlist when a whole album or playlist is
     // being saved; the write calls (a song, or a whole playlist, added) share one error and one gate and are recorded.
@@ -482,6 +501,16 @@ actor FakeMusicBackend: MusicBackend {
         if let gate { await gate.wait() }
         if let error { throw error }
         return page
+    }
+
+    func discography(browseId: String, params: String?) async throws -> [MusicCollection] {
+        let call = DiscographyCall(browseId: browseId, params: params)
+        discographyCalls.append(call)
+        let gate = discographyGates[call], error = discographyErrors[call]
+        let albums = discographyLists[call] ?? []
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        return albums
     }
 
     func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption] {
@@ -783,7 +812,8 @@ nonisolated enum MusicSamples {
         shelves: [MusicShelf] = [],
         isEditable: Bool = false,
         audioPlaylistId: String? = nil,
-        allSongsBrowseId: String? = nil
+        allSongsBrowseId: String? = nil,
+        discographyLinks: [MusicDiscographyLink] = []
     ) -> MusicBrowsePage {
         MusicBrowsePage(
             browseId: browseId,
@@ -795,7 +825,8 @@ nonisolated enum MusicSamples {
             shelves: shelves,
             isEditable: isEditable,
             audioPlaylistId: audioPlaylistId,
-            allSongsBrowseId: allSongsBrowseId
+            allSongsBrowseId: allSongsBrowseId,
+            discographyLinks: discographyLinks
         )
     }
 

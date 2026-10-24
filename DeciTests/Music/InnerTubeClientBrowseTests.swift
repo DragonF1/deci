@@ -115,6 +115,91 @@ struct InnerTubeClientBrowseTests {
         #expect(fake.requests.isEmpty)
     }
 
+    // MARK: - Discography
+
+    private func discographyYoutube() -> FakeYouTube {
+        youtube { $0.browseBodies["MPADdisc"] = (try? MusicFixtures.data("browse-library-albums.json")) ?? Data() }
+    }
+
+    @Test("home leaves params out of its body")
+    func homeSendsNoParams() async throws {
+        let fake = youtube()
+        _ = try await makeClient(fake).home()
+        #expect(FakeYouTube.jsonBody(try onlyRequest(fake))["params"] == nil)
+    }
+
+    @Test("discography sends the browse id with its params, and keeps the first page when the next one fails to parse")
+    func discographyRequestShape() async throws {
+        let fake = discographyYoutube()
+        let albums = try await makeClient(fake).discography(browseId: "MPADdisc", params: "ggMIegYIARoCAQI%3D")
+        #expect(albums.map(\.browseId) == ["MPREbFixtureRam0000", "MPREbFixtureDiscovery"])
+        #expect(albums.allSatisfy { $0.kind == .album })
+
+        let request = try #require(browseRequests(fake).first)
+        #expect(request.method == "POST")
+        #expect(request.url.absoluteString == "https://music.youtube.com/youtubei/v1/browse?prettyPrint=false")
+        #expect(request.headers["Authorization"]?.hasPrefix("SAPISIDHASH 1800000000_") == true)
+        let body = FakeYouTube.jsonBody(request)
+        #expect(body["browseId"] as? String == "MPADdisc")
+        #expect(body["params"] as? String == "ggMIegYIARoCAQI%3D")
+        #expect(body["continuation"] == nil)
+    }
+
+    @Test("discography with no params sends the browse id alone, and trims the id")
+    func discographyWithoutParams() async throws {
+        let fake = discographyYoutube()
+        _ = try await makeClient(fake).discography(browseId: "  MPADdisc \n", params: nil)
+        let body = FakeYouTube.jsonBody(try #require(browseRequests(fake).first))
+        #expect(body["browseId"] as? String == "MPADdisc")
+        #expect(body["params"] == nil)
+    }
+
+    @Test("discography follows its continuations and stops when a page hands back a token it already followed")
+    func discographyFollowsContinuations() async throws {
+        let fake = youtube {
+            $0.browseBodies["MPADdisc"] = (try? MusicFixtures.data("browse-library-albums.json")) ?? Data()
+            $0.browseContinuationBody = (try? MusicFixtures.data("browse-library-continuation-new.json")) ?? Data()
+        }
+        let albums = try await makeClient(fake).discography(browseId: "MPADdisc", params: "P")
+        // The first page, then FIXTURE_LIB_ALBUMS_NEXT, then FIXTURE_LIB_ALBUMS_NEXT2, which answers NEXT2 again.
+        #expect(albums.map(\.browseId) == ["MPREbFixtureRam0000", "MPREbFixtureDiscovery", "MPREbFixtureHomework0000", "MPREbFixtureHomework0000"])
+        let requests = browseRequests(fake)
+        #expect(requests.count == 3)
+        #expect(requests.dropFirst().map { FakeYouTube.jsonBody($0)["continuation"] as? String } == ["FIXTURE_LIB_ALBUMS_NEXT", "FIXTURE_LIB_ALBUMS_NEXT2"])
+    }
+
+    @Test("discography with a blank browse id fails to parse and sends nothing")
+    func discographyBlankBrowseId() async {
+        let fake = discographyYoutube()
+        let client = makeClient(fake)
+        await #expect(throws: MusicError.self) { try await client.discography(browseId: " ", params: "P") }
+        await #expect(throws: MusicError.self) { try await client.discography(browseId: "", params: nil) }
+        #expect(fake.requests.isEmpty)
+    }
+
+    @Test("discography errors map as the other browse calls do, and keep the cookies out of the URL")
+    func discographyErrors() async throws {
+        let signedOut = discographyYoutube()
+        let signedOutClient = makeClient(signedOut, store: MemorySecretStore())
+        await #expect(throws: MusicError.signedOut) { try await signedOutClient.discography(browseId: "MPADdisc", params: "P") }
+        #expect(signedOut.requests.isEmpty)
+
+        let expired = makeClient(youtube { $0.browseStatus = 401 })
+        await #expect(throws: MusicError.signedOut) { try await expired.discography(browseId: "MPADdisc", params: "P") }
+        let broken = makeClient(youtube { $0.browseStatus = 503 })
+        await #expect(throws: MusicError.http(503)) { try await broken.discography(browseId: "MPADdisc", params: "P") }
+
+        let fake = discographyYoutube()
+        _ = try await makeClient(fake).discography(browseId: "MPADdisc", params: "P")
+        let urls = browseRequests(fake).map(\.url.absoluteString)
+        #expect(!urls.isEmpty)
+        for url in urls {
+            for cookie in MusicTestJar.signedInCookies() {
+                #expect(!url.contains(cookie.value))
+            }
+        }
+    }
+
     // MARK: - Continuations
 
     @Test("An old-style token goes in the query as ctoken and continuation, next to the browse id in the body")

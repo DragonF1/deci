@@ -205,8 +205,36 @@ extension InnerTubeParser {
             shelves: shelves,
             isEditable: isEditablePlaylist(root: root, browseId: browseId, rows: rowRenderers),
             audioPlaylistId: audioPlaylistId,
-            allSongsBrowseId: header.isArtist ? rows.flatMap(allSongsBrowseId(in:)) : nil
+            allSongsBrowseId: header.isArtist ? rows.flatMap(allSongsBrowseId(in:)) : nil,
+            discographyLinks: header.isArtist ? discographyLinks(in: sections) : []
         )
+    }
+
+    /// The discography pages an artist page's carousel shelves open (Albums, Singles), once each, in page order. A
+    /// shelf's header is read by its title run first, then its more button. `params` stay as YouTube sent them.
+    private static func discographyLinks(in sections: [[String: Any]]) -> [MusicDiscographyLink] {
+        var links: [MusicDiscographyLink] = []
+        for section in sections {
+            guard let carousel = (section["musicCarouselShelfRenderer"] ?? section["musicImmersiveCarouselShelfRenderer"]) as? [String: Any],
+                  let header = carouselHeader(of: carousel) else { continue }
+            let title = path(runs(header["title"]).first, "navigationEndpoint", "browseEndpoint")
+            let more = path(header, "moreContentButton", "buttonRenderer", "navigationEndpoint", "browseEndpoint")
+            for case let browse as [String: Any] in [title, more] {
+                guard isDiscography(browse), let id = string(browse["browseId"]) else { continue }
+                let link = MusicDiscographyLink(browseId: id, params: string(browse["params"]))
+                if !links.contains(link) { links.append(link) }
+                break
+            }
+        }
+        return links
+    }
+
+    /// An artist's discography page, by its page type, else by its "MPAD" id when the endpoint names no page type.
+    private static func isDiscography(_ browse: [String: Any]) -> Bool {
+        let configs = browse["browseEndpointContextSupportedConfigs"] as? [String: Any]
+        let pageType = string((configs?["browseEndpointContextMusicConfig"] as? [String: Any])?["pageType"])
+        if let pageType { return pageType == "MUSIC_PAGE_TYPE_ARTIST_DISCOGRAPHY" }
+        return (string(browse["browseId"]) ?? "").hasPrefix("MPAD")
     }
 
     /// The artist's list of all their songs, which the Top songs header links to: the page its title run opens, else the

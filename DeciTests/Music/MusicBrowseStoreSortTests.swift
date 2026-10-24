@@ -75,6 +75,34 @@ private struct SortHarness {
         _ = await until { loadedPage(browseId) != nil }
     }
 
+    /// An artist's page "UCartist" whose Top songs link opens "VLOLAK5uy_songs", then that songs list (see `openSongsList`).
+    /// The artist's Albums shelf holds "Zeta" (2015) and "Beta" (2010); `links` are its discography pages.
+    func openArtistThenSongs(links: [MusicDiscographyLink], shelfAlbums: Bool = true) async {
+        let albums = [
+            MusicSamples.collection("MPREzeta", kind: .album, title: "Zeta", subtitle: "Album \u{2022} 2015"),
+            MusicSamples.collection("MPREbeta", kind: .album, title: "Beta", subtitle: "Album \u{2022} 2010"),
+        ]
+        await backend.setPage(MusicSamples.page(
+            "UCartist",
+            title: "Artist",
+            shelves: shelfAlbums ? [MusicShelf(title: "Albums", items: albums.map { .collection($0) })] : [],
+            allSongsBrowseId: "VLOLAK5uy_songs",
+            discographyLinks: links
+        ))
+        store.open(MusicSamples.collection("UCartist", kind: .artist))
+        _ = await until { loadedPage("UCartist") != nil }
+        await openSongsList()
+    }
+
+    /// The discography page "alpha" (2020) lives on, as a link and as what it answers.
+    static let albumsLink = MusicDiscographyLink(browseId: "MPADartist", params: "P1")
+    static let alpha = MusicSamples.collection("MPREalpha", kind: .album, title: "Alpha", subtitle: "Album \u{2022} 2020")
+
+    /// Waits until Release date has read the years of the songs list.
+    func yearsRead(_ browseId: String = "VLOLAK5uy_songs") async -> Bool {
+        await until { store.releaseYears[browseId] != nil && store.loadingReleaseYears.isEmpty }
+    }
+
     func loadedPage(_ browseId: String) -> MusicBrowsePage? {
         if case .loaded(let page)? = store.pages[browseId] { page } else { nil }
     }
@@ -1133,12 +1161,12 @@ struct MusicBrowseStoreSortTests {
         #expect(!h.store.isArtistSongs(MusicBrowseStore.likedMusic.browseId))
     }
 
-    @Test("an artist's songs list offers Popular, Album and Plays, and nothing else")
+    @Test("an artist's songs list offers Popular, Album, Release date and Plays, and nothing else")
     func artistSongsOptions() async {
         let h = SortHarness()
         await h.openSongsList()
         #expect(h.store.isArtistSongs("VLOLAK5uy_songs"))
-        #expect(h.store.sortOptions(for: "VLOLAK5uy_songs") == [.playlistOrder, .album, .plays])
+        #expect(h.store.sortOptions(for: "VLOLAK5uy_songs") == [.playlistOrder, .album, .releaseDate, .plays])
         #expect(MusicBrowseStore.canSort("VLOLAK5uy_songs"))
     }
 
@@ -1320,5 +1348,313 @@ struct MusicBrowseStoreSortTests {
         h.store.pickSort(.title, for: "VLPL1")
         #expect(h.shownIds("VLPL1") == ["b", "a"])
         #expect(h.store.displayedPage("VLPL1")?.allSongsBrowseId == "VLOLAK5uy_all")
+    }
+
+    // MARK: - Release date
+
+    @Test("Release date reads the discography pages, then lists the newest release first with the year-less songs last")
+    func releaseDateSortsNewestFirst() async {
+        let h = SortHarness()
+        await h.backend.setDiscography(browseId: "MPADartist", params: "P1", [SortHarness.alpha])
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == MusicPlaylistSort(field: .releaseDate, ascending: false))
+        #expect(await h.yearsRead())
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        // b: Alpha 2020 (discography), a: Zeta 2015 and d: Beta 2010 (artist page shelf), c: no album.
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["b", "a", "d", "c"])
+        #expect(h.store.displayedPage("VLOLAK5uy_songs")?.continuation == nil)
+        #expect(!h.store.isOrderPending("VLOLAK5uy_songs"))
+        #expect(await h.backend.discographyCalls == [FakeMusicBackend.DiscographyCall(browseId: "MPADartist", params: "P1")])
+        #expect(await h.backend.moreTracksCalls.map(\.continuation) == ["t1"])
+    }
+
+    @Test("every discography link is asked for with its own params, and a title keeps its earliest year across the answers")
+    func releaseDateAsksEveryLink() async {
+        let h = SortHarness()
+        let singles = MusicDiscographyLink(browseId: "MPADartist", params: "P2")
+        // The albums page lists a 2022 re-release of Beta (2010 on the artist page), the singles page brings Alpha in 2012.
+        await h.backend.setDiscography(
+            browseId: "MPADartist", params: "P1",
+            [MusicSamples.collection("MPREbeta2", kind: .album, title: "Beta", subtitle: "Album \u{2022} 2022")]
+        )
+        await h.backend.setDiscography(
+            browseId: "MPADartist", params: "P2",
+            [MusicSamples.collection("MPREalpha", kind: .album, title: "Alpha", subtitle: "Single \u{2022} 2012")]
+        )
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink, singles])
+
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        // a: Zeta 2015, b: Alpha 2012, d: Beta 2010 (the earlier of its two years), c: no album.
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a", "b", "d", "c"])
+        let calls = Set(await h.backend.discographyCalls)
+        #expect(calls == [
+            FakeMusicBackend.DiscographyCall(browseId: "MPADartist", params: "P1"),
+            FakeMusicBackend.DiscographyCall(browseId: "MPADartist", params: "P2"),
+        ])
+    }
+
+    @Test("the list waits while the years load, then shows the order, and a flip neither asks again nor loads again")
+    func releaseDateWaitsThenFlips() async {
+        let h = SortHarness()
+        await h.backend.setDiscography(browseId: "MPADartist", params: "P1", [SortHarness.alpha])
+        let gate = MusicTestGate()
+        await h.backend.setDiscographyGate(browseId: "MPADartist", params: "P1", gate)
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(h.store.loadingReleaseYears == ["VLOLAK5uy_songs"])
+        #expect(h.store.isOrderPending("VLOLAK5uy_songs"))
+        #expect(await h.until { h.store.loadingAllTracks.isEmpty })
+        // Every song is here, but the years are not: the list still waits, and shows the page as it came.
+        #expect(h.store.isOrderPending("VLOLAK5uy_songs"))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a", "b", "c", "d"])
+
+        await gate.open()
+        #expect(await h.yearsRead())
+        #expect(!h.store.isOrderPending("VLOLAK5uy_songs"))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["b", "a", "d", "c"])
+
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == MusicPlaylistSort(field: .releaseDate, ascending: true))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["d", "a", "b", "c"])
+        #expect(!h.store.isOrderPending("VLOLAK5uy_songs"))
+        await h.letLateWorkLand()
+        #expect(await h.backend.discographyCalls.count == 1)
+        #expect(await h.backend.moreTracksCalls.count == 1)
+    }
+
+    @Test("a discography page that fails leaves the artist page's albums to sort by, with no banner and no second try")
+    func releaseDateFailureKeepsTheSeed() async {
+        let h = SortHarness()
+        await h.backend.setDiscographyError(browseId: "MPADartist", params: "P1", MusicError.http(503))
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        // a: Zeta 2015 and d: Beta 2010 from the shelf; b has no year now, so it goes last with c, in their order.
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a", "d", "b", "c"])
+        #expect(h.loadedPage("VLOLAK5uy_songs") != nil)
+        if case .failed = h.store.pageState("VLOLAK5uy_songs") { Issue.record("a failed discography page must not fail the songs list") }
+        await h.letLateWorkLand()
+        #expect(await h.backend.discographyCalls.count == 1)
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == MusicPlaylistSort(field: .releaseDate, ascending: false))
+    }
+
+    @Test("after a failed discography page, picking Release date again asks once more and sorts by the answer")
+    func releaseDateRetriesAfterAFailure() async {
+        let h = SortHarness()
+        await h.backend.setDiscographyError(browseId: "MPADartist", params: "P1", MusicError.http(503))
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        #expect(h.store.releaseYears["VLOLAK5uy_songs"]?.isComplete == false)
+
+        await h.backend.setDiscographyError(browseId: "MPADartist", params: "P1", nil)
+        await h.backend.setDiscography(browseId: "MPADartist", params: "P1", [SortHarness.alpha])
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.until { await h.backend.discographyCalls.count == 2 })
+        #expect(await h.yearsRead())
+        #expect(h.store.releaseYears["VLOLAK5uy_songs"]?.isComplete == true)
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        // Oldest first now: d Beta 2010, a Zeta 2015, b alpha 2020, then c with no album.
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["d", "a", "b", "c"])
+
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        await h.letLateWorkLand()
+        #expect(await h.backend.discographyCalls.count == 2)
+    }
+
+    @Test("two discography pages that both sign out end the session once, after the years are written")
+    func releaseDateSignsOutOnce() async {
+        let h = SortHarness()
+        let singles = MusicDiscographyLink(browseId: "MPADartist", params: "P2")
+        await h.backend.setDiscographyError(browseId: "MPADartist", params: "P1", MusicError.signedOut)
+        await h.backend.setDiscographyError(browseId: "MPADartist", params: "P2", MusicError.signedOut)
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink, singles])
+        var expired = 0
+        h.store.onSessionExpired = { expired += 1 }
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        await h.letLateWorkLand()
+        #expect(expired == 1)
+    }
+
+    @Test("with no artist page behind the songs list, Release date sorts by nothing and asks for nothing")
+    func releaseDateWithoutAnArtistPage() async {
+        let h = SortHarness()
+        await h.openSongsList()
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a", "b", "c", "d"])
+        #expect(!h.store.isOrderPending("VLOLAK5uy_songs"))
+        await h.letLateWorkLand()
+        #expect(await h.backend.discographyCalls.isEmpty)
+    }
+
+    @Test("an artist page with no discography links sorts by the albums on its shelves alone")
+    func releaseDateWithoutLinks() async {
+        let h = SortHarness()
+        await h.openArtistThenSongs(links: [])
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a", "d", "b", "c"])
+        #expect(await h.backend.discographyCalls.isEmpty)
+    }
+
+    @Test("an artist page the songs list does not belong to gives no years")
+    func releaseDateIgnoresOtherArtistPages() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page(
+            "UCother",
+            shelves: [MusicSamples.shelf("Albums", "MPREx")],
+            allSongsBrowseId: "VLOLAK5uy_other",
+            discographyLinks: [SortHarness.albumsLink]
+        ))
+        h.store.open(MusicSamples.collection("UCother", kind: .artist))
+        #expect(await h.until { h.loadedPage("UCother") != nil })
+        await h.openSongsList()
+
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["a", "b", "c", "d"])
+        await h.letLateWorkLand()
+        #expect(await h.backend.discographyCalls.isEmpty)
+    }
+
+    @Test("Release date is no option of a plain playlist: picking it changes nothing and reads nothing")
+    func plainPlaylistRefusesReleaseDate() async {
+        let h = SortHarness()
+        await h.openLongPlaylist()
+        h.store.pickSort(.releaseDate, for: "VLPL1")
+        #expect(h.store.sorts["VLPL1"] == nil)
+        #expect(h.store.sort(for: "VLPL1") == .playlistOrder)
+        #expect(h.store.releaseYears.isEmpty)
+        #expect(h.store.loadingReleaseYears.isEmpty)
+        #expect(h.store.loadingAllTracks.isEmpty)
+        await h.letLateWorkLand()
+        #expect(await h.backend.discographyCalls.isEmpty)
+        #expect(await h.backend.moreTracksCalls.isEmpty)
+
+        // The id of an artist's songs list opened as a plain playlist refuses it as well.
+        await h.openSongsList(isArtistSongs: false)
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(h.store.sorts["VLOLAK5uy_songs"] == nil)
+        #expect(h.store.loadingReleaseYears.isEmpty)
+        await h.letLateWorkLand()
+        #expect(await h.backend.discographyCalls.isEmpty)
+    }
+
+    @Test("closing the songs list while the years load drops the late answer for good")
+    func releaseDateBackDropsLateAnswer() async {
+        let h = SortHarness()
+        await h.backend.setDiscography(browseId: "MPADartist", params: "P1", [SortHarness.alpha])
+        let gate = MusicTestGate()
+        await h.backend.setDiscographyGate(browseId: "MPADartist", params: "P1", gate)
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(h.store.loadingReleaseYears == ["VLOLAK5uy_songs"])
+
+        h.store.back()
+        #expect(h.store.loadingReleaseYears.isEmpty)
+        #expect(h.store.releaseYears["VLOLAK5uy_songs"] == nil)
+        #expect(!h.store.isOrderPending("VLOLAK5uy_songs"))
+
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(h.store.releaseYears["VLOLAK5uy_songs"] == nil)
+        #expect(h.store.loadingReleaseYears.isEmpty)
+        #expect(h.store.pageState("VLOLAK5uy_songs") == .idle)
+    }
+
+    @Test("reset forgets the years and drops an answer still on its way")
+    func releaseDateResetClearsYears() async {
+        let h = SortHarness()
+        await h.backend.setDiscography(browseId: "MPADartist", params: "P1", [SortHarness.alpha])
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        #expect(!h.store.releaseYears.isEmpty)
+        h.store.reset()
+        #expect(h.store.releaseYears.isEmpty)
+        #expect(h.store.loadingReleaseYears.isEmpty)
+
+        // And one cut off while it was loading.
+        let gate = MusicTestGate()
+        await h.backend.setDiscographyGate(browseId: "MPADartist", params: "P1", gate)
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(h.store.loadingReleaseYears == ["VLOLAK5uy_songs"])
+        h.store.reset()
+        #expect(h.store.loadingReleaseYears.isEmpty)
+        await gate.open()
+        await h.letLateWorkLand()
+        #expect(h.store.releaseYears.isEmpty)
+        #expect(h.store.loadingReleaseYears.isEmpty)
+    }
+
+    @Test("opening the songs list again reads the years again, and a pick made before is still Release date")
+    func releaseDateReopenReadsAgain() async {
+        let h = SortHarness()
+        await h.backend.setDiscography(browseId: "MPADartist", params: "P1", [SortHarness.alpha])
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        #expect(await h.yearsRead())
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+
+        h.store.back()
+        h.store.open(MusicSamples.collection("VLOLAK5uy_songs", isArtistSongs: true))
+        #expect(await h.yearsRead())
+        #expect(await h.settled("VLOLAK5uy_songs", count: 4))
+        #expect(h.shownIds("VLOLAK5uy_songs") == ["b", "a", "d", "c"])
+        #expect(await h.backend.discographyCalls.count == 2)
+    }
+
+    @Test("picking another sort while the years load shows that sort at once, with nothing pending")
+    func releaseDateAbandonedWhileLoading() async {
+        let h = SortHarness()
+        let gate = MusicTestGate()
+        await h.backend.setDiscographyGate(browseId: "MPADartist", params: "P1", gate)
+        await h.openArtistThenSongs(links: [SortHarness.albumsLink])
+        h.store.pickSort(.releaseDate, for: "VLOLAK5uy_songs")
+        h.store.pickSort(.playlistOrder, for: "VLOLAK5uy_songs")
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == .playlistOrder)
+        #expect(!h.store.isOrderPending("VLOLAK5uy_songs"))
+        await gate.open()
+        #expect(await h.yearsRead())
+        #expect(h.store.sort(for: "VLOLAK5uy_songs") == .playlistOrder)
+        #expect(!h.store.isOrderPending("VLOLAK5uy_songs"))
+    }
+
+    @Test("the discography links survive loading more songs, taking a song out and sorting")
+    func discographyLinksSurviveRebuilds() async {
+        let h = SortHarness()
+        await h.backend.setPage(MusicSamples.page(
+            "VLPL1",
+            tracks: [MusicSamples.track("a", title: "B", setVideoId: "s1")],
+            continuation: "t1",
+            discographyLinks: [SortHarness.albumsLink]
+        ))
+        await h.backend.setMoreTracks(
+            browseId: "VLPL1", continuation: "t1",
+            tracks: [MusicSamples.track("b", title: "A", setVideoId: "s2"), MusicSamples.track("c", title: "C", setVideoId: "s3")],
+            next: nil
+        )
+        h.store.open(MusicSamples.collection("VLPL1"))
+        #expect(await h.until { h.loadedPage("VLPL1") != nil })
+        h.store.loadMoreTracks("VLPL1")
+        #expect(await h.until { h.loadedPage("VLPL1")?.tracks.count == 3 })
+        #expect(h.loadedPage("VLPL1")?.discographyLinks == [SortHarness.albumsLink])
+        #expect(h.store.removeTrack(setVideoId: "s3", from: "VLPL1"))
+        #expect(h.loadedPage("VLPL1")?.discographyLinks == [SortHarness.albumsLink])
+        h.store.pickSort(.title, for: "VLPL1")
+        #expect(h.store.displayedPage("VLPL1")?.discographyLinks == [SortHarness.albumsLink])
     }
 }

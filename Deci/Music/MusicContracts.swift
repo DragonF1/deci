@@ -196,6 +196,17 @@ struct MusicCollection: Sendable, Hashable, Identifiable {
     var isArtistSongs = false
 
     var id: String { browseId }
+
+    /// The year in the second line: the last " • "-separated part that is exactly four digits in 1900 to 2100 ("Album •
+    /// 2013", "Album • 2013 • 13 songs" and a bare "2013" all give 2013). Nil when the line names no year.
+    var releaseYear: Int? {
+        for part in subtitle.components(separatedBy: "\u{2022}").reversed() {
+            let text = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.count == 4, text.allSatisfy({ $0.isASCII && $0.isNumber }),
+               let year = Int(text), (1900...2100).contains(year) { return year }
+        }
+        return nil
+    }
 }
 
 /// One tile or row on a shelf: a song, or something that opens a page.
@@ -242,6 +253,13 @@ struct MusicCollectionList: Sendable, Equatable {
     let continuation: String?
 }
 
+/// Where an artist's discography lives: the "MPAD..." page a shelf header opens, and the `params` that pick its albums,
+/// singles or the rest, kept exactly as YouTube sent them.
+struct MusicDiscographyLink: Sendable, Hashable {
+    let browseId: String
+    let params: String?
+}
+
 /// A playlist, album or artist page.
 struct MusicBrowsePage: Sendable, Equatable {
     let browseId: String
@@ -264,6 +282,9 @@ struct MusicBrowsePage: Sendable, Equatable {
     /// An artist page's list of all their songs ("VL..."), which the Top songs header links to. Nil on every other
     /// page, and on an artist page whose Top songs header names none.
     var allSongsBrowseId: String?
+    /// An artist page's discography pages, one for each Albums or Singles shelf that links to one, without repeats.
+    /// Release dates are read from them. Empty on every other page.
+    var discographyLinks: [MusicDiscographyLink] = []
 
     /// The playlist a mix page ("RD..." with or without the "VL" prefix) is, or nil for any other id. A curated
     /// "RDCLAK5uy_" playlist is a playlist, not a mix.
@@ -377,6 +398,9 @@ protocol MusicBackend: Sendable {
     func page(browseId: String) async throws -> MusicBrowsePage
     /// The tracks after `continuation` on a playlist page.
     func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage
+    /// The albums on the first page of an artist's discography page ("MPAD..."), picked by `params` as the artist page's
+    /// shelf header sent them. Their subtitles carry the release years.
+    func discography(browseId: String, params: String?) async throws -> [MusicCollection]
     /// The playlists the user can add `videoId` to. YouTube Music does not send a flag for the ones that already hold the
     /// song, so the options come back unmarked unless YouTube flags them; `MusicTrackActionsStore` checks membership itself.
     func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption]

@@ -14,6 +14,9 @@ enum MusicSortField: String, CaseIterable, Identifiable, Sendable {
     case duration
     /// How many times the song was played. Only an artist's songs list offers it: a playlist's rows carry no count.
     case plays
+    /// When the song's album came out. Only an artist's songs list offers it: a song row carries no date, so the years
+    /// come from the artist's discography pages (see `MusicReleaseYears`).
+    case releaseDate
 
     var id: String { rawValue }
 
@@ -26,15 +29,16 @@ enum MusicSortField: String, CaseIterable, Identifiable, Sendable {
         case .album: "Album"
         case .duration: "Duration"
         case .plays: "Plays"
+        case .releaseDate: "Release date"
         }
     }
 
-    /// What a playlist's and Liked music's sort menu offers, in order: every option but Plays.
+    /// What a playlist's and Liked music's sort menu offers, in order: every option but Plays and Release date.
     static let playlistOptions: [MusicSortField] = [.dateAdded, .playlistOrder, .title, .artist, .album, .duration]
 
     /// What an artist's songs list offers, in order. Its Playlist order reads Popular, since YouTube lists an artist's
     /// songs by how popular they are.
-    static let artistSongsOptions: [MusicSortField] = [.playlistOrder, .album, .plays]
+    static let artistSongsOptions: [MusicSortField] = [.playlistOrder, .album, .releaseDate, .plays]
 
     /// The sort menu's options for a playlist, or for an artist's songs list.
     static func options(artistSongs: Bool) -> [MusicSortField] {
@@ -65,12 +69,12 @@ struct MusicPlaylistSort: Equatable, Sendable {
     var isPlaylistOrder: Bool { field == .playlistOrder }
 
     /// What picking `picked` in the sort menu gives: a new option starts ascending, except Date added, which starts
-    /// with the newest song first, and Plays, which starts with the most played; the same option again flips the
-    /// direction, and Playlist order has no direction.
+    /// with the newest song first, Plays, which starts with the most played, and Release date, which starts with the
+    /// newest release; the same option again flips the direction, and Playlist order has no direction.
     func picking(_ picked: MusicSortField) -> MusicPlaylistSort {
         if picked == .playlistOrder { return .playlistOrder }
         if picked == field { return MusicPlaylistSort(field: field, ascending: !ascending) }
-        return MusicPlaylistSort(field: picked, ascending: picked != .dateAdded && picked != .plays)
+        return MusicPlaylistSort(field: picked, ascending: ![.dateAdded, .plays, .releaseDate].contains(picked))
     }
 
     /// Whether this sort puts a playlist's songs in another order than YouTube lists them, so the songs have to be
@@ -80,19 +84,20 @@ struct MusicPlaylistSort: Equatable, Sendable {
         switch field {
         case .playlistOrder: false
         case .dateAdded: ascending == newestFirst
-        case .title, .artist, .album, .duration, .plays: true
+        case .title, .artist, .album, .duration, .plays, .releaseDate: true
         }
     }
 
     /// `tracks` in this order. Text ignores case, accents and width and reads numbers by value; songs that tie
     /// keep the order they had, in both directions; songs with no value for the field go last in both.
     /// The text of each song is folded once, before the sort, and the comparisons only read numbers by value.
+    /// Release date reads each song's year from `releaseYears`; a song whose year is not there goes last.
     /// Date added reads the place of a song in `tracks` and nothing else: `newestFirst` says `tracks` already run
     /// newest first (Liked music), else they run oldest first.
-    func sorted(_ tracks: [MusicTrack], newestFirst: Bool = false) -> [MusicTrack] {
+    func sorted(_ tracks: [MusicTrack], newestFirst: Bool = false, releaseYears: MusicReleaseYears = .empty) -> [MusicTrack] {
         guard reorders(newestFirst: newestFirst), tracks.count > 1 else { return tracks }
         if field == .dateAdded { return tracks.reversed() }
-        let keyed = tracks.enumerated().map { Keyed(index: $0.offset, track: $0.element, key: key(of: $0.element)) }
+        let keyed = tracks.enumerated().map { Keyed(index: $0.offset, track: $0.element, key: key(of: $0.element, releaseYears)) }
         let ordered = keyed.sorted { lhs, rhs in
             switch (lhs.key, rhs.key) {
             case (nil, nil): return lhs.index < rhs.index
@@ -131,7 +136,7 @@ struct MusicPlaylistSort: Equatable, Sendable {
     }
 
     /// The value the sort reads; nil when the song has none, which puts it last.
-    private func key(of track: MusicTrack) -> Key? {
+    private func key(of track: MusicTrack, _ releaseYears: MusicReleaseYears) -> Key? {
         switch field {
         case .playlistOrder, .dateAdded: nil
         case .title: Self.text(track.title)
@@ -139,11 +144,52 @@ struct MusicPlaylistSort: Equatable, Sendable {
         case .album: Self.text(track.album)
         case .duration: track.durationSeconds.map(Key.number)
         case .plays: track.plays.map(Key.number)
+        case .releaseDate: releaseYears.year(of: track).map(Key.number)
         }
     }
 
     private static func text(_ value: String?) -> Key? {
         guard let value, !value.isEmpty else { return nil }
         return .text(value.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current))
+    }
+}
+
+/// The years albums came out, which a song row does not carry. They are read from albums' second lines ("Album • 2013"),
+/// on the artist page's shelves and the discography pages, and found again from a song by its album's page, else by
+/// its album's title.
+struct MusicReleaseYears: Equatable, Sendable {
+    /// The year of each album page ("MPRE...").
+    private(set) var byAlbumId: [String: Int] = [:]
+    /// The year of each album title, folded (no case, accents or padding). Two albums with one title keep the earlier year,
+    /// so a re-release does not push a song past its first release.
+    private(set) var byAlbumTitle: [String: Int] = [:]
+    /// False when a discography page failed, so the next pick of Release date asks for the years again.
+    var isComplete = true
+
+    static let empty = MusicReleaseYears()
+
+    /// Takes in the year of each album that names one. An album already known by page takes the new year, so a
+    /// discography page's answer wins over the shelf tile's; an album with no year in its line adds nothing.
+    mutating func add(_ albums: [MusicCollection]) {
+        for album in albums {
+            guard let year = album.releaseYear else { continue }
+            byAlbumId[album.browseId] = year
+            let title = Self.fold(album.title)
+            if !title.isEmpty { byAlbumTitle[title] = min(byAlbumTitle[title] ?? year, year) }
+        }
+    }
+
+    /// The year of the song's album: by the album page the row links to, else by the album's title. Nil when neither
+    /// is known.
+    func year(of track: MusicTrack) -> Int? {
+        if let id = track.albumBrowseId, let year = byAlbumId[id] { return year }
+        guard let album = track.album else { return nil }
+        let title = Self.fold(album)
+        return title.isEmpty ? nil : byAlbumTitle[title]
+    }
+
+    private static func fold(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
     }
 }

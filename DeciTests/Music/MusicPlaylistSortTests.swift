@@ -15,15 +15,29 @@ struct MusicPlaylistSortTests {
         artist: String = "Artist",
         album: String? = nil,
         seconds: Int? = 200,
-        plays: Int? = nil
+        plays: Int? = nil,
+        albumId: String? = nil
     ) -> MusicTrack {
-        MusicTrack(videoId: id, title: title, artist: artist, album: album, durationSeconds: seconds, thumbnailURL: nil, plays: plays)
+        var track = MusicTrack(videoId: id, title: title, artist: artist, album: album, durationSeconds: seconds, thumbnailURL: nil, plays: plays)
+        track.albumBrowseId = albumId
+        return track
     }
 
     private func ids(_ tracks: [MusicTrack]) -> [String] { tracks.map(\.videoId) }
 
     private func sorted(_ field: MusicSortField, ascending: Bool = true, _ tracks: [MusicTrack]) -> [String] {
         ids(MusicPlaylistSort(field: field, ascending: ascending).sorted(tracks))
+    }
+
+    /// The years of some albums, read from subtitles like the ones a discography grid has.
+    private func albumYears(_ albums: (id: String, title: String, year: Int)...) -> MusicReleaseYears {
+        var years = MusicReleaseYears()
+        years.add(albums.map { MusicSamples.collection($0.id, kind: .album, title: $0.title, subtitle: "Album \u{2022} \($0.year)") })
+        return years
+    }
+
+    private func sortedByYear(ascending: Bool, _ years: MusicReleaseYears, _ tracks: [MusicTrack]) -> [String] {
+        ids(MusicPlaylistSort(field: .releaseDate, ascending: ascending).sorted(tracks, releaseYears: years))
     }
 
     // MARK: - Choosing
@@ -36,18 +50,21 @@ struct MusicPlaylistSortTests {
         #expect(MusicSortField.playlistOptions.map { $0.label(onArtistSongs: false) } == MusicSortField.playlistOptions.map(\.label))
     }
 
-    @Test("an artist's songs offer Popular, Album and Plays, in that order, and Popular is YouTube's own order")
+    @Test("an artist's songs offer Popular, Album, Release date and Plays, in that order, and Popular is YouTube's own order")
     func artistSongsOptions() {
-        #expect(MusicSortField.artistSongsOptions == [.playlistOrder, .album, .plays])
+        #expect(MusicSortField.artistSongsOptions == [.playlistOrder, .album, .releaseDate, .plays])
         #expect(MusicSortField.options(artistSongs: true) == MusicSortField.artistSongsOptions)
-        #expect(MusicSortField.artistSongsOptions.map { $0.label(onArtistSongs: true) } == ["Popular", "Album", "Plays"])
+        #expect(MusicSortField.artistSongsOptions.map { $0.label(onArtistSongs: true) } == ["Popular", "Album", "Release date", "Plays"])
         #expect(MusicSortField.plays.label == "Plays")
+        #expect(MusicSortField.releaseDate.label == "Release date")
     }
 
-    @Test("Plays is a sort key, but no playlist's menu offers it")
+    @Test("Plays and Release date are sort keys, but no playlist's menu offers them")
     func playsOnlyOnArtistSongs() {
         #expect(MusicSortField.allCases.contains(.plays))
         #expect(!MusicSortField.playlistOptions.contains(.plays))
+        #expect(MusicSortField.allCases.contains(.releaseDate))
+        #expect(!MusicSortField.playlistOptions.contains(.releaseDate))
     }
 
     @Test("Playlist order is the order YouTube lists, and a bare sort is that order")
@@ -89,6 +106,17 @@ struct MusicPlaylistSortTests {
         #expect(sort == MusicPlaylistSort(field: .plays, ascending: true))
         sort = sort.picking(.plays)
         #expect(!sort.ascending)
+    }
+
+    @Test("Release date starts with the newest song first, and picking it again flips it")
+    func pickingReleaseDate() {
+        var sort = MusicPlaylistSort.playlistOrder.picking(.releaseDate)
+        #expect(sort == MusicPlaylistSort(field: .releaseDate, ascending: false))
+        sort = sort.picking(.releaseDate)
+        #expect(sort == MusicPlaylistSort(field: .releaseDate, ascending: true))
+        sort = sort.picking(.releaseDate)
+        #expect(!sort.ascending)
+        #expect(sort.picking(.album) == MusicPlaylistSort(field: .album, ascending: true))
     }
 
     @Test("picking Album after Plays starts ascending, and picking Popular puts YouTube's order back")
@@ -370,6 +398,116 @@ struct MusicPlaylistSortTests {
         let list = [track("a"), track("b"), track("c")]
         #expect(sorted(.plays, ascending: false, list) == ["a", "b", "c"])
         #expect(sorted(.plays, ascending: true, list) == ["a", "b", "c"])
+    }
+
+    // MARK: - Release date
+
+    @Test("Release date runs from the newest song down by default, and the other way ascending")
+    func releaseDateOrder() {
+        let years = albumYears(("MPREa", "A", 2013), ("MPREb", "B", 2020), ("MPREc", "C", 1999))
+        let list = [track("a", albumId: "MPREa"), track("b", albumId: "MPREb"), track("c", albumId: "MPREc")]
+        #expect(sortedByYear(ascending: false, years, list) == ["b", "a", "c"])
+        #expect(sortedByYear(ascending: true, years, list) == ["c", "a", "b"])
+    }
+
+    @Test("songs with no known year go last in both directions, in the order they had")
+    func releaseDateMissingLast() {
+        let years = albumYears(("MPREa", "A", 2013), ("MPREb", "B", 2020))
+        let list = [track("x"), track("a", albumId: "MPREa"), track("y", album: "Unknown"), track("b", albumId: "MPREb"), track("z", albumId: "MPREgone")]
+        #expect(sortedByYear(ascending: false, years, list) == ["b", "a", "x", "y", "z"])
+        #expect(sortedByYear(ascending: true, years, list) == ["a", "b", "x", "y", "z"])
+    }
+
+    @Test("songs of the same year keep the order they had, in both directions")
+    func releaseDateTiesKeepOrder() {
+        let years = albumYears(("MPREa", "A", 2013), ("MPREb", "B", 2020))
+        let list = [track("p", albumId: "MPREa"), track("q", albumId: "MPREb"), track("r", albumId: "MPREa"), track("s", albumId: "MPREb")]
+        #expect(sortedByYear(ascending: false, years, list) == ["q", "s", "p", "r"])
+        #expect(sortedByYear(ascending: true, years, list) == ["p", "r", "q", "s"])
+    }
+
+    @Test("a list with no years at all stays in its order, whatever the direction")
+    func releaseDateNoYears() {
+        let list = [track("a", album: "One"), track("b"), track("c", albumId: "MPREc")]
+        #expect(sortedByYear(ascending: false, .empty, list) == ["a", "b", "c"])
+        #expect(sortedByYear(ascending: true, .empty, list) == ["a", "b", "c"])
+        #expect(ids(MusicPlaylistSort(field: .releaseDate, ascending: false).sorted(list)) == ["a", "b", "c"])
+    }
+
+    @Test("Release date reorders the songs in any list, so the songs have to be all here before it shows")
+    func releaseDateReorders() {
+        #expect(MusicPlaylistSort(field: .releaseDate, ascending: false).reorders(newestFirst: false))
+        #expect(MusicPlaylistSort(field: .releaseDate, ascending: true).reorders(newestFirst: true))
+    }
+
+    @Test("the years change no other sort")
+    func yearsAreIgnoredByOtherFields() {
+        let years = albumYears(("MPREa", "A", 2013), ("MPREb", "B", 2020))
+        let list = [track("a", title: "Zed", albumId: "MPREa"), track("b", title: "Alpha", albumId: "MPREb")]
+        for field in [MusicSortField.title, .album, .plays, .duration, .dateAdded, .playlistOrder] {
+            let sort = MusicPlaylistSort(field: field, ascending: true)
+            #expect(sort.sorted(list, releaseYears: years) == sort.sorted(list))
+        }
+    }
+
+    @Test("a song's year is its album page's, then its album title's, ignoring case, accents and padding")
+    func yearLookup() {
+        let years = albumYears(("MPRE1", "Éclair", 2010), ("MPRE2", "Other", 2000))
+        #expect(years.year(of: track("a", albumId: "MPRE1")) == 2010)
+        // The album page wins over a title that says another year.
+        #expect(years.year(of: track("b", album: "Other", albumId: "MPRE1")) == 2010)
+        // An album page the years do not know falls back to the title.
+        #expect(years.year(of: track("c", album: "Other", albumId: "MPREunknown")) == 2000)
+        #expect(years.year(of: track("d", album: "  eclair ")) == 2010)
+        #expect(years.year(of: track("e", album: "ECLAIR")) == 2010)
+        #expect(years.year(of: track("f", album: "Nothing")) == nil)
+        #expect(years.year(of: track("g", album: "")) == nil)
+        #expect(years.year(of: track("h")) == nil)
+    }
+
+    @Test("an album title with two years keeps the earliest, and each album page keeps its own")
+    func yearsKeepTheEarliestPerTitle() {
+        let years = albumYears(("MPRE1", "Greatest Hits", 2015), ("MPRE2", "greatest hits", 2005))
+        #expect(years.year(of: track("a", album: "GREATEST HITS")) == 2005)
+        #expect(years.year(of: track("b", albumId: "MPRE1")) == 2015)
+        #expect(years.year(of: track("c", albumId: "MPRE2")) == 2005)
+    }
+
+    @Test("adding albums again lets the later year win for a page, and an album with no year in its line adds nothing")
+    func addingYears() {
+        var years = albumYears(("MPRE1", "One", 2015))
+        years.add([
+            MusicSamples.collection("MPRE1", kind: .album, title: "One", subtitle: "Album \u{2022} 2013"),
+            MusicSamples.collection("MPRE2", kind: .album, title: "Two", subtitle: "Playlist \u{2022} 50 songs"),
+        ])
+        #expect(years.byAlbumId == ["MPRE1": 2013])
+        #expect(years.byAlbumTitle == ["one": 2013])
+        #expect(MusicReleaseYears.empty.byAlbumId.isEmpty)
+    }
+
+    @Test("a year is the last bullet-separated part of a subtitle that is exactly four digits in 1900 to 2100",
+          arguments: [
+              ("Album \u{2022} 2013", 2013 as Int?),
+              ("2013", 2013),
+              ("Single \u{2022} Artist \u{2022} 2020", 2020),
+              ("Album \u{2022} 2013 \u{2022} 13 songs", 2013),
+              ("Album\u{2022}2013", 2013),
+              ("  2013  ", 2013),
+              ("Album \u{2022} 1900", 1900),
+              ("Album \u{2022} 2100", 2100),
+              ("Album \u{2022} 1899", nil),
+              ("Album \u{2022} 2101", nil),
+              ("Album \u{2022} 20133", nil),
+              ("Album \u{2022} 201", nil),
+              ("Album \u{2022} 20x3", nil),
+              ("Album \u{2022} Artist 2013", nil),
+              ("Playlist \u{2022} 50 songs", nil),
+              ("Auto playlist", nil),
+              ("", nil),
+          ])
+    func releaseYearFromSubtitle(subtitle: String, expected: Int?) {
+        let album = MusicSamples.collection("MPRE1", kind: .album, subtitle: subtitle)
+        #expect(album.releaseYear == expected)
     }
 
     @Test("an empty list and a single song come back as they are")

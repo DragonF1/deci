@@ -67,6 +67,11 @@ final class MusicBrowseStore {
     private(set) var loadingAllTracks: Set<String> = []
     /// The sort picked for each playlist this session. A playlist missing here is at rest, where `sort(for:)` says.
     private(set) var sorts: [String: MusicPlaylistSort] = [:]
+    /// The release years of an artist's songs list, by its browse id, once Release date has read them. A page missing here
+    /// has not read them yet.
+    private(set) var releaseYears: [String: MusicReleaseYears] = [:]
+    /// Artist songs lists whose Release date is still reading the discography pages.
+    private(set) var loadingReleaseYears: Set<String> = []
 
     /// A sort loads songs up to this many and sorts the first this-many songs of the playlist. A shuffled queue
     /// loads up to the same number.
@@ -455,6 +460,7 @@ final class MusicBrowseStore {
         loadingMoreTracks.remove(browseId)
         loadingAllTracks.remove(browseId)
         sortedPages[browseId] = nil
+        forgetReleaseYears(browseId)
         tasks.removeValue(forKey: "page*:\(browseId)")?.cancel()
         launch("page:\(browseId)") { [weak self, backend] in
             do {
@@ -486,6 +492,7 @@ final class MusicBrowseStore {
         guard pageRuns[browseId] == run else { return }
         pages[browseId] = .loaded(page)
         loadAllTracksIfReordering(browseId)
+        loadReleaseYearsIfNeeded(browseId)
         onPageLoaded?(page, path.last { $0.browseId == browseId })
     }
 
@@ -511,7 +518,8 @@ final class MusicBrowseStore {
             shelves: page.shelves,
             isEditable: page.isEditable,
             audioPlaylistId: page.audioPlaylistId,
-            allSongsBrowseId: page.allSongsBrowseId
+            allSongsBrowseId: page.allSongsBrowseId,
+            discographyLinks: page.discographyLinks
         ))
     }
 
@@ -542,7 +550,8 @@ final class MusicBrowseStore {
             shelves: page.shelves,
             isEditable: page.isEditable,
             audioPlaylistId: page.audioPlaylistId,
-            allSongsBrowseId: page.allSongsBrowseId
+            allSongsBrowseId: page.allSongsBrowseId,
+            discographyLinks: page.discographyLinks
         ))
         return true
     }
@@ -587,7 +596,12 @@ final class MusicBrowseStore {
     /// Whether the list has to wait: the sort reorders the songs and the rest of them are still loading, so showing
     /// the songs loaded so far would show an order that changes as the pages land.
     func isOrderPending(_ browseId: String) -> Bool {
-        loadingAllTracks.contains(browseId) && needsReorder(browseId)
+        (loadingAllTracks.contains(browseId) && needsReorder(browseId)) || waitsForReleaseYears(browseId)
+    }
+
+    /// Whether Release date is picked and the years it sorts by are still being read.
+    private func waitsForReleaseYears(_ browseId: String) -> Bool {
+        loadingReleaseYears.contains(browseId) && sort(for: browseId).field == .releaseDate
     }
 
     /// Whether the page is an artist's list of all their songs, as the collection that opened it says. The latest one
@@ -596,7 +610,7 @@ final class MusicBrowseStore {
         path.last { $0.browseId == browseId }?.isArtistSongs ?? false
     }
 
-    /// The options the page's sort menu offers: an artist's songs list has Popular, Album and Plays, any other
+    /// The options the page's sort menu offers: an artist's songs list has Popular, Album, Release date and Plays, any other
     /// playlist and Liked music the usual ones.
     func sortOptions(for browseId: String) -> [MusicSortField] {
         MusicSortField.options(artistSongs: isArtistSongs(browseId))
@@ -612,6 +626,7 @@ final class MusicBrowseStore {
         sorts[browseId] = sort(for: browseId).picking(field)
         sortedPages[browseId] = nil
         loadAllTracksIfReordering(browseId)
+        loadReleaseYearsIfNeeded(browseId)
     }
 
     /// The page as the list shows it and as Play queues it: in the playlist's sort once all its songs are here
@@ -619,19 +634,24 @@ final class MusicBrowseStore {
     func displayedPage(_ browseId: String) -> MusicBrowsePage? {
         guard case .loaded(let page)? = pages[browseId] else { return nil }
         let sort = sort(for: browseId)
-        guard needsReorder(browseId), !loadingAllTracks.contains(browseId) else { return page }
+        guard needsReorder(browseId), !loadingAllTracks.contains(browseId), !waitsForReleaseYears(browseId) else { return page }
         if let cached = sortedPages[browseId], cached.sort == sort { return cached.page }
         let sorted = MusicBrowsePage(
             browseId: page.browseId,
             title: page.title,
             subtitle: page.subtitle,
             thumbnailURL: page.thumbnailURL,
-            tracks: sort.sorted(Array(page.tracks.prefix(Self.sortTrackCap)), newestFirst: listsNewestFirst(browseId)),
+            tracks: sort.sorted(
+                Array(page.tracks.prefix(Self.sortTrackCap)),
+                newestFirst: listsNewestFirst(browseId),
+                releaseYears: releaseYears[browseId] ?? .empty
+            ),
             continuation: nil,
             shelves: page.shelves,
             isEditable: page.isEditable,
             audioPlaylistId: page.audioPlaylistId,
-            allSongsBrowseId: page.allSongsBrowseId
+            allSongsBrowseId: page.allSongsBrowseId,
+            discographyLinks: page.discographyLinks
         )
         sortedPages[browseId] = (sort, sorted)
         return sorted
@@ -709,6 +729,79 @@ final class MusicBrowseStore {
         loadingAllTracks.remove(browseId)
     }
 
+    /// Starts reading the release years of an artist's songs list once, when its sort is Release date: the albums on the
+    /// artist page's shelves give a first set at once, and each discography page the artist page links to adds more. A
+    /// songs list opened with no artist page behind it, or one whose page links none, sorts by the shelves' albums alone.
+    /// A discography page that fails is logged and left out until the next pick of Release date asks again.
+    private func loadReleaseYearsIfNeeded(_ browseId: String) {
+        guard sort(for: browseId).field == .releaseDate, releaseYears[browseId]?.isComplete != true,
+              !loadingReleaseYears.contains(browseId), let run = pageRuns[browseId] else { return }
+        let artist = artistPage(listing: browseId)
+        var seed = MusicReleaseYears()
+        seed.add((artist?.shelves ?? []).flatMap(\.items).compactMap { item in
+            if case .collection(let collection) = item, collection.kind == .album { collection } else { nil }
+        })
+        let links = artist?.discographyLinks ?? []
+        sortedPages[browseId] = nil
+        guard !links.isEmpty else {
+            releaseYears[browseId] = seed
+            return
+        }
+        loadingReleaseYears.insert(browseId)
+        launch("years:\(browseId)") { [weak self, backend] in
+            let answers = await withTaskGroup(of: (Int, Result<[MusicCollection], any Error>).self) { group in
+                for (index, link) in links.enumerated() {
+                    group.addTask {
+                        do {
+                            return (index, .success(try await backend.discography(browseId: link.browseId, params: link.params)))
+                        } catch {
+                            return (index, .failure(error))
+                        }
+                    }
+                }
+                var collected: [(Int, Result<[MusicCollection], any Error>)] = []
+                for await answer in group { collected.append(answer) }
+                return collected.sorted { $0.0 < $1.0 }.map { $0.1 }
+            }
+            self?.landReleaseYears(answers, seed: seed, browseId: browseId, run: run)
+        }
+    }
+
+    private func landReleaseYears(_ answers: [Result<[MusicCollection], any Error>], seed: MusicReleaseYears, browseId: String, run: Int) {
+        guard pageRuns[browseId] == run else { return }
+        var years = seed
+        var signedOut = false
+        for answer in answers {
+            switch answer {
+            case .success(let albums):
+                years.add(albums)
+            case .failure(let error):
+                logger.info("release years failed: \(MusicService.logDescription(of: error), privacy: .public)")
+                years.isComplete = false
+                signedOut = signedOut || (error as? MusicError) == .signedOut
+            }
+        }
+        releaseYears[browseId] = years
+        loadingReleaseYears.remove(browseId)
+        sortedPages[browseId] = nil
+        // Once, and last: signing out resets this store.
+        if signedOut { expireIfSignedOut(MusicError.signedOut) }
+    }
+
+    /// The loaded artist page whose Top songs link opens this songs list.
+    private func artistPage(listing songsBrowseId: String) -> MusicBrowsePage? {
+        for case .loaded(let page) in pages.values where page.allSongsBrowseId == songsBrowseId { return page }
+        return nil
+    }
+
+    /// Forgets the years and the work reading them, so a reopened or reloaded page reads them again and a late answer
+    /// finds nothing to land on.
+    private func forgetReleaseYears(_ browseId: String) {
+        tasks.removeValue(forKey: "years:\(browseId)")?.cancel()
+        releaseYears[browseId] = nil
+        loadingReleaseYears.remove(browseId)
+    }
+
     /// Back one page.
     func back() {
         guard let closed = path.popLast() else { return }
@@ -732,6 +825,7 @@ final class MusicBrowseStore {
         loadingMoreTracks.remove(browseId)
         loadingAllTracks.remove(browseId)
         sortedPages[browseId] = nil
+        forgetReleaseYears(browseId)
     }
 
     // MARK: - Reset
@@ -767,6 +861,8 @@ final class MusicBrowseStore {
         loadingAllTracks.removeAll()
         sorts.removeAll()
         sortedPages.removeAll()
+        releaseYears.removeAll()
+        loadingReleaseYears.removeAll()
     }
 
     // MARK: - Helpers
