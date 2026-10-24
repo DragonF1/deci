@@ -36,6 +36,12 @@ final class AudioEngine {
     /// Called with the new `multiRouteBundleIDs` whenever the set changes.
     var onMultiRouteBundleIDsChange: (@MainActor (Set<String>) -> Void)?
 
+    /// Called when what Deci's tap of Chrome adds to its outputs changes: each tapped output device UID mapped to the
+    /// tap's measured through-latency in seconds, or an empty map once the figure stops applying (no Chrome tap, a
+    /// mixdown tap, or nothing measured). Chrome cannot see this delay, so the extension adds it when it lines
+    /// Chrome's outputs up. Polled at 4 Hz and reported only on a real change (see `ChromeTapLatencyReporter`).
+    var onChromeTapLatencyChange: (@MainActor ([String: Double]) -> Void)?
+
     /// Output device UIDs the engine's own taps play on through a multi-device route. The popup
     /// unions this with the music row's and Chrome tabs' multi-output devices (see
     /// `MenuBarPopupView.outputDevicesInUse`) to light the device list.
@@ -89,6 +95,8 @@ final class AudioEngine {
     private var processRebuilds: [pid_t: ProcessRebuildState] = [:]  // Per-pid helper-process rebuilds
     private var failedProcessLists: [pid_t: Set<AudioObjectID>] = [:]  // Last list whose rebuild failed, not retried
     private var healthMonitorTask: Task<Void, Never>?  // Periodic tap health monitor
+    private var chromeTapLatencyTask: Task<Void, Never>?  // 4 Hz poll of the Chrome tap's through-latency
+    private var chromeTapLatencyReporter = ChromeTapLatencyReporter()
     private var healthTickCount = 0  // Ticks run, for the once-per-second work
     private var consecutiveMisses: [pid_t: Int] = [:]  // Unresponsive-tap misses, one per second
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
@@ -754,6 +762,8 @@ final class AudioEngine {
         }
         taps.removeAll()
         refreshMultiRouteDeviceUIDs()
+        // The Chrome tap is gone with the rest. The poll has stopped, so say so here.
+        pollChromeTapLatency()
         logger.info("AudioEngine stopped")
     }
 
@@ -2349,6 +2359,7 @@ final class AudioEngine {
     /// callbacks is presumed dead. `TapWatchdog` decides when a tap whose callback runs but
     /// delivers nothing is probed with a candidate tap (`rescueStuckTap`).
     private func startHealthMonitor() {
+        startChromeTapLatencyPoll()
         guard healthMonitorTask == nil else { return }
         healthMonitorTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -2568,6 +2579,41 @@ final class AudioEngine {
     private func stopHealthMonitor() {
         healthMonitorTask?.cancel()
         healthMonitorTask = nil
+        chromeTapLatencyTask?.cancel()
+        chromeTapLatencyTask = nil
+    }
+
+    // MARK: - Chrome Tap Latency
+
+    /// Starts the 4 Hz poll of the Chrome tap's through-latency. Its own loop, not a step of `runHealthTick`: that
+    /// returns at once when no taps exist, and the poll still has to say so when the Chrome tap was the last one.
+    private func startChromeTapLatencyPoll() {
+        guard chromeTapLatencyTask == nil else { return }
+        chromeTapLatencyTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: AudioEngine.healthTickInterval)
+                guard !Task.isCancelled, let self else { return }
+                self.pollChromeTapLatency()
+            }
+        }
+    }
+
+    /// One poll: reads the Chrome tap's measured through-latency and reports it through `onChromeTapLatencyChange`
+    /// when `ChromeTapLatencyReporter` says it changed. Only Chrome's taps are read.
+    func pollChromeTapLatency() {
+        guard let report = onChromeTapLatencyChange else { return }
+        let observations = taps.values
+            .filter { ChromeTapLatencyReporter.isChrome($0.app.bundleID) }
+            .map { tap in
+                ChromeTapLatencyReporter.Observation(
+                    bundleID: tap.app.bundleID,
+                    deviceUIDs: tap.currentDeviceUIDs,
+                    readings: tap.healthReadings()
+                )
+            }
+        if let map = chromeTapLatencyReporter.next(readings: observations) {
+            report(map)
+        }
     }
 
     /// Tears down and recreates a tap for a given PID, preserving routing and settings.

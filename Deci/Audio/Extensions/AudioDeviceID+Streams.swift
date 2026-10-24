@@ -54,6 +54,11 @@ nonisolated extension AudioDeviceID {
         return streams
     }
 
+    /// The object ID of the first output stream, nil when the device has none.
+    func firstOutputStreamID() -> AudioObjectID? {
+        (try? readStreams(scope: kAudioObjectPropertyScopeOutput))?.first { $0.isValid }
+    }
+
     /// Number of streams in the given scope (input/output). Counts streams, not channels.
     func streamCount(scope: AudioObjectPropertyScope) -> Int {
         var address = AudioObjectPropertyAddress(

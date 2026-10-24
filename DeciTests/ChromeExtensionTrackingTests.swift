@@ -309,10 +309,10 @@ struct ChromeExtensionTrackingTests {
         manager.requestTabs()
         manager.flushMessages()
 
-        // SET_TRACKING leads; the options and the request follow in any order.
+        // SET_TRACKING leads; the options, the tap latency and the request follow in any order.
         #expect(sent.types().first == "SET_TRACKING")
-        #expect(Set(sent.types()) == ["SET_TRACKING", "SET_OPTIONS", "GET_TABS"])
-        #expect(sent.types().count == 3)
+        #expect(Set(sent.types()) == ["SET_TRACKING", "SET_OPTIONS", "SET_TAP_LATENCY", "GET_TABS"])
+        #expect(sent.types().count == 4)
         #expect(sent.trackingMessages()[0]["tabs"] as? Bool == true)
         #expect(sent.trackingMessages()[0]["incognito"] as? Bool == false)
     }

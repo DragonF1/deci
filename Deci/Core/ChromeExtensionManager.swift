@@ -48,6 +48,18 @@ final class ChromeExtensionManager: NSObject {
     /// `setEngineFansOutChrome`, never by the extension.
     private(set) var engineFansOutChrome = false
 
+    /// What Deci's own tap of Chrome adds to each output it taps, by output device UID, as the engine last reported it
+    /// (`setTapLatency`). Kept raw so a name that is learned later (`updateOutputDevices`) can still be sent.
+    @ObservationIgnored private var tapLatencyByUID: [String: Double] = [:]
+    /// The SET_TAP_LATENCY entries last queued, in the form they go out: names and whole milliseconds, by name.
+    @ObservationIgnored private var lastQueuedTapLatency: [TapLatencyEntry] = []
+
+    /// One output's entry in SET_TAP_LATENCY.
+    private struct TapLatencyEntry: Equatable {
+        var deviceName: String
+        var milliseconds: Int
+    }
+
     /// Whether a tab may play on several outputs at once: the extension can do it and the engine is not already doing it
     /// for the whole Chrome row. The picker's Multi option and the tab's note read this; `supportsMultiDevice` stays the
     /// capability alone.
@@ -536,6 +548,7 @@ final class ChromeExtensionManager: NSObject {
         outputDevices = devices
         defaultOutputUID = defaultDeviceUID
         for device in devices { nameByUID[device.uid] = device.name }
+        queueTapLatencyIfChanged()
 
         // A list adopted before the devices were known has no UIDs yet; they can be read off its names now.
         var tabs = chromeTabs
@@ -567,6 +580,54 @@ final class ChromeExtensionManager: NSObject {
                 setTabDevices(tabId: tab.id, deviceUIDs: tab.selectedDeviceUIDs)
             }
         }
+    }
+
+    // MARK: Tap latency
+
+    /// The delay Deci's own Chrome tap adds to the outputs it taps, by output device UID, as the engine measured it; an
+    /// empty map means none applies. Sent to the extension as a tab-less SET_TAP_LATENCY, which it adds to those outputs'
+    /// latency when it lines Chrome's outputs up. Each message replaces the previous one. A UID with no known name is
+    /// dropped (the extension matches on the names routing messages use), seconds are rounded to a millisecond, and
+    /// nothing is queued unless the result differs from what was queued last. Cheap to repeat.
+    func setTapLatency(_ byUID: [String: Double]) {
+        tapLatencyByUID = byUID
+        queueTapLatencyIfChanged()
+    }
+
+    /// What `setTapLatency` was last given, as it goes out: one entry per device name (the larger value when two
+    /// devices share one), whole milliseconds, sorted by name so the message is stable. Entries that are not a positive
+    /// finite delay up to the extension's 0.5 s limit, or round to 0 ms, are left out.
+    private func tapLatencyEntries() -> [TapLatencyEntry] {
+        var millisecondsByName: [String: Int] = [:]
+        for (uid, seconds) in tapLatencyByUID {
+            guard seconds.isFinite, seconds > 0, seconds <= Self.maxTapLatencySeconds,
+                  let name = outputName(forUID: uid) else { continue }
+            let milliseconds = Int((seconds * 1000).rounded())
+            guard milliseconds > 0 else { continue }
+            millisecondsByName[name] = max(millisecondsByName[name] ?? 0, milliseconds)
+        }
+        return millisecondsByName
+            .map { TapLatencyEntry(deviceName: $0.key, milliseconds: $0.value) }
+            .sorted { $0.deviceName < $1.deviceName }
+    }
+
+    /// The most the extension accepts for one entry; it drops anything larger.
+    private static let maxTapLatencySeconds: Double = 0.5
+
+    private func queueTapLatencyIfChanged() {
+        let entries = tapLatencyEntries()
+        guard entries != lastQueuedTapLatency else { return }
+        lastQueuedTapLatency = entries
+        queueTapLatency(entries)
+    }
+
+    private func queueTapLatency(_ entries: [TapLatencyEntry]) {
+        queueMessage([
+            "type": "SET_TAP_LATENCY",
+            "devices": entries.map { entry -> [String: Any] in
+                ["deviceName": entry.deviceName, "seconds": Double(entry.milliseconds) / 1000]
+            }
+        ])
     }
 
     /// Puts the tab on every ticked output at once. The tab is in multi mode from here on. An empty selection, or one
@@ -657,6 +718,12 @@ final class ChromeExtensionManager: NSObject {
         return names
     }
 
+    /// The name of one device as `outputNames(forUIDs:)` gives it: its name in the current list, else the name it had
+    /// when it was last listed. nil for a UID never seen.
+    private func outputName(forUID uid: String) -> String? {
+        outputDevices.first(where: { $0.uid == uid })?.name ?? nameByUID[uid]
+    }
+
     /// The devices the names stand for in the current list (the first device of each name).
     private func outputUIDs(forNames names: [String]) -> Set<String> {
         Set(names.compactMap { name in outputDevices.first(where: { $0.name == name })?.uid })
@@ -743,6 +810,9 @@ final class ChromeExtensionManager: NSObject {
         trackingMismatchAnswered = false
         queueTracking()
         queueOptions()
+        // Same for the tap latency, empty included: the native host outlives the app, so a value a previous run
+        // sent is still in force in the extension until this one clears it.
+        queueTapLatency(lastQueuedTapLatency)
         queueMessage(["type": "GET_TABS"])
     }
 

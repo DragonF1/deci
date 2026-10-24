@@ -210,6 +210,11 @@ struct DeciApp: App {
         engine.onMultiRouteBundleIDsChange = { bundleIDs in
             ChromeExtensionManager.shared.setEngineFansOutChrome(bundleIDs.contains(ChromeExtensionInstaller.chromeBundleID))
         }
+        // What the engine's own Chrome tap adds to each output it taps, so the extension can wait for it when it
+        // lines Chrome's outputs up. Chrome cannot see that delay.
+        engine.onChromeTapLatencyChange = { byUID in
+            ChromeExtensionManager.shared.setTapLatency(byUID)
+        }
 
         // Media keys / HUD services — instantiated at app scope so the tap
         // and HUD panel outlive popup open/close cycles.

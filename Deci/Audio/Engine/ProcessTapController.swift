@@ -111,6 +111,10 @@ final class ProcessTapController: ProcessTapControlling {
     /// The primary aggregate's rate, for the tracker's frames-to-seconds (set with the gate windows).
     private nonisolated(unsafe) var _tapSampleRate: Double = 48_000
     #endif
+    /// Smoothed time between the tap capturing a buffer and the aggregate handing it to the output (input time to output
+    /// time of the primary IO proc, see TapThroughLatency); 0 = not measured yet. Written by the primary callback, reset
+    /// in markTapStart, read by healthReadings.
+    private nonisolated(unsafe) var _tapThroughSeconds: Double = 0
     /// Input sample time the next primary buffer should start at, for the callback below.
     private nonisolated(unsafe) var _expectedInputSampleTime: Float64 = -1
     private nonisolated(unsafe) var _expectedSampleTimeCallbackID: UInt32 = 0
@@ -206,7 +210,7 @@ final class ProcessTapController: ProcessTapControlling {
 
     var audioLevel: Float { crossfadeState.isActive ? max(_peakLevel, _secondaryPeakLevel) : _peakLevel }
 
-    private static let hostTimeNanosScale: Double = {
+    nonisolated private static let hostTimeNanosScale: Double = {
         var info = mach_timebase_info_data_t()
         mach_timebase_info(&info)
         guard info.denom != 0 else { return 1.0 }
@@ -257,7 +261,8 @@ final class ProcessTapController: ProcessTapControlling {
             secondsSinceHealthyOutput: Self.secondsSince(max(_lastHealthyOutputHostTime, start), now: now),
             // A stream tap carries its device's UID; a mixdown tap has none.
             tapIsStream: primaryResources.tapDescription?.deviceUID != nil,
-            tapDriftCompensation: primaryResources.tapDriftCompensation
+            tapDriftCompensation: primaryResources.tapDriftCompensation,
+            tapThroughSeconds: _tapThroughSeconds
         )
         #if DEBUG
         return withSoakReadings(readings, sampledAt: now)
@@ -284,6 +289,10 @@ final class ProcessTapController: ProcessTapControlling {
         _lastDiscontinuityHostTime = 0
         _expectedInputSampleTime = -1
         _expectedSampleTimeCallbackID = 0
+        // A new tap measures its own through-latency from scratch. Reading the timebase scale here also makes sure
+        // its lazy initialisation runs on this thread, never for the first time inside the IO callback.
+        _ = Self.hostTimeNanosScale
+        _tapThroughSeconds = 0
         #if DEBUG
         _zeroRun.reset()
         _zeroRunForensics = ZeroRunForensics()
@@ -549,6 +558,17 @@ final class ProcessTapController: ProcessTapControlling {
             return subDevices.contains { audioDeviceID(for: $0)?.isBluetoothDevice() == true }
         }
 
+        let (frames, err) = Self.setIOBufferFrameSize(aggregateID: aggregateID, anyBluetooth: anyBluetooth)
+        if err == noErr {
+            logger.notice("IO buffer \(frames) frames for \(self.app.name, privacy: .public) (bluetooth=\(anyBluetooth))")
+        } else {
+            logger.warning("IO buffer \(frames) frames refused for \(self.app.name, privacy: .public): \(err)")
+        }
+    }
+
+    /// Asks the aggregate for the IO buffer size `ioBufferFrames` gives, clamped to the range it reports. Returns
+    /// the size asked for and the HAL's answer. Also used for the aggregate the music player outputs into.
+    static func setIOBufferFrameSize(aggregateID: AudioObjectID, anyBluetooth: Bool) -> (frames: UInt32, status: OSStatus) {
         var rangeAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyBufferFrameSizeRange,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -562,18 +582,23 @@ final class ProcessTapController: ProcessTapControlling {
             allowed = UInt32(range.mMinimum)...UInt32(range.mMaximum)
         }
 
-        var frames = Self.ioBufferFrames(anyBluetooth: anyBluetooth, allowed: allowed)
+        var frames = ioBufferFrames(anyBluetooth: anyBluetooth, allowed: allowed)
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyBufferFrameSize,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
         let err = AudioObjectSetPropertyData(aggregateID, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &frames)
-        if err == noErr {
-            logger.notice("IO buffer \(frames) frames for \(self.app.name, privacy: .public) (bluetooth=\(anyBluetooth))")
-        } else {
-            logger.warning("IO buffer \(frames) frames refused for \(self.app.name, privacy: .public): \(err)")
-        }
+        return (frames, err)
+    }
+
+    /// The sub-device entries of a tap aggregate. With two or more outputs each carries its extra output latency
+    /// (0 when it is not in the table); a single output has only its UID and drift flag, as it always has.
+    static func subDeviceEntries(uids: [String], extraOutputLatencyFrames: [String: UInt32]) -> [[String: Any]] {
+        AggregateSubDeviceList.entries(
+            uids: uids,
+            extraOutputLatencyFrames: uids.count >= 2 ? extraOutputLatencyFrames : nil
+        )
     }
 
     private func buildAggregateDescription(outputUIDs: [String], tapUUID: UUID, tapDeviceUID: String?, name: String) -> [String: Any] {
@@ -595,16 +620,16 @@ final class ProcessTapController: ProcessTapControlling {
             logger.info("Flattened output \(outputUIDs, privacy: .public) → sub-devices \(plan.subDeviceUIDs, privacy: .public) (stacked=\(plan.isStacked))")
         }
 
-        // Build sub-device list - first device is clock source
-        var subDevices: [[String: Any]] = []
-        for (index, deviceUID) in plan.subDeviceUIDs.enumerated() {
-            subDevices.append([
-                kAudioSubDeviceUIDKey: deviceUID,
-                // First device (index 0) is clock source - no drift compensation needed
-                // All other devices have drift compensation enabled to sync to clock
-                kAudioSubDeviceDriftCompensationKey: index > 0
-            ])
+        // Build sub-device list - first device is clock source (no drift compensation), the others sync to it.
+        // With several outputs the HAL adds no compensation between sub-devices, so a device with a longer link delay
+        // (two Bluetooth headsets) trails the other; the faster ones are delayed to sound with the slowest.
+        var extraLatency: [String: UInt32] = [:]
+        if plan.subDeviceUIDs.count >= 2 {
+            let aligned = OutputLatencyAlignment.align(plan.subDeviceUIDs, using: CoreAudioOutputLatencyReader())
+            extraLatency = aligned.extraFrames
+            logger.notice("[LATENCY] \(name, privacy: .public): \(aligned.summary, privacy: .public)")
         }
+        let subDevices = Self.subDeviceEntries(uids: plan.subDeviceUIDs, extraOutputLatencyFrames: extraLatency)
 
         // nil when the clock device does not resolve: tapNeedsDriftCompensation applies the
         // unresolved-clock policy, and the log line says so.
@@ -915,7 +940,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _primaryCallbackID = nextCallbackID
         let activateCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&primaryResources.deviceProcID, primaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, _ in
+        err = AudioDeviceCreateIOProcIDWithBlock(&primaryResources.deviceProcID, primaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -924,7 +949,7 @@ final class ProcessTapController: ProcessTapControlling {
                 }
                 return
             }
-            self.processAudioCallback(inInputData, inputTime: inInputTime, to: outOutputData, callbackID: activateCallbackID)
+            self.processAudioCallback(inInputData, inputTime: inInputTime, outputTime: inOutputTime, to: outOutputData, callbackID: activateCallbackID)
         }
         guard err == noErr else {
             cleanupPartialActivation()
@@ -1499,7 +1524,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _secondaryCallbackID = nextCallbackID
         let secondaryCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&secondaryResources.deviceProcID, secondaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, _ in
+        err = AudioDeviceCreateIOProcIDWithBlock(&secondaryResources.deviceProcID, secondaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -1508,7 +1533,7 @@ final class ProcessTapController: ProcessTapControlling {
                 }
                 return
             }
-            self.processAudioCallback(inInputData, inputTime: inInputTime, to: outOutputData, callbackID: secondaryCallbackID)
+            self.processAudioCallback(inInputData, inputTime: inInputTime, outputTime: inOutputTime, to: outOutputData, callbackID: secondaryCallbackID)
         }
         guard err == noErr else {
             secondaryResources.destroy()
@@ -1710,7 +1735,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _primaryCallbackID = nextCallbackID
         let switchCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&newResources.deviceProcID, newResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, _ in
+        err = AudioDeviceCreateIOProcIDWithBlock(&newResources.deviceProcID, newResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -1719,7 +1744,7 @@ final class ProcessTapController: ProcessTapControlling {
                 }
                 return
             }
-            self.processAudioCallback(inInputData, inputTime: inInputTime, to: outOutputData, callbackID: switchCallbackID)
+            self.processAudioCallback(inInputData, inputTime: inInputTime, outputTime: inOutputTime, to: outOutputData, callbackID: switchCallbackID)
         }
         guard err == noErr else {
             newResources.destroy()
@@ -2025,6 +2050,7 @@ final class ProcessTapController: ProcessTapControlling {
     nonisolated private func processAudioCallback(
         _ inputBufferList: UnsafePointer<AudioBufferList>,
         inputTime: UnsafePointer<AudioTimeStamp>,
+        outputTime: UnsafePointer<AudioTimeStamp>,
         to outputBufferList: UnsafeMutablePointer<AudioBufferList>,
         callbackID: UInt32
     ) {
@@ -2111,6 +2137,12 @@ final class ProcessTapController: ProcessTapControlling {
                 _expectedInputSampleTime = sampleTime + Float64(totalSamplesThisBuffer)
             }
             if maxPeak > 0 { _lastInputSignalHostTime = now }
+            // Capture to hand-off delay of this tap, for the Chrome extension's output alignment. A pair of time
+            // stamps that is not valid, or gives a gap outside 0...0.5 s, is skipped.
+            if let sample = TapThroughLatency.seconds(input: inputTime.pointee, output: outputTime.pointee, scale: Self.hostTimeNanosScale) {
+                _tapThroughSeconds = TapThroughLatency.smoothed(previous: _tapThroughSeconds, sample: sample)
+                OSMemoryBarrier()
+            }
             #if DEBUG
             trackZeroRun(inputBuffers: inputBuffers, inputTime: inputTime, isZero: maxPeak == 0, frames: totalSamplesThisBuffer, now: now)
             #endif

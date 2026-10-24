@@ -197,6 +197,30 @@ struct MusicOutputStackTests {
         #expect(subDevices.map { $0[kAudioSubDeviceDriftCompensationKey] as? Bool } == [false, true, true])
     }
 
+    @Test("every sub-device carries the extra output latency that lines it up with the slowest, in the clock-first order")
+    func descriptionCarriesExtraOutputLatency() throws {
+        let stack = try #require(MusicOutputStack.plan(for: ["xm5", "buds"], isBluetooth: { _ in true }))
+        let description = stack.description(
+            name: "Deci-Music", uid: "Deci-Music-1",
+            extraOutputLatencyFrames: ["xm5": 1412, "buds": 0]
+        )
+
+        let subDevices = try #require(description[kAudioAggregateDeviceSubDeviceListKey] as? [[String: Any]])
+        #expect(subDevices.map { $0[kAudioSubDeviceUIDKey] as? String } == ["buds", "xm5"])
+        #expect(subDevices.map { $0[kAudioSubDeviceExtraOutputLatencyKey] as? UInt32 } == [0, 1412])
+    }
+
+    @Test("with no latency table every sub-device still says 0, and the other keys are as before")
+    func descriptionDefaultsToNoExtraLatency() throws {
+        let stack = MusicOutputStack(subDeviceUIDs: ["a", "b", "c"])
+        let description = stack.description(name: "Deci-Music", uid: "Deci-Music-1")
+
+        let subDevices = try #require(description[kAudioAggregateDeviceSubDeviceListKey] as? [[String: Any]])
+        #expect(subDevices.map { $0[kAudioSubDeviceExtraOutputLatencyKey] as? UInt32 } == [0, 0, 0])
+        #expect(subDevices.map { $0[kAudioSubDeviceDriftCompensationKey] as? Bool } == [false, true, true])
+        #expect(Set(subDevices[0].keys) == [kAudioSubDeviceUIDKey, kAudioSubDeviceDriftCompensationKey, kAudioSubDeviceExtraOutputLatencyKey])
+    }
+
     @Test("a name starting with Deci- keeps the device monitor from listing the aggregate as an output")
     func nameIsHiddenFromTheMonitor() {
         #expect(MusicOutputStack.aggregateName.hasPrefix("Deci-"))

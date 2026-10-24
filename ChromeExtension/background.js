@@ -113,6 +113,22 @@
  *                                            YouTube Music's "Listen on this device?"
  *                                            dialog. Stored when the value changed; the
  *                                            app restates it with every GET_TABS.
+ *   SET_TAP_LATENCY { devices }              no tabId. devices: [ { deviceName: string,
+ *                                            seconds: number } ], the delay the app's own
+ *                                            Core Audio tap adds to each output it taps,
+ *                                            measured by the app (deviceName is the Core
+ *                                            Audio device name, as in SET_TAB_DEVICES).
+ *                                            Multi-output mode adds it to that output's
+ *                                            latency when it lines the outputs up, so the
+ *                                            other outputs wait for it. Every message
+ *                                            replaces the previous one; devices: [] means
+ *                                            no tap latency anywhere. Entries need a
+ *                                            non-blank string deviceName and finite seconds
+ *                                            from 0 to 0.5; others are dropped, and at
+ *                                            most 8 are kept. Kept in memory and in
+ *                                            session storage, and sent on to the offscreen
+ *                                            document, again whenever it is created or a
+ *                                            capture starts or is reconciled.
  *
  * TRACKING. The app can switch off what the extension reports about tabs. A tab is
  * HIDDEN when tracking.tabs is false, or when tracking.incognito is false and the tab is
@@ -178,6 +194,10 @@
  *                                     capture's sinks: outputs are added and removed without
  *                                     restarting the capture)
  *                  STOP_CAPTURE { tabId }
+ *                  SET_TAP_LATENCY { devices }  global (no tabId), as from the app, already
+ *                                      sanitized; the offscreen document sanitizes again.
+ *                                      Replaces its list and re-runs output alignment
+ *                                      under the usual tolerance and timing rules
  *                  LIST_CAPTURES {}  (response: array of captured tab ids)
  *                  RESOLVE_DEVICES {}  re-check label access and re-resolve every capture,
  *                                      reporting DEVICE_ACCESS and each DEVICE_STATUS even
@@ -225,6 +245,8 @@
  *                           (written by SET_OPTIONS only when the value changed; read by
  *                           ytm-switch.js, which treats a missing value as true)
  *   chrome.storage.local    'deviceAccess' -> boolean (last known; default false)
+ *   chrome.storage.session  'tapLatency' -> [ { deviceName, seconds } ] (the last SET_TAP_LATENCY,
+ *                           sanitized; restored at worker start so a restart keeps it)
  *   chrome.storage.session  'knownTabs' -> [tab ids that were audible this session]
  *   chrome.storage.session  'pageBlocked' -> [origins whose media turned unreadable in-page]
  *   chrome.storage.local    'siteDefaults' -> { hostname: { volume, boost } }
@@ -263,6 +285,8 @@ const YTM_URL_PATTERN = 'https://music.youtube.com/*';
 const DEVICE_STATUSES = ['default', 'pending', 'routed', 'notFound', 'noAccess'];
 const REPORTED_DEVICE_STATUSES = ['default', 'routed', 'notFound', 'noAccess'];
 const MAX_DEVICE_NAMES = 8; // outputs one tab can play on at once (offscreen.js has the same cap)
+const MAX_TAP_LATENCY_SECONDS = 0.5; // the most a tap latency entry may claim; a larger value is not trusted
+const MAX_TAP_ENTRIES = 8; // tap latency entries kept (offscreen.js has the same cap)
 
 // ---------------------------------------------------------------------------
 // Value helpers
@@ -305,6 +329,22 @@ function normalizeNames(names) {
 
 function sameNames(a, b) {
   return a.length === b.length && a.every((name, i) => name === b[i]);
+}
+
+// A tap latency list (SET_TAP_LATENCY): entries with a non-blank string deviceName and a finite number of seconds
+// from 0 to MAX_TAP_LATENCY_SECONDS, the first MAX_TAP_ENTRIES of them, as fresh { deviceName, seconds } objects.
+// Anything else is dropped. Pure.
+function normalizeTapLatency(devices) {
+  if (!Array.isArray(devices)) return [];
+  const out = [];
+  for (const device of devices) {
+    if (!device || typeof device.deviceName !== 'string' || device.deviceName.trim() === '') continue;
+    const seconds = device.seconds;
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0 || seconds > MAX_TAP_LATENCY_SECONDS) continue;
+    out.push({ deviceName: device.deviceName, seconds });
+    if (out.length >= MAX_TAP_ENTRIES) break;
+  }
+  return out;
 }
 
 function defaultState() {
@@ -569,6 +609,8 @@ function ready() {
       if (Array.isArray(all.knownTabs)) {
         for (const id of all.knownTabs) if (Number.isInteger(id)) store.known.add(id);
       }
+      // A SET_TAP_LATENCY that landed while this read was pending is newer than what was stored.
+      if (!tapLatencyTouched) tapLatency = normalizeTapLatency(all.tapLatency);
       await reconcileCaptures(store, true);
       storeSync = store;
       return store;
@@ -650,7 +692,9 @@ async function hasOffscreen() {
 
 async function ensureOffscreen() {
   if (await hasOffscreen()) return;
+  let creator = false;
   if (!creatingOffscreen) {
+    creator = true;
     creatingOffscreen = chrome.offscreen.createDocument({
       url: 'offscreen.html',
       reasons: ['USER_MEDIA'],
@@ -663,6 +707,8 @@ async function ensureOffscreen() {
     });
   }
   await creatingOffscreen;
+  // A new document knows no tap latency: give it the current one. Not awaited, so it cannot hold a capture up.
+  if (creator) postTapLatency();
 }
 
 async function sendToOffscreen(message) {
@@ -672,6 +718,44 @@ async function sendToOffscreen(message) {
     console.warn(`Deci: offscreen ${message.type} failed:`, errorText(err));
     return undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tap latency (SET_TAP_LATENCY): what the app's own audio tap adds to the outputs it taps. The app measures it,
+// the offscreen document adds it to the matching output when it lines the outputs up. Kept here (and in
+// chrome.storage.session) so a new offscreen document or capture, or a restarted worker, still has it.
+// ---------------------------------------------------------------------------
+
+let tapLatency = [];
+let tapLatencyTouched = false; // a SET_TAP_LATENCY has landed since the worker started: the stored value is older
+
+// Sends the current tap latency to the offscreen document. Never throws and never creates the document. The value
+// is read when the send is made, so a send that ran late still carries the newest one.
+async function postTapLatency() {
+  try {
+    await sendToOffscreen({ type: 'SET_TAP_LATENCY', devices: tapLatency.map((device) => ({ ...device })) });
+  } catch (err) {
+    console.warn('Deci: SET_TAP_LATENCY failed:', errorText(err));
+  }
+}
+
+// postTapLatency, but only when a document exists (with none, there is nobody to tell, and a new one gets it
+// from ensureOffscreen). Never throws.
+async function sendTapLatency() {
+  try {
+    if (!(await hasOffscreen())) return;
+  } catch (err) {
+    return;
+  }
+  await postTapLatency();
+}
+
+// SET_TAP_LATENCY from the app: replaces the list at once, stores it, tells the offscreen document.
+async function setTapLatency(devices) {
+  tapLatency = normalizeTapLatency(devices);
+  tapLatencyTouched = true;
+  chrome.storage.session.set({ tapLatency }).catch(logError('session write'));
+  await sendTapLatency();
 }
 
 // Tab ids the offscreen document is capturing, [] when it does not exist,
@@ -846,6 +930,8 @@ async function reconcileCaptures(store, refreshAllBadges) {
   }
   // Adopted captures may have reported their device status to nobody.
   if (adopted) sendToOffscreen({ type: 'RESOLVE_DEVICES' });
+  // The document may be a new one that never got the tap latency. Not awaited.
+  sendTapLatency();
 }
 
 function markUncaptured(store, tabId) {
@@ -918,6 +1004,8 @@ async function startCapture(store, tabId, streamId) {
     if (pageWet) sendPageState(tabId, store.tabs.get(tabId) || next, tab); // back to page control
     return false;
   }
+  // The document has the tap latency already; sending it again costs nothing and makes sure. Not awaited.
+  postTapLatency();
 
   // Merge with anything the app changed while the capture was starting.
   const current = store.tabs.get(tabId);
@@ -1594,6 +1682,11 @@ function handleNativeMessage(msg) {
     setOptions(msg).catch(logError('SET_OPTIONS'));
     return;
   }
+  if (type === 'SET_TAP_LATENCY') {
+    // Global, no tabId: handled before the tab gate below.
+    setTapLatency(msg.devices).catch(logError('SET_TAP_LATENCY'));
+    return;
+  }
   if (!Number.isInteger(tabId)) return;
   switch (type) {
     case 'SET_TAB_VOLUME':
@@ -1689,7 +1782,11 @@ function connect() {
   p.onDisconnect.addListener(() => {
     const reason = chrome.runtime.lastError && chrome.runtime.lastError.message;
     console.warn('Deci: native host disconnected:', reason || 'no reason given');
-    if (port === p) port = null;
+    if (port === p) {
+      port = null;
+      // The app is gone, so its tap is too: a stale value would keep delaying the other outputs.
+      setTapLatency([]).catch(logError('tap latency clear'));
+    }
     clearTimeout(stableTimer);
     stableTimer = null;
     scheduleReconnect();

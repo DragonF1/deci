@@ -21,6 +21,9 @@ struct TapHealthReadings: Equatable {
     /// with drift compensation. Filled in every build: the `[RESCUE]` line reports them.
     var tapIsStream = false
     var tapDriftCompensation = false
+    /// Smoothed time the tap adds between capturing a buffer and handing it to the output (see
+    /// `TapThroughLatency`); 0 until the first valid measurement and right after a tap starts.
+    var tapThroughSeconds: Double = 0
 
     // Debug soak instrumentation: filled by DEBUG builds only, left at these defaults otherwise.
     /// Host tick the debug fields below were read at.

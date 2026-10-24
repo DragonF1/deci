@@ -15,6 +15,7 @@
 //      exposes exactly one output stream, so multi-sub-device and multi-stream
 //      flattens stay stacked.
 
+import AudioToolbox
 import Testing
 @testable import Deci
 
@@ -215,5 +216,46 @@ struct TapDriftCompensationTests {
             drift: false, tapDeviceUID: "speakers", clockDeviceUID: "speakers", clockIsBluetooth: nil, tapSourceIsVirtual: true
         )
         #expect(unresolved == "drift=off src=stream:speakers clock=speakers clockBT=unresolved(assumed yes) virtualSource=yes")
+    }
+}
+
+@Suite("ProcessTapController — Sub-device list and latency alignment")
+struct TapSubDeviceListTests {
+
+    private func latency(_ entry: [String: Any]) -> UInt32? {
+        entry[kAudioSubDeviceExtraOutputLatencyKey] as? UInt32
+    }
+
+    @Test("With two or more outputs every sub-device carries its extra output latency")
+    func multiDeviceCarriesLatency() {
+        let entries = ProcessTapController.subDeviceEntries(
+            uids: ["xm5", "buds"],
+            extraOutputLatencyFrames: ["xm5": 1412, "buds": 0]
+        )
+        #expect(entries.map { $0[kAudioSubDeviceUIDKey] as? String } == ["xm5", "buds"])
+        #expect(entries.map { $0[kAudioSubDeviceDriftCompensationKey] as? Bool } == [false, true])
+        #expect(entries.map(latency) == [1412, 0])
+    }
+
+    @Test("A sub-device with no entry in the table is given 0, so the key is on all of them")
+    func missingEntryIsZero() {
+        let entries = ProcessTapController.subDeviceEntries(uids: ["a", "b", "c"], extraOutputLatencyFrames: ["b": 300])
+        #expect(entries.map(latency) == [0, 300, 0])
+    }
+
+    @Test("A single output stays exactly as it was: only the UID and the drift flag, whatever the table holds")
+    func singleDeviceIsUnchanged() {
+        let entries = ProcessTapController.subDeviceEntries(uids: ["speakers"], extraOutputLatencyFrames: ["speakers": 500])
+        let legacy: [String: Any] = [kAudioSubDeviceUIDKey: "speakers", kAudioSubDeviceDriftCompensationKey: false]
+        #expect(entries.count == 1)
+        #expect((entries[0] as NSDictionary).isEqual(to: legacy))
+        #expect(entries[0][kAudioSubDeviceExtraOutputLatencyKey] == nil)
+    }
+
+    @Test("A single output with an empty table is the same as today")
+    func singleDeviceEmptyTable() {
+        let entries = ProcessTapController.subDeviceEntries(uids: ["speakers"], extraOutputLatencyFrames: [:])
+        let legacy: [String: Any] = [kAudioSubDeviceUIDKey: "speakers", kAudioSubDeviceDriftCompensationKey: false]
+        #expect((entries[0] as NSDictionary).isEqual(to: legacy))
     }
 }

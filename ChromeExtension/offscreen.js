@@ -34,6 +34,8 @@ const ALIGN_FIRST_TICKS = 2; // passes in a row that must want the same delay be
 const ALIGN_TICKS = 3; // the same for every correction after that
 const ALIGN_MIN_GAP_SECONDS = 5; // least audio time between two corrections of one chain (each one dips it)
 const ALIGN_UNKNOWN_GRACE_SECONDS = 3; // a running chain without a reported latency holds the pass back this long after it connects
+const MAX_TAP_LATENCY_SECONDS = 0.5; // the most a tap latency entry may claim; a larger value is not trusted
+const MAX_TAP_ENTRIES = 8; // tap latency entries kept (background.js has the same cap)
 const DIP_SECONDS = 0.03; // a change that would click (a delay step, a source swap) is made this long into a trim dip
 const DIP_TIME_CONSTANT = 0.004; // setTargetAtTime time constant of the dip and of the return
 const SWAP_SLACK_SECONDS = 0.002; // a source swap goes ahead once the audio clock is this close to the bottom of its dip
@@ -337,12 +339,88 @@ function waitToSwap(chain, step, waits) {
 // Output alignment
 // ---------------------------------------------------------------------------
 
-// Seconds from a chain's graph to its speaker; 0 when unknown (the context is not running, or Chrome has not
-// reported an output latency yet).
+// The Deci app taps the audio of some outputs (a Core Audio process tap) and plays it again, which delays that
+// output by an amount Chrome cannot see. The app measures it per tapped device and sends it as SET_TAP_LATENCY;
+// each message replaces the list. [{ deviceName, seconds }], empty when no output is tapped.
+let tapLatency = [];
+// deviceId -> label of the audio outputs the last enumerateDevices() listed, 'default' included. A chain on the
+// default output has no name of its own (see chainLabels), so its label is read from here.
+let outputLabels = new Map();
+
+// A tap latency list as sent by the app: entries with a non-blank string deviceName and a finite number of seconds
+// from 0 to MAX_TAP_LATENCY_SECONDS, the first MAX_TAP_ENTRIES of them, as fresh objects. Anything else is dropped.
+// Pure.
+function sanitizeTapLatency(devices) {
+  if (!Array.isArray(devices)) return [];
+  const out = [];
+  for (const device of devices) {
+    if (!device || typeof device.deviceName !== 'string' || device.deviceName.trim() === '') continue;
+    const seconds = device.seconds;
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0 || seconds > MAX_TAP_LATENCY_SECONDS) continue;
+    out.push({ deviceName: device.deviceName, seconds });
+    if (out.length >= MAX_TAP_ENTRIES) break;
+  }
+  return out;
+}
+
+// SET_TAP_LATENCY: replaces the list and lets the alignment timer pick it up. A change moves nothing at once: the
+// next passes see the new latencies and correct under the usual tolerance, vote and gap rules (see nudgeAlign).
+function setTapLatency(devices) {
+  tapLatency = sanitizeTapLatency(devices);
+  syncAlign();
+}
+
+function noteOutputLabels(devices) {
+  const next = new Map();
+  for (const device of Array.isArray(devices) ? devices : []) {
+    if (device && device.kind === 'audiooutput' && typeof device.deviceId === 'string' &&
+        typeof device.label === 'string' && device.label !== '') {
+      next.set(device.deviceId, device.label);
+    }
+  }
+  outputLabels = next;
+}
+
+// The names an output of a chain goes by, best first. chain.name is the name that routed it: the one the app asked
+// for, which can be shorter than Chrome's label for the device (matchOutput takes "contains"). A chain on the
+// default output has no name (''), so it is known by the label of the 'default' device entry instead
+// ("Default - WH-1000XM5"). The label of the chain's own sink comes second.
+function chainLabels(chain) {
+  const labels = [];
+  if (typeof chain.name === 'string' && chain.name !== '') labels.push(chain.name);
+  const onDefault = chain.sinkId === '' || chain.sinkId === 'default';
+  const label = outputLabels.get(onDefault ? 'default' : chain.sinkId);
+  if (label && !labels.includes(label)) labels.push(label);
+  return labels;
+}
+
+// The tap entry for an output label, by the rules matchOutput uses to find a device from a name: the entry's
+// deviceName equals the label, else the label starts with deviceName + " (", else contains it (any case).
+function matchTapEntry(label) {
+  const lower = label.toLowerCase();
+  return tapLatency.find((entry) => label === entry.deviceName) ||
+    tapLatency.find((entry) => label.startsWith(`${entry.deviceName} (`)) ||
+    tapLatency.find((entry) => lower.includes(entry.deviceName.toLowerCase())) ||
+    null;
+}
+
+// Seconds the tap adds to a chain's output; 0 when no entry matches it.
+function extraLatency(chain) {
+  if (tapLatency.length === 0) return 0;
+  for (const label of chainLabels(chain)) {
+    const entry = matchTapEntry(label);
+    if (entry) return entry.seconds;
+  }
+  return 0;
+}
+
+// Seconds from a chain's graph to its speaker, the tap's included; 0 when unknown (the context is not running, or
+// Chrome has not reported an output latency yet). The tap adds to a known latency only: an unknown one stays 0,
+// so the unknown-latency handling in alignChains is unchanged.
 function chainLatency(chain) {
   const out = chain.ctx.outputLatency;
   if (chain.ctx.state !== 'running' || !Number.isFinite(out) || out <= 0) return 0;
-  return (chain.ctx.baseLatency || 0) + out;
+  return (chain.ctx.baseLatency || 0) + out + extraLatency(chain);
 }
 
 // Sets the delay at the head of a chain. A heard chain dips its trim around the step so it does not click, a
@@ -988,6 +1066,7 @@ async function resolveOutput(tabId, entry, gen) {
   } catch (err) {
     console.warn('Deci offscreen: enumerateDevices failed:', err);
   }
+  if (devices) noteOutputLabels(devices); // fresh whether or not this pass is still wanted
   if (!isCurrent()) return;
   let plan;
   if (!devices) {
@@ -1132,6 +1211,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       accessSent = null;
       checkAccess();
       routeAll(true);
+      sendResponse({ ok: true });
+      return false;
+    case 'SET_TAP_LATENCY':
+      // Global, not per tab (no tabId): the tap latency of each tapped output device. Not part of mergeState.
+      setTapLatency(msg.devices);
       sendResponse({ ok: true });
       return false;
     default:
