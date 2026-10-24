@@ -155,6 +155,42 @@ enum InnerTubeParser {
         return renderers.compactMap(track(from:))
     }
 
+    /// The track an unfiltered search names as its Top result, which the songs filter can leave out (an uploaded
+    /// video). The Top result is a card whose title runs carry the watch endpoint when it is a song or video; an
+    /// artist, album or playlist card has none, so there is no track. A response with no card at all falls back to the
+    /// first row of a shelf titled "Top result", the older shape.
+    static func searchTopResult(from data: Data) throws -> MusicTrack? {
+        let root = try jsonObject(data, what: "search response")
+        var cards: [[String: Any]] = []
+        collect("musicCardShelfRenderer", in: root, into: &cards)
+        if let card = cards.first { return topTrack(fromCard: card) }
+
+        var shelves: [[String: Any]] = []
+        collect("musicShelfRenderer", in: root, into: &shelves)
+        let top = shelves.first { text(of: runs(path($0, "title"))) == "Top result" }
+        let first = (top?["contents"] as? [[String: Any]])?.first
+        return (first?["musicResponsiveListItemRenderer"] as? [String: Any]).flatMap(track(from:))
+    }
+
+    private static func topTrack(fromCard card: [String: Any]) -> MusicTrack? {
+        let titleRuns = runs(card["title"])
+        guard let videoId = string(path(titleRuns.first, "navigationEndpoint", "watchEndpoint", "videoId")),
+              !videoId.isEmpty,
+              let title = text(of: titleRuns)
+        else { return nil }
+        let subtitle = parseSubtitle(runs(card["subtitle"]))
+        return MusicTrack(
+            videoId: videoId,
+            title: title,
+            artist: subtitle.artists.joined(separator: ", "),
+            album: subtitle.album,
+            durationSeconds: subtitle.durationSeconds,
+            thumbnailURL: thumbnailURL(in: card),
+            artistLinks: subtitle.artistLinks,
+            albumBrowseId: subtitle.albumBrowseId
+        )
+    }
+
     static func collect(_ key: String, in node: Any, into found: inout [[String: Any]]) {
         if let dictionary = node as? [String: Any] {
             if let match = dictionary[key] as? [String: Any] {

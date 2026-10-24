@@ -120,6 +120,9 @@ actor FakeMusicBackend: MusicBackend {
     private var artistSearchResults: [String: [MusicCollection]] = [:]
     private var artistSearchErrors: [String: any Error] = [:]
     private var artistSearchGates: [String: MusicTestGate] = [:]
+    private var topResults: [String: Deci.MusicTrack] = [:]
+    private var topResultErrors: [String: any Error] = [:]
+    private var topResultGates: [String: MusicTestGate] = [:]
     private var streams: [String: ResolvedStream] = [:]
     private var resolveErrors: [String: any Error] = [:]
     private var resolveGates: [String: MusicTestGate] = [:]
@@ -211,6 +214,7 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var relatedCalls: [String] = []
     private(set) var searchedQueries: [String] = []
     private(set) var searchedArtistQueries: [String] = []
+    private(set) var searchedTopResultQueries: [String] = []
     private(set) var resolvedIDs: [String] = []
     private(set) var reportAttempts: [Report] = []
     private(set) var signInCookies: [[StoredCookie]] = []
@@ -254,6 +258,11 @@ actor FakeMusicBackend: MusicBackend {
     func setArtistSearch(_ query: String, results: [MusicCollection]) { artistSearchResults[query] = results }
     func setArtistSearchError(_ query: String, _ error: any Error) { artistSearchErrors[query] = error }
     func setArtistSearchGate(_ query: String, _ gate: MusicTestGate) { artistSearchGates[query] = gate }
+
+    /// The track the unfiltered search names as its top result for `query`. A query with none scripted has no top result.
+    func setTopResult(_ query: String, track: Deci.MusicTrack?) { topResults[query] = track }
+    func setTopResultError(_ query: String, _ error: any Error) { topResultErrors[query] = error }
+    func setTopResultGate(_ query: String, _ gate: MusicTestGate) { topResultGates[query] = gate }
     func setStream(_ stream: ResolvedStream) { streams[stream.videoId] = stream }
     func setResolveError(_ videoId: String, _ error: any Error) { resolveErrors[videoId] = error }
     func clearResolveError(_ videoId: String) { resolveErrors[videoId] = nil }
@@ -597,6 +606,13 @@ actor FakeMusicBackend: MusicBackend {
         }
         if let error = artistSearchErrors[query] { throw error }
         return artistSearchResults[query] ?? []
+    }
+
+    func searchTopResult(_ query: String) async throws -> Deci.MusicTrack? {
+        searchedTopResultQueries.append(query)
+        if let gate = topResultGates[query] { await gate.wait() }
+        if let error = topResultErrors[query] { throw error }
+        return topResults[query]
     }
 
     func resolve(videoId: String) async throws -> ResolvedStream {

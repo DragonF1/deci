@@ -369,6 +369,10 @@ protocol MusicBackend: Sendable {
     func search(_ query: String) async throws -> [MusicTrack]
     /// Artists matching `query`, for the Artists shelf over the search results.
     func searchArtists(_ query: String) async throws -> [MusicCollection]
+    /// The song or video YouTube Music names as the Top result of an unfiltered search, or nil when the top result is
+    /// something else (an artist, album or playlist). The songs filter leaves out uploaded videos, so this is how one
+    /// typed by name is found.
+    func searchTopResult(_ query: String) async throws -> MusicTrack?
     func resolve(videoId: String) async throws -> ResolvedStream
     /// First page of the radio seeded by `seedVideoId` (playlist RDAMVM<seedVideoId>).
     func radio(seedVideoId: String) async throws -> MusicQueuePage

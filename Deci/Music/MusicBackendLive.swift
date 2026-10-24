@@ -58,6 +58,10 @@ actor MusicBackendLive: MusicBackend {
         try await client.searchArtists(query)
     }
 
+    func searchTopResult(_ query: String) async throws -> MusicTrack? {
+        try await client.searchTopResult(query)
+    }
+
     func resolve(videoId: String) async throws -> ResolvedStream {
         try await resolver.resolve(videoId: videoId)
     }

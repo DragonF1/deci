@@ -1,0 +1,180 @@
+{
+ "_handBuilt": "shape from ytmusicapi parse_top_result, not a live capture",
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "contents": {
+  "tabbedSearchResultsRenderer": {
+   "tabs": [
+    {
+     "tabRenderer": {
+      "title": "YT Music",
+      "selected": true,
+      "content": {
+       "sectionListRenderer": {
+        "contents": [
+         {
+          "musicCardShelfRenderer": {
+           "header": {
+            "musicCardShelfHeaderBasicRenderer": {
+             "title": {
+              "runs": [
+               {
+                "text": "Top result"
+               }
+              ]
+             }
+            }
+           },
+           "thumbnail": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://img.example.test/topvideo=w60-h60",
+                "width": 60,
+                "height": 60
+               },
+               {
+                "url": "https://img.example.test/topvideo=w120-h120",
+                "width": 120,
+                "height": 120
+               },
+               {
+                "url": "https://img.example.test/topvideo=w544-h544",
+                "width": 544,
+                "height": 544
+               }
+              ]
+             },
+             "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_UNSPECIFIED"
+            }
+           },
+           "title": {
+            "runs": [
+             {
+              "text": "Crab Rave Bass Boosted",
+              "navigationEndpoint": {
+               "watchEndpoint": {
+                "videoId": "topVideo001",
+                "watchEndpointMusicSupportedConfigs": {
+                 "watchEndpointMusicConfig": {
+                  "musicVideoType": "MUSIC_VIDEO_TYPE_UGC"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "subtitle": {
+            "runs": [
+             {
+              "text": "Video"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "Bass Channel",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "UCbassChannel",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                 }
+                }
+               }
+              }
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "12M views"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicShelfRenderer": {
+           "title": {
+            "runs": [
+             {
+              "text": "Songs"
+             }
+            ]
+           },
+           "contents": [
+            {
+             "musicResponsiveListItemRenderer": {
+              "thumbnail": {
+               "musicThumbnailRenderer": {
+                "thumbnail": {
+                 "thumbnails": [
+                  {
+                   "url": "https://img.example.test/songrow=w120-h120",
+                   "width": 120,
+                   "height": 120
+                  }
+                 ]
+                }
+               }
+              },
+              "flexColumns": [
+               {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Crab Rave",
+                    "navigationEndpoint": {
+                     "watchEndpoint": {
+                      "videoId": "songRow001"
+                     }
+                    }
+                   }
+                  ]
+                 }
+                }
+               },
+               {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Song"
+                   },
+                   {
+                    "text": " • "
+                   },
+                   {
+                    "text": "Noisestorm"
+                   },
+                   {
+                    "text": " • "
+                   },
+                   {
+                    "text": "3:05"
+                   }
+                  ]
+                 }
+                }
+               }
+              ]
+             }
+            }
+           ]
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   ]
+  }
+ }
+}

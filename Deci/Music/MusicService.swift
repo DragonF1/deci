@@ -590,7 +590,7 @@ final class MusicService {
 
     // MARK: - Search
 
-    /// Submit-on-Return search. A newer search replaces the one in flight.
+    /// Searches for `query`: run on Return, and as the owner types. A newer search replaces the one in flight.
     func search() {
         searchTask?.cancel()
         searchGeneration += 1
@@ -610,20 +610,30 @@ final class MusicService {
         }
     }
 
-    /// Songs and artists are asked for at the same time. They land together, so the shelf never pops in above
-    /// songs the owner is already reading. Only the songs decide success: if they fail the search fails as
-    /// before and the artists are dropped; if only the artists fail, the songs show and the shelf stays empty.
-    /// Once the songs are in, the artists get `artistGrace` more to arrive; a slower artist request is cancelled
-    /// and the songs show with no shelf, so they never wait out its timeout.
+    /// What the search asks for besides the songs, as it arrives.
+    private enum SearchExtra: Sendable {
+        case artists([MusicCollection])
+        case topTrack(MusicTrack?)
+        case graceEnded
+    }
+
+    /// Songs, artists and the Top result are asked for at the same time. They land together, so the shelf never pops in
+    /// above songs the owner is already reading, and the Top result never takes the first place from under them. Only
+    /// the songs decide success: if they fail the search fails as before and the rest is dropped; if only the artists
+    /// or the Top result fail, the songs show without them. Once the songs are in, the artists and the Top result get
+    /// `artistGrace` more between them to arrive; a slower request is cancelled and the songs show without it, so they
+    /// never wait out its timeout.
     private func runSearch(_ term: String, generation: Int) async {
         let backend = self.backend
         // Not `async let`: that is awaited when the scope ends, which would keep the songs back for as long as
-        // the artist request lives. This task is cancelled instead, and hands over what it found by a stream.
-        let (arrivals, arrive) = AsyncStream.makeStream(of: [MusicCollection]?.self)
-        let artistsTask = Task { arrive.yield(await Self.searchArtistsQuietly(term, through: backend)) }
+        // the extra requests live. These tasks are cancelled instead, and hand over what they found by a stream.
+        let (arrivals, arrive) = AsyncStream.makeStream(of: SearchExtra.self)
+        let artistsTask = Task { arrive.yield(.artists(await Self.searchArtistsQuietly(term, through: backend))) }
+        let topTask = Task { arrive.yield(.topTrack(await Self.searchTopResultQuietly(term, through: backend))) }
         var timer: Task<Void, Never>?
         defer {
             artistsTask.cancel()
+            topTask.cancel()
             timer?.cancel()
         }
         do {
@@ -632,17 +642,28 @@ final class MusicService {
             timer = Task {
                 do {
                     try await Task.sleep(for: grace)
-                    arrive.yield(nil)
+                    arrive.yield(.graceEnded)
                 } catch {}
             }
-            // The first of the two to arrive: the artists, or the end of the grace. A cancelled search ends the wait.
+            // Both extras, or the end of the grace, whichever comes first. A cancelled search ends the wait.
             var artists: [MusicCollection] = []
+            var topTrack: MusicTrack?
+            var waiting = 2
             for await arrived in arrivals {
-                artists = arrived ?? []
-                break
+                switch arrived {
+                case .artists(let list):
+                    artists = list
+                    waiting -= 1
+                case .topTrack(let track):
+                    topTrack = track
+                    waiting -= 1
+                case .graceEnded:
+                    waiting = 0
+                }
+                if waiting == 0 { break }
             }
             guard generation == searchGeneration, !Task.isCancelled else { return }
-            results = found
+            results = Self.withTopTrack(topTrack, in: found)
             artistResults = Array(artists.prefix(Self.maxArtistResults))
             isSearching = false
             MusicMemoryLog.log("search")
@@ -651,6 +672,13 @@ final class MusicService {
             isSearching = false
             handle(error)
         }
+    }
+
+    /// The songs with the Top result first and not repeated: an uploaded video the songs filter leaves out shows where
+    /// the owner looks first, and a song the filter did return moves up instead of showing twice.
+    private static func withTopTrack(_ top: MusicTrack?, in songs: [MusicTrack]) -> [MusicTrack] {
+        guard let top else { return songs }
+        return [top] + songs.filter { $0.videoId != top.videoId }
     }
 
     /// The artists for a search, or none when the request fails: the shelf is a bonus, so it never shows an
@@ -663,6 +691,19 @@ final class MusicService {
                 logger.info("artist search failed: \(logDescription(of: error), privacy: .public)")
             }
             return []
+        }
+    }
+
+    /// The Top result's track for a search, or none when the request fails: like the artists it is a bonus, so it
+    /// never shows an error, and a failure logs the error kind only.
+    private static func searchTopResultQuietly(_ term: String, through backend: any MusicBackend) async -> MusicTrack? {
+        do {
+            return try await backend.searchTopResult(term)
+        } catch {
+            if !isCancellation(error) {
+                logger.info("top result search failed: \(logDescription(of: error), privacy: .public)")
+            }
+            return nil
         }
     }
 

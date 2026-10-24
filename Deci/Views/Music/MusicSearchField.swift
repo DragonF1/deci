@@ -53,8 +53,15 @@ struct MusicSearchField: View {
             RoundedRectangle(cornerRadius: Self.radius, style: .continuous)
                 .strokeBorder(accent.solid.opacity(0.55), lineWidth: 1)
         )
-        // Typing starts the moment the field opens.
-        .task { isFocused = true }
+        // Typing starts the moment the field opens. Asked for as the view appears, focus finds no text field in the
+        // window yet (SwiftUI then drops the ask), so it is asked for a run loop turn later, and once more if that ask
+        // was dropped too.
+        .task {
+            try? await Task.sleep(for: .milliseconds(1))
+            isFocused = true
+            try? await Task.sleep(for: .milliseconds(120))
+            if !isFocused { isFocused = true }
+        }
     }
 }
 

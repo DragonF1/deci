@@ -84,14 +84,23 @@ final class MusicSearchNavigation {
     private(set) var isQueueFieldOpen = false
     private(set) var queueQuery = ""
 
+    /// Words were typed in the YouTube Music field and their search is waiting out the delay after the last keystroke.
+    private(set) var isSearchPending = false
+    @ObservationIgnored private var pendingSearch: Task<Void, Never>?
+    /// How long after the last keystroke the typed words are searched.
+    @ObservationIgnored private let searchDelay: Duration
+    /// The trimmed words of the search last sent, by Return or by typing. Typing the same words again sends nothing.
+    @ObservationIgnored private var lastSearchedQuery = ""
+
     @ObservationIgnored private let service: MusicService
     /// Where a menu pick's rating outcome shows: the notice line while the Music popup is open, else the HUD, as for the
     /// hotkeys. The host sets it. Not held: the reporter holds the host, which holds this. Without one the outcome shows
     /// on the notice line.
     @ObservationIgnored weak var outcomes: (any MusicOutcomeReporting)?
 
-    init(service: MusicService) {
+    init(service: MusicService, searchDelay: Duration = .milliseconds(300)) {
         self.service = service
+        self.searchDelay = searchDelay
     }
 
     // MARK: - What shows
@@ -161,13 +170,15 @@ final class MusicSearchNavigation {
 
     /// What the results cover the column with.
     var panel: MusicSearchPanel {
-        MusicSearchPanel.resolve(
+        let panel = MusicSearchPanel.resolve(
             queryIsEmpty: trimmedQuery.isEmpty,
             showsResults: showsResults,
             hasResults: hasResults,
             isSearching: service.isSearching,
             hasFailed: service.lastError != nil
         )
+        // Words that are about to be searched on their own do not ask for Return.
+        return panel == .pressReturn && isSearchPending ? .searching : panel
     }
 
     // MARK: - Search field
@@ -268,23 +279,62 @@ final class MusicSearchNavigation {
         }
     }
 
-    /// Return in the YouTube Music field.
+    /// Return in the YouTube Music field: the words are searched at once, whatever was waiting out its delay.
     func submit() {
         hidesResults = false
         closePanels()
-        submittedQuery = trimmedQuery
-        service.search()
+        cancelPendingSearch()
+        sendSearch()
     }
 
-    /// The query was edited. An emptied field stops the search and drops its results, back to browsing. Typing
-    /// closes the save to playlist menu, but never Lyrics or Up next: the field is under them, and a key that reaches it
-    /// must not take them away.
+    /// The query was edited. An emptied field stops the search and drops its results, back to browsing. Other words are
+    /// searched once the owner pauses. Typing closes the save to playlist menu, but never Lyrics or Up next: the field
+    /// is under them, and a key that reaches it must not take them away.
     func queryChanged() {
         hidesResults = false
         service.trackActions.closePicker()
-        if trimmedQuery.isEmpty, service.isSearching || hasResults {
-            service.search()
+        guard !trimmedQuery.isEmpty else {
+            cancelPendingSearch()
+            lastSearchedQuery = ""
+            if service.isSearching || hasResults { service.search() }
+            return
         }
+        scheduleSearch()
+    }
+
+    /// Sends the trimmed query as a search and remembers it as the last one.
+    private func sendSearch() {
+        submittedQuery = trimmedQuery
+        lastSearchedQuery = trimmedQuery
+        service.search()
+    }
+
+    /// Waits `searchDelay` for another edit, then searches the words as they are by then. Each edit starts the wait
+    /// again, and the search in flight keeps its own guard against a stale answer. Only the YouTube Music field is
+    /// sent anywhere: the fields that filter what is on screen change nothing here, and words that trim to the last
+    /// search, or to nothing, are not searched.
+    private func scheduleSearch() {
+        cancelPendingSearch()
+        guard scope == .global, trimmedQuery != lastSearchedQuery else { return }
+        isSearchPending = true
+        let delay = searchDelay
+        pendingSearch = Task { [weak self] in
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled else { return }
+            self?.searchTypedWords()
+        }
+    }
+
+    private func searchTypedWords() {
+        cancelPendingSearch()
+        guard scope == .global, !trimmedQuery.isEmpty, trimmedQuery != lastSearchedQuery else { return }
+        sendSearch()
+    }
+
+    private func cancelPendingSearch() {
+        pendingSearch?.cancel()
+        pendingSearch = nil
+        isSearchPending = false
     }
 
     /// The "Search YouTube Music instead" link of a filter that found nothing: the same words go to Home's field and
@@ -314,6 +364,7 @@ final class MusicSearchNavigation {
 
     /// Every field closes and forgets its words (a tab was picked, or the session ended).
     func resetFields() {
+        cancelPendingSearch()
         searchAnchor = nil
         filterAnchor = nil
         filterQuery = ""

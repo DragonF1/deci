@@ -1,0 +1,118 @@
+{
+ "_handBuilt": "shape from ytmusicapi parse_top_result, not a live capture",
+ "responseContext": {
+  "visitorData": "SCRUBBED"
+ },
+ "contents": {
+  "tabbedSearchResultsRenderer": {
+   "tabs": [
+    {
+     "tabRenderer": {
+      "title": "YT Music",
+      "selected": true,
+      "content": {
+       "sectionListRenderer": {
+        "contents": [
+         {
+          "musicCardShelfRenderer": {
+           "header": {
+            "musicCardShelfHeaderBasicRenderer": {
+             "title": {
+              "runs": [
+               {
+                "text": "Top result"
+               }
+              ]
+             }
+            }
+           },
+           "thumbnail": {
+            "musicThumbnailRenderer": {
+             "thumbnail": {
+              "thumbnails": [
+               {
+                "url": "https://img.example.test/topartist=w120-h120",
+                "width": 120,
+                "height": 120
+               }
+              ]
+             },
+             "thumbnailCrop": "MUSIC_THUMBNAIL_CROP_CIRCLE"
+            }
+           },
+           "title": {
+            "runs": [
+             {
+              "text": "Artist Alpha",
+              "navigationEndpoint": {
+               "browseEndpoint": {
+                "browseId": "UCartistA",
+                "browseEndpointContextSupportedConfigs": {
+                 "browseEndpointContextMusicConfig": {
+                  "pageType": "MUSIC_PAGE_TYPE_ARTIST"
+                 }
+                }
+               }
+              }
+             }
+            ]
+           },
+           "subtitle": {
+            "runs": [
+             {
+              "text": "Artist"
+             },
+             {
+              "text": " • "
+             },
+             {
+              "text": "1.2M monthly audience"
+             }
+            ]
+           }
+          }
+         },
+         {
+          "musicShelfRenderer": {
+           "title": {
+            "runs": [
+             {
+              "text": "Songs"
+             }
+            ]
+           },
+           "contents": [
+            {
+             "musicResponsiveListItemRenderer": {
+              "flexColumns": [
+               {
+                "musicResponsiveListItemFlexColumnRenderer": {
+                 "text": {
+                  "runs": [
+                   {
+                    "text": "Alpha Song",
+                    "navigationEndpoint": {
+                     "watchEndpoint": {
+                      "videoId": "songRow002"
+                     }
+                    }
+                   }
+                  ]
+                 }
+                }
+               }
+              ]
+             }
+            }
+           ]
+          }
+         }
+        ]
+       }
+      }
+     }
+    }
+   ]
+  }
+ }
+}

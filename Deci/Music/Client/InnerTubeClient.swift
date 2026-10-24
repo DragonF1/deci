@@ -201,6 +201,20 @@ actor InnerTubeClient {
         return artists
     }
 
+    /// The track YouTube Music names as the Top result of an unfiltered search, nil when the top result is not a song or
+    /// video. Songs found only this way are uploads the songs filter leaves out. Same guards as `search`; the query
+    /// goes out with no `params`, and only whether a track came back is logged.
+    func searchTopResult(_ query: String) async throws -> MusicTrack? {
+        guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let session = try await sessionOrFallback()
+        let data = try await post("search", session: session, body: ["query": trimmed])
+        let track = try InnerTubeParser.searchTopResult(from: data)
+        Self.log.info("top result has a track \(track != nil, privacy: .public)")
+        return track
+    }
+
     /// The first page of the autoplay queue seeded by `seedVideoId`, starting with the seed itself.
     func radio(seedVideoId: String) async throws -> MusicQueuePage {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }

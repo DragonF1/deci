@@ -8,6 +8,9 @@ import SwiftUI
 /// searches depends on the screen (`MusicSearchScope`). The avatar opens the account card, which holds Settings; there
 /// is no gear.
 ///
+/// The field slides out of the magnifier's place when it opens and folds back into it when it closes (a plain fade with
+/// Reduce Motion on). The tabs swap with no transition, so a label never fades or moves while the field grows.
+///
 /// Signed out, the tabs dim and answer nothing, there is no magnifier, and the avatar is a placeholder that opens the
 /// card with Sign in and Settings. Lyrics and Up next wear their own headers (`MusicPanelHeaders`).
 struct MusicRightColumnHeader: View {
@@ -16,8 +19,18 @@ struct MusicRightColumnHeader: View {
     @Binding var isAccountCardOpen: Bool
 
     @Environment(\.musicAccent) private var accent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isSignedIn: Bool { service?.authState == .signedIn && navigation != nil }
+
+    /// The field is showing in the header, which is what the slide follows.
+    private var isFieldShowing: Bool { isSignedIn && navigation?.isFieldOpen == true }
+
+    /// How long the field takes to slide out or back.
+    static let slideDuration = 0.2
+
+    /// Between the trailing buttons, which the field replaces.
+    private static let trailingSpacing: CGFloat = 10
 
     var body: some View {
         Group {
@@ -41,12 +54,25 @@ struct MusicRightColumnHeader: View {
         .padding(.top, MusicPopupMetrics.rightPaddingTop)
         // A new song's accent glides into the active tab's underline.
         .animation(.easeInOut(duration: 0.4), value: accent)
+        .animation(.easeOut(duration: Self.slideDuration), value: isFieldShowing)
+    }
+
+    /// The field's entrance and exit.
+    private var fieldTransition: AnyTransition {
+        reduceMotion ? .opacity : AnyTransition(MusicFieldSlide(originInset: Self.magnifierInset))
+    }
+
+    /// How far the magnifier's centre sits from the trailing edge, where the avatar is next to it.
+    private static var magnifierInset: CGFloat {
+        MusicPopupMetrics.avatarSize + trailingSpacing + MusicPopupMetrics.avatarSize / 2
     }
 
     private func openRow(tabs shown: [MusicHeaderTab], field: some View, fieldMinWidth: CGFloat?) -> some View {
         HStack(spacing: 12) {
             tabs(shown)
-            field.frame(minWidth: fieldMinWidth, idealWidth: fieldMinWidth, maxWidth: .infinity)
+            field
+                .frame(minWidth: fieldMinWidth, idealWidth: fieldMinWidth, maxWidth: .infinity)
+                .transition(fieldTransition)
         }
     }
 
@@ -61,6 +87,8 @@ struct MusicRightColumnHeader: View {
             }
         }
         .opacity(isSignedIn ? 1 : 0.35)
+        // The same labels sit in the same place with the field open or closed, so they swap with no fade.
+        .transition(.identity)
     }
 
     /// The field, while it is open on this screen.
@@ -70,7 +98,7 @@ struct MusicRightColumnHeader: View {
     }
 
     private var trailing: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Self.trailingSpacing) {
             if isSignedIn, let service, let navigation, navigation.showsHomeRefresh {
                 MusicRefreshButton(isRefreshing: service.browse.isRefreshingHome || service.browse.home == .loading) {
                     service.browse.refreshHome()
@@ -91,6 +119,30 @@ struct MusicRightColumnHeader: View {
                 MusicSignedOutAvatarButton(isOpen: isAccountCardOpen) { isAccountCardOpen.toggle() }
             }
         }
+    }
+}
+
+/// The open field's entrance and exit: it is uncovered from the magnifier's place outward to both sides, and covered
+/// again toward that place on the way out, fading as it goes. The field is only masked, never squeezed, so its words
+/// keep their shape. At rest the mask reaches past the field, so it clips nothing.
+private struct MusicFieldSlide: Transition {
+    /// How far from the field's trailing edge the magnifier's centre sits.
+    let originInset: CGFloat
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        let shown = phase.isIdentity
+        content
+            .mask {
+                GeometryReader { proxy in
+                    let origin = max(proxy.size.width - originInset, 0)
+                    let left = shown ? -2 : origin
+                    let right = shown ? proxy.size.width + 2 : origin
+                    Rectangle()
+                        .frame(width: right - left, height: proxy.size.height)
+                        .offset(x: left)
+                }
+            }
+            .opacity(shown ? 1 : 0)
     }
 }
 
@@ -178,7 +230,8 @@ struct MusicRefreshButton: View {
 }
 
 /// The search field of the screen on top, wired to the navigation: its placeholder, its words and what Return does.
-/// Return sends a YouTube Music search; a filter has nothing to send, it works as it is typed.
+/// A YouTube Music search goes out a moment after typing stops, or at once on Return; a filter has nothing to send, it
+/// works as it is typed.
 struct MusicNavigationSearchField: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
