@@ -1,12 +1,15 @@
 // DeciTests/Music/MusicSpectrumLayerTests.swift
-// The spectrum is drawn by a layer, not by SwiftUI: thirty polls a second must not run the popup's SwiftUI update, so the
-// driver keeps its per poll numbers out of observation and tells the layer directly, and only when something that shows
-// has changed. Covered here: the quantized picture a poll is compared by, the driver's notifications and what a view
-// can still observe, and the layer view's own redraws and pixels. Nothing is shown on screen.
+// The spectrum is built from layers by a view of its own, not by SwiftUI: thirty polls a second must not run the popup's
+// SwiftUI update, so the driver keeps its per poll numbers out of observation and tells the layer view directly, and only
+// when something that shows has changed; the view then sets a few layer properties and draws nothing on the CPU. Covered
+// here: the quantized picture a poll is compared by, the driver's notifications and what a view can still observe, and
+// the layer view's own writes, geometry and pixels (against the drawing it replaced). Nothing is shown on screen.
 
 import AppKit
+import Metal
 import Observation
 import os
+import QuartzCore
 import Testing
 @testable import Deci
 
@@ -21,6 +24,220 @@ private nonisolated final class Fired: Sendable {
 @MainActor
 private final class Counter {
     var count = 0
+}
+
+/// A premultiplied sRGB bitmap `scale` pixels to the point, read back by point from the top left.
+private struct SpectrumBitmap {
+    let scale: Int
+    let width: Int
+    let height: Int
+    let bytes: [UInt8]
+
+    /// Draws into a bitmap `points` big with `draw`, in a context whose unit is the point and whose origin is the bottom
+    /// left (the layers' space).
+    static func render(points: CGSize, scale: Int, draw: (CGContext) -> Void) throws -> SpectrumBitmap {
+        let width = Int(points.width) * scale
+        let height = Int(points.height) * scale
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        let made = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+            draw(context)
+            return true
+        }
+        try #require(made)
+        return SpectrumBitmap(scale: scale, width: width, height: height, bytes: bytes)
+    }
+
+    /// `layer` as the render server paints it: a `CARenderer` into a Metal texture, `scale` pixels to the point (the
+    /// screen's own path for layers, gradients and masks, which `CALayer.render(in:)` is not: it shifts pure primaries).
+    /// The renderer is told the target is sRGB, so an sRGB colour comes out as the same bytes, blended as the screen
+    /// blends it. The layer is hung from a root of its own for the render and taken off again.
+    static func renderOnGPU(_ layer: CALayer, points: CGSize, scale: Int, space: CGColorSpace? = CGColorSpace(name: CGColorSpace.sRGB)) throws -> SpectrumBitmap {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let queue = try #require(device.makeCommandQueue())
+        let width = Int(points.width) * scale
+        let height = Int(points.height) * scale
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+        )
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        let texture = try #require(device.makeTexture(descriptor: descriptor))
+        var options: [AnyHashable: Any] = [kCARendererMetalCommandQueue: queue]
+        if let space { options[kCARendererColorSpace] = space }
+        let renderer = CARenderer(mtlTexture: texture, options: options)
+        let root = CALayer()
+        root.anchorPoint = .zero
+        root.position = .zero
+        root.bounds = CGRect(origin: .zero, size: points)
+        root.sublayerTransform = CATransform3DMakeScale(CGFloat(scale), CGFloat(scale), 1)
+        renderer.layer = root
+        renderer.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        root.addSublayer(layer)
+        defer { layer.removeFromSuperlayer() }
+        CATransaction.flush()
+        renderer.beginFrame(atTime: CACurrentMediaTime(), timeStamp: nil)
+        let update = renderer.updateBounds()
+        renderer.addUpdate(update)
+        renderer.render()
+        renderer.endFrame()
+        // The render is on the queue given to the renderer: an empty buffer behind it is done when the render is.
+        let marker = try #require(queue.makeCommandBuffer())
+        marker.commit()
+        marker.waitUntilCompleted()
+        var bgra = [UInt8](repeating: 0, count: width * height * 4)
+        texture.getBytes(&bgra, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        // The renderer's rows run from the layers' origin: the bottom of a layer is the first row. Flip them to the top
+        // left origin of the CG bitmaps, and take the blue-green-red order to red-green-blue.
+        var bytes = bgra
+        for row in 0..<height {
+            for column in 0..<width {
+                let from = ((height - 1 - row) * width + column) * 4
+                let to = (row * width + column) * 4
+                bytes[to] = bgra[from + 2]
+                bytes[to + 1] = bgra[from + 1]
+                bytes[to + 2] = bgra[from]
+                bytes[to + 3] = bgra[from + 3]
+            }
+        }
+        return SpectrumBitmap(scale: scale, width: width, height: height, bytes: bytes)
+    }
+
+    /// The colour at point `x`, `y` from the top left, not premultiplied.
+    func pixel(_ x: Int, _ y: Int) -> (r: Double, g: Double, b: Double, a: Double) {
+        let offset = (y * scale * width + x * scale) * 4
+        let alpha = Double(bytes[offset + 3]) / 255
+        guard alpha > 0 else { return (0, 0, 0, 0) }
+        return (
+            Double(bytes[offset]) / 255 / alpha, Double(bytes[offset + 1]) / 255 / alpha,
+            Double(bytes[offset + 2]) / 255 / alpha, alpha
+        )
+    }
+
+    /// How well this bitmap (the layers) agrees with `old` (the drawing they replace). The two anti-aliasers do not agree
+    /// on the pixels along a shape's edge, so those are told apart: a pixel is flat if it and every one of its eight
+    /// neighbours are within `flat` of each other in both bitmaps, and a flat pixel must match closely; an edge pixel is
+    /// allowed a wider gap. The covered area and its centre must agree as a whole, which a bar or the soft edge out of
+    /// place would upset.
+    func parity(with old: SpectrumBitmap, flat: Int) -> (flatLargest: Int, edgeLargest: Int, flatPixels: Int, edgePixels: Int, area: Double, shift: Double) {
+        func gap(_ a: [UInt8], _ b: [UInt8], _ i: Int, _ j: Int) -> Int {
+            var worst = 0
+            var channel = 0
+            while channel < 4 {
+                let apart = Int(a[i * 4 + channel]) - Int(b[j * 4 + channel])
+                worst = max(worst, apart < 0 ? -apart : apart)
+                channel += 1
+            }
+            return worst
+        }
+        var flatLargest = 0
+        var edgeLargest = 0
+        var flatPixels = 0
+        var edgePixels = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let here = y * width + x
+                var isFlat = true
+                scan: for dy in -1...1 {
+                    for dx in -1...1 where dx != 0 || dy != 0 {
+                        let nx = x + dx
+                        let ny = y + dy
+                        guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                        let there = ny * width + nx
+                        if gap(bytes, bytes, here, there) > flat || gap(old.bytes, old.bytes, here, there) > flat {
+                            isFlat = false
+                            break scan
+                        }
+                    }
+                }
+                let apart = gap(bytes, old.bytes, here, here)
+                if isFlat {
+                    flatLargest = max(flatLargest, apart)
+                    flatPixels += 1
+                } else {
+                    edgeLargest = max(edgeLargest, apart)
+                    edgePixels += 1
+                }
+            }
+        }
+        // The opacity, summed: the area the shapes cover, and where it is on average (a shift of a bar or of the edge
+        // moves it), in points.
+        func moments(_ bitmap: SpectrumBitmap) -> (sum: Double, x: Double, y: Double) {
+            var sum = 0.0
+            var x = 0.0
+            var y = 0.0
+            for row in 0..<bitmap.height {
+                for column in 0..<bitmap.width {
+                    let alpha = Double(bitmap.bytes[(row * bitmap.width + column) * 4 + 3])
+                    sum += alpha
+                    x += alpha * (Double(column) + 0.5)
+                    y += alpha * (Double(row) + 0.5)
+                }
+            }
+            return (sum, x / max(sum, 1) / Double(bitmap.scale), y / max(sum, 1) / Double(bitmap.scale))
+        }
+        let mine = moments(self)
+        let theirs = moments(old)
+        let area = abs(mine.sum - theirs.sum) / max(theirs.sum, 1)
+        let shift = max(abs(mine.x - theirs.x), abs(mine.y - theirs.y))
+        return (flatLargest, edgeLargest, flatPixels, edgePixels, area, shift)
+    }
+}
+
+/// The spectrum as it was drawn before it was built from layers (the view's `draw(_:)`, as it stood), into `context`
+/// whose unit is the point and whose origin is the bottom left: the reference the layers are compared with.
+private func drawnTheOldWay(
+    into context: CGContext, width viewWidth: Double, levels: [Double], progress: Double, style: MusicSpectrumStyle
+) {
+    // The old view was flipped: y ran down from the top.
+    context.translateBy(x: 0, y: CGFloat(style.height))
+    context.scaleBy(x: 1, y: -1)
+    let height = style.height
+    let thickness = MusicSpectrum.barThickness(height: height)
+    let edge = MusicSpectrum.fillEdge(height: height)
+    let edgeY = MusicSpectrum.fillEdgeY(progress: progress, height: height)
+    let rgb = MusicSpectrum.rgb(hue: style.hue, saturation: style.saturation, brightness: style.brightness)
+    let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    let played = CGColor(
+        colorSpace: space, components: [rgb.red, rgb.green, rgb.blue, style.barsOpacity].map { CGFloat($0) }
+    ) ?? CGColor(gray: 1, alpha: 1)
+    let unplayed = CGColor(
+        colorSpace: space, components: [1, 1, 1, style.unplayedOpacity * style.barsOpacity].map { CGFloat($0) }
+    ) ?? CGColor(gray: 1, alpha: 0.25)
+    let gradient = CGGradient(colorsSpace: space, colors: [played, unplayed] as CFArray, locations: nil)
+
+    for (index, level) in levels.enumerated() {
+        let width = style.fixedWidth ?? MusicSpectrum.width(forLevel: level)
+        let rect = CGRect(
+            x: (viewWidth - width) / 2,
+            y: MusicSpectrum.barY(index, height: height),
+            width: width,
+            height: thickness
+        )
+        let path = CGPath(roundedRect: rect, cornerWidth: thickness / 2, cornerHeight: thickness / 2, transform: nil)
+        context.saveGState()
+        context.addPath(path)
+        if rect.maxY <= edgeY - edge / 2 {
+            context.setFillColor(played)
+            context.fillPath()
+        } else if rect.minY >= edgeY + edge / 2 {
+            context.setFillColor(unplayed)
+            context.fillPath()
+        } else if let gradient {
+            context.clip()
+            context.drawLinearGradient(
+                gradient,
+                start: CGPoint(x: rect.midX, y: edgeY - edge / 2),
+                end: CGPoint(x: rect.midX, y: edgeY + edge / 2),
+                options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+            )
+        }
+        context.restoreGState()
+    }
 }
 
 // MARK: - The picture a frame is compared by
@@ -386,36 +603,38 @@ struct MusicSpectrumLayerViewTests {
         MusicSpectrumLayerView(frame: NSRect(x: 0, y: 0, width: MusicSpectrum.boxWidth, height: height))
     }
 
-    /// The view drawn straight into an sRGB bitmap four pixels to the point, so the colours read back are the ones drawn
-    /// (no window, no screen profile). Returns the colour at a point `x`, `y` from the top left.
+    /// How much has been set on the layers so far: bar widths, the fill's points, the colours, full layouts.
+    private func writeCounts(_ view: MusicSpectrumLayerView) -> [Int] {
+        [view.barWrites, view.edgeWrites, view.colourWrites, view.layoutPasses]
+    }
+
+    /// A window the view sits in that is on screen for AppKit and invisible to the user (alpha 0, no focus, no mouse).
+    private func show(_ view: MusicSpectrumLayerView) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 200, width: view.frame.width, height: view.frame.height),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.collectionBehavior = [.transient, .ignoresCycle, .stationary]
+        window.contentView?.addSubview(view)
+        window.orderFrontRegardless()
+        return window
+    }
+
+    /// The middle of the soft edge as the layers show it, from the top of the box, read from the gradient's two points.
+    private func edgeMiddle(of view: MusicSpectrumLayerView) -> Double {
+        let height = Double(view.bounds.height)
+        return height * (1 - Double(view.gradientLayer.startPoint.y + view.gradientLayer.endPoint.y) / 2)
+    }
+
+    /// The view's layers rendered into an sRGB bitmap two pixels to the point, so the colours read back are the ones
+    /// painted (no window, no screen profile). Returns the colour at a point `x`, `y` from the top left.
     private func pixels(of view: MusicSpectrumLayerView) throws -> (_ x: Int, _ y: Int) -> (r: Double, g: Double, b: Double, a: Double) {
-        let scale = 4
-        let width = Int(view.bounds.width) * scale
-        let height = Int(view.bounds.height) * scale
-        let context = try #require(CGContext(
-            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ))
-        // Top left origin, as the flipped view draws.
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: CGFloat(scale), y: -CGFloat(scale))
-        let graphics = NSGraphicsContext(cgContext: context, flipped: true)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = graphics
-        view.draw(view.bounds)
-        NSGraphicsContext.restoreGraphicsState()
-        let data = try #require(context.data).assumingMemoryBound(to: UInt8.self)
-        return { x, y in
-            // The closure keeps the bitmap alive: the pixels are read through its memory.
-            withExtendedLifetime(context) {}
-            let offset = (y * scale * width + x * scale) * 4
-            let alpha = Double(data[offset + 3]) / 255
-            guard alpha > 0 else { return (0, 0, 0, 0) }
-            return (
-                Double(data[offset]) / 255 / alpha, Double(data[offset + 1]) / 255 / alpha,
-                Double(data[offset + 2]) / 255 / alpha, alpha
-            )
-        }
+        let bitmap = try SpectrumBitmap.renderOnGPU(try #require(view.layer), points: view.bounds.size, scale: 2)
+        return { x, y in bitmap.pixel(x, y) }
     }
 
     @Test("the layer takes no mouse events, so the column's seek gesture and hover keep working over it")
@@ -424,40 +643,46 @@ struct MusicSpectrumLayerViewTests {
         #expect(view.hitTest(NSPoint(x: 70, y: 50)) == nil)
     }
 
-    @Test("the same picture again is not redrawn, and a new one is")
-    func redrawsOnlyOnAChange() {
+    @Test("the same picture again is not put on the layers, and a new one is")
+    func appliesOnlyOnAChange() {
         let view = makeView()
         view.update(style: style(), levels: levels, progress: 0.5, live: nil)
-        let first = view.invalidations
+        let first = view.appliedFrames
         #expect(first >= 1)
         view.update(style: style(), levels: levels, progress: 0.5, live: nil)
-        #expect(view.invalidations == first)
+        #expect(view.appliedFrames == first)
 
         view.update(style: style(), levels: levels, progress: 0.5 + 0.0001, live: nil)
-        #expect(view.invalidations == first)
+        #expect(view.appliedFrames == first)
 
         view.update(style: style(), levels: levels, progress: 0.6, live: nil)
-        #expect(view.invalidations == first + 1)
+        #expect(view.appliedFrames == first + 1)
 
         view.update(style: style(hue: 0.3), levels: levels, progress: 0.6, live: nil)
-        #expect(view.invalidations == first + 2)
+        #expect(view.appliedFrames == first + 2)
 
         view.update(style: style(hue: 0.3, barsOpacity: 0.5), levels: levels, progress: 0.6, live: nil)
-        #expect(view.invalidations == first + 3)
+        #expect(view.appliedFrames == first + 3)
 
         var louder = levels
         louder[4] = 0.9
         view.update(style: style(hue: 0.3, barsOpacity: 0.5), levels: louder, progress: 0.6, live: nil)
-        #expect(view.invalidations == first + 4)
+        #expect(view.appliedFrames == first + 4)
     }
 
-    @Test("a resize redraws the picture at the new size")
-    func resizeRedraws() {
+    @Test("a resize lays the layers out again at the new size")
+    func resizeLaysOutAgain() {
         let view = makeView()
         view.update(style: style(), levels: levels, progress: 0.5, live: nil)
-        let before = view.invalidations
+        let before = view.appliedFrames
+        let passes = view.layoutPasses
         view.setFrameSize(NSSize(width: MusicSpectrum.boxWidth, height: 160))
-        #expect(view.invalidations == before + 1)
+        #expect(view.appliedFrames == before + 1)
+        #expect(view.layoutPasses == passes + 1)
+        // The same size again says nothing.
+        view.setFrameSize(NSSize(width: MusicSpectrum.boxWidth, height: 160))
+        #expect(view.appliedFrames == before + 1)
+        #expect(view.layoutPasses == passes + 1)
     }
 
     // MARK: Live
@@ -478,24 +703,24 @@ struct MusicSpectrumLayerViewTests {
         ))
     }
 
-    @Test("with a driver, a poll redraws the view and it shows the driver's bars and fill")
+    @Test("with a driver, a poll puts a frame on the layers and the view shows the driver's bars and fill")
     func followsTheDriver() {
         let feed = Feed()
         let driver = driver(feed)
         let view = makeView()
         view.update(style: style(), levels: levels, progress: 0, live: MusicSpectrumLive(driver: driver, videoId: "song"))
         #expect(driver.frameListenerCount == 1)
-        let before = view.invalidations
+        let before = view.appliedFrames
 
         feed.position = 100
         feed.level = 0.2
         driver.tick()
-        #expect(view.invalidations == before + 1)
+        #expect(view.appliedFrames == before + 1)
         #expect(view.shownProgress == 0.5)
         #expect(view.shownLevels == driver.bars(for: "song"))
     }
 
-    @Test("an unchanged poll does not redraw the view")
+    @Test("an unchanged poll sets nothing on the layers")
     func steadyPollIsSilentForTheView() {
         let feed = Feed()
         let driver = driver(feed)
@@ -503,10 +728,12 @@ struct MusicSpectrumLayerViewTests {
         view.update(style: style(), levels: levels, progress: 0, live: MusicSpectrumLive(driver: driver, videoId: "song"))
         feed.position = 100
         driver.tick()
-        let before = view.invalidations
+        let before = view.appliedFrames
+        let writes = writeCounts(view)
         driver.tick()
         driver.tick()
-        #expect(view.invalidations == before)
+        #expect(view.appliedFrames == before)
+        #expect(writeCounts(view) == writes)
     }
 
     @Test("when the driver rests, the view keeps the polls' last fill until SwiftUI says where the fill is now")
@@ -902,5 +1129,369 @@ struct MusicSpectrumLayerViewTests {
         let y = Int(MusicSpectrum.barY(0)) + 1
         #expect(pixel(71 + 18, y).a > 0.05)
         #expect(pixel(71 + 24, y).a < 0.02)
+    }
+
+    // MARK: Layers
+
+    private func close(_ a: CGRect, _ b: CGRect, within tolerance: Double = 1e-6) -> Bool {
+        abs(a.minX - b.minX) < tolerance && abs(a.minY - b.minY) < tolerance
+            && abs(a.width - b.width) < tolerance && abs(a.height - b.height) < tolerance
+    }
+
+    /// A spread of levels, so that no two bars are as wide.
+    private var spread: [Double] {
+        (0..<MusicSpectrum.barCount).map { MusicSpectrum.minLevel + (1 - MusicSpectrum.minLevel) * Double($0 * 7 % 28) / 27 }
+    }
+
+    @Test("the picture is 28 bar layers masking one gradient layer")
+    func layerStructure() {
+        let view = makeView()
+        view.update(style: style(), levels: spread, progress: 0.5, live: nil)
+        #expect(view.barLayers.count == MusicSpectrum.barCount)
+        #expect(view.gradientLayer.superlayer === view.layer)
+        #expect(view.gradientLayer.mask === view.barsLayer)
+        #expect(view.barLayers.allSatisfy { $0.superlayer === view.barsLayer })
+        #expect(view.barsLayer.sublayers?.count == MusicSpectrum.barCount)
+        #expect(view.layer?.sublayers?.count == 1)
+    }
+
+    @Test("each bar layer stands where the bar stood: centred, as wide as its level, as thick as the box says, round ended")
+    func barGeometry() {
+        for height in [MusicSpectrum.boxHeight, 160, 208, 300] {
+            let view = makeView(height: height)
+            let levels = spread
+            view.update(style: style(height: height), levels: levels, progress: 0.5, live: nil)
+            let thickness = MusicSpectrum.barThickness(height: height)
+            for (index, bar) in view.barLayers.enumerated() {
+                let width = MusicSpectrum.width(forLevel: levels[index])
+                // The layers' space runs up from the bottom left; the box's runs down from the top left.
+                let expected = CGRect(
+                    x: (MusicSpectrum.boxWidth - width) / 2,
+                    y: height - (MusicSpectrum.barY(index, height: height) + thickness),
+                    width: width,
+                    height: thickness
+                )
+                #expect(close(bar.frame, expected), "bar \(index) at \(height): \(bar.frame) not \(expected)")
+                #expect(abs(Double(bar.cornerRadius) - thickness / 2) < 1e-4)
+                #expect(bar.isHidden == false)
+            }
+        }
+    }
+
+    @Test("a bar with no level is not there")
+    func missingLevelsHideBars() {
+        let view = makeView()
+        view.update(style: style(), levels: Array(spread.prefix(10)), progress: 0.5, live: nil)
+        #expect(view.barLayers.prefix(10).allSatisfy { !$0.isHidden })
+        #expect(view.barLayers.dropFirst(10).allSatisfy { $0.isHidden })
+        view.update(style: style(), levels: spread, progress: 0.5, live: nil)
+        #expect(view.barLayers.allSatisfy { !$0.isHidden })
+    }
+
+    @Test("the gradient's two points are the two sides of the soft edge, and its colours the accent and the dimmed white")
+    func gradientPaint() throws {
+        let view = makeView()
+        let progress = 0.37
+        view.update(style: style(hue: 0.6, saturation: 0.7, brightness: 0.9, barsOpacity: 0.5, unplayedOpacity: 0.09), levels: spread, progress: progress, live: nil)
+        let edge = MusicSpectrum.fillEdge()
+        let middle = MusicSpectrum.fillEdgeY(progress: progress)
+        let height = MusicSpectrum.boxHeight
+        let start = view.gradientLayer.startPoint
+        let end = view.gradientLayer.endPoint
+        #expect(abs(Double(start.x) - 0.5) < 1e-9 && abs(Double(end.x) - 0.5) < 1e-9)
+        #expect(abs(height * (1 - Double(start.y)) - (middle - edge / 2)) < 1e-6)
+        #expect(abs(height * (1 - Double(end.y)) - (middle + edge / 2)) < 1e-6)
+        #expect(abs(edgeMiddle(of: view) - middle) < 1e-6)
+
+        let colours = try #require(view.gradientLayer.colors as? [CGColor])
+        #expect(colours.count == 2)
+        let rgb = MusicSpectrum.rgb(hue: 0.6, saturation: 0.7, brightness: 0.9)
+        let played = try #require(colours.first?.converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil)?.components)
+        let unplayed = try #require(colours.last?.converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil)?.components)
+        #expect(abs(Double(played[0]) - rgb.red) < 1e-4 && abs(Double(played[1]) - rgb.green) < 1e-4 && abs(Double(played[2]) - rgb.blue) < 1e-4)
+        #expect(abs(Double(played[3]) - 0.5) < 1e-4)
+        #expect(abs(Double(unplayed[0]) - 1) < 1e-4 && abs(Double(unplayed[3]) - 0.045) < 1e-4)
+    }
+
+    @Test("the layers show the fill the view says it shows, at the start, the end and in between")
+    func layersFollowTheFill() {
+        let view = makeView()
+        for progress in [0.0, 0.01, 0.25, 0.5, 0.9, 1.0] {
+            view.update(style: style(), levels: spread, progress: progress, live: nil)
+            #expect(abs(edgeMiddle(of: view) - MusicSpectrum.fillEdgeY(progress: view.shownProgress)) < 1e-6, "progress \(progress)")
+        }
+    }
+
+    // MARK: Writes
+
+    @Test("the same frame sets nothing; a fill that moves under a quarter point sets nothing")
+    func unchangedFramesWriteNothing() {
+        let view = makeView()
+        view.update(style: style(), levels: spread, progress: 0.5, live: nil)
+        let counts = writeCounts(view)
+        view.update(style: style(), levels: spread, progress: 0.5, live: nil)
+        view.update(style: style(), levels: spread, progress: 0.5 + 1e-5, live: nil)
+        // A level that moves a bar by under a half point.
+        var nudged = spread
+        nudged[3] += 0.0005
+        view.update(style: style(), levels: nudged, progress: 0.5, live: nil)
+        #expect(writeCounts(view) == counts)
+    }
+
+    @Test("one bar's new level sets that bar's layer and nothing else")
+    func oneBarWritesOneBar() {
+        let view = makeView()
+        view.update(style: style(), levels: spread, progress: 0.5, live: nil)
+        let counts = writeCounts(view)
+        let others = view.barLayers.map(\.bounds)
+        var louder = spread
+        louder[9] = min(1, louder[9] + 0.2)
+        view.update(style: style(), levels: louder, progress: 0.5, live: nil)
+        #expect(view.barWrites == counts[0] + 1)
+        #expect(view.edgeWrites == counts[1])
+        #expect(view.colourWrites == counts[2])
+        #expect(view.layoutPasses == counts[3])
+        for (index, bar) in view.barLayers.enumerated() where index != 9 {
+            #expect(bar.bounds == others[index])
+        }
+        #expect(abs(view.barLayers[9].bounds.width - MusicSpectrum.width(forLevel: louder[9])) < 1e-9)
+    }
+
+    @Test("a fill that moves sets the gradient's two points and nothing else")
+    func fillWritesTheEdgeOnly() {
+        let view = makeView()
+        view.update(style: style(), levels: spread, progress: 0.5, live: nil)
+        let counts = writeCounts(view)
+        view.update(style: style(), levels: spread, progress: 0.52, live: nil)
+        #expect(view.barWrites == counts[0])
+        #expect(view.edgeWrites == counts[1] + 1)
+        #expect(view.colourWrites == counts[2])
+        #expect(view.layoutPasses == counts[3])
+    }
+
+    @Test("a new accent or dim sets the colours and nothing else")
+    func accentWritesColoursOnly() {
+        let view = makeView()
+        view.update(style: style(), levels: spread, progress: 0.5, live: nil)
+        let counts = writeCounts(view)
+        view.update(style: style(hue: 0.4), levels: spread, progress: 0.5, live: nil)
+        #expect(view.colourWrites == counts[2] + 1)
+        view.update(style: style(hue: 0.4, barsOpacity: 0.5), levels: spread, progress: 0.5, live: nil)
+        #expect(view.colourWrites == counts[2] + 2)
+        view.update(style: style(hue: 0.4, barsOpacity: 0.5, unplayedOpacity: 0.07), levels: spread, progress: 0.5, live: nil)
+        #expect(view.colourWrites == counts[2] + 3)
+        #expect(view.barWrites == counts[0])
+        #expect(view.edgeWrites == counts[1])
+        #expect(view.layoutPasses == counts[3])
+    }
+
+    @Test("a taller box lays every layer out again")
+    func heightRelays() {
+        let view = makeView()
+        view.update(style: style(), levels: spread, progress: 0.5, live: nil)
+        let passes = view.layoutPasses
+        view.setFrameSize(NSSize(width: MusicSpectrum.boxWidth, height: 208))
+        view.update(style: style(height: 208), levels: spread, progress: 0.5, live: nil)
+        // The frame's new size lays them out, and the style's new height may do it again; never more.
+        #expect((passes + 1)...(passes + 2) ~= view.layoutPasses)
+        let thickness = MusicSpectrum.barThickness(height: 208)
+        #expect(thickness > MusicSpectrum.barThickness)
+        #expect(view.barLayers.allSatisfy { abs($0.bounds.height - thickness) < 1e-4 && abs(Double($0.cornerRadius) - thickness / 2) < 1e-4 })
+    }
+
+    @Test("playing, a poll sets at most the two bars whose width the pulse changes, and the fill's points")
+    func pollsWriteLittle() {
+        let feed = Feed()
+        let driver = driver(feed)
+        let view = makeView()
+        view.update(style: style(), levels: levels, progress: 0, live: MusicSpectrumLive(driver: driver, videoId: "song"))
+        feed.position = 20
+        feed.level = 0.1
+        driver.tick()
+        var polls = 0
+        for step in 1...60 {
+            feed.position = 20 + Double(step) * 0.3
+            feed.level = 0.05 + Float(step % 7) * 0.02
+            let before = writeCounts(view)
+            driver.tick()
+            let after = writeCounts(view)
+            polls += 1
+            #expect(after[0] - before[0] <= 2, "poll \(step) set \(after[0] - before[0]) bars")
+            #expect(after[1] - before[1] <= 1)
+            #expect(after[2] == before[2])
+            #expect(after[3] == before[3])
+        }
+        #expect(polls == 60)
+    }
+
+    // MARK: Not drawn
+
+    @Test("the view draws nothing: no redraw policy, no backing store, no display requests as the picture changes")
+    func neverDraws() async throws {
+        let view = makeView()
+        let window = show(view)
+        defer { window.close() }
+        #expect(view.wantsUpdateLayer)
+        #expect(view.layerContentsRedrawPolicy == .never)
+        view.update(style: style(), levels: spread, progress: 0.2, live: nil)
+        window.displayIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        // The first display is over; what is checked is what the changes below ask for.
+        view.needsDisplay = false
+
+        for step in 1...30 {
+            var changed = spread
+            changed[step % 28] = 0.1 + 0.03 * Double(step % 30)
+            view.update(
+                style: style(hue: Double(step) / 30, barsOpacity: step % 2 == 0 ? 1 : 0.5),
+                levels: changed, progress: Double(step) / 30, live: nil
+            )
+        }
+        view.setFrameSize(NSSize(width: MusicSpectrum.boxWidth, height: 150))
+        view.update(style: style(height: 150), levels: spread, progress: 0.4, live: nil)
+        #expect(view.needsDisplay == false)
+        #expect(view.layer?.needsDisplay() == false)
+        for layer in [view.gradientLayer, view.barsLayer] + view.barLayers {
+            #expect(layer.needsDisplay() == false)
+            #expect(layer.contents == nil)
+        }
+        #expect(view.layer?.contents == nil)
+    }
+
+    @Test("a change is never animated implicitly: no layer is left with an animation")
+    func noImplicitAnimations() async throws {
+        let view = makeView()
+        let window = show(view)
+        defer { window.close() }
+        view.update(style: style(), levels: spread, progress: 0.2, live: nil)
+        window.displayIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        var changed = spread
+        changed[2] = 0.9
+        changed[20] = 0.1
+        view.update(style: style(hue: 0.5, barsOpacity: 0.5), levels: changed, progress: 0.8, live: nil)
+        view.setFrameSize(NSSize(width: MusicSpectrum.boxWidth, height: 180))
+        view.update(style: style(height: 180), levels: changed, progress: 0.8, live: nil)
+        for layer in [view.gradientLayer, view.barsLayer] + view.barLayers {
+            #expect(layer.animationKeys() == nil)
+        }
+    }
+
+    // MARK: The hand-off and the slide, as the layers show them
+
+    @Test("pausing keeps the layers' fill where playback was, and SwiftUI's later fill moves it there")
+    func layersKeepTheFillAtRest() {
+        let feed = Feed()
+        let driver = driver(feed)
+        let view = makeView()
+        let window = hold(view)
+        defer { window.close() }
+        let live = MusicSpectrumLive(driver: driver, videoId: "song")
+        send(view, progress: 0.01, isLive: true, live: live)
+        feed.position = 120
+        driver.tick()
+        #expect(abs(edgeMiddle(of: view) - MusicSpectrum.fillEdgeY(progress: 0.6)) < 1e-6)
+        let counts = writeCounts(view)
+
+        // The rest and SwiftUI's stale picture say nothing new: the layers do not move.
+        driver.rest()
+        send(view, progress: 0.01, isLive: true, glides: true, live: live)
+        #expect(abs(edgeMiddle(of: view) - MusicSpectrum.fillEdgeY(progress: 0.6)) < 1e-6)
+        #expect(writeCounts(view) == counts)
+
+        send(view, progress: 0.6003, glides: true, live: live)
+        // The edge is kept to a quarter point, so it is within an eighth of the exact one.
+        #expect(abs(edgeMiddle(of: view) - MusicSpectrum.fillEdgeY(progress: 0.6003)) < 0.13)
+    }
+
+    @Test("a seek while paused slides the layers' fill, step by step, and ends on the target")
+    func layersSlide() throws {
+        let view = makeView()
+        let window = hold(view)
+        defer { window.close() }
+        send(view, progress: 0.2, live: nil)
+        send(view, progress: 0.8, glides: true, live: nil)
+        #expect(abs(edgeMiddle(of: view) - MusicSpectrum.fillEdgeY(progress: 0.2)) < 1e-6)
+        let start = try #require(view.glideStartedAt)
+        var last = edgeMiddle(of: view)
+        for step in 1...9 {
+            view.advanceGlide(at: start + MusicSpectrum.pausedSeekGlide * Double(step) / 10)
+            let now = edgeMiddle(of: view)
+            #expect(now > last)
+            #expect(abs(now - MusicSpectrum.fillEdgeY(progress: view.shownProgress)) < 1e-6)
+            last = now
+        }
+        view.advanceGlide(at: start + MusicSpectrum.pausedSeekGlide + 0.01)
+        #expect(abs(edgeMiddle(of: view) - MusicSpectrum.fillEdgeY(progress: 0.8)) < 1e-6)
+    }
+
+    // MARK: Parity with the drawing the layers replaced
+
+    private struct Look {
+        let name: String
+        let levels: [Double]
+        let progress: Double
+        let style: MusicSpectrumStyle
+
+        /// Every bar is one opacity (all played or all unplayed), so the centre of the picture is the bars' and nothing else.
+        var uniform: Bool { progress <= 0 || progress >= 1 }
+    }
+
+    private var looks: [Look] {
+        let seeded = MusicSpectrum.seededLevels(seed: MusicSpectrum.seed(forVideoId: "parity"))
+        func make(
+            _ name: String, levels: [Double]? = nil, progress: Double, hue: Double = 0.07, saturation: Double = 0.8,
+            brightness: Double = 1, barsOpacity: Double = 1, unplayedOpacity: Double = 0.25,
+            height: Double = MusicSpectrum.boxHeight, fixedWidth: Double? = nil
+        ) -> Look {
+            Look(
+                name: name, levels: levels ?? seeded, progress: progress,
+                style: style(
+                    hue: hue, saturation: saturation, brightness: brightness, barsOpacity: barsOpacity,
+                    unplayedOpacity: unplayedOpacity, height: height, fixedWidth: fixedWidth
+                )
+            )
+        }
+        return [
+            make("start", progress: 0),
+            make("just begun", progress: 0.03),
+            make("a third", progress: 0.33, hue: 0.6, saturation: 0.7, brightness: 0.9),
+            make("half, red", progress: 0.5, hue: 0, saturation: 1),
+            make("an edge on a bar", progress: 0.612),
+            make("nearly done", progress: 0.97),
+            make("end", progress: 1),
+            make("paused dim", progress: 0.4, barsOpacity: 0.55),
+            make("loading", progress: 0.4, unplayedOpacity: 0.07),
+            make("empty state", progress: 0, unplayedOpacity: 0.09, fixedWidth: MusicPlayerColumnState.emptyBarWidth),
+            make("taller", progress: 0.55, height: 208),
+            make("tallest", progress: 0.21, hue: 0.33, height: 300),
+            make("white accent", progress: 0.5, saturation: 0, brightness: 1),
+            make("dark accent", progress: 0.5, hue: 0.8, saturation: 1, brightness: 0.3),
+            make("taller, nothing played", progress: 0, height: 208),
+            make("tallest, all played", progress: 1, hue: 0.33, height: 300),
+        ]
+    }
+
+    @Test("the layers paint what the old drawing painted, at several levels, fills, tints, dims and heights")
+    func paintsLikeTheOldDrawing() throws {
+        for look in looks {
+            let view = makeView(height: look.style.height)
+            view.update(style: look.style, levels: look.levels, progress: look.progress, live: nil)
+            let size = view.bounds.size
+            let new = try SpectrumBitmap.renderOnGPU(try #require(view.layer), points: size, scale: 2)
+            let old = try SpectrumBitmap.render(points: size, scale: 2) {
+                drawnTheOldWay(into: $0, width: size.width, levels: look.levels, progress: look.progress, style: look.style)
+            }
+            let parity = new.parity(with: old, flat: 10)
+            // Away from any edge the two agree to a level or two (the gradient's shader rounds a little differently).
+            #expect(parity.flatLargest <= 4, "\(look.name): flat pixels differ by \(parity.flatLargest)")
+            // Along an edge the GPU's anti-aliasing and Core Graphics' differ by up to a fifth of a pixel's coverage.
+            #expect(parity.edgeLargest <= 64, "\(look.name): edge pixels differ by \(parity.edgeLargest)")
+            #expect(parity.edgePixels * 100 < parity.flatPixels * 50, "\(look.name): too many edge pixels")
+            // The same shapes in the same places: the same area (to the rounding of a translucent bar's opacity) and, for
+            // a picture of one opacity, the centre to a hundredth of a point.
+            #expect(parity.area < 0.03, "\(look.name): area differs by \(parity.area)")
+            #expect(parity.shift < (look.uniform ? 0.02 : 0.12), "\(look.name): centre moved by \(parity.shift) points")
+        }
     }
 }

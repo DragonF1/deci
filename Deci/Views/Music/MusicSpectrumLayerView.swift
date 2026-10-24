@@ -34,11 +34,19 @@ private final class MusicSpectrumGlideTarget: NSObject {
     }
 }
 
-/// The spectrum's bars, drawn into a layer of their own. The driver polls 30 times a second; if each poll ran a SwiftUI
-/// update, the popup's whole window would lay out 30 times a second. This view listens to the driver instead and marks
-/// only itself for display, and only when the picture changed by a step the eye can see (`MusicSpectrumFrame`).
-/// SwiftUI still sets the style and the song's bars (`update`), which is what happens while the accent glides to a new
-/// song's colour.
+/// The spectrum's bars, built from layers. The driver polls 30 times a second; if each poll ran a SwiftUI update, the
+/// popup's whole window would lay out 30 times a second. This view listens to the driver instead, and a poll that
+/// changed the picture by a step the eye can see (`MusicSpectrumFrame`) sets a few layer properties, and nothing is
+/// drawn on the CPU: no `draw(_:)`, no backing store, no `needsDisplay`. SwiftUI still sets the style and the song's
+/// bars (`update`), which is what happens while the accent glides to a new song's colour.
+///
+/// The picture is one gradient layer, masked by the bars. The gradient runs down the box from the played colour to the
+/// unplayed white across the soft edge (its two ends are the edge's two sides, and it holds its end colours beyond
+/// them), so the fill is two points (`startPoint`, `endPoint`) and a bar takes the colour of the gradient where it
+/// stands, which is the accent above the edge, the white below it and a blend of the two in it. The mask is 28 rounded
+/// layers, one per bar, whose width is the bar's `bounds` (they sit on the box's middle line), so a bar that moves is one
+/// property of one layer. Nothing is animated implicitly; the one animation is the accent's and the slide's, which this
+/// view is handed frame by frame.
 ///
 /// The fill has two sources. While the driver's polls run, it is the driver's. Otherwise it is the one SwiftUI gives
 /// (the player's position), and a change in that while the song is paused (a seek) is slid here, over
@@ -55,7 +63,7 @@ final class MusicSpectrumLayerView: NSView {
     private var live: MusicSpectrumLive?
     private var listenerToken: Int?
     private var picture: MusicSpectrumFrame?
-    private var drawnStyle: MusicSpectrumStyle?
+    private var shownStyle: MusicSpectrumStyle?
 
     /// The fill shown when the driver has none: SwiftUI's, or the driver's last, or part of the way between on a slide.
     private(set) var restingProgress = 0.0
@@ -78,8 +86,52 @@ final class MusicSpectrumLayerView: NSView {
     /// The bars and the fill as of the last change, whoever set them.
     private(set) var shownLevels: [Double] = []
     private(set) var shownProgress = 0.0
-    /// How many times the view marked itself for display.
-    private(set) var invalidations = 0
+
+    // MARK: Layers
+
+    /// The accent above the soft edge and the white below it, seen through the bars.
+    let gradientLayer = CAGradientLayer()
+    /// The mask of `gradientLayer`: the bars.
+    let barsLayer = CALayer()
+    /// One layer per bar, top to bottom.
+    let barLayers: [CALayer] = (0..<MusicSpectrum.barCount).map { _ in CALayer() }
+
+    private var allLayers: [CALayer] { [gradientLayer, barsLayer] + barLayers }
+
+    /// What the layers show, so that a frame sets only what differs from it.
+    private var shownWidths = [Int](repeating: 0, count: MusicSpectrum.barCount)
+    private var shownGeometry: Geometry?
+    private var shownEdge: Int?
+    private var shownColours: Colours?
+
+    /// How many times a frame (a change that shows) was put on the layers.
+    private(set) var appliedFrames = 0
+    /// How many bars had their width (or their being there) set, over all frames.
+    private(set) var barWrites = 0
+    /// How many times the fill's two points were set.
+    private(set) var edgeWrites = 0
+    /// How many times the gradient's colours were set.
+    private(set) var colourWrites = 0
+    /// How many times every layer was laid out again: the first frame, a new size or a new box height.
+    private(set) var layoutPasses = 0
+
+    /// The box as the layers are laid out: where the bars stand and how thick they are.
+    private struct Geometry: Equatable {
+        /// The view's size.
+        var width: Double
+        var height: Double
+        /// The box height the bars are spread over (`MusicSpectrumStyle.height`).
+        var box: Double
+    }
+
+    /// What the gradient is painted with.
+    private struct Colours: Equatable {
+        var hue: Double
+        var saturation: Double
+        var brightness: Double
+        var barsOpacity: Double
+        var unplayedOpacity: Double
+    }
 
     /// Whether a slide of the fill is under way.
     var isGliding: Bool { glide != nil }
@@ -91,9 +143,10 @@ final class MusicSpectrumLayerView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        // Redrawn when marked, never because the window asked: a poll that changes nothing costs nothing.
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        // The view never draws: its layers are the picture, so the window's asks for a redraw have nothing to do.
+        layerContentsRedrawPolicy = .never
         glideTarget.view = self
+        buildLayers()
     }
 
     @available(*, unavailable)
@@ -106,9 +159,13 @@ final class MusicSpectrumLayerView: NSView {
         detach()
     }
 
-    override var isFlipped: Bool { true }
-
     override var isOpaque: Bool { false }
+
+    /// The layers are the picture: AppKit asks `updateLayer` (which has nothing to do) and never `draw(_:)`, and gives
+    /// the view no backing store of its own.
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {}
 
     /// The seek gesture and the hover live on the SwiftUI view around this one.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -116,7 +173,13 @@ final class MusicSpectrumLayerView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         let changed = newSize != frame.size
         super.setFrameSize(newSize)
-        if changed { invalidate() }
+        if changed, let picture { apply(picture) }
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        let scale = window?.backingScaleFactor ?? 2
+        for layer in allLayers { layer.contentsScale = scale }
     }
 
     override func viewDidMoveToWindow() {
@@ -245,9 +308,9 @@ final class MusicSpectrumLayerView: NSView {
         glideLink = nil
     }
 
-    // MARK: - Drawing state
+    // MARK: - The picture
 
-    /// Takes the latest bars and fill, and marks the view for display if the picture is not the one on screen.
+    /// Takes the latest bars and fill, and puts them on the layers if the picture is not the one on screen.
     private func refresh() {
         if let live {
             shownLevels = live.driver.bars(for: live.videoId)
@@ -267,25 +330,121 @@ final class MusicSpectrumLayerView: NSView {
         let next = MusicSpectrumFrame(
             levels: shownLevels, progress: shownProgress, height: style.height, fixedWidth: style.fixedWidth
         )
-        guard next != picture || style != drawnStyle else { return }
+        guard next != picture || style != shownStyle else { return }
         picture = next
-        drawnStyle = style
-        invalidate()
+        shownStyle = style
+        apply(next)
     }
 
-    private func invalidate() {
-        invalidations += 1
-        needsDisplay = true
+    // MARK: - Layers
+
+    private func buildLayers() {
+        // Nothing here is ever animated implicitly: a layer's property is the picture, set when the picture changes.
+        let off: [String: any CAAction] = [
+            "bounds": NSNull(), "position": NSNull(), "colors": NSNull(), "startPoint": NSNull(), "endPoint": NSNull(),
+            "hidden": NSNull(), "cornerRadius": NSNull(), "contentsScale": NSNull(),
+        ]
+        for layer in allLayers {
+            layer.actions = off
+        }
+        gradientLayer.type = .axial
+        // Any opaque colour: a mask reads the alpha.
+        let opaque = CGColor(gray: 0, alpha: 1)
+        for bar in barLayers {
+            bar.backgroundColor = opaque
+            bar.isHidden = true
+            barsLayer.addSublayer(bar)
+        }
+        gradientLayer.mask = barsLayer
+        layer?.addSublayer(gradientLayer)
     }
 
-    // MARK: - Drawing
+    /// Puts a frame on the layers, setting only what differs from what they show: the bars whose width changed, the
+    /// fill's two points if the soft edge moved, the colours if the accent or the dim changed. A new size or box height
+    /// lays every layer out again.
+    private func apply(_ frame: MusicSpectrumFrame) {
+        appliedFrames += 1
+        let geometry = Geometry(
+            width: bounds.width, height: bounds.height > 0 ? bounds.height : style.height, box: style.height
+        )
+        let relaid = geometry != shownGeometry
+        let colours = Colours(
+            hue: style.hue, saturation: style.saturation, brightness: style.brightness,
+            barsOpacity: style.barsOpacity, unplayedOpacity: style.unplayedOpacity
+        )
+        withoutActions {
+            if relaid {
+                layoutPasses += 1
+                shownGeometry = geometry
+                layOut(geometry)
+            }
+            let thickness = MusicSpectrum.barThickness(height: geometry.box)
+            for index in 0..<MusicSpectrum.barCount {
+                let half = index < frame.widths.count ? max(frame.widths[index], 0) : 0
+                guard half != shownWidths[index] || relaid else { continue }
+                shownWidths[index] = half
+                barWrites += 1
+                let bar = barLayers[index]
+                bar.isHidden = half == 0
+                bar.bounds = CGRect(x: 0, y: 0, width: Double(half) / 2, height: thickness)
+            }
+            if relaid || frame.edge != shownEdge {
+                shownEdge = frame.edge
+                edgeWrites += 1
+                let points = Self.gradientPoints(progress: shownProgress, box: geometry.box, height: geometry.height)
+                gradientLayer.startPoint = points.start
+                gradientLayer.endPoint = points.end
+            }
+            if colours != shownColours {
+                shownColours = colours
+                colourWrites += 1
+                let paint = Self.paint(for: style)
+                gradientLayer.colors = [paint.played, paint.unplayed]
+            }
+        }
+    }
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let height = style.height
-        let thickness = MusicSpectrum.barThickness(height: height)
-        let edge = MusicSpectrum.fillEdge(height: height)
-        let edgeY = MusicSpectrum.fillEdgeY(progress: shownProgress, height: height)
+    /// Everything that depends on the size: the layers' frames, and where each bar stands and how round it is.
+    private func layOut(_ geometry: Geometry) {
+        let size = CGRect(x: 0, y: 0, width: geometry.width, height: geometry.height)
+        gradientLayer.frame = size
+        barsLayer.frame = size
+        let thickness = MusicSpectrum.barThickness(height: geometry.box)
+        for (index, bar) in barLayers.enumerated() {
+            bar.cornerRadius = thickness / 2
+            bar.position = Self.barPosition(index, box: geometry.box, thickness: thickness, width: geometry.width, height: geometry.height)
+        }
+    }
+
+    private func withoutActions(_ body: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        body()
+        CATransaction.commit()
+    }
+
+    // MARK: - Measures
+
+    /// The middle of bar `index`. The layers' space has its origin at the bottom left, the box's at the top left, and the
+    /// bars hang from the top of the view whatever its height; every bar is on the middle line.
+    static func barPosition(_ index: Int, box: Double, thickness: Double, width: Double, height: Double) -> CGPoint {
+        CGPoint(x: width / 2, y: height - (MusicSpectrum.barY(index, height: box) + thickness / 2))
+    }
+
+    /// The gradient's two ends, in the unit square of the layer (y up): the played colour at the top of the soft edge, the
+    /// unplayed white at its bottom. They may lie outside the layer, and the gradient holds its end colours beyond them.
+    static func gradientPoints(progress: Double, box: Double, height: Double) -> (start: CGPoint, end: CGPoint) {
+        let edge = MusicSpectrum.fillEdge(height: box)
+        let edgeY = MusicSpectrum.fillEdgeY(progress: progress, height: box)
+        let height = max(height, 1)
+        return (
+            CGPoint(x: 0.5, y: 1 - (edgeY - edge / 2) / height),
+            CGPoint(x: 0.5, y: 1 - (edgeY + edge / 2) / height)
+        )
+    }
+
+    /// The accent and the white, with the dim in their alpha, in sRGB.
+    static func paint(for style: MusicSpectrumStyle) -> (played: CGColor, unplayed: CGColor) {
         let rgb = MusicSpectrum.rgb(hue: style.hue, saturation: style.saturation, brightness: style.brightness)
         let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         let played = CGColor(
@@ -294,37 +453,7 @@ final class MusicSpectrumLayerView: NSView {
         let unplayed = CGColor(
             colorSpace: space, components: [1, 1, 1, style.unplayedOpacity * style.barsOpacity].map { CGFloat($0) }
         ) ?? CGColor(gray: 1, alpha: 0.25)
-        let gradient = CGGradient(colorsSpace: space, colors: [played, unplayed] as CFArray, locations: nil)
-
-        for (index, level) in shownLevels.enumerated() {
-            let width = style.fixedWidth ?? MusicSpectrum.width(forLevel: level)
-            let rect = CGRect(
-                x: (bounds.width - width) / 2,
-                y: MusicSpectrum.barY(index, height: height),
-                width: width,
-                height: thickness
-            )
-            let path = CGPath(roundedRect: rect, cornerWidth: thickness / 2, cornerHeight: thickness / 2, transform: nil)
-            context.saveGState()
-            context.addPath(path)
-            if rect.maxY <= edgeY - edge / 2 {
-                context.setFillColor(played)
-                context.fillPath()
-            } else if rect.minY >= edgeY + edge / 2 {
-                context.setFillColor(unplayed)
-                context.fillPath()
-            } else if let gradient {
-                // A bar in the soft edge: the accent above it, the white below.
-                context.clip()
-                context.drawLinearGradient(
-                    gradient,
-                    start: CGPoint(x: rect.midX, y: edgeY - edge / 2),
-                    end: CGPoint(x: rect.midX, y: edgeY + edge / 2),
-                    options: [.drawsBeforeStartLocation, .drawsAfterEndLocation]
-                )
-            }
-            context.restoreGState()
-        }
+        return (played, unplayed)
     }
 }
 
