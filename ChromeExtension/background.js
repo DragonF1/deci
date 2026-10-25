@@ -17,7 +17,9 @@
  *       captured: boolean,           (true only for real tab capture)
  *       control: string,             one of:
  *                                      "capture"  captured (gain, EQ and device in Deci)
- *                                      "none"     not captured
+ *                                      "none"     not captured: plain control (the page's
+ *                                                 media volume and Chrome's tab mute, see
+ *                                                 TAB MODES)
  *                                    (missing means an older extension: use captured)
  *       volume: number 0..1,         (base volume, NOT multiplied by boost)
  *       boost: 1 | 2 | 3 | 4,
@@ -66,8 +68,12 @@
  *
  * App to extension:
  *   GET_TABS {}                              reply with a TAB_LIST push
- *   SET_TAB_VOLUME { tabId, volume, boost }  volume 0..1, boost 1..4
- *   SET_TAB_MUTE { tabId, muted }
+ *   SET_TAB_VOLUME { tabId, volume, boost }  volume 0..1, boost 1..4. Captured: the graph plays
+ *                                            at volume * boost. Not captured: the plain level is
+ *                                            volume (clamped to 0..1); boost is stored but ignored
+ *                                            until a capture uses it (see TAB MODES)
+ *   SET_TAB_MUTE { tabId, muted }            captured: the Deci gain mute (Chrome's tab mute stays
+ *                                            off). Not captured: Chrome's tab mute
  *   SET_TAB_EQ { tabId, eqBands }            10 numbers in dB
  *   SET_TAB_DEVICE { tabId, deviceName }     "" = system default; applied with
  *                                            AudioContext.setSinkId while captured,
@@ -117,6 +123,22 @@
  *                                            session storage, and sent on to the offscreen
  *                                            document, again whenever it is created or a
  *                                            capture starts or is reconciled.
+ *
+ * TAB MODES. A tab is On or Off, nothing in between.
+ *   On, control "capture": the toolbar click (or its shortcut) captured the tab (tabCapture and the
+ *     offscreen graph). Volume, boost, mute, EQ and output devices are all Deci's. The plain level of
+ *     its frames is 1, so the page plays at its own level into the capture.
+ *   Off, control "none": not captured. Plain control only, with no click, no AudioContext and no
+ *     audio graph: the media elements of every frame play at the page's own volume times the tab's
+ *     plain level, clamp(volume, 0, 1) (plain-volume.js), and mute is Chrome's tab mute. Boost, EQ and
+ *     devices are only stored, for a later capture. Audio that does not come from a media element
+ *     (Web Audio), and pages content scripts cannot reach (chrome:// pages, the Web Store), get mute
+ *     only.
+ *   Switching never makes a tab louder for a moment. A capture start sends level 1 only once the
+ *   graph is live (until then the plain level scales the capture too, so the tab is only quieter). A
+ *   stop sends the plain level before the capture is released. A capture that ended on its own
+ *   (CAPTURE_ENDED, the offscreen document gone) is released before the worker hears of it, so its
+ *   plain level follows as soon as it does.
  *
  * TRACKING. The app can switch off what the extension reports about tabs. A tab is
  * HIDDEN when tracking.tabs is false, or when tracking.incognito is false and the tab is
@@ -168,6 +190,29 @@
  *                  DEVICE_ACCESS { granted }         from offscreen (labels readable or not)
  *                                                    and from permissions.html (prompt result)
  *
+ * Service worker <-> content script messages (plain control, see TAB MODES). They carry no target
+ * field. Only this extension's content scripts in a tab (sender.id is this extension, sender.tab
+ * set) are answered.
+ *   to background: PLAIN_HELLO {}   from plain-bridge.js in every frame when it loads, and again
+ *                                   when its page comes back from the back/forward cache or a
+ *                                   prerendered page is shown. Reply { factor }: the plain level
+ *                                   of sender.tab.id, the last one this worker sent to the tab,
+ *                                   else the stored state's (1 with no state yet)
+ *   to every frame of a tab (chrome.tabs.sendMessage):
+ *                  PLAIN_VOLUME { factor }  factor 0..1, sent when the tab's plain level changes
+ *                                   (an uncaptured volume change, a capture start or end), never
+ *                                   when it did not. Reply { ok: true }. When no frame answers (a
+ *                                   tab open from before the extension loaded, or one whose copies
+ *                                   an extension reload cut off) both scripts are injected into it,
+ *                                   once per tab and worker start, and the level is sent again.
+ *                                   The first worker start of a session (storage.session empty,
+ *                                   as after an extension reload or update) also sends every open
+ *                                   tab its level once, so no page keeps a level from before
+ *   plain-bridge.js to plain-volume.js (page world): CustomEvent '__deci_plain_volume__' on
+ *                  document, detail = the factor. One way only: the page world script never sends
+ *                  anything to the extension.
+ *   Plain level: captured ? 1 : clamp(volume, 0, 1).
+ *
  * Device resolution (offscreen): enumerateDevices() 'audiooutput', skipping the
  * 'default' and 'communications' pseudo entries; match deviceName against label:
  * exact, then label starting with deviceName + " (", then case-insensitive contains.
@@ -217,6 +262,11 @@ const TITLE_OFF = "Deci: click to control this tab's audio";
 const TITLE_ON = 'Deci: controlling this tab (click to stop)';
 const YTM_SWITCH_FILE = 'ytm-switch.js';
 const YTM_URL_PATTERN = 'https://music.youtube.com/*';
+const PLAIN_VOLUME_FILE = 'plain-volume.js'; // page world (see TAB MODES)
+const PLAIN_BRIDGE_FILE = 'plain-bridge.js'; // isolated world
+const PLAIN_SWEPT_KEY = 'plainSwept'; // chrome.storage.session flag, see sweepPlain()
+const PLAIN_STOP_WAIT_MS = 500; // the longest a stop waits for the plain level to land
+const PLAIN_SWEEP_BATCH = 8; // tabs the startup sweep reaches at once
 const DEVICE_STATUSES = ['default', 'pending', 'routed', 'notFound', 'noAccess'];
 const REPORTED_DEVICE_STATUSES = ['default', 'routed', 'notFound', 'noAccess'];
 const MAX_DEVICE_NAMES = 8; // outputs one tab can play on at once (offscreen.js has the same cap)
@@ -365,6 +415,17 @@ function hostOf(url) {
 // "control" field. st may be undefined (no state yet).
 function controlOf(st) {
   return st && st.captured ? 'capture' : 'none';
+}
+
+// The plain level a tab's frames get while it is not captured: its volume,
+// boost ignored. st may be undefined (no state yet: the page's own level).
+function uncapturedFactor(st) {
+  return st ? clampVolume(st.volume) : 1;
+}
+
+// The plain level for the tab as it is now (see TAB MODES).
+function plainFactor(st) {
+  return st && st.captured ? 1 : uncapturedFactor(st);
 }
 
 function faviconOrNull(url) {
@@ -753,6 +814,95 @@ async function refreshBadge(store, tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Plain control (uncaptured tabs, see TAB MODES)
+// ---------------------------------------------------------------------------
+
+const plainSent = new Map(); // tabId -> plain level last sent by this worker
+const plainInjected = new Set(); // tabs this worker injected the plain scripts into (or tried)
+
+// What a frame of the tab should play at: the last level sent (it may be
+// ahead of the stored state while a capture starts or stops), else the
+// stored state's. store may be null (the state could not be loaded).
+function plainLevelOf(store, tabId) {
+  if (plainSent.has(tabId)) return plainSent.get(tabId);
+  return plainFactor(store ? store.tabs.get(tabId) : undefined);
+}
+
+// Sends the tab's plain level to every frame unless it is the one already
+// sent. Resolves once a frame has applied it, or once that failed (never
+// rejects).
+function pushPlain(tabId, factor) {
+  if (plainSent.get(tabId) === factor) return Promise.resolve();
+  plainSent.set(tabId, factor);
+  return sendPlain(tabId, factor);
+}
+
+async function sendPlain(tabId, factor) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'PLAIN_VOLUME', factor });
+    return;
+  } catch (err) {
+    // No live bridge in the tab: it was open before this extension loaded,
+    // or a reload of the extension cut off its copies.
+  }
+  if (plainInjected.has(tabId) || removedTabs.has(tabId)) return;
+  plainInjected.add(tabId);
+  // Injected even for level 1: a page world copy left from before an
+  // extension reload may still hold an older level.
+  if (!(await injectPlain(tabId)) || !plainSent.has(tabId)) return;
+  // The newest level, which may have changed while the scripts went in.
+  await chrome.tabs.sendMessage(tabId, { type: 'PLAIN_VOLUME', factor: plainSent.get(tabId) }).catch(() => {});
+}
+
+// Puts both plain scripts into every frame of the tab. A frame that already
+// has a live copy ignores the repeat. Resolves false where scripts cannot run
+// (chrome:// pages, the Web Store, a discarded tab).
+async function injectPlain(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true }, files: [PLAIN_VOLUME_FILE], world: 'MAIN', injectImmediately: true
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true }, files: [PLAIN_BRIDGE_FILE], injectImmediately: true
+    });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// chrome.storage.session starts empty after an extension reload, update or
+// re-enable, so every tab is back at plain level 1, but the page world copies
+// in tabs open from before keep the level they last got. Once per session,
+// send every open tab its level so none plays quieter than the app shows.
+async function sweepPlain() {
+  const flags = await chrome.storage.session.get(PLAIN_SWEPT_KEY);
+  if (flags[PLAIN_SWEPT_KEY]) return;
+  const store = await ready();
+  const tabs = (await chrome.tabs.query({}))
+    .filter((tab) => !tab.discarded && Number.isInteger(tab.id) && tab.id >= 0);
+  // A few tabs at a time, so a window of a hundred tabs is not one burst of injections.
+  for (let i = 0; i < tabs.length; i += PLAIN_SWEEP_BATCH) {
+    await Promise.all(tabs.slice(i, i + PLAIN_SWEEP_BATCH)
+      .map((tab) => pushPlain(tab.id, plainFactor(store.tabs.get(tab.id)))));
+  }
+  await chrome.storage.session.set({ [PLAIN_SWEPT_KEY]: true });
+}
+
+// PLAIN_HELLO from plain-bridge.js. Only this extension's own content scripts
+// in a tab are answered; other messages are left to the listener below.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'PLAIN_HELLO' || msg.target !== undefined) return false;
+  const tab = sender && sender.tab;
+  if (sender.id !== chrome.runtime.id || !tab || !Number.isInteger(tab.id) || tab.id < 0) return false;
+  ready().then(
+    (store) => sendResponse({ factor: plainLevelOf(store, tab.id) }),
+    () => sendResponse({ factor: plainLevelOf(null, tab.id) })
+  );
+  return true;
+});
+
+// ---------------------------------------------------------------------------
 // Capture lifecycle
 // ---------------------------------------------------------------------------
 
@@ -770,6 +920,7 @@ async function reconcileCaptures(store, refreshAllBadges) {
       st.captured = true;
       persistTab(tabId, st);
       setBadge(tabId, 'capture');
+      pushPlain(tabId, 1); // the graph is live
       adopted = true;
     } else if (refreshAllBadges) {
       if (isLive) setBadge(tabId, 'capture');
@@ -785,6 +936,7 @@ async function reconcileCaptures(store, refreshAllBadges) {
     persistTab(tabId, st);
     setBadge(tabId, 'capture');
     sendToOffscreen({ type: 'SET_STATE', tabId, ...audioFields(st) });
+    pushPlain(tabId, 1);
     adopted = true;
   }
   // Adopted captures may have reported their device status to nobody.
@@ -798,6 +950,9 @@ function markUncaptured(store, tabId) {
   const st = store.tabs.get(tabId);
   if (!st) return;
   if (st.captured) {
+    // The capture is gone already (or going, from stopCapture, which sent
+    // this level first and makes this a no-op): back to the plain level.
+    pushPlain(tabId, uncapturedFactor(st));
     st.captured = false;
     resetDeviceReport(st);
     persistTab(tabId, st);
@@ -808,9 +963,18 @@ function markUncaptured(store, tabId) {
 
 async function stopCapture(store, tabId) {
   const st = store.tabs.get(tabId);
-  // Mute through the tabs API before releasing the stream so a muted tab
-  // never blips back at full level.
-  if (st && st.muted) await chrome.tabs.update(tabId, { muted: true }).catch(() => {});
+  // Mute through the tabs API, and scale the page's media to the plain level,
+  // before releasing the stream so the tab never blips back at full level.
+  // While the graph still runs the tab is only quieter. A frame that takes too
+  // long to answer does not hold the stop up.
+  const plain = Promise.race([
+    pushPlain(tabId, uncapturedFactor(st)),
+    new Promise((resolve) => setTimeout(resolve, PLAIN_STOP_WAIT_MS))
+  ]);
+  await Promise.all([
+    st && st.muted ? chrome.tabs.update(tabId, { muted: true }).catch(() => {}) : null,
+    plain
+  ]);
   await sendToOffscreen({ type: 'STOP_CAPTURE', tabId });
   markUncaptured(store, tabId);
 }
@@ -863,6 +1027,11 @@ async function startCapture(store, tabId, streamId) {
   if (current && !sameAudio(final, sent)) {
     sendToOffscreen({ type: 'SET_STATE', tabId, ...audioFields(final) });
   }
+  // Only now that the graph is live does the page go back to its own level
+  // (until then the plain level scaled the capture too: quieter, never
+  // louder). Sent in the same turn as captured flips, so a stop or a
+  // CAPTURE_ENDED that follows always sends its plain level after this one.
+  pushPlain(tabId, 1);
   // Unmute via the API only after the gain (muted) owns the audio.
   if (apiMuted) chrome.tabs.update(tabId, { muted: false }).catch(() => {});
   setBadge(tabId, 'capture');
@@ -886,6 +1055,7 @@ async function toggleCapture(tabId, streamIdRequest) {
       store.tabs.set(tabId, healed);
       persistTab(tabId, healed);
       setBadge(tabId, 'capture');
+      pushPlain(tabId, 1); // the graph is live
       sendToOffscreen({ type: 'RESOLVE_DEVICES' }); // its status may have gone unrecorded
       schedulePush();
       return;
@@ -893,7 +1063,11 @@ async function toggleCapture(tabId, streamIdRequest) {
     console.warn(`Deci: cannot capture tab ${tabId}:`, result.error);
     return;
   }
-  await startCapture(store, tabId, result.id);
+  if (!(await startCapture(store, tabId, result.id))) {
+    // Still plain. A failed start may have seeded the state with a site
+    // default, so the level may have changed.
+    pushPlain(tabId, plainFactor(store.tabs.get(tabId)));
+  }
 }
 
 function requestStreamId(tabId) {
@@ -1125,6 +1299,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 function forgetTab(tabId) {
   removedTabs.add(tabId);
+  plainSent.delete(tabId);
+  plainInjected.delete(tabId);
   ready().then((store) => {
     const st = store.tabs.get(tabId);
     if (st && st.captured) sendToOffscreen({ type: 'STOP_CAPTURE', tabId });
@@ -1195,7 +1371,8 @@ async function runTogglePlayback(tabId) {
 // ---------------------------------------------------------------------------
 
 // Applies a change to a tab's stored state, syncs the offscreen graph when
-// the tab is captured, and schedules a TAB_LIST push.
+// the tab is captured (else the plain level of its frames, sent only when it
+// changed), and schedules a TAB_LIST push.
 async function updateTabState(tabId, mutate) {
   const store = await ready();
   const tab = await getTab(tabId);
@@ -1205,6 +1382,7 @@ async function updateTabState(tabId, mutate) {
   store.tabs.set(tabId, st);
   persistTab(tabId, st);
   if (st.captured) sendToOffscreen({ type: 'SET_STATE', tabId, ...audioFields(st) });
+  else pushPlain(tabId, plainFactor(st));
   schedulePush();
   return { st, tab };
 }
@@ -1427,6 +1605,8 @@ loadTracking().catch(logError('tracking read'));
 // Every worker start, not onInstalled: re-enabling the extension orphans the
 // tab's copy too and fires no onInstalled. A live copy ignores the repeat.
 injectYTMSwitch().catch(logError('inject ytm-switch'));
+// A no-op after the first worker start of a session.
+sweepPlain().catch(logError('plain sweep'));
 // Never throws (async); if the Permissions API is unusable here, the
 // offscreen document and permissions.html still report access.
 watchMicPermission().catch(() => {});

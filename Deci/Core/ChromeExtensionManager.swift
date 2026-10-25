@@ -476,9 +476,11 @@ final class ChromeExtensionManager: NSObject {
         ])
     }
 
+    /// Sets the tab's volume. A tab that is not captured has plain control only, a level in 0...1, so that is what is
+    /// kept and sent; the boost it may hold for a later capture goes along untouched.
     func setTabVolume(tabId: Int, volume: Float) {
         guard let index = chromeTabs.firstIndex(where: { $0.id == tabId }) else { return }
-        chromeTabs[index].volume = volume
+        chromeTabs[index].volume = chromeTabs[index].isCaptured ? volume : ChromeTab.plainVolume(volume)
         markPending(tabId)
         queueVolume(for: chromeTabs[index])
     }
@@ -947,15 +949,11 @@ enum ChromeTabDeviceStatus: String, Equatable {
 enum ChromeTabControl: String, Equatable {
     /// Captured through the toolbar click: volume, boost, EQ and output device.
     case capture
-    /// Auto mode routed the page's media in-page: volume, boost and EQ, no output device.
-    case page
-    /// Auto mode is on for the tab but nothing plays yet: volume, boost and EQ are kept
-    /// and apply once its media routes in-page (no output device).
-    case armed
-    /// Nothing controls the tab until the user clicks Deci in Chrome.
+    /// Not captured: plain volume and mute only, until the user clicks Deci in Chrome.
     case none
 
-    /// A capture always wins. Older extensions send no `control`, only `captured`.
+    /// A capture always wins. Older extensions send no `control`, only `captured`. Any other value, such as the
+    /// `page` and `armed` of the removed auto mode, reads as not captured.
     init(wireValue: String?, captured: Bool) {
         if captured {
             self = .capture
@@ -974,13 +972,12 @@ struct ChromeTab: Identifiable, Equatable {
     var paused: Bool = false
     var isAudible: Bool = false
     var control: ChromeTabControl = .none
-    /// False until the user clicks the Deci toolbar button in Chrome for this tab.
+    /// False until the user clicks the Deci toolbar button in Chrome for this tab. Volume and mute work either way;
+    /// boost, EQ and output devices need a capture.
     var isCaptured: Bool {
         get { control == .capture }
-        set { control = newValue ? .capture : (control == .capture ? .none : control) }
+        set { control = newValue ? .capture : .none }
     }
-    /// Volume, boost and EQ work (captured, or auto mode in-page now or once it plays).
-    var isControlled: Bool { control != .none }
     var isIncognito: Bool = false
     var currentTime: Double = 0
     var duration: Double = 0
@@ -1000,4 +997,10 @@ struct ChromeTab: Identifiable, Equatable {
     var deviceSelectionMode: DeviceSelectionMode = .single
     /// The devices ticked in multi mode. Kept when flipping back to single, like the engine keeps it. Exists only in Deci.
     var selectedDeviceUIDs: Set<String> = []
+
+    /// A volume as a tab without a capture plays it: a plain level from 0 (silent) to 1 (full). Boost, which can
+    /// push past full, needs a capture. A value that is not a number reads as full, like a missing one on the wire.
+    static func plainVolume(_ volume: Float) -> Float {
+        volume.isNaN ? 1 : min(max(volume, 0), 1)
+    }
 }

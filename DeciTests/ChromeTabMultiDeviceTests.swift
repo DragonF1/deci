@@ -509,7 +509,6 @@ struct ChromeTabMultiDeviceTests {
         #expect(counted == ["uid-speakers", "uid-hdmi"])
 
         // Not captured: Chrome plays it as it always did.
-        #expect(ChromeExtensionManager.multiOutputUIDs(tabs: [tab(1, names: pair, control: .page)], devices: allDevices).isEmpty)
         #expect(ChromeExtensionManager.multiOutputUIDs(tabs: [tab(1, names: pair, control: .none)], devices: allDevices).isEmpty)
         // One of two names matched no output: one sink is left, which is not multi.
         #expect(ChromeExtensionManager.multiOutputUIDs(tabs: [tab(1, names: pair, missing: ["HDMI"])], devices: allDevices).isEmpty)
@@ -800,11 +799,10 @@ struct ChromeTabMultiDeviceTests {
         #expect(ChromeTabRow.multiOutputNote(for: none, supportsMultiDevice: true) == .allNotFound)
     }
 
-    @Test("a stored list on a tab Chrome does not capture waits for a click, and an uncontrolled tab keeps its own caption")
+    @Test("a stored list on a tab that is not captured has no multi caption: its own caption covers it")
     func captionNotCaptured() {
-        #expect(ChromeTabRow.multiOutputNote(for: captionTab(control: .page), supportsMultiDevice: true) == .clickToUse)
-        #expect(ChromeTabRow.multiOutputNote(for: captionTab(control: .armed), supportsMultiDevice: true) == .clickToUse)
         #expect(ChromeTabRow.multiOutputNote(for: captionTab(control: .none), supportsMultiDevice: true) == nil)
+        #expect(ChromeTabRow.multiOutputNote(for: captionTab(control: .none, status: .notFound), supportsMultiDevice: true) == nil)
     }
 
     @Test("unreadable device names use the existing permission button, not a multi caption")
@@ -822,13 +820,13 @@ struct ChromeTabMultiDeviceTests {
         #expect(ChromeTabRow.MultiOutputNote.chromeRowFansOut.text == "Plays on the outputs of the Chrome row")
     }
 
-    @Test("the fan-out caption needs a controlled multi tab with several ticks")
+    @Test("the fan-out caption needs a captured multi tab with several ticks")
     func captionFanOutScope() {
         let oneTick = captionTab(selected: ["uid-speakers"], names: [])
         #expect(ChromeTabRow.multiOutputNote(for: oneTick, supportsMultiDevice: true, engineFansOutChrome: true) == nil)
         let single = captionTab(mode: .single, selected: [], names: [], status: .routed)
         #expect(ChromeTabRow.multiOutputNote(for: single, supportsMultiDevice: true, engineFansOutChrome: true) == nil)
-        let uncontrolled = captionTab(control: .none, names: [])
-        #expect(ChromeTabRow.multiOutputNote(for: uncontrolled, supportsMultiDevice: true, engineFansOutChrome: true) == nil)
+        let uncaptured = captionTab(control: .none, names: [])
+        #expect(ChromeTabRow.multiOutputNote(for: uncaptured, supportsMultiDevice: true, engineFansOutChrome: true) == nil)
     }
 }

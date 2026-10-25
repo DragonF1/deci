@@ -15,8 +15,10 @@ struct AppRowControls: View {
     let deviceSelectionMode: DeviceSelectionMode
     let boost: BoostLevel
     let isEQExpanded: Bool
-    /// When false, everything except the mute button is dimmed and inert (Chrome tabs that
-    /// Deci has not captured yet can only be muted).
+    /// When false, the mute button, volume slider and percentage are dimmed and inert.
+    var isVolumeEnabled: Bool = true
+    /// When false, boost, the output picker and the EQ button are dimmed and inert (Chrome tabs that Deci has not
+    /// captured yet get volume and mute only).
     var isEnabled: Bool = true
     /// False hides the Single/Multi toggle in the device picker (a Chrome tab while the Chrome row already fans out).
     var showModeToggle: Bool = true
@@ -83,6 +85,7 @@ struct AppRowControls: View {
                     onMuteChange(true)
                 }
             }
+            .gatedControl(isVolumeEnabled)
 
             // Volume slider
             LiquidGlassSlider(
@@ -97,7 +100,7 @@ struct AppRowControls: View {
             .frame(width: DesignTokens.Dimensions.sliderWidth)
             .opacity(showMutedIcon ? 0.5 : 1.0)
             .scrollWheelStep(sliderBinding, in: 0.0...1.0)
-            .gatedControl(isEnabled)
+            .gatedControl(isVolumeEnabled)
 
             // Editable volume percentage (shows slider position, not raw gain)
             EditablePercentage(
@@ -114,7 +117,7 @@ struct AppRowControls: View {
                 range: 0...100,
                 isRowFocused: isRowFocused
             )
-            .gatedControl(isEnabled)
+            .gatedControl(isVolumeEnabled)
 
             // Boost chevrons
             BoostChevrons(level: boost, onTap: { onBoostChange(boost.next) })

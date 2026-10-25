@@ -19,12 +19,14 @@ struct ChromeExtensionManagerTests {
         volume: Float = 1.0,
         boost: BoostLevel = .x1,
         isMuted: Bool = false,
-        deviceName: String? = nil
+        deviceName: String? = nil,
+        captured: Bool = false
     ) -> ChromeTab {
         var tab = ChromeTab(id: id, title: title, volume: volume)
         tab.boost = boost
         tab.isMuted = isMuted
         tab.deviceName = deviceName
+        tab.isCaptured = captured
         return tab
     }
 
@@ -308,36 +310,51 @@ struct ChromeExtensionManagerTests {
     func parseControl() {
         let json: [String: Any] = ["tabs": [
             ["id": 1, "control": "capture", "captured": true],
-            ["id": 2, "control": "page", "captured": false],
+            ["id": 2, "control": "none", "captured": false],
             ["id": 3, "control": "none"],
-            ["id": 4, "control": "page", "captured": true],
+            ["id": 4, "control": "none", "captured": true],
             ["id": 5, "captured": true],
             ["id": 6],
             ["id": 7, "control": "somethingNew"],
-            ["id": 8, "control": "armed", "captured": false],
-            ["id": 9, "control": "armed", "captured": true],
+            ["id": 8, "control": "capture"],
         ]]
 
         let tabs = ChromeExtensionManager.parseTabList(json).tabs
 
-        #expect(tabs.map(\.control) == [.capture, .page, .none, .capture, .capture, .none, .none, .armed, .capture])
-        #expect(tabs.map(\.isControlled) == [true, true, false, true, true, false, false, true, true])
-        #expect(tabs.map(\.isCaptured) == [true, false, false, true, true, false, false, false, true])
+        #expect(tabs.map(\.control) == [.capture, .none, .none, .capture, .capture, .none, .none, .capture])
+        #expect(tabs.map(\.isCaptured) == [true, false, false, true, true, false, false, true])
     }
 
-    @Test("clearing isCaptured only drops a capture, never page control")
+    @Test("control values from the removed auto mode read as not captured, and a capture still wins")
+    func parseLegacyControl() {
+        // An older extension build may still send "page" or "armed". They must not crash and must not count as a capture.
+        let json: [String: Any] = ["tabs": [
+            ["id": 1, "control": "page", "captured": false],
+            ["id": 2, "control": "armed", "captured": false],
+            ["id": 3, "control": "page"],
+            ["id": 4, "control": "armed"],
+            ["id": 5, "control": "page", "captured": true],
+            ["id": 6, "control": "armed", "captured": true],
+            ["id": 7, "control": 5],
+            ["id": 8, "control": ""],
+        ]]
+
+        let tabs = ChromeExtensionManager.parseTabList(json).tabs
+
+        #expect(tabs.map(\.control) == [.none, .none, .none, .none, .capture, .capture, .none, .none])
+        #expect(tabs.map(\.isCaptured) == [false, false, false, false, true, true, false, false])
+    }
+
+    @Test("isCaptured sets a capture and clears it")
     func isCapturedSetter() {
         var tab = ChromeTab(id: 1, title: "T", volume: 1, favIconUrl: nil)
-        tab.control = .page
-        tab.isCaptured = false
-        #expect(tab.control == .page)
+        #expect(tab.control == .none)
         tab.isCaptured = true
         #expect(tab.control == .capture)
+        #expect(tab.isCaptured)
         tab.isCaptured = false
         #expect(tab.control == .none)
-        tab.control = .armed
-        tab.isCaptured = false
-        #expect(tab.control == .armed)
+        #expect(!tab.isCaptured)
     }
 
     @Test("a TAB_LIST message updates deviceAccess and each tab's deviceStatus")
@@ -659,6 +676,99 @@ struct ChromeExtensionManagerTests {
         manager.flushMessages()
 
         #expect(sent.messages.count == 1)
+    }
+
+    // MARK: - plain control of an uncaptured tab
+
+    @Test("a volume change on an uncaptured tab sends SET_TAB_VOLUME with the stored boost")
+    func uncapturedVolumeIsSent() {
+        let (manager, sent) = makeManager(tabs: [makeTab(id: 4, volume: 1.0, boost: .x3)])
+
+        manager.setTabVolume(tabId: 4, volume: 0.4)
+        manager.flushMessages()
+
+        let volumes = sent.messages(ofType: "SET_TAB_VOLUME")
+        #expect(volumes.count == 1)
+        #expect(volumes[0]["tabId"] as? Int == 4)
+        #expect((volumes[0]["volume"] as? Float) == 0.4)
+        // The extension keeps the boost for a later capture, so it travels along and is not rewritten here.
+        #expect((volumes[0]["boost"] as? Float) == BoostLevel.x3.rawValue)
+        #expect(manager.chromeTabs[0].volume == 0.4)
+        #expect(manager.chromeTabs[0].boost == .x3)
+    }
+
+    @Test("muting and unmuting an uncaptured tab sends SET_TAB_MUTE and leaves volume and boost alone")
+    func uncapturedMuteIsSent() {
+        let (manager, sent) = makeManager(tabs: [makeTab(id: 4, volume: 0.6, boost: .x2)])
+
+        manager.setTabMuted(tabId: 4, muted: true)
+        manager.flushMessages()
+        #expect(sent.messages(ofType: "SET_TAB_MUTE").count == 1)
+        #expect(sent.messages(ofType: "SET_TAB_MUTE")[0]["tabId"] as? Int == 4)
+        #expect(sent.messages(ofType: "SET_TAB_MUTE")[0]["muted"] as? Bool == true)
+        #expect(manager.chromeTabs[0].isMuted)
+
+        sent.messages.removeAll()
+        manager.setTabMuted(tabId: 4, muted: false)
+        manager.flushMessages()
+        #expect(sent.messages(ofType: "SET_TAB_MUTE")[0]["muted"] as? Bool == false)
+        #expect(!manager.chromeTabs[0].isMuted)
+        #expect(manager.chromeTabs[0].volume == 0.6)
+        #expect(manager.chromeTabs[0].boost == .x2)
+        #expect(sent.messages(ofType: "SET_TAB_VOLUME").isEmpty)
+    }
+
+    @Test("an uncaptured tab's volume is capped to 0...1, both stored and sent, and its boost is untouched")
+    func uncapturedVolumeIsCapped() {
+        let (manager, sent) = makeManager(tabs: [makeTab(id: 4, volume: 0.5, boost: .x4)])
+
+        manager.setTabVolume(tabId: 4, volume: 1.7)
+        manager.flushMessages()
+        #expect((sent.messages(ofType: "SET_TAB_VOLUME").last?["volume"] as? Float) == 1.0)
+        #expect(manager.chromeTabs[0].volume == 1.0)
+
+        sent.messages.removeAll()
+        manager.setTabVolume(tabId: 4, volume: -0.3)
+        manager.flushMessages()
+        #expect((sent.messages(ofType: "SET_TAB_VOLUME").last?["volume"] as? Float) == 0.0)
+        #expect(manager.chromeTabs[0].volume == 0.0)
+
+        #expect(manager.chromeTabs[0].boost == .x4)
+        #expect((sent.messages(ofType: "SET_TAB_VOLUME").last?["boost"] as? Float) == BoostLevel.x4.rawValue)
+    }
+
+    @Test("a captured tab sends volume, boost and mute exactly as before")
+    func capturedControlIsUnchanged() {
+        let (manager, sent) = makeManager(tabs: [makeTab(id: 9, volume: 1.0, boost: .x2, captured: true)])
+
+        manager.setTabVolume(tabId: 9, volume: 0.25)
+        manager.setTabBoost(tabId: 9, boost: .x3)
+        manager.setTabMuted(tabId: 9, muted: true)
+        manager.flushMessages()
+
+        let volumes = sent.messages(ofType: "SET_TAB_VOLUME")
+        #expect(volumes.count == 1)
+        #expect((volumes[0]["volume"] as? Float) == 0.25)
+        #expect((volumes[0]["boost"] as? Float) == BoostLevel.x3.rawValue)
+        #expect(sent.messages(ofType: "SET_TAB_MUTE")[0]["muted"] as? Bool == true)
+        #expect(manager.chromeTabs[0].volume == 0.25)
+        #expect(manager.chromeTabs[0].boost == .x3)
+        #expect(manager.chromeTabs[0].isMuted)
+    }
+
+    @Test("a stale TAB_LIST inside the pending window does not undo an uncaptured tab's volume or mute")
+    func uncapturedChangeIsShieldedFromStaleList() {
+        let (manager, _) = makeManager()
+        let list = #"{"type":"TAB_LIST","tabs":[{"id":6,"title":"T","volume":1,"boost":1,"muted":false,"captured":false}]}"#
+        manager.handleChromeMessageString(list)
+        #expect(manager.chromeTabs.first?.isCaptured == false)
+
+        manager.setTabVolume(tabId: 6, volume: 0.3)
+        manager.setTabMuted(tabId: 6, muted: true)
+        manager.handleChromeMessageString(list)
+
+        #expect(manager.chromeTabs.first?.volume == 0.3)
+        #expect(manager.chromeTabs.first?.isMuted == true)
     }
 
     // MARK: - setTabMuted (shared instance)

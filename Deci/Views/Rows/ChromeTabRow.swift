@@ -82,8 +82,9 @@ struct ChromeTabRow: View {
 
                 // Volume Controls, Mixer, and Multi-Device
                 let currentDeviceUID = tab.deviceName.flatMap { name in devices.first(where: { $0.name == name })?.uid }
+                let controls = Self.controls(for: tab)
                 AppRowControls(
-                    volume: tab.volume,
+                    volume: Self.displayedVolume(for: tab),
                     isMuted: tab.isMuted,
                     devices: devices,
                     deviceIconOverrides: [:],
@@ -94,7 +95,8 @@ struct ChromeTabRow: View {
                     deviceSelectionMode: tab.deviceSelectionMode,
                     boost: tab.boost,
                     isEQExpanded: isEQExpanded,
-                    isEnabled: tab.isControlled,
+                    isVolumeEnabled: controls.volumeAndMute,
+                    isEnabled: controls.boostEQAndOutputs,
                     // A tab already in Multi keeps the toggle, so it can be flipped back.
                     showModeToggle: chromeManager.allowsTabMultiDevice || tab.deviceSelectionMode == .multi,
                     onVolumeChange: { newVolume in
@@ -166,9 +168,9 @@ struct ChromeTabRow: View {
                 levelPoller.stop()
             }
         }
-        .onChange(of: tab.isControlled) { _, isControlled in
-            // EQ is unavailable on an uncontrolled tab, so don't leave its panel open.
-            if !isControlled { isEQExpanded = false }
+        .onChange(of: tab.isCaptured) { _, isCaptured in
+            // EQ is unavailable on a tab that is not captured, so don't leave its panel open.
+            if !isCaptured { isEQExpanded = false }
         }
         .onChange(of: tab.eqSettings) { _, newEQ in
             // Update local state if the tab model changes (e.g. from background sync)
@@ -176,22 +178,16 @@ struct ChromeTabRow: View {
         }
     }
 
-    /// One quiet line under the title. Not being controllable yet outranks any device problem.
+    /// One quiet line under the title. Not being captured yet outranks any device problem.
     @ViewBuilder
     private var statusCaption: some View {
-        if !tab.isControlled {
-            Text("Click Deci in Chrome to control")
+        if let note = Self.captureNote(for: tab) {
+            Text(note)
                 .font(.system(size: 9))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .lineLimit(1)
         } else if let note = Self.multiOutputNote(for: tab, supportsMultiDevice: chromeManager.supportsMultiDevice, engineFansOutChrome: chromeManager.engineFansOutChrome) {
             Text(note.text)
-                .font(.system(size: 9))
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .lineLimit(1)
-        } else if tab.control == .page || tab.control == .armed, tab.deviceName != nil {
-            // In-page control cannot pick an output; the stored device waits for a capture.
-            Text("Click Deci in Chrome to use this output")
                 .font(.system(size: 9))
                 .foregroundStyle(DesignTokens.Colors.textTertiary)
                 .lineLimit(1)
@@ -231,8 +227,6 @@ struct ChromeTabRow: View {
     enum MultiOutputNote: Equatable {
         /// Multi is picked with several devices, but the extension predates SET_TAB_DEVICES and plays on one.
         case reloadExtension
-        /// The outputs are stored, but the page is not captured, so nothing routes yet.
-        case clickToUse
         /// No chosen output exists: the tab plays on the default.
         case allNotFound
         /// This many chosen outputs exist no more; the others still play.
@@ -243,7 +237,6 @@ struct ChromeTabRow: View {
         var text: String {
             switch self {
             case .reloadExtension: "Reload the Deci extension for multiple outputs"
-            case .clickToUse: "Click Deci in Chrome to use these outputs"
             case .allNotFound: "Outputs not found, using default"
             case .someNotFound(let count): count == 1 ? "1 output not found" : "\(count) outputs not found"
             case .chromeRowFansOut: "Plays on the outputs of the Chrome row"
@@ -251,17 +244,16 @@ struct ChromeTabRow: View {
         }
     }
 
-    /// The multi-output caption for a tab, or nil when the single-output captions apply. Pure. A tab that cannot
-    /// be controlled yet is not covered: its own caption wins.
+    /// The multi-output caption for a tab, or nil when the single-output captions apply. Pure. A tab that is not
+    /// captured yet is not covered: its own caption wins.
     static func multiOutputNote(for tab: ChromeTab, supportsMultiDevice: Bool, engineFansOutChrome: Bool = false) -> MultiOutputNote? {
-        guard tab.isControlled else { return nil }
+        guard tab.isCaptured else { return nil }
         if tab.deviceSelectionMode == .multi, tab.selectedDeviceUIDs.count > 1 {
             // Whoever plays the tab on several outputs, the tab's own ticks are not what is heard.
             if engineFansOutChrome { return .chromeRowFansOut }
             if !supportsMultiDevice { return .reloadExtension }
         }
         guard !tab.deviceNames.isEmpty else { return nil }
-        guard tab.control == .capture else { return .clickToUse }
         switch tab.deviceStatus {
         case .notFound: return .allNotFound
         case .routed: return tab.missingDeviceNames.isEmpty ? nil : .someNotFound(tab.missingDeviceNames.count)
@@ -270,14 +262,43 @@ struct ChromeTabRow: View {
         }
     }
 
+    /// Which controls of a tab's row respond.
+    struct Controls: Equatable {
+        /// The volume slider, its percentage and the mute button. Plain control: no capture needed.
+        var volumeAndMute: Bool
+        /// Boost, EQ and the output picker. They need a capture.
+        var boostEQAndOutputs: Bool
+    }
+
+    /// The controls a tab's row lets the user touch. Pure. A captured tab has all of them; one that is not captured
+    /// keeps volume and mute, and boost, EQ and outputs wait for a click on Deci in Chrome.
+    static func controls(for tab: ChromeTab) -> Controls {
+        Controls(volumeAndMute: true, boostEQAndOutputs: tab.isCaptured)
+    }
+
+    /// The caption of a tab that is not captured, saying what a capture adds.
+    static let uncapturedCaption = "Click Deci in Chrome for boost, EQ and outputs"
+
+    /// The caption for a tab that is not captured, or nil once it is. Pure. It outranks every device caption: the
+    /// stored outputs only matter after a capture.
+    static func captureNote(for tab: ChromeTab) -> String? {
+        tab.isCaptured ? nil : uncapturedCaption
+    }
+
+    /// The volume the row shows for a tab. A tab that is not captured has a plain 0...1 volume, so a stored value above
+    /// 1 shows as 1; the stored volume and boost are not rewritten. A captured tab shows its volume as it is. Pure.
+    static func displayedVolume(for tab: ChromeTab) -> Float {
+        tab.isCaptured ? tab.volume : ChromeTab.plainVolume(tab.volume)
+    }
+
     /// The jitter a playing tab's made-up level is drawn from, before its volume scales it.
     static let jitterRange: ClosedRange<Float> = 0.1...0.7
 
     /// The level to show for a tab: a made-up one while the tab plays, 0 otherwise.
     static func simulatedLevel(for tab: ChromeTab, jitter: Float = .random(in: jitterRange)) -> Float {
         let isPlaying = (tab.isAudible || tab.isCaptured) && !tab.paused
-        guard isPlaying, tab.volume > 0, !tab.isMuted else { return 0 }
-        return jitter * tab.volume
+        guard isPlaying, displayedVolume(for: tab) > 0, !tab.isMuted else { return 0 }
+        return jitter * displayedVolume(for: tab)
     }
 
     private func startSimulatedVUMeter() {
