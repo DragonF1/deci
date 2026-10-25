@@ -14,6 +14,9 @@ struct MusicTrackMenuHandler: Sendable {
     /// Where the song's download stands, for the glyph or the progress ring at the end of its row. Reads the download
     /// service, so a row that calls it from its body redraws when the state changes.
     var downloadState: @MainActor (MusicTrack) -> MusicDownloadState = { _ in .none }
+    /// The song cannot play now: the network is gone (or the account) and it is not downloaded. Its row dims and a tap on it
+    /// plays nothing. Reads the store, so a row that calls it from its body redraws when the network goes or returns.
+    var isDimmed: @MainActor (MusicTrack) -> Bool = { _ in false }
 }
 
 private struct MusicTrackMenuKey: EnvironmentKey {

@@ -2908,6 +2908,8 @@ struct MusicServiceBrowseTests {
         h.service.signOut()
         await h.service.signOutTask?.value
         await h.backend.setHome(shelves: [MusicSamples.shelf("Other account", "VLPL9")])
+        try? await h.backend.signIn(with: [])
+        await h.service.refreshAuth()
 
         h.service.browse.loadHomeIfNeeded()
         let reloaded = await h.eventually { h.service.browse.home == .loaded([MusicSamples.shelf("Other account", "VLPL9")]) }

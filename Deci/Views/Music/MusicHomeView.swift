@@ -24,8 +24,14 @@ struct MusicHomeView: View {
                 VStack(spacing: 0) {
                     Color.clear.frame(height: 0).id(Self.topId)
                     LazyVStack(alignment: .leading, spacing: MusicBrowseLayout.homeSectionGap) {
-                        pinnedRow
-                        shelves
+                        // Offline Home is one line: its shelves and pinned tiles are the network's, and a note
+                        // stands in until it returns (what was loaded is kept, not wiped).
+                        if let note = browse.offlineNote(for: .home) {
+                            MusicOfflineNote(text: note, signInService: browse.offersSignIn ? service : nil)
+                        } else {
+                            pinnedRow
+                            shelves
+                        }
                         MusicBottomInsetSpacer()
                     }
                     .padding(.top, MusicBrowseLayout.homeTop)

@@ -141,6 +141,15 @@ struct MusicSongRow: View {
     /// row is the only one that follows the progress.
     private var downloadState: MusicDownloadState { menu?.downloadState(track) ?? MusicDownloadState.none }
 
+    /// Offline (or signed out) a song that is not downloaded cannot play: its row dims and a tap on it does nothing.
+    private var isDimmed: Bool { menu?.isDimmed(track) == true }
+
+    /// What a tap, Space or Return does: plays the row, unless it is dimmed.
+    private func play() {
+        guard !isDimmed else { return }
+        action()
+    }
+
     private func perform(_ action: MusicTrackAction) {
         menu?.perform(action, track, context)
     }
@@ -156,6 +165,7 @@ struct MusicSongRow: View {
         if isPinned { text += ", pinned" }
         if let spoken = MusicDownloadGlyph.spokenState(downloadState) { text += ", \(spoken)" }
         if isPlaying { text += ", playing" }
+        if isDimmed { text += ", not downloaded" }
         return text
     }
 
@@ -190,6 +200,7 @@ struct MusicSongRow: View {
         )
         .animation(DesignTokens.Animation.hover, value: showsMore)
         .padding(.horizontal, layout.horizontalPadding - MusicBrowseLayout.rowHoverInset)
+        .opacity(isDimmed ? MusicBrowseLayout.dimmedRowOpacity : 1)
         .onHover {
             isHovered = $0
             if $0 { reveal() }
@@ -215,22 +226,22 @@ struct MusicSongRow: View {
             MusicTrackMenuItems(actions: actions, perform: perform)
         }
         // A name's own button takes its click first; a click anywhere else on the row plays.
-        .onTapGesture(perform: action)
+        .onTapGesture(perform: play)
         // What the Button gave the row: reachable with Full Keyboard Access only (a plain Tab stays on the search
         // field and the popup's arrow keys), and Space or Return plays. A key goes to the row only while it has
         // focus, so typing in the search field never reaches it.
         .focusable(interactions: .activate)
         .focused($isKeyboardFocused)
         .onKeyPress(keys: [.space, .return], phases: .down) { _ in
-            action()
+            play()
             return .handled
         }
         // A container, so each artist name inside stays its own button for VoiceOver; the row plays by its action.
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
-        .accessibilityAction(named: "Play", action)
-        .accessibilityAction(.default, action)
+        .accessibilityAction(named: "Play", play)
+        .accessibilityAction(.default, play)
         // The "..." button hides until the pointer or the keyboard is on the row; VoiceOver gets the actions here.
         .accessibilityActions {
             ForEach(actions, id: \.self) { action in

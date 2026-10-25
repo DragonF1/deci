@@ -117,9 +117,13 @@ enum MusicPagePills {
     /// The page's menu: the Home pin. `home` is nil where Home cannot hold the page (Liked Music, which belongs to
     /// the account and has no cover of its own), and that pin is then left out. So is the pin of an artist's songs
     /// list, which a pinned tile would reopen as a plain playlist.
-    static func menuItems(kind: MusicPageKind, home: MusicHomePinState?, isArtistSongs: Bool = false) -> [MusicPageMenuItem] {
+    ///
+    /// The Downloaded songs page (`isDownloads`) is no page Home could reopen: it has no menu.
+    static func menuItems(
+        kind: MusicPageKind, home: MusicHomePinState?, isArtistSongs: Bool = false, isDownloads: Bool = false
+    ) -> [MusicPageMenuItem] {
         var items: [MusicPageMenuItem] = []
-        if kind != .liked, !isArtistSongs, let home {
+        if kind != .liked, !isArtistSongs, !isDownloads, let home {
             items.append(.pinHome(home))
         }
         return items
@@ -265,6 +269,20 @@ struct MusicPageHeroText: Equatable {
                 meta: counted
             )
         }
+    }
+
+    /// The Downloaded songs page: its kind word, its fixed title and a line saying where the songs are, then their count and
+    /// length (the page holds every song at once, so both are certain).
+    static let downloadsKicker = "DOWNLOADS"
+    static let downloadsSub = "Saved on this Mac"
+
+    static func downloads(songCount: Int, totalSeconds: Int?) -> MusicPageHeroText {
+        MusicPageHeroText(
+            kicker: downloadsKicker,
+            title: MusicDownloadService.songsTitle,
+            sub: downloadsSub,
+            meta: meta([], songCount: songCount, totalSeconds: totalSeconds)
+        )
     }
 
     /// The header's meta line with the page's download line after it ("40 songs \u{00B7} Downloaded"). The line alone when

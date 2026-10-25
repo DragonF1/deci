@@ -66,6 +66,16 @@ enum MusicTrackAction: Hashable, Sendable {
         }
     }
 
+    /// The action needs YouTube Music: the account, a page, a rating or a playlist. Offline, or signed out, these have
+    /// nothing to talk to. Play next and Add to queue are not on the list (a downloaded song plays from its file), nor
+    /// are the download entries and Remove from queue, which touch only this Mac.
+    var isOnlineOnly: Bool {
+        switch self {
+        case .saveToPlaylist, .removeFromPlaylist, .pinHome, .like, .dislike, .goToAlbum, .goToArtist, .related: true
+        case .playNext, .addToQueue, .removeFromQueue, .download, .removeDownload: false
+        }
+    }
+
     /// Off for the refusal while Home is full.
     var isEnabled: Bool {
         switch self {
@@ -121,11 +131,13 @@ enum MusicTrackActions {
     /// download when the song is queued, downloading or downloaded. `downloadHeldByCollectionOnly` is a song that a
     /// downloaded playlist or album lists and that was not downloaded on its own: while it is queued, downloading or
     /// downloaded it offers neither entry (the page's pill removes it); one not yet fetched, or that failed, still
-    /// offers Download.
+    /// offers Download. `limited` is a Music tab that has only this Mac to work with, offline or signed out: every entry
+    /// that needs YouTube Music is left out (`isOnlineOnly`), and so are Play next and Add to queue unless the song
+    /// `playsOffline` (it is downloaded, so it plays from its file). Download, Remove download and Remove from queue stay.
     static func available(
         for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil, offersQueue: Bool = false,
         canRate: Bool = false, likeStatus: MusicLikeStatus? = nil, download: MusicDownloadState? = nil,
-        downloadHeldByCollectionOnly: Bool = false
+        downloadHeldByCollectionOnly: Bool = false, limited: Bool = false, playsOffline: Bool = false
     ) -> [MusicTrackAction] {
         var actions: [MusicTrackAction] = offersQueue ? [.playNext, .addToQueue, .saveToPlaylist] : [.saveToPlaylist]
         if let home { actions.append(.pinHome(home)) }
@@ -147,7 +159,14 @@ enum MusicTrackActions {
         if hasId(track) { actions.append(.related) }
         if canRemove(track, in: context) { actions.append(.removeFromPlaylist) }
         if offersQueue, context.isUpNext { actions.append(.removeFromQueue) }
-        return actions
+        guard limited else { return actions }
+        return actions.filter { action in
+            if action.isOnlineOnly { return false }
+            switch action {
+            case .playNext, .addToQueue: return playsOffline
+            default: return true
+            }
+        }
     }
 
     /// The entries of an album, playlist or artist tile, in the song menu's order and words. An album: save the whole
@@ -155,9 +174,11 @@ enum MusicTrackActions {
     /// All three end with Related songs, which starts from the first song of the page; a tile with no page id has none.
     /// Save shows only for what has a playlist to add from (`playlistSourceId`). Go to album and Go to artist hide on
     /// the page they would open. `home` is where the tile stands with the Pinned row on Home; nil leaves the entry out.
+    /// A `limited` Music tab (offline or signed out) offers a tile nothing: every entry needs YouTube Music.
     static func available(
-        for collection: MusicCollection, in context: MusicTrackContext, home: MusicHomePinState? = nil
+        for collection: MusicCollection, in context: MusicTrackContext, home: MusicHomePinState? = nil, limited: Bool = false
     ) -> [MusicTrackAction] {
+        guard !limited else { return [] }
         var actions: [MusicTrackAction] = []
         if playlistSourceId(for: collection) != nil { actions.append(.saveToPlaylist) }
         if let home { actions.append(.pinHome(home)) }

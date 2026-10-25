@@ -30,8 +30,27 @@ final class MusicBrowseStore {
         browseId: "VLLM", kind: .playlist, title: "Liked music", subtitle: "Auto playlist", thumbnailURL: nil
     )
 
+    /// Pinned at the top of Library's Downloads tab; opens the Downloaded songs page. The reserved browse id belongs to
+    /// no page of YouTube Music: the store answers it from the download index and never lets it reach the backend.
+    static let downloadedSongs = MusicCollection(
+        browseId: MusicDownloadService.songsBrowseId, kind: .playlist, title: MusicDownloadService.songsTitle,
+        subtitle: "", thumbnailURL: nil
+    )
+
     var tab: Tab = .home
-    var librarySection: MusicLibrarySection = .playlists
+
+    /// The account list Playlists or Albums shows: the one the lists load for. Setting it shows that tab.
+    var librarySection: MusicLibrarySection {
+        get { pickedSection }
+        set {
+            pickedSection = newValue
+            downloadsPicked = false
+        }
+    }
+
+    private var pickedSection: MusicLibrarySection = .playlists
+    /// Downloads was picked (online). Offline it is shown whatever was picked, and this is what comes back with the network.
+    private var downloadsPicked = false
 
     private(set) var home: Load<[MusicShelf]> = .idle
     private(set) var isLoadingMoreHome = false
@@ -82,6 +101,19 @@ final class MusicBrowseStore {
     static let sortEmptyPageLimit = 3
 
     @ObservationIgnored private let backend: any MusicBackend
+    /// Whether the network is up; nil reads as always up. Observable, so what reads `isOffline` redraws when it moves.
+    @ObservationIgnored private let connectivity: MusicConnectivity?
+    /// Where the Downloads tab, the Downloaded songs page and the pages of downloaded collections are read from.
+    @ObservationIgnored private let downloads: MusicDownloadService?
+    /// Loads asked for while offline, or cut by the network going: each runs once when it returns. A request skipped offline
+    /// leaves its list idle, so nothing shows a spinner that cannot end.
+    @ObservationIgnored private var waitingHome = false
+    @ObservationIgnored private var waitingHistory = false
+    @ObservationIgnored private var waitingLibrary: Set<MusicLibrarySection> = []
+    @ObservationIgnored private var waitingPages: Set<String> = []
+    /// Pages on screen that were built from the download index because the network was down; the network's page replaces
+    /// each when it returns.
+    @ObservationIgnored private var storedPages: Set<String> = []
     /// A load names itself with the next number and only lands while it is still the current one for
     /// its list, so a reload, a reset or a slower earlier request can never overwrite newer data.
     @ObservationIgnored private var runCounter = 0
@@ -105,8 +137,16 @@ final class MusicBrowseStore {
     /// pinned item's name and photo current. Not told for a page that was closed, reloaded or reset before it landed.
     @ObservationIgnored var onPageLoaded: (@MainActor (MusicBrowsePage, MusicCollection?) -> Void)?
 
-    init(backend: any MusicBackend) {
+    init(backend: any MusicBackend, connectivity: MusicConnectivity? = nil, downloads: MusicDownloadService? = nil) {
         self.backend = backend
+        self.connectivity = connectivity
+        self.downloads = downloads
+        connectivity?.observe { [weak self] online in self?.connectivityChanged(online) }
+        // A load that failed for the network before the system's first word waits for it; an online word runs what
+        // waited. An offline word leaves them waiting for the network to return, as any other offline does.
+        connectivity?.observeFirstReport { [weak self] online in
+            if online { self?.connectivityChanged(true) }
+        }
     }
 
     func libraryState(_ section: MusicLibrarySection) -> Load<[MusicCollection]> {
@@ -119,7 +159,191 @@ final class MusicBrowseStore {
     }
 
     func pageState(_ browseId: String) -> Load<MusicBrowsePage> {
-        pages[browseId] ?? .idle
+        if browseId == MusicDownloadService.songsBrowseId { return .loaded(downloadedSongsPage()) }
+        return pages[browseId] ?? .idle
+    }
+
+    // MARK: - Offline
+
+    /// Whether the account is gone (signed out), as the service answers it; nil reads as never. What the closure reads is
+    /// observable, so what reads `isOffline` redraws when the account goes and when it returns.
+    @ObservationIgnored var accountGone: (@MainActor () -> Bool)?
+
+    /// True while the network is down. Observable.
+    var isNetworkDown: Bool {
+        guard let connectivity else { return false }
+        return !connectivity.isOnline
+    }
+
+    /// The system has not said yet whether there is a network (the first report of the path monitor comes a moment after
+    /// launch), so a load that fails for the network may only have started on a path that was already gone. Such a load
+    /// waits for the first report instead of failing; once it has come a failure is a failure.
+    private var pathDoubt: Bool {
+        guard let connectivity else { return false }
+        return !connectivity.hasReported
+    }
+
+    /// Whether `error` is the network failing while the path is still in doubt: the load waits, it does not fail.
+    private func cutByDoubtfulPath(_ error: any Error) -> Bool {
+        pathDoubt && MusicConnectivity.isNetworkFailure(error)
+    }
+
+    /// The account is gone while the network is up: a signed-out listener, who can sign in, as opposed to one who is
+    /// offline, who cannot. Offline notes then say signed out and carry the Sign in button.
+    var offersSignIn: Bool {
+        !isNetworkDown && accountGone?() == true
+    }
+
+    /// Only the downloads can be shown: the network is down, or there is no account to ask it with. Both read the same
+    /// way: lists are not asked for, pages of downloaded collections are built from the index, songs that are not downloaded
+    /// are dimmed and do not play.
+    var isOffline: Bool {
+        isNetworkDown || accountGone?() == true
+    }
+
+    /// The account came back (a sign-in finished): what was held back while it was gone runs, as it does when the network
+    /// returns, unless the network is still down.
+    func accountReturned() {
+        guard !isOffline else { return }
+        connectivityChanged(true)
+    }
+
+    /// Whether a song can play with no network: it is downloaded. Online every song can, as far as the network goes.
+    /// Offline, the rows of the others are dimmed and do not play.
+    func isDimmed(_ videoId: String) -> Bool {
+        guard isOffline else { return false }
+        guard let downloads else { return true }
+        if case .downloaded = downloads.state(for: videoId) { return false }
+        return true
+    }
+
+    /// The line that stands in for a feed or a page the network would fill, or nil when it should show as usual. Home and
+    /// History show it offline whatever they hold (what was loaded is kept for when the network returns); a page shows it
+    /// offline unless it is loaded or loading, which includes the pages built from the download index.
+    /// The words depend on why: the network down says offline; the account gone with the network up says signed out.
+    func offlineNote(for surface: MusicOfflineSurface) -> String? {
+        guard isOffline else { return nil }
+        let note = isNetworkDown ? MusicOfflineCopy.note : MusicOfflineCopy.signedOutNote
+        switch surface {
+        case .home, .history:
+            return note
+        case .page(let browseId):
+            switch pageState(browseId) {
+            case .idle, .failed: return note
+            case .loading, .loaded: return nil
+            }
+        }
+    }
+
+    // MARK: - Downloads
+
+    /// The pinned row of the Downloads tab: the reserved id, and the number of songs for a subtitle.
+    var downloadedSongsRow: MusicCollection {
+        MusicCollection(
+            browseId: Self.downloadedSongs.browseId, kind: .playlist, title: Self.downloadedSongs.title,
+            subtitle: MusicDownloadService.songCountText(downloads?.downloadedSongCount ?? 0), thumbnailURL: nil
+        )
+    }
+
+    /// The downloaded playlists and albums under the pinned row, newest download first. A collection still downloading
+    /// shows how far it has got in its subtitle.
+    var downloadedCollectionRows: [MusicCollection] {
+        (downloads?.downloadedCollections ?? []).map(Self.row(of:))
+    }
+
+    /// The browse ids of `downloadedCollectionRows`, in the same order, read without any download state. A list lays its
+    /// rows out from these and each row reads its own (`downloadedCollectionRow`), so a download's progress redraws that
+    /// row and not the list.
+    var downloadedCollectionIds: [String] {
+        downloads?.downloadedCollectionIds ?? []
+    }
+
+    /// One row of `downloadedCollectionRows`; nil when the collection is gone.
+    func downloadedCollectionRow(_ browseId: String) -> MusicCollection? {
+        downloads?.downloadedCollection(browseId: browseId).map(Self.row(of:))
+    }
+
+    private static func row(of collection: MusicDownloadedCollection) -> MusicCollection {
+        MusicCollection(
+            browseId: collection.browseId,
+            kind: collection.kind == .album ? .album : .playlist,
+            title: collection.title,
+            subtitle: collection.subtitle,
+            thumbnailURL: collection.thumbnailURL
+        )
+    }
+
+    /// Whether there is anything to list on the Downloads tab: a downloaded song, or a collection downloaded or on its way.
+    var hasDownloads: Bool {
+        guard let downloads else { return false }
+        return downloads.downloadedSongCount > 0 || !downloads.downloadedCollectionIds.isEmpty
+    }
+
+    /// The saved picture for a cover address, nil when none was saved (or no downloads here).
+    func localCoverURL(for address: URL?) -> URL? {
+        downloads?.localCoverURL(for: address)
+    }
+
+    /// The Downloaded songs page, read from the index each time (nothing of it is stored here, so it is current).
+    private func downloadedSongsPage() -> MusicBrowsePage {
+        downloads?.downloadedSongsPage() ?? MusicBrowsePage(
+            browseId: MusicDownloadService.songsBrowseId, title: MusicDownloadService.songsTitle,
+            subtitle: MusicDownloadService.songCountText(0), thumbnailURL: nil, tracks: [], continuation: nil, shelves: []
+        )
+    }
+
+    // MARK: - Library tabs
+
+    /// The tab Library shows. Offline it is Downloads, whatever was picked; online the last pick returns.
+    var libraryTab: MusicLibraryTab {
+        if isOffline || downloadsPicked { return .downloads }
+        return MusicLibraryTab(pickedSection)
+    }
+
+    /// Offline the Playlists and Albums pills are disabled: their lists need the network.
+    func isLibraryTabEnabled(_ tab: MusicLibraryTab) -> Bool {
+        !isOffline || tab == .downloads
+    }
+
+    /// Picks a tab. Offline nothing changes: Downloads is already shown, and the pick that was made before the network
+    /// went is kept for when it returns.
+    func selectLibraryTab(_ tab: MusicLibraryTab) {
+        guard !isOffline else { return }
+        if let section = tab.section {
+            librarySection = section
+        } else {
+            downloadsPicked = true
+        }
+    }
+
+    /// The network went or came back. Coming back runs everything that was held back, once, unless the account is still
+    /// gone: then nothing runs and nothing is forgotten, and the sign-in (`accountReturned`) runs it.
+    private func connectivityChanged(_ online: Bool) {
+        guard online, !isOffline else { return }
+        if waitingHome {
+            waitingHome = false
+            loadHomeIfNeeded()
+        }
+        if waitingHistory {
+            waitingHistory = false
+            loadHistoryIfNeeded()
+        }
+        let sections = waitingLibrary
+        waitingLibrary.removeAll()
+        for section in MusicLibrarySection.allCases where sections.contains(section) { loadLibraryIfNeeded(section) }
+        // A page that was built from the index is replaced by the network's, which is the fuller one, once that has
+        // arrived: the stored page stays up meanwhile, so the list does not turn into a spinner under the listener.
+        let stored = storedPages
+        storedPages.removeAll()
+        for browseId in stored.sorted() where pages[browseId] != nil { refreshStoredPage(browseId) }
+        let waiting = waitingPages
+        waitingPages.removeAll()
+        for browseId in waiting.sorted() where path.contains(where: { $0.browseId == browseId }) {
+            switch pageState(browseId) {
+            case .idle, .failed: reloadPage(browseId)
+            case .loading, .loaded: break
+            }
+        }
     }
 
     // MARK: - Home
@@ -132,8 +356,15 @@ final class MusicBrowseStore {
         }
     }
 
-    /// Loads Home again from the top.
+    /// Loads Home again from the top. Offline nothing is asked: Home that has not loaded waits for the network, and one that
+    /// has keeps what it shows.
     func reloadHome() {
+        guard !isOffline else {
+            if !isLoaded(home) { waitingHome = true }
+            return
+        }
+        // Cut by a path in doubt: the first report decides, so a view that asks again as Home lands idle starts no loop.
+        if pathDoubt, waitingHome { return }
         let run = newRun()
         homeRun = run
         homeToken = nil
@@ -155,7 +386,7 @@ final class MusicBrowseStore {
     /// the old shelves. Loads from the top when nothing is up yet.
     func refreshHome() {
         guard case .loaded = home else { return reloadHome() }
-        guard !isRefreshingHome else { return }
+        guard !isRefreshingHome, !isOffline else { return }
         let run = newRun()
         homeRun = run
         tokenBeforeRefresh = homeToken
@@ -176,7 +407,7 @@ final class MusicBrowseStore {
 
     /// Loads the next shelves when the list scrolls to its end.
     func loadMoreHome() {
-        guard case .loaded = home, let run = homeRun, let token = homeToken, !isLoadingMoreHome else { return }
+        guard case .loaded = home, let run = homeRun, let token = homeToken, !isLoadingMoreHome, !isOffline else { return }
         isLoadingMoreHome = true
         launch("home+") { [weak self, backend] in
             do {
@@ -209,8 +440,13 @@ final class MusicBrowseStore {
             tokenBeforeRefresh = nil
             canLoadMoreHome = homeToken != nil
             logger.info("home refresh failed: \(MusicService.logDescription(of: error), privacy: .public)")
+        } else if cutByDoubtfulPath(error) {
+            home = .idle
+            waitingHome = true
         } else {
             home = .failed(describe(error))
+            // Cut by the network going: asked for again when it returns.
+            if isOffline { waitingHome = true }
         }
         expireIfSignedOut(error)
     }
@@ -260,8 +496,13 @@ final class MusicBrowseStore {
         }
     }
 
-    /// Loads History again from the top.
+    /// Loads History again from the top. Offline nothing is asked, as with Home.
     func reloadHistory() {
+        guard !isOffline else {
+            if !isLoaded(history) { waitingHistory = true }
+            return
+        }
+        if pathDoubt, waitingHistory { return }
         let run = newRun()
         historyRun = run
         historyToken = nil
@@ -282,7 +523,7 @@ final class MusicBrowseStore {
         case .loading:
             return
         case .loaded:
-            guard !isRefreshingHistory else { return }
+            guard !isRefreshingHistory, !isOffline else { return }
         }
         let run = newRun()
         historyRun = run
@@ -308,7 +549,7 @@ final class MusicBrowseStore {
 
     /// Loads the next days when the list scrolls to its end.
     func loadMoreHistory() {
-        guard case .loaded = history, let run = historyRun, let token = historyToken, !isLoadingMoreHistory else { return }
+        guard case .loaded = history, let run = historyRun, let token = historyToken, !isLoadingMoreHistory, !isOffline else { return }
         isLoadingMoreHistory = true
         launch("history+") { [weak self, backend] in
             do {
@@ -340,8 +581,12 @@ final class MusicBrowseStore {
             historyTokenBeforeRefresh = nil
             canLoadMoreHistory = historyToken != nil
             logger.info("history refresh failed: \(MusicService.logDescription(of: error), privacy: .public)")
+        } else if cutByDoubtfulPath(error) {
+            history = .idle
+            waitingHistory = true
         } else {
             history = .failed(describe(error))
+            if isOffline { waitingHistory = true }
         }
         expireIfSignedOut(error)
     }
@@ -376,6 +621,11 @@ final class MusicBrowseStore {
     }
 
     func reloadLibrary(_ section: MusicLibrarySection) {
+        guard !isOffline else {
+            if !isLoaded(libraryState(section)) { waitingLibrary.insert(section) }
+            return
+        }
+        if pathDoubt, waitingLibrary.contains(section) { return }
         let run = newRun()
         libraryRuns[section] = run
         libraryTokens[section] = nil
@@ -395,7 +645,7 @@ final class MusicBrowseStore {
     /// Loads the next page of a library list when it scrolls to its end.
     func loadMoreLibrary(_ section: MusicLibrarySection) {
         guard case .loaded? = library[section], let run = libraryRuns[section],
-              let token = libraryTokens[section], !loadingMoreLibrary.contains(section) else { return }
+              let token = libraryTokens[section], !loadingMoreLibrary.contains(section), !isOffline else { return }
         loadingMoreLibrary.insert(section)
         launch("library+:\(section.rawValue)") { [weak self, backend] in
             do {
@@ -416,7 +666,13 @@ final class MusicBrowseStore {
 
     private func failLibrary(_ error: any Error, section: MusicLibrarySection, run: Int) {
         guard libraryRuns[section] == run else { return }
+        if cutByDoubtfulPath(error) {
+            library[section] = .idle
+            waitingLibrary.insert(section)
+            return
+        }
         library[section] = .failed(describe(error))
+        if isOffline { waitingLibrary.insert(section) }
         expireIfSignedOut(error)
     }
 
@@ -459,6 +715,12 @@ final class MusicBrowseStore {
     }
 
     func reloadPage(_ browseId: String) {
+        // The Downloaded songs page is no page of YouTube Music: it is read from the index and its id goes nowhere.
+        guard browseId != MusicDownloadService.songsBrowseId else { return }
+        guard !isOffline else { return showStoredOrWait(browseId) }
+        if pathDoubt, waitingPages.contains(browseId) || storedPages.contains(browseId) { return }
+        storedPages.remove(browseId)
+        waitingPages.remove(browseId)
         let run = newRun()
         pageRuns[browseId] = run
         pages[browseId] = .loading
@@ -481,7 +743,7 @@ final class MusicBrowseStore {
     func loadMoreTracks(_ browseId: String) {
         guard case .loaded(let page)? = pages[browseId], let run = pageRuns[browseId],
               let token = page.continuation, !loadingMoreTracks.contains(browseId),
-              !loadingAllTracks.contains(browseId) else { return }
+              !loadingAllTracks.contains(browseId), !isOffline else { return }
         loadingMoreTracks.insert(browseId)
         launch("page+:\(browseId)") { [weak self, backend] in
             do {
@@ -501,9 +763,50 @@ final class MusicBrowseStore {
         onPageLoaded?(page, path.last { $0.browseId == browseId })
     }
 
+    /// The network's page for one that the download index is showing. The stored page stays up while it is out (the
+    /// list keeps its place) and is swapped for the network's only when it lands. A failure leaves the stored page up
+    /// and keeps the page in line for the next time the network returns.
+    private func refreshStoredPage(_ browseId: String) {
+        guard browseId != MusicDownloadService.songsBrowseId else { return }
+        guard isLoaded(pageState(browseId)) else { return reloadPage(browseId) }
+        waitingPages.remove(browseId)
+        let run = newRun()
+        pageRuns[browseId] = run
+        launch("page:\(browseId)") { [weak self, backend] in
+            do {
+                let page = try await backend.page(browseId: browseId)
+                self?.landRefreshedPage(page, browseId: browseId, run: run)
+            } catch {
+                self?.failRefreshedPage(error, browseId: browseId, run: run)
+            }
+        }
+    }
+
+    private func landRefreshedPage(_ page: MusicBrowsePage, browseId: String, run: Int) {
+        guard pageRuns[browseId] == run else { return }
+        loadingMoreTracks.remove(browseId)
+        loadingAllTracks.remove(browseId)
+        sortedPages[browseId] = nil
+        forgetReleaseYears(browseId)
+        landPage(page, browseId: browseId, run: run)
+    }
+
+    private func failRefreshedPage(_ error: any Error, browseId: String, run: Int) {
+        guard pageRuns[browseId] == run else { return }
+        logger.info("stored page refresh failed: \(MusicService.logDescription(of: error), privacy: .public)")
+        pageRuns[browseId] = nil
+        storedPages.insert(browseId)
+        expireIfSignedOut(error)
+    }
+
     private func failPage(_ error: any Error, browseId: String, run: Int) {
         guard pageRuns[browseId] == run else { return }
+        if cutByDoubtfulPath(error) {
+            // The downloaded collection's own page when there is one, else nothing and a wait for the first report.
+            return showStoredOrWait(browseId)
+        }
         pages[browseId] = .failed(describe(error))
+        if isOffline { waitingPages.insert(browseId) }
         expireIfSignedOut(error)
     }
 
@@ -637,7 +940,7 @@ final class MusicBrowseStore {
     /// The page as the list shows it and as Play queues it: in the playlist's sort once all its songs are here
     /// (with no more to load, so a queue made from it ends where the sorted list does), else as loaded.
     func displayedPage(_ browseId: String) -> MusicBrowsePage? {
-        guard case .loaded(let page)? = pages[browseId] else { return nil }
+        guard case .loaded(let page) = pageState(browseId) else { return nil }
         let sort = sort(for: browseId)
         guard needsReorder(browseId), !loadingAllTracks.contains(browseId), !waitsForReleaseYears(browseId) else { return page }
         if let cached = sortedPages[browseId], cached.sort == sort { return cached.page }
@@ -677,7 +980,7 @@ final class MusicBrowseStore {
     private func loadAllTracksIfReordering(_ browseId: String) {
         guard needsReorder(browseId), case .loaded(let page)? = pages[browseId], let run = pageRuns[browseId],
               page.continuation != nil, page.tracks.count < Self.sortTrackCap,
-              !loadingAllTracks.contains(browseId) else { return }
+              !loadingAllTracks.contains(browseId), !isOffline else { return }
         loadingAllTracks.insert(browseId)
         launch("page*:\(browseId)") { [weak self] in
             await self?.loadRemainingTracks(browseId, run: run)
@@ -740,7 +1043,7 @@ final class MusicBrowseStore {
     /// A discography page that fails is logged and left out until the next pick of Release date asks again.
     private func loadReleaseYearsIfNeeded(_ browseId: String) {
         guard sort(for: browseId).field == .releaseDate, releaseYears[browseId]?.isComplete != true,
-              !loadingReleaseYears.contains(browseId), let run = pageRuns[browseId] else { return }
+              !loadingReleaseYears.contains(browseId), let run = pageRuns[browseId], !isOffline else { return }
         let artist = artistPage(listing: browseId)
         var seed = MusicReleaseYears()
         seed.add((artist?.shelves ?? []).flatMap(\.items).compactMap { item in
@@ -833,6 +1136,8 @@ final class MusicBrowseStore {
         for key in ["page:\(browseId)", "page+:\(browseId)", "page*:\(browseId)"] { tasks.removeValue(forKey: key)?.cancel() }
         pageRuns[browseId] = nil
         pages[browseId] = nil
+        storedPages.remove(browseId)
+        waitingPages.remove(browseId)
         loadingMoreTracks.remove(browseId)
         loadingAllTracks.remove(browseId)
         sortedPages[browseId] = nil
@@ -853,6 +1158,11 @@ final class MusicBrowseStore {
         libraryRuns.removeAll()
         libraryTokens.removeAll()
         pageRuns.removeAll()
+        waitingHome = false
+        waitingHistory = false
+        waitingLibrary.removeAll()
+        waitingPages.removeAll()
+        storedPages.removeAll()
         home = .idle
         isLoadingMoreHome = false
         canLoadMoreHome = false
@@ -877,6 +1187,25 @@ final class MusicBrowseStore {
     }
 
     // MARK: - Helpers
+
+    private func isLoaded<Value>(_ load: Load<Value>) -> Bool {
+        if case .loaded = load { true } else { false }
+    }
+
+    /// A page opened with no network: the downloaded collection's own page, built from the index, or nothing (the page
+    /// shows the offline note) and a wait for the network. Nothing is sent, and a page that already shows is left alone.
+    private func showStoredOrWait(_ browseId: String) {
+        if isLoaded(pageState(browseId)) { return }
+        if let page = downloads?.downloadedPage(browseId: browseId) {
+            pages[browseId] = .loaded(page)
+            pageRuns[browseId] = nil
+            storedPages.insert(browseId)
+            waitingPages.remove(browseId)
+        } else {
+            pages[browseId] = nil
+            waitingPages.insert(browseId)
+        }
+    }
 
     private func newRun() -> Int {
         runCounter += 1

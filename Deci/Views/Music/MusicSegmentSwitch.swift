@@ -8,6 +8,8 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
         let value: Value
         let title: String
         var icon: String?
+        /// A segment that is not enabled dims and answers nothing (Playlists and Albums while there is no network).
+        var isEnabled = true
 
         var id: Value { value }
     }
@@ -41,6 +43,7 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
                             .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
                     }
                     .foregroundStyle(Color.white.opacity(isSelected ? MusicStyle.Opacity.heading : MusicStyle.Opacity.idleControl))
+                    .opacity(segment.isEnabled ? 1 : MusicStyle.Opacity.disabledSegment)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 4)
                     .background {
@@ -53,6 +56,7 @@ struct MusicSegmentSwitch<Value: Hashable>: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(!segment.isEnabled)
                 .accessibilityLabel(segment.title)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
@@ -83,5 +87,12 @@ extension MusicLibrarySection {
 
     static var segments: [MusicSegmentSwitch<Self>.Segment] {
         allCases.map { .init(value: $0, title: $0.title) }
+    }
+}
+
+extension MusicLibraryTab {
+    /// The three tabs of Library, in order. `isEnabled` says which answer: offline only Downloads does.
+    static func segments(isEnabled: (MusicLibraryTab) -> Bool) -> [MusicSegmentSwitch<Self>.Segment] {
+        allCases.map { .init(value: $0, title: $0.title, isEnabled: isEnabled($0)) }
     }
 }

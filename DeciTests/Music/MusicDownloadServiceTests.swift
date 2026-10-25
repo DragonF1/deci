@@ -36,7 +36,8 @@ struct DownloadServiceRig {
         covers: (any MusicCoverFetching)? = nil,
         resolver: FakeDownloadResolver = FakeDownloadResolver(),
         pause: RecordingPause = RecordingPause(),
-        beforeCollectionChange: (@Sendable (String) -> Void)? = nil
+        beforeCollectionChange: (@Sendable (String) -> Void)? = nil,
+        connectivity: MusicConnectivity? = nil
     ) {
         self.folder = folder
         self.clock = clock
@@ -54,7 +55,8 @@ struct DownloadServiceRig {
             source: source ?? backend.map { MusicCollectionSource(backend: $0) },
             covers: covers,
             pause: pause.closure,
-            now: { clock.now }
+            now: { clock.now },
+            connectivity: connectivity
         )
     }
 

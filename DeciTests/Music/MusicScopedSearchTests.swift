@@ -574,6 +574,29 @@ struct MusicSearchLibrarySongsTests {
         #expect(await h.backend.searchedQueries.isEmpty)
     }
 
+    @Test("on the Downloads tab the Library filter asks for no Liked music and has no Songs block")
+    func downloadsTabAsksForNothing() async {
+        let h = ScopedHarness()
+        await liked(h, ["Night Drive"])
+        h.nav.select(.library)
+        h.browse.selectLibraryTab(.downloads)
+        #expect(h.browse.libraryTab == .downloads)
+        h.nav.openField()
+
+        h.type("night")
+        h.nav.startScopedLoad()
+
+        #expect(h.nav.scopedLoadTarget == nil)
+        #expect(h.nav.likedSongs == nil)
+        #expect(!h.nav.isScopedLoadPending)
+        #expect(h.browse.pageState(ScopedHarness.likedId) == .idle)
+        #expect(await h.backend.pageCalls.isEmpty)
+
+        // Back on Playlists the same words ask for it.
+        h.browse.selectLibraryTab(.playlists)
+        #expect(h.nav.scopedLoadTarget == ScopedHarness.likedId)
+    }
+
     /// Ways a Library filter ends or empties; each has to let go of the Liked music page it loaded.
     enum Ending: String, CaseIterable {
         case clearButton, typedEmpty, escape, escapeTwice, columnMoved, reset

@@ -36,8 +36,8 @@ final class MusicLyricsStore {
     static let busyMessage = "Lyrics service is busy. Trying again shortly."
 
     /// The store the app uses: lyrics from YouTube Music, with LRCLIB behind it and a disk cache in front.
-    static func live() -> MusicLyricsStore {
-        MusicLyricsStore(provider: LyricsChain.live())
+    static func live(connectivity: MusicConnectivity? = nil) -> MusicLyricsStore {
+        MusicLyricsStore(provider: LyricsChain.live(), connectivity: connectivity)
     }
 
     private(set) var state: State = .idle
@@ -109,15 +109,34 @@ final class MusicLyricsStore {
     @ObservationIgnored private(set) var loadTask: Task<Void, Never>?
     /// The timer that asks again when a busy or server-error window ends. At most one, and only while watching.
     @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private let connectivity: MusicConnectivity?
+    /// The state on screen is the "no lyrics" answer given because the network was gone, not one a source gave. It is
+    /// replaced by a fetch when the network returns.
+    @ObservationIgnored private var answeredOffline = false
 
     init(
         provider: any LyricsProviding,
         now: @escaping @Sendable () -> Date = Date.init,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        connectivity: MusicConnectivity? = nil
     ) {
         self.provider = provider
         self.now = now
         self.sleep = sleep
+        self.connectivity = connectivity
+        connectivity?.observe { [weak self] online in
+            if online { self?.networkReturned() }
+        }
+    }
+
+    /// The network is back: lyrics that were answered as missing only because it was gone are fetched, at once while the
+    /// panel is watched and else when it next opens. Lyrics a source gave are left alone.
+    private func networkReturned() {
+        guard answeredOffline else { return }
+        answeredOffline = false
+        guard case .loaded(.notFound) = state else { return }
+        state = .idle
+        fetchIfNeeded(debounced: false)
     }
 
     // MARK: - Panel and popup
@@ -169,6 +188,7 @@ final class MusicLyricsStore {
         }
         cancelFetch()
         state = .idle
+        answeredOffline = false
         track = new
         self.duration = known
         lookupLacksDuration = false
@@ -223,6 +243,7 @@ final class MusicLyricsStore {
     func reset() {
         cancelFetch()
         state = .idle
+        answeredOffline = false
         track = nil
         duration = nil
         lookupLacksDuration = false
@@ -241,10 +262,19 @@ final class MusicLyricsStore {
         case .busy(let until): guard until <= now() else { return }
         case .loading, .loaded: return
         }
-        runCounter += 1
-        let run = runCounter
         retryTask?.cancel()
         retryTask = nil
+        // No network: no source is asked. The panel lands on the same state a song without lyrics gets, which is no
+        // spinner and no error, and the fetch is made when the network returns.
+        if connectivity?.isOnline == false {
+            runCounter += 1
+            answeredOffline = true
+            loadedCredit = nil
+            state = .loaded(.notFound)
+            return
+        }
+        runCounter += 1
+        let run = runCounter
         state = .loading
         loadTask = Task { [weak self, provider, sleep] in
             if debounced {
@@ -287,6 +317,7 @@ final class MusicLyricsStore {
     /// credit with it. An answer that does not depend on the length ends the wait for one.
     private func land(_ answer: LyricsAnswer, run: Int) {
         guard run == runCounter else { return }
+        answeredOffline = false
         if !answer.lengthMatters { lookupLacksDuration = false }
         loadedCredit = answer.credit
         land(.loaded(answer.result), run: run)

@@ -8,6 +8,8 @@ import SwiftUI
 struct MusicSignedOutView: View {
     let service: MusicService
     let isSigningIn: Bool
+    /// Opens the downloaded music in place of this note; nil leaves the link out.
+    var openDownloads: (() -> Void)?
 
     /// The room under the stack, which lifts it above the middle of the column.
     private static let bottomPadding: CGFloat = 36
@@ -43,24 +45,17 @@ struct MusicSignedOutView: View {
                 .frame(maxWidth: Self.descriptionWidth)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 6)
-            Button {
-                service.signIn()
-            } label: {
-                Text("Sign in")
-                    .musicText(MusicStyle.Typeface.stateButton)
-                    .foregroundStyle(MusicStyle.Palette.popupBackground)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 6)
-                    .background(Capsule(style: .continuous).fill(Color.white.opacity(0.95)))
-                    .contentShape(Capsule(style: .continuous))
-            }
-            .buttonStyle(MusicSignInPress())
-            .accessibilityLabel("Sign in to YouTube Music")
-            .padding(.top, 16)
+            MusicSignInButton(service: service)
+                .padding(.top, 16)
             Text("Opens a sign-in window")
                 .musicText(MusicStyle.Typeface.secondary)
                 .foregroundStyle(Color.white.opacity(0.40))
                 .padding(.top, 8)
+            // Downloaded songs play without an account.
+            if let openDownloads, service.browse.hasDownloads {
+                MusicOpenDownloadsLink(action: openDownloads)
+                    .padding(.top, 14)
+            }
             if let message = service.lastError {
                 Text(message)
                     .musicText(MusicStyle.Typeface.caption)
@@ -84,6 +79,28 @@ struct MusicSignedOutView: View {
                 .padding(.top, 14)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// The white Sign in button: opens the sign-in window. The signed-out column uses it, and so does the signed-out note
+/// that stands in for Home, History and a page that is not downloaded.
+struct MusicSignInButton: View {
+    let service: MusicService
+
+    var body: some View {
+        Button {
+            service.signIn()
+        } label: {
+            Text(MusicOfflineCopy.signInButton)
+                .musicText(MusicStyle.Typeface.stateButton)
+                .foregroundStyle(MusicStyle.Palette.popupBackground)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+                .background(Capsule(style: .continuous).fill(Color.white.opacity(0.95)))
+                .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(MusicSignInPress())
+        .accessibilityLabel("Sign in to YouTube Music")
     }
 }
 

@@ -62,11 +62,24 @@ final class MusicService {
     let pinnedItems: MusicPinnedItems
     /// The downloaded songs, which play from their files. Nil in a service built without them (a preview, most tests).
     let downloads: MusicDownloadService?
+    /// Whether the network is reachable. Nil in a service built without it (a preview, most tests): always online.
+    @ObservationIgnored private let connectivity: MusicConnectivity?
+    /// The network is gone. Observable: the views that read it redraw when it goes and when it returns.
+    var isOffline: Bool {
+        guard let connectivity else { return false }
+        return !connectivity.isOnline
+    }
     /// Next is on while a track follows. At the last track it stays on when something can still follow: Loop playlist
     /// wraps to the first track, a page waits for its next page or the radio that is loading, and Autoplay (with Loop
     /// playlist off) plays the staged radio or asks for a new one. A mix that can still grow always has more. With Autoplay
     /// off a radio queue has only the songs the listener queued: its radio is parked.
     var canGoNext: Bool {
+        // Offline only a downloaded song can follow, and nothing is coming from the network: the queue ends at the last one
+        // (Loop playlist starts it over from the first).
+        if isOffline {
+            if queue.hasNext(where: canPlayNow) { return true }
+            return loopMode == .playlist && queue.tracks.contains(where: canPlayNow)
+        }
         if queue.hasNext { return true }
         if queue.isEmpty { return false }
         if queue.mixHasMore { return true }
@@ -223,6 +236,9 @@ final class MusicService {
     @ObservationIgnored private var wasPlaying = false
 
     @ObservationIgnored private var searchGeneration = 0
+    /// The search that was asked for while offline, or cut by the network going: it runs once, when the network returns.
+    /// Clearing the query forgets it.
+    @ObservationIgnored private var deferredSearch: String?
     @ObservationIgnored private var playGeneration = 0
     /// Each account fetch names itself with the next number and only lands while it is still the latest,
     /// so a slower earlier one, or one that left before a sign-out, can never fill in the wrong account.
@@ -260,10 +276,12 @@ final class MusicService {
         // Where the session is remembered between launches; nil (a test's default) remembers nothing.
         sessionStore: MusicSessionStore? = nil,
         downloads: MusicDownloadService? = nil,
+        connectivity: MusicConnectivity? = nil,
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
-        let browse = MusicBrowseStore(backend: backend)
+        self.connectivity = connectivity
+        let browse = MusicBrowseStore(backend: backend, connectivity: connectivity, downloads: downloads)
         self.browse = browse
         self.trackActions = MusicTrackActionsStore(backend: backend, browse: browse)
         self.likes = MusicLikeStore(backend: backend)
@@ -316,6 +334,9 @@ final class MusicService {
             self?.ratingRolledBack(videoId: videoId, shown: shown)
         }
         browse.onPageLoaded = { [weak self] page, opener in self?.pageLoaded(page, opener: opener) }
+        // Signed out the store shows the downloads only, like it does with the network down.
+        browse.accountGone = { [weak self] in self?.authState == .signedOut }
+        connectivity?.observe { [weak self] online in self?.connectivityChanged(online) }
         if refreshOnCreate {
             authRefreshTask = Task { [weak self] in await self?.refreshAuth() }
         }
@@ -353,9 +374,40 @@ final class MusicService {
     /// A sign-in is in place: the account's details are read, and so is the state of a song that was already playing,
     /// which was skipped while signed out. The downloaded playlists and albums are synced once per launch, from here.
     private func didSignIn() {
-        refreshIdentity()
+        browse.accountReturned()
+        // A Related panel that could not ask without the account asks now.
+        related.connectionReturned()
+        // Offline the account cannot be read: it is, when the network returns (see `connectivityChanged`).
+        if !isOffline { refreshIdentity() }
         loadLikeStatus()
         downloads?.signInKnown()
+    }
+
+    /// The network came back (going away needs nothing: what is in flight fails on its own, and the stores hold their
+    /// failures for the return). What was held back runs now: the search, the account's details, the like state of the
+    /// song playing, and the queue's top-up, which asks the radio or the next page that was never asked for.
+    private func connectivityChanged(_ online: Bool) {
+        guard online else { return networkLost() }
+        queueRetryAttempts = 0
+        related.connectionReturned()
+        if deferredSearch != nil { search() }
+        if authState == .signedIn {
+            if isBrandChannel == nil { refreshChannelIdentity() }
+            if account == nil { refreshAccount() }
+            if sessionChannelKey == nil { refreshSessionKey() }
+            loadLikeStatus()
+        }
+        topUpQueue()
+    }
+
+    /// The network went. A radio or page fetch that is out is cancelled instead of waited out (it would only fail after
+    /// the connection's own timeout), and a Next that was parked behind it settles at once: the song plays on, since
+    /// nothing is coming. The fetch is asked for again when the network returns (see `connectivityChanged`).
+    private func networkLost() {
+        guard radioTask != nil || queueRetryTask != nil else { return }
+        cancelRadio()
+        guard !resumePendingAdvance() else { return }
+        settlePendingAdvance()
     }
 
     func signIn() {
@@ -646,6 +698,7 @@ final class MusicService {
         trackingTask?.cancel()
         trackingTask = nil
         isSearching = false
+        deferredSearch = nil
         #if DEBUG
         memoryProbe?.cancel()
         #endif
@@ -726,10 +779,20 @@ final class MusicService {
             sessionStore.delete()
             return
         }
-        // Without the account a session cannot be told to be this one's: left on disk for the next launch.
-        guard let key = await backend.sessionIdentity() else {
-            logger.info("session not restored: account unknown")
-            return
+        // Without the account a session cannot be told to be this one's: left on disk for the next launch. With no
+        // network the account cannot be read at all: the one session on disk is taken as this one's, and the key is read
+        // when the network returns (see `connectivityChanged`).
+        var key: String?
+        if !isOffline { key = await backend.sessionIdentity() }
+        if key == nil, !isOffline {
+            // Before the system's first word on the network the account may be unreadable only because the network is
+            // gone: wait for the word, and carry on as the offline launch does when it says so.
+            await waitForFirstReport()
+            guard generation == playGeneration, !Task.isCancelled else { return }
+            if !isOffline {
+                logger.info("session not restored: account unknown")
+                return
+            }
         }
         guard generation == playGeneration, !Task.isCancelled, authState == .signedIn else { return }
         sessionChannelKey = key
@@ -738,11 +801,28 @@ final class MusicService {
             sessionStore.delete()
             return
         }
+        // Offline, a song that is not downloaded cannot start. The queue is put back all the same, with that song selected
+        // and nothing loading: Play moves on to the next downloaded song (see `resume`).
+        if isOffline, await downloadedStream(of: track.videoId) == nil {
+            guard generation == playGeneration, !Task.isCancelled else { return }
+            parkRestoredQueue(snapshot, current: track)
+            return
+        }
         let stream: ResolvedStream
         do {
             stream = try await streamForSource(of: track.videoId)
         } catch {
             guard generation == playGeneration, !Task.isCancelled, !Self.isCancellation(error) else { return }
+            // The network failing is no fault of the session: when the path is unreported the word decides, and with no
+            // network the queue is put back as the offline launch does, to play from the files, and the session is kept.
+            if MusicConnectivity.isNetworkFailure(error) {
+                await waitForFirstReport()
+                guard generation == playGeneration, !Task.isCancelled else { return }
+                if isOffline {
+                    parkRestoredQueue(snapshot, current: track)
+                    return
+                }
+            }
             // Nothing plays and the neighbours are not tried: the session is dropped whole.
             logger.error("session restore failed: \(Self.logDescription(of: error), privacy: .public)")
             sessionStore.delete()
@@ -770,6 +850,25 @@ final class MusicService {
         topUpQueue()
     }
 
+    /// Puts the remembered queue back with its current song selected and nothing loading (a song that cannot start with
+    /// no network). Play moves on to the next downloaded song (see `resume`).
+    private func parkRestoredQueue(_ snapshot: MusicSessionSnapshot, current track: MusicTrack) {
+        queue = snapshot.queue
+        direction = .forward
+        failureStreak = 0
+        queueRetryAttempts = 0
+        session = nil
+        restoredVideoId = track.videoId
+        lastSavedSession = snapshot
+        player.beginLoading(track)
+        player.failLoading()
+    }
+
+    /// Returns at once when the system has said whether there is a network, else when its first word comes.
+    private func waitForFirstReport() async {
+        await connectivity?.firstReport()
+    }
+
     // MARK: - Search
 
     /// Searches for `query`: run on Return, and as the owner types. A newer search replaces the one in flight.
@@ -779,6 +878,7 @@ final class MusicService {
         let generation = searchGeneration
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
+            deferredSearch = nil
             results = []
             artistResults = []
             albumResults = []
@@ -786,6 +886,18 @@ final class MusicService {
             searchTask = nil
             return
         }
+        // No network: nothing is asked and nothing spins. The words are kept, and the search runs once when it returns.
+        guard !isOffline else {
+            deferredSearch = trimmed
+            results = []
+            artistResults = []
+            albumResults = []
+            isSearching = false
+            lastError = nil
+            searchTask = nil
+            return
+        }
+        deferredSearch = nil
         isSearching = true
         lastError = nil
         searchTask = Task { [weak self] in
@@ -862,6 +974,11 @@ final class MusicService {
         } catch {
             guard generation == searchGeneration else { return }
             isSearching = false
+            // The network went while the search was on its way: it is not an error, it runs again when the network returns.
+            if isOffline, error is URLError {
+                deferredSearch = term
+                return
+            }
             handle(error)
         }
     }
@@ -926,6 +1043,8 @@ final class MusicService {
 
     /// Plays a tapped track. With Autoplay, a radio queue starts behind it; without, the song plays alone and stops.
     func play(_ track: MusicTrack) {
+        // Offline a song that is not downloaded does not start, and what is playing is left alone.
+        guard canPlayNow(track) else { return }
         noteActivity()
         queue.start(with: track)
         // The radio's pages are mixed in as they land.
@@ -933,7 +1052,9 @@ final class MusicService {
         direction = .forward
         failureStreak = 0
         queueRetryAttempts = 0
-        if isAutoplayOn {
+        // The radio is asked for when the network is back (see `connectivityChanged`), and never for a downloaded song
+        // played with the account gone.
+        if isAutoplayOn, !holdsBackRequests {
             startRadio(seed: track.videoId)
         } else {
             // A radio still loading for the last queue must not land in this one.
@@ -947,16 +1068,20 @@ final class MusicService {
     /// (the radio of the last song when YouTube names none). A mix page is an endless mix: it is asked for more after its
     /// last song whatever Autoplay and Loop say.
     func play(_ track: MusicTrack, in page: MusicBrowsePage) {
+        guard canPlayNow(track) else { return }
         noteActivity()
         // A page is its own order: a radio left over from the last queue must not add to it.
         cancelRadio()
+        // Offline, or signed out from a song's file, the page is its downloaded songs: the rest cannot play, its later pages
+        // and its mix cannot be asked for.
+        let offline = isOffline || (authState == .signedOut && isDownloaded(track))
         queue.start(
-            page: page.tracks,
+            page: offline ? page.tracks.filter(isDownloaded) : page.tracks,
             playing: track,
             browseId: page.browseId,
-            continuation: page.continuation,
-            automixPlaylistId: page.automixPlaylistId,
-            mixPlaylistId: page.mixPlaylistId
+            continuation: offline ? nil : page.continuation,
+            automixPlaylistId: offline ? nil : page.automixPlaylistId,
+            mixPlaylistId: offline ? nil : page.mixPlaylistId
         )
         // The row that was tapped plays first; every other row, the ones above it too, is mixed in after it.
         if isShuffleOn { queue.shuffle(mixingEarlier: true, using: &shuffleGenerator) }
@@ -966,9 +1091,25 @@ final class MusicService {
         begin(track)
     }
 
+    /// "Play" on a playlist or album page: starts from its first song that can play. That is its first song, except offline
+    /// and signed out, where it is the first one that is downloaded.
+    func playFirst(of page: MusicBrowsePage) {
+        guard let first = playableTracks(of: page).first else { return }
+        play(first, in: page)
+    }
+
+    /// The songs of `page` a start can begin from: all of them, minus the ones that cannot play now. Signed out, the
+    /// downloaded ones when there are any: they are the ones that can play without an account.
+    private func playableTracks(of page: MusicBrowsePage) -> [MusicTrack] {
+        let ready = page.tracks.filter(canPlayNow)
+        guard authState == .signedOut else { return ready }
+        let local = ready.filter(isDownloaded)
+        return local.isEmpty ? ready : local
+    }
+
     /// "Shuffle" on a playlist or album page: turns shuffle on and starts from a random track of the page.
     func playShuffled(_ page: MusicBrowsePage) {
-        guard let track = page.tracks.randomElement(using: &shuffleGenerator) else { return }
+        guard let track = playableTracks(of: page).randomElement(using: &shuffleGenerator) else { return }
         if !isShuffleOn {
             isShuffleOn = true
             savePlaybackPreferences()
@@ -981,6 +1122,7 @@ final class MusicService {
     /// Play next: the song plays right after the current one. With nothing queued it just starts the song, like a tap
     /// on a lone song: with Autoplay, a radio behind it.
     func playNext(_ track: MusicTrack) {
+        guard canPlayNow(track) else { return }
         guard !queue.isEmpty else { return play(track) }
         guard queue.playNext(track) else { return }
         noteActivity()
@@ -992,6 +1134,7 @@ final class MusicService {
     /// Add to queue: the song goes after the queue's own songs and before the radio that follows. With nothing queued it
     /// just starts the song, like a tap on a lone song: with Autoplay, a radio behind it.
     func addToQueue(_ track: MusicTrack) {
+        guard canPlayNow(track) else { return }
         guard !queue.isEmpty else { return play(track) }
         guard queue.addToQueue(track) else { return }
         noteActivity()
@@ -1106,6 +1249,14 @@ final class MusicService {
         guard let track = player.nowPlaying else { return }
         guard !player.hasStream, !player.isLoading else { return player.play() }
         failureStreak = 0
+        // Offline the selected song may be one that cannot start (a session restored without the network): the next
+        // downloaded song plays in its place, or nothing does when there is none.
+        if !canPlayNow(track) {
+            direction = .forward
+            guard let next = queue.advance(where: canPlayNow) else { return }
+            begin(next)
+            return
+        }
         begin(track)
     }
 
@@ -1114,8 +1265,9 @@ final class MusicService {
         direction = .forward
         failureStreak = 0
         guard let track = advanceQueue() else {
-            // The radio may still be loading: keep playing and move on when its page lands.
-            if !awaitRadio(for: .skipped), !wrapAround() { stopPlayback() }
+            // The radio may still be loading: keep playing and move on when its page lands. Offline there is no radio and
+            // the queue ends at its last downloaded song: Next leaves it playing.
+            if !awaitRadio(for: .skipped), !wrapAround(), !isOffline { stopPlayback() }
             return
         }
         begin(track)
@@ -1125,19 +1277,21 @@ final class MusicService {
     func previous() {
         noteActivity()
         guard player.nowPlaying != nil else { return }
-        if player.currentTime > Self.restartThreshold || !queue.hasPrevious {
+        let hasPrevious = isOffline ? queue.hasPrevious(where: canPlayNow) : queue.hasPrevious
+        if player.currentTime > Self.restartThreshold || !hasPrevious {
             // A track that ended replays through play(), which also rewinds it.
             if player.hasEnded { player.play() } else { seek(to: 0) }
             return
         }
         direction = .backward
         failureStreak = 0
-        guard let track = queue.retreat() else { return }
+        guard let track = retreatQueue() else { return }
         begin(track)
     }
 
     /// Plays a track that is already in the queue.
     func jump(to track: MusicTrack) {
+        guard canPlayNow(track) else { return }
         noteActivity()
         guard let target = queue.jump(to: track.videoId) else { return }
         direction = .forward
@@ -1218,7 +1372,27 @@ final class MusicService {
     /// restore, playback and prefetch sites all start here. A refresh after a failure does not: it goes to the network.
     private func streamForSource(of videoId: String) async throws -> ResolvedStream {
         if let local = await downloadedStream(of: videoId) { return local }
+        // No network: a song with no file has nowhere to play from, and nothing is asked.
+        if isOffline { throw URLError(.notConnectedToInternet) }
         return try await backend.resolve(videoId: videoId)
+    }
+
+    /// The song can start now: it is downloaded, or the network is there for a stream.
+    private func canPlayNow(_ track: MusicTrack) -> Bool {
+        !isOffline || isDownloaded(track)
+    }
+
+    private func isDownloaded(_ track: MusicTrack) -> Bool {
+        downloads?.state(for: track.videoId) == .downloaded
+    }
+
+    /// The queue asks the network for no radio, mix or page: there is none, or the account is gone and the song that
+    /// plays comes from its file (a request for the account's radio would only end in a sign-out that clears the pages).
+    /// A song that streams while signed out is not held back: it behaves as it always did.
+    private var holdsBackRequests: Bool {
+        if isOffline { return true }
+        guard authState == .signedOut, let id = queue.current?.videoId else { return false }
+        return downloads?.state(for: id) == .downloaded
     }
 
     /// The downloaded file, waiting first for the downloads of earlier launches to be read from disk.
@@ -1231,6 +1405,13 @@ final class MusicService {
     /// Used by the player to replace a dead or expired stream. The playback session carries on.
     private func resolveFreshStream(for track: MusicTrack) async throws -> ResolvedStream {
         let generation = playGeneration
+        // With no network, or no account to ask with, a file that fails has nowhere to retry: the song stays failed, and
+        // nothing is asked (an answer of "signed out" would clear the pages the listener is looking at).
+        if isOffline || (authState == .signedOut && player.isPlayingLocalFile) {
+            let error = URLError(.notConnectedToInternet)
+            refreshError = error
+            throw error
+        }
         // A downloaded file that fails gets the network stream as its one retry. No id or path in the line.
         if player.isPlayingLocalFile { logger.error("downloaded file failed to play, retrying through the network") }
         do {
@@ -1267,7 +1448,8 @@ final class MusicService {
     private func fetchTrackingURLs(for stream: ResolvedStream, generation: Int) {
         trackingTask?.cancel()
         trackingTask = nil
-        guard stream.url.isFileURL else { return }
+        // Offline the pings have nowhere to go, and signed out there is no History: a song from its file asks nothing.
+        guard stream.url.isFileURL, !isOffline, authState != .signedOut else { return }
         let videoId = stream.videoId
         trackingTask = Task { [weak self, backend] in
             let fresh: ResolvedStream
@@ -1328,15 +1510,24 @@ final class MusicService {
     /// The next track of the queue. At the end of a page, with Autoplay, the staged radio joins the queue and its first
     /// track plays.
     private func advanceQueue() -> MusicTrack? {
+        // Offline the songs that are not downloaded are stepped over, and no staged radio joins the queue: the queue ends
+        // at the last downloaded song.
+        if isOffline { return queue.advance(where: canPlayNow) }
         if let track = queue.advance() { return track }
         guard playsAutoplay, queue.takeAutoplay() else { return nil }
         return queue.advance()
     }
 
+    /// The song before the current one, stepping over the ones that cannot play offline.
+    private func retreatQueue() -> MusicTrack? {
+        isOffline ? queue.retreat(where: canPlayNow) : queue.retreat()
+    }
+
     /// Loop playlist: starts the queue over from the first track of its play order (a shuffled queue from its shuffled
-    /// start). False when the queue does not loop.
+    /// start; offline the first one that can play). False when the queue does not loop.
     private func wrapAround() -> Bool {
-        guard loopMode == .playlist, let first = queue.wrapToStart() else { return false }
+        guard loopMode == .playlist else { return false }
+        guard let first = isOffline ? queue.wrapToStart(where: canPlayNow) : queue.wrapToStart() else { return false }
         direction = .forward
         begin(first)
         return true
@@ -1362,7 +1553,8 @@ final class MusicService {
         failureStreak += 1
         logger.error("track failed: \(Self.logDescription(of: error), privacy: .public)")
         let exhausted = failureStreak >= Self.maxFailures
-        if Self.skipsTrack(error) {
+        // Offline a song with no file (it vanished from disk) is as good as unplayable: the next downloaded song is tried.
+        if Self.skipsTrack(error) || (isOffline && (error as? URLError)?.code == .notConnectedToInternet) {
             if skipToNeighbour() { return }
             // The last song of a page whose mix or radio is still on its way: wait for it (it parks as `.skipped`, a
             // resolve failure leaves no player error) and keep the song selected, as a player failure does.
@@ -1393,7 +1585,8 @@ final class MusicService {
             endQueue()
             return
         }
-        if authState == .signedOut {
+        // A downloaded song that fails to play signed out stays failed like any other: the queue is the listener's.
+        if authState == .signedOut, downloads?.state(for: player.nowPlaying?.videoId ?? "") != .downloaded {
             player.stop()
             endQueue()
             return
@@ -1414,10 +1607,11 @@ final class MusicService {
     /// failure cap still stops a queue in which nothing plays.
     private func skipToNeighbour() -> Bool {
         guard failureStreak < Self.maxFailures else { return false }
-        if direction == .forward, queue.upcomingCount == 0, loopMode == .playlist, !queue.isEmpty, !queue.mixHasMore {
+        let atEnd = isOffline ? !queue.hasNext(where: canPlayNow) : queue.upcomingCount == 0
+        if direction == .forward, atEnd, loopMode == .playlist, !queue.isEmpty, !queue.mixHasMore {
             return wrapAround()
         }
-        guard let neighbour = direction == .forward ? advanceQueue() : queue.retreat() else { return false }
+        guard let neighbour = direction == .forward ? advanceQueue() : retreatQueue() else { return false }
         begin(neighbour)
         return true
     }
@@ -1483,7 +1677,8 @@ final class MusicService {
         case .skipped:
             // A radio that Autoplay off parked is not coming, but the song is not cut short: it plays on and stops at its
             // end, and the radio comes back with Autoplay.
-            if !wrapAround(), !parksRadio { stopPlayback() }
+            // Offline it is the same: nothing is coming, and the song plays on to its end.
+            if !wrapAround(), !parksRadio, !isOffline { stopPlayback() }
         case .failed:
             endQueue()
         }
@@ -1508,7 +1703,9 @@ final class MusicService {
     /// One fetch at a time; a fetch that starts replaces a retry that was waiting. `emptyPages` counts pages in a row
     /// that added nothing after de-duplication.
     private func topUpQueue(emptyPages: Int = 0) {
-        guard radioTask == nil, emptyPages < Self.maxEmptyPages else { return }
+        // No network (or no account, for a song from its file): no radio, mix or page is asked for. The ask that was held
+        // back is made when the network returns (see `connectivityChanged`).
+        guard !holdsBackRequests, radioTask == nil, emptyPages < Self.maxEmptyPages else { return }
         // A queue running out with nothing left to page asks for a radio: the first radio of a tapped song with
         // Autoplay (Loop playlist or not), then with Autoplay and Loop playlist off the radio of the last track. A
         // playlist or album page stages it as soon as it has loaded in full, whatever the number of songs left, so
@@ -1595,8 +1792,9 @@ final class MusicService {
                 topUpQueue(emptyPages: emptyPages + 1)
             } else {
                 // Anything else (network, 5xx) may pass: the same request is asked for again after a wait, unless the
-                // radio is parked: the next top-up under Autoplay on asks for it.
-                if !parksRadio { scheduleQueueRetry(emptyPages: emptyPages) }
+                // radio is parked: the next top-up under Autoplay on asks for it. With the network gone there is no use in
+                // waiting: the top-up that follows its return asks for it, and the waits are not spent.
+                if !parksRadio, !holdsBackRequests { scheduleQueueRetry(emptyPages: emptyPages) }
             }
             if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
             return
@@ -1693,6 +1891,8 @@ final class MusicService {
     // MARK: - Prefetch
 
     private func prefetchNextIfNeeded(position: TimeInterval) {
+        // Offline the next song is a file or it does not play: there is no stream to resolve ahead.
+        guard !isOffline else { return }
         let duration = player.duration
         let target = prefetchTarget
         guard duration > Self.prefetchLead * 2, duration - position <= Self.prefetchLead,
@@ -1749,6 +1949,12 @@ final class MusicService {
 
     // MARK: - Likes
 
+    /// The player column shows a song and its transport: signed in, or signed out with a downloaded song in the player (it
+    /// plays from its file, so the account is not needed to pause it or skip to the next).
+    var showsPlayerControls: Bool {
+        authState == .signedIn || (authState == .signedOut && player.nowPlaying != nil)
+    }
+
     /// The like buttons are on offer: signed in, with a song loaded in the player.
     var canRate: Bool {
         authState == .signedIn && player.nowPlaying != nil
@@ -1770,7 +1976,7 @@ final class MusicService {
     /// when the user shows interest in a song, so the menu can word Like and Dislike for it. Signed out there is no
     /// state to read, and nothing is asked.
     func loadLikeStatus(of track: MusicTrack) {
-        guard authState == .signedIn else { return }
+        guard authState == .signedIn, !isOffline else { return }
         likes.load(videoId: track.videoId)
     }
 
@@ -1951,6 +2157,9 @@ final class MusicService {
     /// Sends `pings` after any still waiting. They leave one at a time, in the order they were earned. A failed one is
     /// not retried and does not stop the ones behind it; one that has not left when the session is cancelled never does.
     private func enqueue(_ pings: [HistoryPing]) {
+        // Offline a ping has nowhere to go, and one kept for later would reach History as a listen of another hour: it is
+        // dropped.
+        guard !isOffline else { return }
         pendingPings += pings
         guard !isSendingPings else { return }
         isSendingPings = true

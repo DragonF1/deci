@@ -24,6 +24,16 @@ struct MusicSearchResultsView: View {
 
     @ViewBuilder
     private func content(_ panel: MusicSearchPanel) -> some View {
+        // No network: nothing is searched, so the one line stands in for every panel (nothing spins, nothing fails).
+        if service.isOffline {
+            MusicOfflineNote()
+        } else {
+            panelContent(panel)
+        }
+    }
+
+    @ViewBuilder
+    private func panelContent(_ panel: MusicSearchPanel) -> some View {
         switch panel {
         case .invite:
             EmptyView()

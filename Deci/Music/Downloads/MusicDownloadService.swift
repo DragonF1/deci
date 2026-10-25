@@ -40,6 +40,20 @@ struct MusicCollectionRequest: Equatable, Sendable {
     let coverURL: URL?
 }
 
+/// One downloaded playlist or album as the Downloads tab lists it.
+struct MusicDownloadedCollection: Equatable, Sendable, Identifiable {
+    let browseId: String
+    let title: String
+    /// What the row's second line says: how far a download has got, how many songs arrived when some did not, else the
+    /// subtitle the page had.
+    let subtitle: String
+    let kind: MusicDownloadStore.Collection.Kind
+    /// The saved cover file when there is one, else the address the page gave.
+    let thumbnailURL: URL?
+
+    var id: String { browseId }
+}
+
 /// The app's side of downloads: which songs and collections are downloaded or on their way, one download at a time, and
 /// the local stream playback prefers to the network.
 ///
@@ -98,6 +112,7 @@ final class MusicDownloadService {
     private let backoff: [TimeInterval]
     private let pageSyncInterval: TimeInterval
     private let now: @Sendable () -> Date
+    private let connectivity: MusicConnectivity?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var hasLoaded = false
     @ObservationIgnored private var removedBeforeLoad: Set<String> = []
@@ -131,6 +146,9 @@ final class MusicDownloadService {
     /// Cover pictures waiting to be fetched, in order, by a task of their own so the queue never waits for one.
     @ObservationIgnored private var coverJobs: [CoverJob] = []
     @ObservationIgnored private var coverTask: Task<Void, Never>?
+    /// How many times the network has gone since launch. A song or a page read that was under way when it moved was cut by
+    /// it, whatever error it ended with, even when the network is back by the time the error arrives.
+    @ObservationIgnored private var networkLosses = 0
 
     private enum CoverJob {
         case song(MusicTrack)
@@ -146,7 +164,8 @@ final class MusicDownloadService {
         songGap: TimeInterval = MusicDownloadService.songGap,
         backoff: [TimeInterval] = MusicDownloadService.backoffDelays,
         pageSyncInterval: TimeInterval = MusicDownloadService.pageSyncInterval,
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        connectivity: MusicConnectivity? = nil
     ) {
         self.store = store
         self.downloader = downloader
@@ -157,22 +176,27 @@ final class MusicDownloadService {
         self.backoff = backoff
         self.pageSyncInterval = pageSyncInterval
         self.now = now
+        self.connectivity = connectivity
         loadTask = Task { [weak self] in
             let loaded = await store.load()
             let stored = await store.collectionList()
             self?.finishLoading(loaded, collections: stored)
         }
+        connectivity?.observe { [weak self] online in self?.connectivityChanged(online) }
     }
 
     /// The service for the app: downloads under Application Support, streams resolved by `resolve`, collection pages read
     /// through `source` (nil turns whole-page downloads off).
     static func live(
         resolve: @escaping @Sendable (String) async throws -> ResolvedStream,
-        source: MusicCollectionSource? = nil
+        source: MusicCollectionSource? = nil,
+        connectivity: MusicConnectivity? = nil
     ) -> MusicDownloadService {
         let store = MusicDownloadStore(root: MusicDownloadStore.liveRoot())
         let downloader = MusicDownloader(store: store, transport: URLSessionDownloadTransport(), resolve: resolve)
-        return MusicDownloadService(store: store, downloader: downloader, source: source, covers: URLSessionCoverFetcher())
+        return MusicDownloadService(
+            store: store, downloader: downloader, source: source, covers: URLSessionCoverFetcher(), connectivity: connectivity
+        )
     }
 
     // MARK: - Reading
@@ -234,6 +258,116 @@ final class MusicDownloadService {
     /// The collection's small cover picture on disk, nil when it has none saved.
     func localCoverURL(forCollection browseId: String) -> URL? {
         guard let name = collections[browseId]?.coverFile, store.hasCover(named: name) else { return nil }
+        return store.coverURL(named: name)
+    }
+
+    // MARK: - The Downloads tab and the offline pages
+
+    /// The reserved id of the page that lists every downloaded song. It is no page YouTube Music knows: it is answered from
+    /// the index in memory and must never be sent anywhere.
+    nonisolated static let songsBrowseId = "DECI_DOWNLOADS"
+    nonisolated static let songsTitle = "Downloaded songs"
+
+    /// "No songs", "1 song", "42 songs": the subtitle of the Downloaded songs row and page.
+    nonisolated static func songCountText(_ count: Int) -> String {
+        count <= 0 ? "No songs" : (count == 1 ? "1 song" : "\(count) songs")
+    }
+
+    /// Every downloaded song, newest download first (songs downloaded in the same instant by video id), with the title and
+    /// artist that were stored with it.
+    var downloadedSongs: [MusicTrack] {
+        entries.values
+            .sorted { ($0.downloadedAt, $1.track.videoId) > ($1.downloadedAt, $0.track.videoId) }
+            .map(\.track)
+    }
+
+    /// How many songs are downloaded. Observable on its own, so the Downloads tab's pinned row redraws when it changes.
+    var downloadedSongCount: Int { entries.count }
+
+    /// The "Downloaded songs" page: every downloaded song newest first. It has no cover, nothing to continue and no
+    /// shelves, and it can't be edited.
+    func downloadedSongsPage() -> MusicBrowsePage {
+        MusicBrowsePage(
+            browseId: Self.songsBrowseId,
+            title: Self.songsTitle,
+            subtitle: Self.songCountText(entries.count),
+            thumbnailURL: nil,
+            tracks: downloadedSongs,
+            continuation: nil,
+            shelves: []
+        )
+    }
+
+    /// The downloaded playlists and albums, newest first, with a collection whose page has not been read yet at the top.
+    /// The subtitle says how far a download has got, or how many songs arrived when some did not, and otherwise is the
+    /// page's own. The cover is the saved file when there is one.
+    var downloadedCollections: [MusicDownloadedCollection] {
+        downloadedCollectionIds.compactMap { downloadedCollection(browseId: $0) }
+    }
+
+    /// The ids of `downloadedCollections`, in the same order, read without any download state: a list that only needs
+    /// the ids to lay its rows out is not redrawn by a progress tick. A row reads its own collection (`downloadedCollection`).
+    var downloadedCollectionIds: [String] {
+        var ids = pendingCollections.keys.filter { collections[$0] == nil }.sorted()
+        ids += collections.sorted { ($0.value.addedAt, $1.key) > ($1.value.addedAt, $0.key) }.map(\.key)
+        return ids
+    }
+
+    /// One entry of `downloadedCollections`; nil for an id that is neither stored nor on its way.
+    func downloadedCollection(browseId: String) -> MusicDownloadedCollection? {
+        guard let collection = collections[browseId] else {
+            guard let request = pendingCollections[browseId] else { return nil }
+            return MusicDownloadedCollection(
+                browseId: browseId,
+                title: request.title,
+                subtitle: MusicDownloadPage.metaText(collectionState(for: browseId)) ?? "Downloading",
+                kind: request.kind,
+                thumbnailURL: request.coverURL
+            )
+        }
+        let state = collectionState(for: browseId)
+        var subtitle = collection.subtitle.isEmpty
+            ? (collection.kind == .album ? "Album" : "Playlist")
+            : collection.subtitle
+        switch state {
+        case .none:
+            break
+        case .downloading, .updating:
+            subtitle = MusicDownloadPage.metaText(state) ?? subtitle
+        case .downloaded(let done, let total):
+            if done < total { subtitle = MusicDownloadPage.metaText(state) ?? subtitle }
+        }
+        return MusicDownloadedCollection(
+            browseId: browseId,
+            title: collection.title,
+            subtitle: subtitle,
+            kind: collection.kind,
+            thumbnailURL: localCoverURL(forCollection: browseId) ?? collection.coverURL
+        )
+    }
+
+    /// A stored collection's page built from the index alone: its title, subtitle and saved cover, and the songs that are
+    /// on disk in the stored order. Nil for an id that is no stored collection (a first download still being read, an
+    /// unknown page, the Downloaded songs page).
+    func downloadedPage(browseId: String) -> MusicBrowsePage? {
+        guard browseId != Self.songsBrowseId, let collection = collections[browseId] else { return nil }
+        return MusicBrowsePage(
+            browseId: browseId,
+            title: collection.title,
+            subtitle: collection.subtitle.isEmpty ? nil : collection.subtitle,
+            thumbnailURL: localCoverURL(forCollection: browseId) ?? collection.coverURL,
+            tracks: collection.videoIds.compactMap { entries[$0]?.track },
+            continuation: nil,
+            shelves: []
+        )
+    }
+
+    /// The saved picture for a cover address of any size, nil when none was saved from it. Reads the index, so a view that
+    /// calls it redraws when downloads load or change.
+    func localCoverURL(for address: URL?) -> URL? {
+        guard let address, !entries.isEmpty || !collections.isEmpty else { return nil }
+        let name = MusicDownloadCovers.name(for: MusicArtworkURL.small(address))
+        guard store.hasCover(named: name) else { return nil }
         return store.coverURL(named: name)
     }
 
@@ -549,6 +683,11 @@ final class MusicDownloadService {
             return
         }
         guard collections[browseId] != nil else { return }
+        // Offline: asked again when the network returns, under the same ten minute rule.
+        guard isOnline else {
+            pendingPageOpens.insert(browseId)
+            return
+        }
         if let last = lastAutoSync[browseId], now().timeIntervalSince(last) < pageSyncInterval { return }
         lastAutoSync[browseId] = now()
         sync(browseId)
@@ -558,7 +697,8 @@ final class MusicDownloadService {
     /// back until the index has loaded.
     func signInKnown() {
         guard !didLaunchSync else { return }
-        guard hasLoaded else {
+        // Not loaded yet, or offline: it runs once, when the index has loaded and the network is there.
+        guard hasLoaded, isOnline else {
             launchSyncWanted = true
             return
         }
@@ -619,8 +759,31 @@ final class MusicDownloadService {
         }
     }
 
+    private var isOnline: Bool { connectivity?.isOnline ?? true }
+
+    /// The network went or came back. Going: whatever is on the wire is stopped (it is put back, not failed, by the code
+    /// that was waiting for it). Coming back: syncs held back run, and the queue starts again.
+    private func connectivityChanged(_ online: Bool) {
+        guard online else {
+            networkLosses += 1
+            activeTask?.cancel()
+            enumerationTask?.cancel()
+            return
+        }
+        if hasLoaded {
+            let opened = pendingPageOpens
+            pendingPageOpens = []
+            for browseId in opened.sorted() { pageOpened(browseId) }
+            if launchSyncWanted {
+                launchSyncWanted = false
+                signInKnown()
+            }
+        }
+        if !queue.isEmpty || !awaitingFinish.isEmpty { startPumpIfNeeded() }
+    }
+
     private func startPumpIfNeeded() {
-        guard pump == nil else { return }
+        guard pump == nil, isOnline else { return }
         pump = Task { [weak self] in
             await self?.runQueue()
         }
@@ -629,8 +792,14 @@ final class MusicDownloadService {
     /// Runs what is queued, one job at a time, until nothing is left.
     private func runQueue() async {
         await waitUntilLoaded()
+        var pausedOffline = false
         while true {
             await storeWork?.value
+            // Offline the queue holds still: what is in it stays, and starts again when the network returns.
+            guard isOnline else {
+                pausedOffline = true
+                break
+            }
             // Nothing suspends between taking the job and the end of the loop, so a job queued meanwhile is never missed.
             guard let job = queue.next() else { break }
             switch job {
@@ -641,20 +810,33 @@ final class MusicDownloadService {
                     wantedStandalone.remove(track.videoId)
                     continue
                 }
-                let gaveUp = await run(track)
+                let outcome = await run(track)
+                // A song the network cut is back in the queue and the queue does not rest: the loop above finds the network
+                // gone and waits, or finds it back and carries on.
+                if outcome == .cutByNetwork { continue }
                 // A song that gave up on a rate limit holds the rest back for ten minutes, not half a second.
-                if queue.songCount > 0 { try? await pause(gaveUp ? Self.rateLimitHold : songGap) }
+                if queue.songCount > 0 { try? await pause(outcome == .rateLimited ? Self.rateLimitHold : songGap) }
             }
         }
-        finishCollections()
+        // A collection waits for the network to be finished: its result is not written with songs still to come.
+        if !pausedOffline { finishCollections() }
         // The index is written when the queue goes idle, not for every song on the way.
         enqueueStoreJob { store in await store.flushIndex() }
         pump = nil
     }
 
-    /// Downloads one song. True when it gave up on a rate limit (a 429 or a 5xx that did not lift), so the queue should rest.
-    private func run(_ track: MusicTrack) async -> Bool {
+    private enum RunOutcome {
+        case finished
+        /// Gave up on a rate limit (a 429 or a 5xx that did not lift), so the queue should rest.
+        case rateLimited
+        /// The network went while the song was on its way: it is back in the queue and has not failed.
+        case cutByNetwork
+    }
+
+    /// Downloads one song.
+    private func run(_ track: MusicTrack) async -> RunOutcome {
         let videoId = track.videoId
+        let lossesBefore = networkLosses
         activeID = videoId
         activeFraction = 0
         activeWasRemoved = false
@@ -677,7 +859,7 @@ final class MusicDownloadService {
         let removed = activeWasRemoved
         activeWasRemoved = false
         activeID = nil
-        var gaveUp = false
+        var outcome = RunOutcome.finished
         switch result {
         case .success(let entry):
             if removed && !listedIDs.contains(videoId) {
@@ -688,16 +870,21 @@ final class MusicDownloadService {
                 enqueueCover(.song(track))
             }
         case .failure(let error):
-            if !removed {
+            if !removed, !isOnline || networkLosses != lossesBefore {
+                // Not the song's fault and not a try used up: it goes back to the front, with the standing it had.
+                outcome = .cutByNetwork
+                let wanted = wantedStandalone.contains(videoId)
+                if wanted || listedIDs.contains(videoId) { queue.requeueFront(track, standalone: wanted) }
+            } else if !removed {
                 wantedStandalone.remove(videoId)
                 if !(error is CancellationError) { failedIDs.insert(videoId) }
-                gaveUp = Self.isRateLimited(error)
+                if Self.isRateLimited(error) { outcome = .rateLimited }
             }
-            if let line = Self.failureLogLine(for: error, removed: removed) {
+            if outcome != .cutByNetwork, let line = Self.failureLogLine(for: error, removed: removed) {
                 Self.log.error("A download failed: \(line, privacy: .public)")
             }
         }
-        return gaveUp
+        return outcome
     }
 
     /// Lists a finished download and makes its standing match what was asked for while it ran: the user's own, only a
@@ -771,6 +958,7 @@ final class MusicDownloadService {
         guard stored != nil || pendingCollections[browseId] != nil else { return }
         let generation = generations[browseId, default: 0]
         let cancelled = cancels[browseId, default: 0]
+        let lossesBefore = networkLosses
         lastAutoSync[browseId] = now()
         let rule: ChannelRule = stored != nil && browseId == Self.likedBrowseId ? .matching(stored?.channelKey) : .any
 
@@ -794,6 +982,12 @@ final class MusicDownloadService {
                 await storeFirstDownload(request, read: read, generation: generation)
             }
         case .failure(let error):
+            if !isOnline || networkLosses != lossesBefore {
+                // The network went: neither a failed download nor an unreachable page. The request and the stored result
+                // stay as they were, and the page is read again when the network returns.
+                queue.requeueCollection(browseId)
+                return
+            }
             if collections[browseId] != nil {
                 markUnreachable(browseId)
             } else {

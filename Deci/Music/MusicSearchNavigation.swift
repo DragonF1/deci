@@ -273,7 +273,8 @@ final class MusicSearchNavigation {
         guard !browseFilterTerms.isEmpty else { return nil }
         switch browseScope {
         case .library:
-            return MusicBrowseStore.likedMusic.browseId
+            // Downloads is answered from the download index: Liked music's page is not asked for there.
+            return service.browse.libraryTab == .downloads ? nil : MusicBrowseStore.likedMusic.browseId
         case .artist:
             guard let artist = service.browse.path.last,
                   case .loaded(let page) = service.browse.pageState(artist.browseId) else { return nil }
@@ -331,7 +332,7 @@ final class MusicSearchNavigation {
     /// The Songs block over the filtered Library: the matches in Liked music, loaded or not yet. Nil without words.
     var likedSongs: MusicLikedSongs? {
         let terms = browseFilterTerms
-        guard browseScope == .library, !terms.isEmpty else { return nil }
+        guard browseScope == .library, !terms.isEmpty, service.browse.libraryTab != .downloads else { return nil }
         return MusicLikedSongs.resolve(page: loadedPage(MusicBrowseStore.likedMusic.browseId), terms: terms)
     }
 
@@ -694,7 +695,24 @@ final class MusicSearchNavigation {
 
     // MARK: - Song actions
 
-    /// The "..." menu of a song: what it offers here, in menu order.
+    /// The Music tab has only this Mac to work with: the network is down, or the account is gone (a call then ends in
+    /// the service signing out, which throws the listener off the page they are on). Menus offer nothing that needs
+    /// YouTube Music, and running such an action does nothing.
+    private var isLimited: Bool { service.browse.isOffline }
+
+    /// Whether `action` may run on `track` now. Limited, only what works on this Mac: the downloads, Remove from queue,
+    /// and the queue entries for a downloaded song, which plays from its file.
+    private func mayPerform(_ action: MusicTrackAction, for track: MusicTrack) -> Bool {
+        guard isLimited else { return true }
+        if action.isOnlineOnly { return false }
+        switch action {
+        case .playNext, .addToQueue: return service.downloads?.state(for: track.videoId) == .downloaded
+        default: return true
+        }
+    }
+
+    /// The "..." menu of a song: what it offers here, in menu order. Offline or signed out it is the downloads and the
+    /// queue entries of a downloaded song only (see `MusicTrackActions.available`).
     func actions(for track: MusicTrack, in context: MusicTrackContext) -> [MusicTrackAction] {
         let home = MusicPinnedItem(track: track).map { service.pinnedItems.state(for: $0) }
         // The song in the player is already playing: it is not queued behind itself.
@@ -704,7 +722,8 @@ final class MusicSearchNavigation {
             for: track, in: context, home: home, offersQueue: offersQueue,
             canRate: service.authState == .signedIn, likeStatus: likeStatus(of: track, in: context),
             download: service.downloads?.state(for: track.videoId),
-            downloadHeldByCollectionOnly: service.downloads?.isCollectionOnly(track.videoId) ?? false
+            downloadHeldByCollectionOnly: service.downloads?.isCollectionOnly(track.videoId) ?? false,
+            limited: isLimited, playsOffline: service.downloads?.state(for: track.videoId) == .downloaded
         )
     }
 
@@ -729,6 +748,7 @@ final class MusicSearchNavigation {
     /// and Remove dislike set the song's rating and say what came of it where the hotkeys' outcome shows (`rate`).
     /// Download queues the song's audio for saving on this Mac; Remove download deletes it, or stops it while it runs.
     func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
+        guard mayPerform(action, for: track) else { return }
         switch action {
         case .goToAlbum:
             if let album = MusicTrackActions.albumCollection(for: track) { openCollection(album) }
@@ -779,7 +799,7 @@ final class MusicSearchNavigation {
     /// The "..." menu of an album, playlist or artist tile: what it offers here, in menu order.
     func actions(for collection: MusicCollection, in context: MusicTrackContext) -> [MusicTrackAction] {
         let home = MusicPinnedItem(collection: collection).map { service.pinnedItems.state(for: $0) }
-        return MusicTrackActions.available(for: collection, in: context, home: home)
+        return MusicTrackActions.available(for: collection, in: context, home: home, limited: isLimited)
     }
 
     /// Runs a tile's menu item, with the same effects as the song menu's: Save to playlist opens the save menu for the
@@ -787,6 +807,8 @@ final class MusicSearchNavigation {
     /// the first song of the tile's page, Pin to Home changes Deci's own list. The song-only entries, and the downloads
     /// (an album or playlist has none yet), do nothing on a tile.
     func perform(_ action: MusicTrackAction, for collection: MusicCollection, in context: MusicTrackContext) {
+        // Every tile entry needs YouTube Music.
+        guard !isLimited else { return }
         switch action {
         case .goToAlbum:
             if let album = MusicTrackActions.albumCollection(for: collection) { openCollection(album) }

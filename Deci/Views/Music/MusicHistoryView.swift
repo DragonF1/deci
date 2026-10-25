@@ -34,6 +34,15 @@ struct MusicHistoryView: View {
 
     @ViewBuilder
     private var days: some View {
+        if let note = browse.offlineNote(for: .history) {
+            MusicOfflineNote(text: note, signInService: browse.offersSignIn ? service : nil)
+        } else {
+            loadedDays
+        }
+    }
+
+    @ViewBuilder
+    private var loadedDays: some View {
         switch browse.history {
         case .idle, .loading:
             MusicLoadingCard()

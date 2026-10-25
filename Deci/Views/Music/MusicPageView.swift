@@ -20,6 +20,12 @@ struct MusicPageView: View {
         .resolve(kind: collection.kind, browseId: collection.browseId)
     }
 
+    /// The Downloaded songs page: every downloaded song, built from the index. It is no page of YouTube Music, so it has
+    /// no Download pill, Pin to Home or other action that needs the network.
+    private var isDownloadsPage: Bool {
+        collection.browseId == MusicDownloadService.songsBrowseId
+    }
+
     /// The page this one was opened from on the path, for the Back row's name: the title of the page below it, else the
     /// tab the path started on.
     private var backLabel: String {
@@ -47,18 +53,25 @@ struct MusicPageView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch browse.pageState(collection.browseId) {
-        case .idle, .loading:
-            MusicLoadingCard()
+        // Offline a page that is neither loaded nor loading says so, with no error and no Retry.
+        if let note = browse.offlineNote(for: .page(collection.browseId)) {
+            MusicOfflineNote(text: note, signInService: browse.offersSignIn ? service : nil)
                 .padding(.top, 48)
                 .frame(maxHeight: .infinity, alignment: .top)
-        case .failed(let message):
-            MusicFailedCard(message: message) { browse.reloadPage(collection.browseId) }
-                .padding(.top, 48)
-                .frame(maxHeight: .infinity, alignment: .top)
-        case .loaded(let loaded):
-            // A sorted playlist shows, and queues, its sorted songs once all of them are loaded.
-            loadedContent(page: browse.displayedPage(collection.browseId) ?? loaded)
+        } else {
+            switch browse.pageState(collection.browseId) {
+            case .idle, .loading:
+                MusicLoadingCard()
+                    .padding(.top, 48)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            case .failed(let message):
+                MusicFailedCard(message: message) { browse.reloadPage(collection.browseId) }
+                    .padding(.top, 48)
+                    .frame(maxHeight: .infinity, alignment: .top)
+            case .loaded(let loaded):
+                // A sorted playlist shows, and queues, its sorted songs once all of them are loaded.
+                loadedContent(page: browse.displayedPage(collection.browseId) ?? loaded)
+            }
         }
     }
 
@@ -88,22 +101,26 @@ struct MusicPageView: View {
 
     private func header(page: MusicBrowsePage) -> some View {
         let isComplete = page.continuation == nil
-        let text = MusicPageHeroText.resolve(
-            kind: kind,
-            title: shownTitle(of: page),
-            subtitle: page.subtitle,
-            firstArtist: page.tracks.first?.artist,
-            isEditable: page.isEditable,
-            songCount: isComplete ? page.tracks.count : nil,
-            totalSeconds: MusicPageDuration.total(of: page.tracks.map(\.durationSeconds), isComplete: isComplete),
-            albumCount: MusicPageHeroText.albumCount(in: page.shelves)
-        )
+        let totalSeconds = MusicPageDuration.total(of: page.tracks.map(\.durationSeconds), isComplete: isComplete)
+        let text = isDownloadsPage
+            ? MusicPageHeroText.downloads(songCount: page.tracks.count, totalSeconds: totalSeconds)
+            : MusicPageHeroText.resolve(
+                kind: kind,
+                title: shownTitle(of: page),
+                subtitle: page.subtitle,
+                firstArtist: page.tracks.first?.artist,
+                isEditable: page.isEditable,
+                songCount: isComplete ? page.tracks.count : nil,
+                totalSeconds: totalSeconds,
+                albumCount: MusicPageHeroText.albumCount(in: page.shelves)
+            )
         return MusicPageHeader(
             kind: kind,
             coverURL: page.thumbnailURL ?? collection.thumbnailURL,
             text: text,
             downloads: canDownload ? service.downloads : nil,
-            browseId: collection.browseId
+            browseId: collection.browseId,
+            artSymbol: isDownloadsPage ? MusicBrowseLayout.downloadsSymbol : nil
         )
     }
 
@@ -143,7 +160,7 @@ struct MusicPageView: View {
         switch pill {
         case .play:
             MusicPlayPill(title: shownTitle(of: page)) {
-                if let first = page.tracks.first { service.play(first, in: page) }
+                service.playFirst(of: page)
             }
         case .shuffle:
             MusicShufflePill(title: shownTitle(of: page)) { service.playShuffled(page) }
@@ -175,7 +192,8 @@ struct MusicPageView: View {
         return MusicPagePills.menuItems(
             kind: kind,
             home: MusicPinnedItem(page: page, opener: collection).map { pins.state(for: $0) },
-            isArtistSongs: collection.isArtistSongs
+            isArtistSongs: collection.isArtistSongs,
+            isDownloads: isDownloadsPage
         )
     }
 
@@ -235,7 +253,7 @@ struct MusicPageView: View {
         if browse.isOrderPending(page.browseId) {
             EmptyView()
         } else if page.tracks.isEmpty, page.shelves.isEmpty {
-            MusicStateCard(message: "No songs here yet.", minHeight: 56)
+            MusicStateCard(message: isDownloadsPage ? MusicOfflineCopy.noDownloadsTitle + "." : "No songs here yet.", minHeight: 56)
         } else if !page.tracks.isEmpty {
             // The page the songs sit on decides whether they can leave the playlist or go to this album.
             let context = MusicTrackContext(
@@ -309,7 +327,7 @@ struct MusicPageView: View {
                 let copy = MusicSearchCopy.noResults(
                     noun: .song,
                     query: navigation.filterQuery,
-                    place: kind == .album ? "this album" : "this playlist",
+                    place: isDownloadsPage ? "your downloads" : (kind == .album ? "this album" : "this playlist"),
                     beyond: page.title
                 )
                 MusicNoResultsBlock(title: copy.title, detail: copy.detail) {

@@ -2,10 +2,11 @@
 import SwiftUI
 
 /// The art of Liked music, drawn instead of a cover: a warm dark base under a wash of the accent that fades down, and an
-/// accent heart in the middle.
+/// accent heart in the middle. The Downloaded songs row wears the same art with the download arrow in the heart's place.
 struct MusicLikedArt: View {
     let size: CGFloat
     var cornerRadius: CGFloat = MusicStyle.Radius.art
+    var symbol = "heart.fill"
 
     @Environment(\.musicAccent) private var accent
 
@@ -21,7 +22,7 @@ struct MusicLikedArt: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-            Image(systemName: "heart.fill")
+            Image(systemName: symbol)
                 .font(.system(size: MusicLikedArtStyle.heartSize(art: size)))
                 .foregroundStyle(accent.solid)
         }

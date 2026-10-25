@@ -67,6 +67,14 @@ nonisolated enum MusicBrowseLayout {
     /// How far a row's hover surface reaches past the row's content on each side.
     static let rowHoverInset: CGFloat = 6
     static let rowHoverRadius: CGFloat = 6
+
+    /// The room the offline note keeps where a feed would be, and the room above and below the banner's line.
+    static let offlineNoteHeight: CGFloat = 120
+    static let offlineBannerPadding: CGFloat = 3
+    /// The symbol in the art of the Downloaded songs row.
+    static let downloadsSymbol = "arrow.down.circle.fill"
+    /// How a row of a song that cannot play offline reads: the whole row dims.
+    static let dimmedRowOpacity: Double = 0.4
 }
 
 // MARK: - Quick picks

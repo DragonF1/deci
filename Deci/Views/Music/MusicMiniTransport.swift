@@ -82,8 +82,11 @@ struct MusicThumbnail: View {
     /// The corner radius of a square cover; the button radius when nil.
     var cornerRadius: CGFloat?
 
+    /// The picture saved with a download, which shows in place of the address whenever there is one, online or not.
+    @Environment(\.musicLocalCover) private var localCover
+
     var body: some View {
-        AsyncImage(url: url) { phase in
+        AsyncImage(url: localCover?(url) ?? url) { phase in
             switch phase {
             case .success(let image):
                 image.resizable().scaledToFill()

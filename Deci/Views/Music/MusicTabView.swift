@@ -22,20 +22,42 @@ struct MusicTabView: View {
 private struct MusicServiceView: View {
     @Bindable var service: MusicService
     let navigation: MusicSearchNavigation
+    /// Signed out: the downloads are open in place of the sign-in note.
+    @State private var showsDownloads = false
 
     var body: some View {
-        switch service.authState {
-        case .unknown:
-            ProgressView()
-                .controlSize(.small)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .signedOut:
-            MusicSignedOutView(service: service, isSigningIn: false)
-        case .signingIn:
-            MusicSignedOutView(service: service, isSigningIn: true)
-        case .signedIn:
-            MusicSignedInView(service: service, navigation: navigation)
+        Group {
+            switch service.authState {
+            case .unknown:
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .signedOut:
+                if showsDownloads {
+                    MusicSignedOutDownloadsView(service: service, navigation: navigation) { closeDownloads() }
+                } else {
+                    MusicSignedOutView(service: service, isSigningIn: false) { openDownloads() }
+                }
+            case .signingIn:
+                MusicSignedOutView(service: service, isSigningIn: true)
+            case .signedIn:
+                MusicSignedInView(service: service, navigation: navigation)
+            }
         }
+        // An account ends the downloads-only view: the signed-in column takes over from the root.
+        .onChange(of: service.authState == .signedIn) { _, isSignedIn in
+            if isSignedIn { showsDownloads = false }
+        }
+    }
+
+    private func openDownloads() {
+        service.browse.tab = .library
+        showsDownloads = true
+    }
+
+    private func closeDownloads() {
+        service.browse.popToRoot()
+        showsDownloads = false
     }
 }
 
@@ -168,8 +190,15 @@ private struct MusicActionsModifier: ViewModifier {
             perform: { navigation.perform($0, for: $1, in: $2) },
             isPinned: { service.pinnedItems.isPinned($0) },
             reveal: { navigation.revealLikeStatus(of: $0, in: $1) },
-            downloadState: { service.downloads?.state(for: $0.videoId) ?? MusicDownloadState.none }
+            downloadState: { service.downloads?.state(for: $0.videoId) ?? MusicDownloadState.none },
+            isDimmed: { service.browse.isDimmed($0.videoId) }
         )
+    }
+
+    /// Every cover shows the picture saved with a download when there is one.
+    private var localCover: MusicLocalCoverResolver? {
+        guard let service else { return nil }
+        return { service.browse.localCoverURL(for: $0) }
     }
 
     /// Also which tiles and rows wear the pin badge: those pinned to Home.
@@ -187,5 +216,6 @@ private struct MusicActionsModifier: ViewModifier {
             .environment(\.openMusicArtist, artistOpener)
             .environment(\.musicTrackMenu, trackMenu)
             .environment(\.musicCollectionPin, collectionPin)
+            .environment(\.musicLocalCover, localCover)
     }
 }

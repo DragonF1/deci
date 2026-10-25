@@ -27,7 +27,8 @@ struct MusicPlayerColumn: View {
 
     private var state: MusicPlayerColumnState {
         MusicPlayerColumnState.resolve(
-            isSignedIn: service?.authState == .signedIn,
+            // Signed out it still shows a downloaded song that plays from its file.
+            isSignedIn: service?.showsPlayerControls ?? false,
             hasTrack: track != nil,
             isLoading: player?.isLoading ?? false,
             isPlaying: player?.isPlaying ?? false
@@ -354,9 +355,12 @@ struct MusicPlayerColumn: View {
         let hasSong = track != nil
         let hasQueue = !(service?.queue.isEmpty ?? true)
         let relatedIsOpen = navigation?.showsRelated ?? false
+        // Lyrics, Related and Up next are the signed-in column's panels: signed out the right column is the sign-in note
+        // or the downloads, which have none of them.
+        let hasAccount = service?.authState == .signedIn
         func available(_ kind: MusicViewButtons.Kind) -> Bool {
             MusicViewButtons.isAvailable(
-                kind, controlsAreEnabled: state.controlsAreEnabled, hasLyrics: hasLyrics, hasSong: hasSong,
+                kind, controlsAreEnabled: state.controlsAreEnabled && hasAccount, hasLyrics: hasLyrics, hasSong: hasSong,
                 hasQueue: hasQueue, relatedIsOpen: relatedIsOpen
             )
         }

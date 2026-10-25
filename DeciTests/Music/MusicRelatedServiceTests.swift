@@ -132,8 +132,12 @@ struct MusicRelatedServiceTests {
 
         #expect(h.service.related.state == .idle)
         #expect(h.service.related.seed == nil)
+        let askedBefore = await h.backend.relatedCalls.count
+
+        // Signed out, the panel can be opened again, but it asks for nothing: it says why (see `holdsOffline`).
         h.service.related.show(MusicSamples.track("a", title: "Song a"))
-        #expect(h.service.related.state == .loading)
+        #expect(h.service.related.state == .failed(MusicRelatedStore.signedOutMessage))
+        #expect(await h.backend.relatedCalls.count == askedBefore)
     }
 
     @Test("A call that finds the session gone signs the service out")

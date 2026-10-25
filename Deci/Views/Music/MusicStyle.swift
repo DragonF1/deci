@@ -30,6 +30,8 @@ enum MusicStyle {
         /// The line under a page's title.
         static let pageSub = 0.70
         static let chevron = 0.30
+        /// A Library pill that needs the network while there is none.
+        static let disabledSegment = 0.4
     }
 
     enum Palette {

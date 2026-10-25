@@ -121,6 +121,11 @@ struct MusicPopupView: View {
         let column = musicHost.navigation?.rightColumn ?? .browse
         return VStack(spacing: 0) {
             header(for: column)
+            // No network: one thin line says so, over whatever the column shows.
+            if appSettings.showMusicInMenuBar, musicHost.service?.isOffline == true {
+                MusicOfflineBanner()
+                    .transition(.opacity)
+            }
             if appSettings.showMusicInMenuBar {
                 MusicTabView(host: musicHost)
                     .environment(\.musicBottomInset, MusicPopupMetrics.rightPaddingBottom)

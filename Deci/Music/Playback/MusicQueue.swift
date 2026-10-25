@@ -260,6 +260,46 @@ struct MusicQueue: Equatable, Codable {
         return move(to: currentIndex - 1)
     }
 
+    // MARK: - Stepping over what cannot play
+
+    // Offline only the downloaded songs can play. These step over the others without moving the position onto them: the
+    // songs in between are not reached, and a position with nothing playable ahead (or behind) stays where it is.
+
+    /// The next song after the current one for which `isPlayable` is true, which becomes the current one. Nil, and no
+    /// move, when there is none.
+    @discardableResult
+    mutating func advance(where isPlayable: (MusicTrack) -> Bool) -> MusicTrack? {
+        guard let currentIndex, let index = tracks[(currentIndex + 1)...].firstIndex(where: isPlayable) else { return nil }
+        return move(to: index)
+    }
+
+    /// The nearest song before the current one for which `isPlayable` is true, which becomes the current one. Nil, and
+    /// no move, when there is none.
+    @discardableResult
+    mutating func retreat(where isPlayable: (MusicTrack) -> Bool) -> MusicTrack? {
+        guard let currentIndex, let index = tracks[..<currentIndex].lastIndex(where: isPlayable) else { return nil }
+        return move(to: index)
+    }
+
+    /// A song for which `isPlayable` is true lies after the current one.
+    func hasNext(where isPlayable: (MusicTrack) -> Bool) -> Bool {
+        guard let currentIndex else { return false }
+        return tracks[(currentIndex + 1)...].contains(where: isPlayable)
+    }
+
+    /// A song for which `isPlayable` is true lies before the current one.
+    func hasPrevious(where isPlayable: (MusicTrack) -> Bool) -> Bool {
+        guard let currentIndex else { return false }
+        return tracks[..<currentIndex].contains(where: isPlayable)
+    }
+
+    /// Loop playlist offline: back to the first song of the play order that can play. Nil, and no move, when none can.
+    @discardableResult
+    mutating func wrapToStart(where isPlayable: (MusicTrack) -> Bool) -> MusicTrack? {
+        guard let index = tracks.firstIndex(where: isPlayable) else { return nil }
+        return move(to: index)
+    }
+
     /// Plays a queued track. A track of the staged radio brings the radio into the queue first.
     @discardableResult
     mutating func jump(to videoId: String) -> MusicTrack? {

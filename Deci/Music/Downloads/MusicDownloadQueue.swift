@@ -42,6 +42,8 @@ nonisolated struct MusicDownloadQueue {
     private var places: [String: Place] = [:]
     private var nextToken = 0
     private var nextOrder = 0
+    /// The order of the next song put back to the front: counts down from -1, under every ordinary one.
+    private var nextFrontOrder = -1
 
     init() {}
 
@@ -100,6 +102,33 @@ nonisolated struct MusicDownloadQueue {
         }
         listed.insert(moved, at: low)
         places[videoId] = Place(group: .listed, token: token, order: place.order)
+    }
+
+    /// Puts back a song that was taken to be fetched and could not be, because the network went: it runs before the songs
+    /// still waiting in its group (a standalone song before the standalone ones, a collection song before the collection
+    /// ones, so a standalone song still goes first). Put back in the reverse of the order they were taken, several songs
+    /// run in the order they were taken. Nothing changes for a song that waits already.
+    mutating func requeueFront(_ track: MusicTrack, standalone isStandalone: Bool) {
+        guard places[track.videoId] == nil else { return }
+        let token = takeToken()
+        // Below every order handed out so far, so a collection's songs stay sorted by order for `demote`.
+        let order = nextFrontOrder
+        nextFrontOrder -= 1
+        let slot = Slot(token: token, order: order, track: track)
+        if isStandalone {
+            standalone.insert(slot, at: standaloneHead)
+            places[track.videoId] = Place(group: .standalone, token: token, order: order)
+        } else {
+            listed.insert(slot, at: listedHead)
+            places[track.videoId] = Place(group: .listed, token: token, order: order)
+        }
+    }
+
+    /// Puts back the listing of a collection that was taken to be read and could not be: it runs before the listings
+    /// still waiting. Once, however often it is asked.
+    mutating func requeueCollection(_ browseId: String) {
+        guard !collections.contains(browseId) else { return }
+        collections.insert(browseId, at: 0)
     }
 
     /// Takes a waiting song out, wherever it waits.

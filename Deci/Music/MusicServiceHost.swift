@@ -75,10 +75,12 @@ final class MusicServiceHost {
         self.makeService = makeService ?? {
             // One backend for playback and for downloads, so both sign in as the same account.
             let backend = MusicBackendLive.live()
+            // One network watch for everything that waits for the network: the pages, the queue, the downloads, the lyrics.
+            let connectivity = MusicConnectivity.live()
             return MusicService(
                 backend: backend,
                 player: MusicServiceHost.makePlayer(mixer: mixer),
-                lyrics: .live(),
+                lyrics: .live(connectivity: connectivity),
                 listenerLevel: { [weak mixer] in mixer?.watchtimeLevel ?? (WatchtimeTracker.fullVolume, false) },
                 // Shuffle, loop and Autoplay are remembered in settings.json.
                 preferences: settings?.appSettings.musicPlayback ?? MusicPlaybackPreferences(),
@@ -91,8 +93,10 @@ final class MusicServiceHost {
                 // Whole playlists and albums are read through the same backend.
                 downloads: .live(
                     resolve: { try await backend.resolve(videoId: $0) },
-                    source: MusicCollectionSource(backend: backend)
-                )
+                    source: MusicCollectionSource(backend: backend),
+                    connectivity: connectivity
+                ),
+                connectivity: connectivity
             )
         }
         MusicMemoryLog.log("launch")

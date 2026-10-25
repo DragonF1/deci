@@ -11,6 +11,8 @@ struct MusicPageHeader: View {
     /// The downloads, for a page that can be downloaded: the meta line adds the page's download line, reading it itself.
     var downloads: MusicDownloadService?
     var browseId = ""
+    /// A symbol drawn on the Liked music art in place of a cover: the Downloaded songs page has no cover of its own.
+    var artSymbol: String?
 
     var body: some View {
         HStack(alignment: .center, spacing: MusicBrowseLayout.pageArtGap) {
@@ -46,6 +48,8 @@ struct MusicPageHeader: View {
         let size = MusicBrowseLayout.pageArt
         if kind == .liked {
             MusicLikedArt(size: size, cornerRadius: MusicBrowseLayout.pageArtRadius)
+        } else if let artSymbol {
+            MusicLikedArt(size: size, cornerRadius: MusicBrowseLayout.pageArtRadius, symbol: artSymbol)
         } else {
             MusicThumbnail(
                 url: coverURL,

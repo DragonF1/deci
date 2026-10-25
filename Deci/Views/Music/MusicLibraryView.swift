@@ -1,8 +1,10 @@
 // Deci/Views/Music/MusicLibraryView.swift
 import SwiftUI
 
-/// The Library root: the Playlists / Albums switch, then the saved list, with Liked music first on
-/// Playlists. Playlists are rows, Albums a grid of covers. One scroll view, so the switch scrolls away with
+/// The Library root: the Playlists / Albums / Downloads switch, then the saved list, with Liked music first on
+/// Playlists. Playlists are rows, Albums a grid of covers, Downloads the pinned Downloaded songs row over the downloaded
+/// playlists and albums, read from the download index so it works with no network and signed out (offline, and signed
+/// out, it is the only tab that answers). One scroll view, so the switch scrolls away with
 /// the content. The header's field filters the segment live, from what is loaded: a count line, the rows that match
 /// with the words tinted, and a line for what the other segments hold.
 struct MusicLibraryView: View {
@@ -11,6 +13,9 @@ struct MusicLibraryView: View {
     @Environment(\.musicCollectionPin) private var collectionPin
 
     private var browse: MusicBrowseStore { service.browse }
+    /// The tab on screen. Offline it is Downloads whatever was picked.
+    private var tab: MusicLibraryTab { browse.libraryTab }
+    /// The account list Playlists or Albums shows; the last one picked while Downloads is on screen.
     private var section: MusicLibrarySection { browse.librarySection }
 
     /// What the field holds, for the rows to tint; empty while it is closed.
@@ -18,7 +23,7 @@ struct MusicLibraryView: View {
 
     /// What the field's words leave of this segment; nil while nothing is typed or the segment is not loaded yet.
     private var filter: MusicLibraryFilter? {
-        guard !terms.isEmpty, case .loaded = browse.libraryState(section) else { return nil }
+        guard tab != .downloads, !terms.isEmpty, case .loaded = browse.libraryState(section) else { return nil }
         let loaded = browse.library.compactMapValues { load -> [MusicCollection]? in
             if case .loaded(let items) = load { items } else { nil }
         }
@@ -30,13 +35,19 @@ struct MusicLibraryView: View {
         )
     }
 
+    /// What the field's words leave of the Downloads tab; nil while nothing is typed or another tab is on screen.
+    private var downloadsFilter: MusicDownloadsFilter? {
+        guard tab == .downloads, !terms.isEmpty else { return nil }
+        return MusicDownloadsFilter.resolve(collections: browse.downloadedCollectionRows, terms: terms)
+    }
+
     private static let topID = "library-top"
 
     var body: some View {
         ScrollViewReader { proxy in
             scroll
-                // Another section starts at the top.
-                .onChange(of: section) {
+                // Another tab starts at the top.
+                .onChange(of: tab) {
                     proxy.scrollTo(Self.topID, anchor: .top)
                 }
         }
@@ -45,8 +56,11 @@ struct MusicLibraryView: View {
     private var scroll: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                MusicSegmentSwitch(segments: MusicLibrarySection.segments, selection: section) {
-                    browse.librarySection = $0
+                MusicSegmentSwitch(
+                    segments: MusicLibraryTab.segments(isEnabled: browse.isLibraryTabEnabled),
+                    selection: tab
+                ) {
+                    browse.selectLibraryTab($0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, MusicStyle.Spacing.page)
@@ -54,7 +68,9 @@ struct MusicLibraryView: View {
                 .padding(.bottom, MusicBrowseLayout.segmentListGap)
                 .id(Self.topID)
 
-                if let filter {
+                if tab == .downloads {
+                    downloads
+                } else if let filter {
                     filtered(filter)
                 } else {
                     // Always first on Playlists, whatever state the list under it is in.
@@ -66,14 +82,18 @@ struct MusicLibraryView: View {
             }
         }
         .scrollIndicators(.never)
-        .onAppear { browse.loadLibraryIfNeeded(section) }
-        .onChange(of: section) { _, newSection in
-            browse.loadLibraryIfNeeded(newSection)
-        }
+        .onAppear { loadListIfNeeded() }
+        .onChange(of: tab) { loadListIfNeeded() }
         // A channel switch drops what was loaded while this view stays up.
         .onChange(of: browse.libraryState(section) == .idle) { _, isIdle in
-            if isIdle { browse.loadLibraryIfNeeded(section) }
+            if isIdle { loadListIfNeeded() }
         }
+    }
+
+    /// Asks for the account list the tab shows. Downloads is no list of the account's: nothing is asked for.
+    private func loadListIfNeeded() {
+        guard let shown = tab.section else { return }
+        browse.loadLibraryIfNeeded(shown)
     }
 
     @ViewBuilder
@@ -97,7 +117,8 @@ struct MusicLibraryView: View {
         if section == .albums {
             albumGrid(items)
         } else {
-            ForEach(Array(items.enumerated()), id: \.offset) { _, collection in
+            // By browse id, not position: a list that grows or reorders keeps each row's state and hover.
+            ForEach(items, id: \.browseId) { collection in
                 MusicCollectionRow(
                     collection: collection,
                     isPinned: collectionPin?.isPinned(collection) == true
@@ -118,6 +139,64 @@ struct MusicLibraryView: View {
                 browse.loadMoreLibrary(section)
             }
         }
+    }
+
+    // MARK: - Downloads
+
+    /// The Downloaded songs row over the downloaded playlists and albums, newest download first; the empty state when
+    /// nothing is downloaded or on its way; the matches under the field's words.
+    @ViewBuilder
+    private var downloads: some View {
+        if let filter = downloadsFilter {
+            filteredDownloads(filter)
+        } else if !browse.hasDownloads {
+            noDownloads
+        } else {
+            downloadedSongsRow
+            downloadedRows(browse.downloadedCollectionIds)
+        }
+    }
+
+    /// Pinned first like Liked music is on Playlists: the art with the download arrow and the count of songs.
+    private var downloadedSongsRow: some View {
+        MusicCollectionRow(collection: browse.downloadedSongsRow, isDownloads: true) {
+            browse.open(MusicBrowseStore.downloadedSongs)
+        }
+    }
+
+    /// The rows are laid out from the ids alone; each one reads its own download state (see `MusicDownloadedCollectionRow`).
+    private func downloadedRows(_ browseIds: [String]) -> some View {
+        ForEach(browseIds, id: \.self) { browseId in
+            MusicDownloadedCollectionRow(browse: browse, browseId: browseId)
+        }
+    }
+
+    private var noDownloads: some View {
+        MusicStateCard(minHeight: MusicBrowseLayout.offlineNoteHeight) {
+            MusicStateIconCircle(symbol: MusicBrowseLayout.downloadsSymbol)
+            Text(MusicOfflineCopy.noDownloadsTitle)
+                .musicText(MusicStyle.Typeface.stateTitle)
+                .foregroundStyle(MusicStyle.Palette.textPlaying)
+                .multilineTextAlignment(.center)
+                .accessibilityAddTraits(.isHeader)
+            MusicStateCardMessage(text: MusicOfflineCopy.noDownloadsDetail)
+        }
+    }
+
+    @ViewBuilder
+    private func filteredDownloads(_ filter: MusicDownloadsFilter) -> some View {
+        VStack(spacing: 0) {
+            MusicScopeLine(text: filter.countLine)
+                .padding(.bottom, MusicBrowseLayout.listBarGap)
+            if filter.showsSongsRow {
+                downloadedSongsRow
+            }
+            downloadedRows(filter.items.map(\.browseId))
+            if filter.isEmpty {
+                MusicStateCard(message: MusicOfflineCopy.noMatch(query: navigation.filterQuery))
+            }
+        }
+        .environment(\.musicHighlightTerms, terms)
     }
 
     // MARK: - Filtered
@@ -203,7 +282,7 @@ struct MusicLibraryView: View {
             alignment: .leading,
             spacing: MusicBrowseLayout.gridRowGap
         ) {
-            ForEach(Array(albums.enumerated()), id: \.offset) { _, album in
+            ForEach(albums, id: \.browseId) { album in
                 MusicCoverTile(
                     title: album.title,
                     subtitle: MusicHomeText.subtitle(album.subtitle),
@@ -231,11 +310,33 @@ struct MusicLibraryView: View {
     }
 }
 
+/// One downloaded playlist or album row. It reads its own download state (the subtitle says how far a download has got),
+/// so a progress tick redraws this row and not the whole list; the list passes the id and nothing else.
+private struct MusicDownloadedCollectionRow: View {
+    let browse: MusicBrowseStore
+    let browseId: String
+    @Environment(\.musicCollectionPin) private var collectionPin
+
+    var body: some View {
+        if let collection = browse.downloadedCollectionRow(browseId) {
+            MusicCollectionRow(
+                collection: collection,
+                isPinned: collectionPin?.isPinned(collection) == true
+            ) {
+                browse.open(collection)
+            }
+            .musicCollectionMenu(collection)
+        }
+    }
+}
+
 /// A playlist or artist row that opens its page: a 40 pt cover and two lines on a playlist, a 36 pt round photo and a
-/// chevron on an artist. `isLiked` draws the Liked music art in place of a cover.
+/// chevron on an artist. `isLiked` draws the Liked music art in place of a cover, `isDownloads` the same art with the
+/// download arrow, for the Downloaded songs row.
 struct MusicCollectionRow: View {
     let collection: MusicCollection
     var isLiked = false
+    var isDownloads = false
     /// Pinned to Home: the cover wears the pin badge.
     var isPinned = false
     let action: () -> Void
@@ -252,9 +353,9 @@ struct MusicCollectionRow: View {
 
     private var rowHeight: CGFloat { isArtist ? MusicBrowseLayout.artistRowHeight : MusicBrowseLayout.playlistRowHeight }
 
-    /// Liked music keeps its own line ("Auto playlist"); every other row leads with its kind.
+    /// Liked music keeps its own line ("Auto playlist") and Downloaded songs its count; every other row leads with its kind.
     private var subtitleText: String {
-        if isLiked { return MusicHomeText.subtitle(collection.subtitle) }
+        if isLiked || isDownloads { return MusicHomeText.subtitle(collection.subtitle) }
         return MusicHomeText.librarySubtitle(kind: collection.kind, youtubeSubtitle: collection.subtitle)
     }
 
@@ -313,6 +414,8 @@ struct MusicCollectionRow: View {
     private var cover: some View {
         if isLiked {
             MusicLikedArt(size: artSize, cornerRadius: MusicBrowseLayout.libraryArtRadius)
+        } else if isDownloads {
+            MusicLikedArt(size: artSize, cornerRadius: MusicBrowseLayout.libraryArtRadius, symbol: MusicBrowseLayout.downloadsSymbol)
         } else {
             MusicThumbnail(
                 url: collection.thumbnailURL,

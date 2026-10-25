@@ -22,7 +22,9 @@ private let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicRelat
 /// kept by video id for the session, so going back to a seed shows at once; an empty answer or a failure is not
 /// kept. The first song found on a collection's page is kept the same way, by browse id, so the same album chosen
 /// again does not read its page again. A late answer for a seed that is no longer the current one, or for a session
-/// that ended, is dropped. Nothing here logs a song, a playlist or an id, only error kinds.
+/// that ended, is dropped. While the Music tab has only the downloads to work with (the network is down, or the account
+/// is gone) nothing goes out: the panel says why, an answer or a seed already kept still shows, and the panel asks
+/// once when the network or the account returns. Nothing here logs a song, a playlist or an id, only error kinds.
 @MainActor
 @Observable
 final class MusicRelatedStore {
@@ -42,6 +44,12 @@ final class MusicRelatedStore {
 
     /// What the panel says when a load failed, whatever the cause. The cause goes to the log, as a kind only.
     static let failureMessage = "Couldn't load related songs."
+
+    /// What the panel says when the network is down. The same words with Retry, which asks again once it is back.
+    static let offlineMessage = "Related songs need a network connection."
+
+    /// What the panel says when the account is gone: a signed-out listener has a network, but nothing to ask with.
+    static let signedOutMessage = "Related songs need you to sign in."
 
     /// What the panel says when YouTube Music has no related songs for the seed.
     static let emptyMessage = "No related songs for this one."
@@ -92,6 +100,8 @@ final class MusicRelatedStore {
     @ObservationIgnored private var target: Target?
     /// The player's song changed while the popup was hidden: the panel is on it, and nothing was asked for yet.
     @ObservationIgnored private var pending = false
+    /// The panel could not ask because the Music tab had only the downloads to work with: it asks when that ends.
+    @ObservationIgnored private var waitingForNetwork = false
     /// Each load names itself with the next number and lands only while it is still the current one, so a new seed, a
     /// close or a reset drops a slower earlier answer.
     @ObservationIgnored private var runCounter = 0
@@ -158,6 +168,12 @@ final class MusicRelatedStore {
         reload()
     }
 
+    /// The network or the account is back (the service says so): a panel that could not ask asks now, once.
+    func connectionReturned() {
+        guard waitingForNetwork, !browse.isOffline else { return }
+        reload()
+    }
+
     /// The panel closed: the answer that is out lands nowhere, the player is no longer followed, and the cache stays.
     func close() {
         isFollowing = false
@@ -201,7 +217,17 @@ final class MusicRelatedStore {
         runCounter += 1
         task?.cancel()
         task = nil
+        waitingForNetwork = false
         return runCounter
+    }
+
+    /// Says why nothing is asked, and waits for the network or the account to return. True when the Music tab has only the
+    /// downloads to work with.
+    private func holdsOffline() -> Bool {
+        guard browse.isOffline else { return false }
+        waitingForNetwork = true
+        state = .failed(browse.isNetworkDown ? Self.offlineMessage : Self.signedOutMessage)
+        return true
     }
 
     /// Asks again for what the panel is on, from the start: a collection whose seed is known asks only for its songs.
@@ -247,6 +273,7 @@ final class MusicRelatedStore {
             state = .loaded(kept)
             return
         }
+        guard !holdsOffline() else { return }
         state = .loading
         guard mayAsk(run) else { return }
         task = Task { [weak self, backend, sleep] in
@@ -283,6 +310,7 @@ final class MusicRelatedStore {
             seedFound(in: page, browseId: browseId, run: run)
             return
         }
+        guard !holdsOffline() else { return }
         task = Task { [weak self, backend] in
             do {
                 let page = try await backend.page(browseId: browseId)

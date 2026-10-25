@@ -100,6 +100,13 @@ struct MusicPagePillsTests {
         #expect(MusicPagePills.pills(kind: .artist, hasTracks: true, hasMenuItems: false) == [.play])
     }
 
+    @Test("the Downloaded songs page has no menu: Home could not reopen it")
+    func downloadsPageHasNoMenu() {
+        let home = MusicHomePinState.canPin
+        #expect(MusicPagePills.menuItems(kind: .playlist, home: home, isDownloads: true).isEmpty)
+        #expect(MusicPagePills.menuItems(kind: .playlist, home: home, isDownloads: false) == [.pinHome(home)])
+    }
+
     @Test("with no songs there is nothing to play or shuffle, and the menu stays only if it has an action")
     func noTracks() {
         for kind in [MusicPageKind.album, .playlist, .liked, .artist] {
@@ -295,6 +302,17 @@ struct MusicPageHeroTextTests {
             kind: kind, title: title, subtitle: subtitle, firstArtist: firstArtist, isEditable: isEditable,
             songCount: songCount, totalSeconds: totalSeconds, albumCount: albumCount
         )
+    }
+
+    @Test("the Downloaded songs page says where the songs are, then how many and how long")
+    func downloadedSongsHero() {
+        let hero = MusicPageHeroText.downloads(songCount: 3, totalSeconds: 600)
+        #expect(hero.kicker == "DOWNLOADS")
+        #expect(hero.title == "Downloaded songs")
+        #expect(hero.sub == "Saved on this Mac")
+        #expect(hero.meta == "3 songs \(dot) 10 min")
+        #expect(MusicPageHeroText.downloads(songCount: 1, totalSeconds: nil).meta == "1 song")
+        #expect(MusicPageHeroText.downloads(songCount: 0, totalSeconds: nil).meta == nil)
     }
 
     @Test("YouTube's bullet becomes the design's middle dot, and empty text is nothing")
