@@ -233,7 +233,7 @@ actor MusicDownloadStore {
         }
     }
 
-    private static let indexName = "downloads.json"
+    static let indexName = "downloads.json"
     private static let unreadablePrefix = "downloads.json.unreadable"
     private static let missingMarkerName = "downloads.json.missing"
     private static let coversName = "covers"
@@ -723,6 +723,7 @@ actor MusicDownloadStore {
             Self.log.error("The downloads index could not be written after a removal")
         }
         deleteCoversIfUnnamed(current.coverFile.map { [$0] } ?? [])
+        removeEmptyFolders()
         return .deleted
     }
 
@@ -735,14 +736,17 @@ actor MusicDownloadStore {
         try? FileManager.default.removeItem(at: audio)
         writeIndexLoggingFailure("discarding a damaged song")
         deleteCoversIfUnnamed(current.coverFile.map { [$0] } ?? [])
+        removeEmptyFolders()
     }
 
     /// Deletes the song's file when nothing lists it: for a file `remove(keepingFile:)` left under the player. A song
-    /// downloaded again since, and one whose entry the store holds back unread, keeps its file.
+    /// downloaded again since, and one whose entry the store holds back unread, keeps its file. The audio and covers
+    /// folders go too when that leaves them empty.
     func removeFileIfUnlisted(videoId: String) {
         guard !isBlocked, entries[videoId] == nil, preservedEntries[videoId] == nil,
               let audio = audioURL(for: videoId) else { return }
         try? FileManager.default.removeItem(at: audio)
+        removeEmptyFolders()
     }
 
     // MARK: - Collections
@@ -904,6 +908,155 @@ actor MusicDownloadStore {
             Self.log.error("A cover picture could not be written")
             return false
         }
+    }
+
+    // MARK: - Remove all
+
+    /// What `removeAll` did.
+    struct Wipe: Equatable, Sendable {
+        /// The folder is not the Downloads folder (or is a link, or not a folder), so nothing was touched.
+        var refused = false
+        /// Files, links and folders deleted. The index, which is replaced and not deleted, is not counted.
+        var removed = 0
+        /// Items that could not be deleted. Their songs are still listed.
+        var failed = 0
+        /// What the store lists afterwards: empty after a clean wipe, the songs whose files could not be deleted after a
+        /// partial one, and everything after a refusal.
+        var entries: [String: Entry] = [:]
+    }
+
+    /// Whether `url` has the shape of the Downloads folder: a path that ends in `Application Support/Deci/Downloads`, with
+    /// at least one folder above it and no `.` or `..` anywhere. Only the path is read, never the disk.
+    nonisolated static func hasDownloadsShape(_ url: URL) -> Bool {
+        let parts = url.pathComponents
+        guard parts.count >= 5, !parts.contains("."), !parts.contains("..") else { return false }
+        return parts.suffix(3).elementsEqual(["Application Support", "Deci", "Downloads"])
+    }
+
+    /// Whether the store at `url` may be emptied: the path has the shape of the Downloads folder both as given and with
+    /// every link on the way resolved, and Application Support, Deci and Downloads are each a real folder (or not there yet),
+    /// never a link. A link at Deci that leads to another folder shaped like the Downloads folder is refused too: the path
+    /// would look right on both counts.
+    nonisolated static func isDeletableRoot(_ url: URL) -> Bool {
+        guard url.isFileURL, hasDownloadsShape(url), hasDownloadsShape(url.resolvingSymlinksInPath()) else { return false }
+        let downloads = url
+        let deci = downloads.deletingLastPathComponent()
+        let support = deci.deletingLastPathComponent()
+        for folder in [support, deci, downloads] {
+            var info = stat()
+            // Nothing below a folder that is not there can be there.
+            guard lstat(folder.path, &info) == 0 else { return errno == ENOENT }
+            guard (info.st_mode & S_IFMT) == S_IFDIR else { return false }
+        }
+        return true
+    }
+
+    /// Whether `removeAll` would work on this store's folder, without touching it. The service asks before it stops
+    /// anything.
+    nonisolated func canRemoveAll() -> Bool { Self.isDeletableRoot(root) }
+
+    /// Deletes everything inside the Downloads folder (audio, `.part` files, covers, the markers of an earlier launch's
+    /// trouble, files nobody owns) and leaves a fresh empty index. Nothing outside the folder is touched: the folder is
+    /// opened through handles that never follow a link, the walk deletes relative to those handles (so a link swapped in
+    /// while it runs is unlinked or refused, never followed), a link inside is unlinked and never followed, an item on
+    /// another device is left, and a folder that is not the Downloads folder is refused.
+    ///
+    /// The empty index is written first, and if that fails nothing is deleted and the store is as it was. Files named in
+    /// `keepingFiles` (the song playing from its file) stay, unlisted, for `removeFileIfUnlisted`. An item that cannot be
+    /// deleted is counted, and a song whose file is still there stays listed, in memory and in the index, so what the store
+    /// says matches the disk. The store is unblocked afterwards and the markers are gone, so the next launch sweeps audio
+    /// nobody owns again. Changes that were waiting for their timer are dropped with the rest.
+    @discardableResult
+    func removeAll(keepingFiles: Set<String> = []) -> Wipe {
+        guard Self.isDeletableRoot(root) else { return Wipe(refused: true, entries: entries) }
+        let handle: Int32
+        switch MusicDownloadTreeWipe.openFolder(root) {
+        case .refused:
+            return Wipe(refused: true, entries: entries)
+        case .unreadable:
+            Self.log.error("Remove all stopped because the downloads folder could not be opened, so nothing was deleted")
+            return Wipe(failed: 1, entries: entries)
+        case .missing:
+            // A folder that is not there has nothing in it, and is not made for the wipe.
+            forgetEverything()
+            isIndexDirty = false
+            return Wipe()
+        case .folder(let opened):
+            handle = opened
+        }
+        defer { close(handle) }
+
+        let fileManager = FileManager.default
+        let before = (
+            entries: entries, collections: collections, preservedEntries: preservedEntries,
+            preservedCollections: preservedCollections, isBlocked: isBlocked, isIndexDirty: isIndexDirty,
+            hasLoaded: hasLoaded
+        )
+        forgetEverything()
+        do {
+            try writeIndex()
+        } catch {
+            entries = before.entries
+            collections = before.collections
+            preservedEntries = before.preservedEntries
+            preservedCollections = before.preservedCollections
+            isBlocked = before.isBlocked
+            isIndexDirty = before.isIndexDirty
+            hasLoaded = before.hasLoaded
+            if isIndexDirty { markIndexDirty() }
+            Self.log.error("Remove all stopped because the empty index could not be written, so nothing was deleted")
+            return Wipe(failed: 1, entries: entries)
+        }
+
+        let keptNames = Set(keepingFiles.compactMap { id in
+            Self.isValidVideoId(id) ? "\(id).\(Self.audioExtension)" : nil
+        })
+        var tally = MusicDownloadTreeWipe.deleteContents(
+            of: handle, skipping: [Self.indexName], keepingInside: keptNames.isEmpty ? [:] : ["audio": keptNames]
+        )
+
+        // A song whose file is still there is still a download.
+        var survivors: [String: Entry] = [:]
+        for (videoId, entry) in before.entries where !keepingFiles.contains(videoId) {
+            guard let audio = audioURL(for: videoId), fileManager.fileExists(atPath: audio.path) else { continue }
+            var kept = entry
+            kept.standalone = true
+            if let cover = kept.coverFile, !hasCover(named: cover) { kept.coverFile = nil }
+            survivors[videoId] = kept
+        }
+        if !survivors.isEmpty {
+            entries = survivors
+            do {
+                try writeIndex()
+            } catch {
+                tally.failed += 1
+                Self.log.error("The downloads index could not be written after a partial remove all")
+            }
+        }
+        if tally.failed > 0 {
+            Self.log.error("Remove all deleted \(tally.removed, privacy: .public) items and could not delete \(tally.failed, privacy: .public)")
+        }
+        return Wipe(removed: tally.removed, failed: tally.failed, entries: entries)
+    }
+
+    /// Drops everything the store holds in memory and unblocks it, as the start of a wipe does.
+    private func forgetEverything() {
+        flushTask?.cancel()
+        flushTask = nil
+        entries = [:]
+        collections = [:]
+        preservedEntries = [:]
+        preservedCollections = [:]
+        isBlocked = false
+        hasLoaded = true
+    }
+
+    /// Removes the audio and covers folders when nothing is left in them, so a folder that holds no download reads as
+    /// holding nothing. `rmdir` takes only an empty folder, and every write into these folders happens inside this actor,
+    /// so a song or cover being written is never caught between.
+    private func removeEmptyFolders() {
+        rmdir(audioDirectory.path)
+        rmdir(coversDirectory.path)
     }
 
     // MARK: - Helpers

@@ -10,10 +10,17 @@ import Testing
 /// A fresh folder for one test's downloads, removed by `remove()`. The store creates it on its first write.
 nonisolated struct DownloadTestFolder {
     let root: URL
+    /// The folder that holds `root` and is deleted with it. With `shaped`, `root` sits at `Application Support/Deci/Downloads`
+    /// beneath it, the one path "Remove all downloads" will empty, and files beside it (`container/outside.txt`) are what a
+    /// wipe must leave alone.
+    let container: URL
 
-    init() {
-        root = URL(fileURLWithPath: "/Volumes/Storage/_test/deci/tmp", isDirectory: true)
+    init(shaped: Bool = false) {
+        container = URL(fileURLWithPath: "/Volumes/Storage/_test/deci/tmp", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        root = shaped
+            ? container.appendingPathComponent("Application Support/Deci/Downloads", isDirectory: true)
+            : container
     }
 
     /// Deletes the folder. Permissions a test took away are given back first, or the delete would fail.
@@ -26,7 +33,7 @@ nonisolated struct DownloadTestFolder {
             _ = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
             try? fileManager.setAttributes([.posixPermissions: isDirectory.boolValue ? 0o755 : 0o644], ofItemAtPath: url.path)
         }
-        try? fileManager.removeItem(at: root)
+        try? fileManager.removeItem(at: container)
     }
 
     var audioDirectory: URL { root.appendingPathComponent("audio", isDirectory: true) }

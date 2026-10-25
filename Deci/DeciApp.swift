@@ -72,6 +72,7 @@ struct DeciApp: App {
     @State private var menuBarPopupController: MenuBarPopupController
     @State private var shortcutsRegistry: ShortcutsRegistry
     @State private var musicHost: MusicServiceHost
+    @State private var downloadsSettings: MusicDownloadsSettingsModel
     @State private var musicChip: MusicMenuBarChipController
     @StateObject private var updateManager = UpdateManager()
     @State private var showMenuBarExtra = true
@@ -97,6 +98,7 @@ struct DeciApp: App {
                 mediaKeyMonitor: mediaKeyMonitor,
                 volumeKeyRecorder: volumeKeyRecorder,
                 shortcutsRegistry: shortcutsRegistry,
+                downloads: downloadsSettings,
                 updateManager: updateManager,
                 onSettingsReset: { musicHost.settingsDidReset() }
             )
@@ -335,6 +337,15 @@ struct DeciApp: App {
         // Only this boolean reaches Chrome: while Deci plays, the extension stops auto-clicking "Switch".
         music.onNativePlayingChange = { ChromeExtensionManager.shared.setNativeMusicPlaying($0) }
         _musicHost = State(initialValue: music)
+        // Settings reaches the downloads through the host: it never builds the Music service just to show a size, and builds
+        // it only when Remove all has something to remove and no service exists yet.
+        _downloadsSettings = State(initialValue: MusicDownloadsSettingsModel(
+            downloads: { music.service?.downloads },
+            prepare: {
+                music.loadIfNeeded()
+                return music.service?.downloads
+            }
+        ))
         // One opener for the Music popup: the Save hotkey and the hover card's buttons open it the same way.
         let musicPopupOpener = MusicPopupOpener()
         // The like animation plays on the popup's strip while the popup is open (on screen and key, the outcome reporter's

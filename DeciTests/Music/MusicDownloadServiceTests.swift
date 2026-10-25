@@ -37,7 +37,8 @@ struct DownloadServiceRig {
         resolver: FakeDownloadResolver = FakeDownloadResolver(),
         pause: RecordingPause = RecordingPause(),
         beforeCollectionChange: (@Sendable (String) -> Void)? = nil,
-        connectivity: MusicConnectivity? = nil
+        connectivity: MusicConnectivity? = nil,
+        idleTimeout: Duration = MusicDownloadService.idleTimeout
     ) {
         self.folder = folder
         self.clock = clock
@@ -56,7 +57,8 @@ struct DownloadServiceRig {
             covers: covers,
             pause: pause.closure,
             now: { clock.now },
-            connectivity: connectivity
+            connectivity: connectivity,
+            idleTimeout: idleTimeout
         )
     }
 

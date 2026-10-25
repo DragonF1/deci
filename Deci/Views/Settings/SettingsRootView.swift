@@ -14,6 +14,8 @@ struct SettingsRootView: View {
     let mediaKeyMonitor: MediaKeyMonitor
     let volumeKeyRecorder: VolumeKeyRecorder
     let shortcutsRegistry: ShortcutsRegistry
+    /// The Downloads section of the General tab: storage used and Remove all.
+    let downloads: MusicDownloadsSettingsModel
     @ObservedObject var updateManager: UpdateManager
     /// Reset all settings, for the parts that live outside the audio engine (the Music tab).
     var onSettingsReset: () -> Void = {}
@@ -29,6 +31,7 @@ struct SettingsRootView: View {
         TabView(selection: $selection) {
             GeneralTab(
                 settings: settings,
+                downloads: downloads,
                 onResetAll: {
                     audioEngine.handleSettingsReset()
                     deviceVolumeMonitor.setSystemFollowDefault()

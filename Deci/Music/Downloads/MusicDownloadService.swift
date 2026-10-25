@@ -88,6 +88,9 @@ final class MusicDownloadService {
     nonisolated static let rateLimitHold: TimeInterval = 600
     /// The least time between two syncs a page opening starts for one collection.
     nonisolated static let pageSyncInterval: TimeInterval = 600
+    /// The longest "Remove all downloads" waits for the downloads, page reads and disk jobs it stopped to end before it
+    /// deletes anyway.
+    nonisolated static let idleTimeout: Duration = .seconds(30)
     /// The Liked music page, which belongs to one channel.
     nonisolated private static let likedBrowseId = "VLLM"
 
@@ -102,6 +105,16 @@ final class MusicDownloadService {
     private var collections: [String: MusicDownloadStore.Collection] = [:]
     /// Collections asked for whose page has not been read yet.
     private var pendingCollections: [String: MusicCollectionRequest] = [:]
+    /// True from the moment "Remove all downloads" starts until it has ended. Downloads and syncs asked for meanwhile are
+    /// ignored, and nothing that finishes late is taken in.
+    private(set) var isRemovingAll = false
+    /// The index of earlier launches has been read. Observable, unlike the flag the service itself keeps, so a view that
+    /// shows counts redraws when they become known.
+    private(set) var isLoaded = false
+    /// Counts the changes to the files on disk that the song and collection counts do not show: a cover picture saved, the
+    /// file of a removed song deleted once playback left it, and a wipe. A view that shows the room the downloads take
+    /// reads it to measure again.
+    private(set) var diskRevision = 0
 
     private let store: MusicDownloadStore
     private let downloader: MusicDownloader
@@ -113,6 +126,7 @@ final class MusicDownloadService {
     private let pageSyncInterval: TimeInterval
     private let now: @Sendable () -> Date
     private let connectivity: MusicConnectivity?
+    private let idleTimeout: Duration
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var hasLoaded = false
     @ObservationIgnored private var removedBeforeLoad: Set<String> = []
@@ -165,7 +179,8 @@ final class MusicDownloadService {
         backoff: [TimeInterval] = MusicDownloadService.backoffDelays,
         pageSyncInterval: TimeInterval = MusicDownloadService.pageSyncInterval,
         now: @escaping @Sendable () -> Date = Date.init,
-        connectivity: MusicConnectivity? = nil
+        connectivity: MusicConnectivity? = nil,
+        idleTimeout: Duration = MusicDownloadService.idleTimeout
     ) {
         self.store = store
         self.downloader = downloader
@@ -177,6 +192,7 @@ final class MusicDownloadService {
         self.pageSyncInterval = pageSyncInterval
         self.now = now
         self.connectivity = connectivity
+        self.idleTimeout = idleTimeout
         loadTask = Task { [weak self] in
             let loaded = await store.load()
             let stored = await store.collectionList()
@@ -305,6 +321,12 @@ final class MusicDownloadService {
         downloadedCollectionIds.compactMap { downloadedCollection(browseId: $0) }
     }
 
+    /// How many playlists and albums are downloaded or on their way: the length of `downloadedCollectionIds`, counted
+    /// without sorting anything.
+    var downloadedCollectionCount: Int {
+        collections.count + pendingCollections.keys.reduce(0) { $0 + (collections[$1] == nil ? 1 : 0) }
+    }
+
     /// The ids of `downloadedCollections`, in the same order, read without any download state: a list that only needs
     /// the ids to lay its rows out is not redrawn by a progress tick. A row reads its own collection (`downloadedCollection`).
     var downloadedCollectionIds: [String] {
@@ -415,6 +437,31 @@ final class MusicDownloadService {
         }
     }
 
+    /// `waitUntilIdle`, but only for `limit`: false when the time ran out first. The wait that was left behind goes on in
+    /// the background and ends with the work it waits for.
+    private func waitUntilIdle(upTo limit: Duration) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let answered = OSAllocatedUnfairLock(initialState: false)
+            let answer: @Sendable (Bool) -> Void = { idle in
+                let isFirst = answered.withLock { done -> Bool in
+                    defer { done = true }
+                    return !done
+                }
+                if isFirst { continuation.resume(returning: idle) }
+            }
+            // The wait is not cancellable, so the two are raced by hand: whichever ends first answers, once.
+            let timer = Task {
+                do { try await Task.sleep(for: limit) } catch { return }
+                answer(false)
+            }
+            Task { [weak self] in
+                await self?.waitUntilIdle()
+                timer.cancel()
+                answer(true)
+            }
+        }
+    }
+
     /// Writes the index changes that are waiting for their timer, for a quit. Blocks for at most a second and a half.
     func flushOnQuit() {
         let store = store
@@ -428,6 +475,7 @@ final class MusicDownloadService {
 
     private func finishLoading(_ loaded: [String: MusicDownloadStore.Entry], collections stored: [String: MusicDownloadStore.Collection]) {
         hasLoaded = true
+        isLoaded = true
         entries = loaded.filter { !removedBeforeLoad.contains($0.key) }
         collections = stored.filter { !removedCollectionsBeforeLoad.contains($0.key) }
         recomputeListed()
@@ -467,6 +515,7 @@ final class MusicDownloadService {
     /// song already queued, downloading or downloaded is left alone, except that a collection's song becomes the user's
     /// own; one that failed tries again.
     func download(_ track: MusicTrack) {
+        guard !isRemovingAll else { return }
         let videoId = track.videoId
         switch state(for: videoId) {
         case .queued:
@@ -548,6 +597,80 @@ final class MusicDownloadService {
         }
     }
 
+    // MARK: - Remove all
+
+    /// Deletes every download: the songs, the playlists and albums, the pictures, and whatever else is in the Downloads
+    /// folder. Everything reads as not downloaded at once; the disk follows.
+    ///
+    /// What is running is stopped first (the song on its way, the queue, a page being read, a cover being fetched) and the
+    /// service waits for it, so nothing that finishes late can be added back, and downloads asked for meanwhile are
+    /// ignored. Then the store, the one thing that deletes, empties its folder, and the service takes over what it says is
+    /// left: nothing after a clean wipe, the songs whose files could not be deleted after a partial one. The song playing
+    /// from its file keeps playing: its file stays until playback leaves it (see `noteLocalPlayback(of:)`).
+    ///
+    /// A folder that is not the Downloads folder is refused before anything is stopped. A second call while one runs does
+    /// nothing.
+    @discardableResult
+    func removeAll() async -> MusicDownloadStore.Wipe {
+        guard !isRemovingAll else { return MusicDownloadStore.Wipe() }
+        guard store.canRemoveAll() else {
+            Self.log.error("Remove all was refused because the downloads folder is not where it should be")
+            return MusicDownloadStore.Wipe(refused: true, entries: entries)
+        }
+        isRemovingAll = true
+        if !hasLoaded { await waitUntilLoaded() }
+
+        // Gone from the app at once. No suspension from here to the cancels.
+        // A page read that is still under way when the wipe goes ahead finds its collection changed and saves nothing.
+        var browseIds = Set(collections.keys).union(pendingCollections.keys)
+        if let enumeratingID { browseIds.insert(enumeratingID) }
+        for browseId in browseIds {
+            generations[browseId, default: 0] += 1
+            cancels[browseId, default: 0] += 1
+        }
+        let playing = playingLocalID.flatMap { MusicDownloadStore.isValidVideoId($0) ? $0 : nil }
+        if activeID != nil { activeWasRemoved = true }
+        activeID = nil
+        activeFraction = 0
+        entries = [:]
+        collections = [:]
+        pendingCollections = [:]
+        failedIDs = []
+        queue = MusicDownloadQueue()
+        wantedStandalone = []
+        listedIDs = []
+        keptFiles = []
+        awaitingFinish = []
+        lastAutoSync = [:]
+        pendingPageOpens = []
+        coverJobs = []
+        activeTask?.cancel()
+        enumerationTask?.cancel()
+        coverTask?.cancel()
+        pump?.cancel()
+
+        if await !waitUntilIdle(upTo: idleTimeout) {
+            Self.log.error("Remove all waited too long for the downloads to stop, so it went ahead")
+        }
+        let wipe = await store.removeAll(keepingFiles: playing.map { [$0] } ?? [])
+        let stored = await store.collectionList()
+
+        // The store's word is the truth now, and nothing suspends from here to the end.
+        entries = wipe.entries
+        collections = stored
+        recomputeListed()
+        if let playing {
+            if playingLocalID == playing {
+                keptFiles.insert(playing)
+            } else {
+                deleteKeptFile(playing)
+            }
+        }
+        if !wipe.refused { diskRevision &+= 1 }
+        isRemovingAll = false
+        return wipe
+    }
+
     // MARK: - Collections
 
     /// Downloads every song of the playlist or album. Its page is read first (a job of its own in the queue); nothing is
@@ -555,7 +678,7 @@ final class MusicDownloadService {
     /// collection that is stored or on its way changes nothing.
     func downloadCollection(_ request: MusicCollectionRequest) {
         let browseId = request.browseId
-        guard source != nil, MusicCollectionEnumerator.isDownloadable(browseId: browseId) else { return }
+        guard !isRemovingAll, source != nil, MusicCollectionEnumerator.isDownloadable(browseId: browseId) else { return }
         guard collections[browseId] == nil, pendingCollections[browseId] == nil else { return }
         pendingCollections[browseId] = request
         queue.enqueueCollection(browseId)
@@ -649,6 +772,7 @@ final class MusicDownloadService {
     private func collectionRemoved(
         _ browseId: String, _ removal: MusicDownloadStore.CollectionRemoval, letGo: [String: MusicDownloadStore.Entry]
     ) {
+        guard !isRemovingAll else { return }
         let dropped = Set(removal.dropped)
         for videoId in removal.dropped where videoId != activeID { entries[videoId] = nil }
         for (videoId, entry) in letGo where !dropped.contains(videoId) {
@@ -670,7 +794,7 @@ final class MusicDownloadService {
     /// reads as empty, leaves everything as it was and records that the sync could not run. Does nothing for a collection
     /// that is not downloaded.
     func sync(_ browseId: String) {
-        guard source != nil, collections[browseId] != nil else { return }
+        guard !isRemovingAll, source != nil, collections[browseId] != nil else { return }
         queue.enqueueCollection(browseId)
         startPumpIfNeeded()
     }
@@ -726,6 +850,8 @@ final class MusicDownloadService {
     /// file: the entry comes back here if the service had let go of it. A song that was deleted loses a stale entry; one
     /// whose file was kept for the player is deleted when playback leaves it.
     private func applyRemoval(_ release: MusicDownloadStore.Release, of videoId: String, keptFile: Bool) {
+        // The store is about to be emptied: what it kept for a collection is not coming back.
+        guard !isRemovingAll else { return }
         switch release {
         case .untouched:
             break
@@ -743,19 +869,23 @@ final class MusicDownloadService {
 
     /// Deletes the file of a song removed while it played, unless a download has listed the song again since.
     private func deleteKeptFile(_ videoId: String) {
-        enqueueStoreJob { store in
+        enqueueStoreJob(changesDisk: true) { store in
             await store.removeFileIfUnlisted(videoId: videoId)
         }
     }
 
-    /// Runs `job` against the store once every earlier job has finished and the index has loaded.
-    private func enqueueStoreJob(_ job: @escaping @Sendable (MusicDownloadStore) async -> Void) {
+    /// Runs `job` against the store once every earlier job has finished and the index has loaded. A job that changes the
+    /// files on disk without changing a count says so with `changesDisk`, and `diskRevision` moves once it has run.
+    private func enqueueStoreJob(
+        changesDisk: Bool = false, _ job: @escaping @Sendable (MusicDownloadStore) async -> Void
+    ) {
         let previous = storeWork
         let store = store
         storeWork = Task { [weak self] in
             await previous?.value
             await self?.waitUntilLoaded()
             await job(store)
+            if changesDisk { self?.diskRevision &+= 1 }
         }
     }
 
@@ -783,7 +913,7 @@ final class MusicDownloadService {
     }
 
     private func startPumpIfNeeded() {
-        guard pump == nil, isOnline else { return }
+        guard pump == nil, isOnline, !isRemovingAll else { return }
         pump = Task { [weak self] in
             await self?.runQueue()
         }
@@ -801,7 +931,7 @@ final class MusicDownloadService {
                 break
             }
             // Nothing suspends between taking the job and the end of the loop, so a job queued meanwhile is never missed.
-            guard let job = queue.next() else { break }
+            guard !isRemovingAll, let job = queue.next() else { break }
             switch job {
             case .collection(let browseId):
                 await readPage(of: browseId)
@@ -867,7 +997,7 @@ final class MusicDownloadService {
                 removeFromStore(videoId)
             } else {
                 settle(entry, track: track)
-                enqueueCover(.song(track))
+                if !isRemovingAll { enqueueCover(.song(track)) }
             }
         case .failure(let error):
             if !removed, !isOnline || networkLosses != lossesBefore {
@@ -890,6 +1020,8 @@ final class MusicDownloadService {
     /// Lists a finished download and makes its standing match what was asked for while it ran: the user's own, only a
     /// collection's, or (when nothing wants it any more) nothing.
     private func settle(_ entry: MusicDownloadStore.Entry, track: MusicTrack) {
+        // A song that finished as everything was being removed goes with the rest.
+        guard !isRemovingAll else { return }
         let videoId = track.videoId
         let wanted = wantedStandalone.remove(videoId) != nil
         let listed = listedIDs.contains(videoId)
@@ -972,7 +1104,7 @@ final class MusicDownloadService {
         enumerationTask = nil
         enumeratingID = nil
         // Removed or cancelled while the page was being read: nothing is saved, queued or noted.
-        guard generations[browseId, default: 0] == generation, cancels[browseId, default: 0] == cancelled else { return }
+        guard !isRemovingAll, generations[browseId, default: 0] == generation, cancels[browseId, default: 0] == cancelled else { return }
 
         switch result {
         case .success(let read):
@@ -1039,6 +1171,8 @@ final class MusicDownloadService {
             channelKey: read.channelKey
         )
         await storeWork?.value
+        // Everything is being removed: nothing is stored, and what is stored already goes with the rest.
+        guard !isRemovingAll else { return }
         do {
             try await store.saveCollection(browseId, record)
         } catch {
@@ -1046,6 +1180,7 @@ final class MusicDownloadService {
             Self.log.error("A collection could not be stored")
             return
         }
+        guard !isRemovingAll else { return }
         guard generations[browseId, default: 0] == generation else {
             // Removed while it was being written: the store has the record again, so it goes again.
             removeCollectionInStore(browseId)
@@ -1066,7 +1201,7 @@ final class MusicDownloadService {
         let listing = read.listing
         // What is playing is read after the disk has caught up: it may have changed while earlier jobs ran.
         await storeWork?.value
-        guard generations[browseId, default: 0] == generation, let stored = collections[browseId] else { return }
+        guard !isRemovingAll, generations[browseId, default: 0] == generation, let stored = collections[browseId] else { return }
         guard let decision = MusicCollectionSyncRules.decide(
             stored: stored.videoIds,
             playable: listing.tracks.map(\.videoId),
@@ -1097,6 +1232,7 @@ final class MusicDownloadService {
                 markUnreachable(browseId)
                 return
             }
+            guard !isRemovingAll else { return }
             guard generations[browseId, default: 0] == generation, collections[browseId] != nil else {
                 removeCollectionInStore(browseId)
                 return
@@ -1126,6 +1262,7 @@ final class MusicDownloadService {
     /// Queues the collection songs given, in order, that nothing has in hand: not on disk, not on their way and not asked
     /// for on their own. A song already queued is left alone; one that failed before tries again.
     private func queueListed(_ tracks: [MusicTrack]) {
+        guard !isRemovingAll else { return }
         for track in tracks
         where entries[track.videoId] == nil && activeID != track.videoId && !wantedStandalone.contains(track.videoId) {
             if queue.enqueueListed(track) {
@@ -1147,7 +1284,7 @@ final class MusicDownloadService {
     /// Queues a cover picture to be fetched by the cover task, which runs at low priority apart from the download queue:
     /// a slow image never holds up the next song.
     private func enqueueCover(_ job: CoverJob) {
-        guard covers != nil else { return }
+        guard covers != nil, !isRemovingAll else { return }
         coverJobs.append(job)
         guard coverTask == nil else { return }
         coverTask = Task(priority: .utility) { [weak self] in
@@ -1182,6 +1319,8 @@ final class MusicDownloadService {
         }
         guard await store.saveCover(data, named: name, forVideoId: track.videoId) else { return }
         entries[track.videoId]?.coverFile = name
+        // A picture written, or one the song had before deleted: the room changes, the counts do not.
+        if !data.isEmpty || entry.coverFile != name { diskRevision &+= 1 }
     }
 
     /// Saves the collection's small cover, as `saveCover(of:)` does for a song.
@@ -1190,6 +1329,7 @@ final class MusicDownloadService {
         let small = MusicArtworkURL.small(url)
         let name = MusicDownloadCovers.name(for: small)
         if collections[browseId]?.coverFile == name, store.hasCover(named: name) { return }
+        let before = collections[browseId]?.coverFile
         var data = Data()
         if !store.hasCover(named: name) {
             guard let fetched = try? await covers.fetch(small) else { return }
@@ -1197,6 +1337,7 @@ final class MusicDownloadService {
         }
         guard await store.saveCover(data, named: name, forCollection: browseId) else { return }
         collections[browseId]?.coverFile = name
+        if !data.isEmpty || before != name { diskRevision &+= 1 }
     }
 
     // MARK: - Waiting out a rate limit

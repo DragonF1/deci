@@ -4,9 +4,11 @@ import SwiftUI
 @MainActor
 struct GeneralTab: View {
     @Bindable var settings: SettingsManager
+    let downloads: MusicDownloadsSettingsModel
     let onResetAll: () -> Void
 
     @State private var showResetConfirmation = false
+    @State private var showRemoveDownloadsConfirmation = false
     private let chrome = ChromeExtensionManager.shared
 
     var body: some View {
@@ -15,6 +17,7 @@ struct GeneralTab: View {
                 generalSection
                 menuBarSection
                 chromeSection
+                downloadsSection
                 dataSection
             }
             .padding(.horizontal, 20)
@@ -176,6 +179,72 @@ struct GeneralTab: View {
                     .labelsHidden()
             }
         }
+    }
+
+    // MARK: - Downloads
+
+    private var downloadsSection: some View {
+        SettingsSection(MusicDownloadSettingsText.sectionTitle) {
+            SettingsRow(
+                MusicDownloadSettingsText.storageTitle,
+                description: downloads.summary
+            ) {
+                Text(downloads.sizeText)
+                    .font(.system(size: 13).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(minWidth: 96, alignment: .trailing)
+            }
+            SettingsRowDivider()
+            SettingsRow(
+                MusicDownloadSettingsText.removeTitle,
+                description: MusicDownloadSettingsText.removeDescription
+            ) {
+                HStack(spacing: 8) {
+                    if let removing = downloads.removingText {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(removing)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Button(role: .destructive) {
+                        showRemoveDownloadsConfirmation = true
+                    } label: {
+                        Text(MusicDownloadSettingsText.removeButton)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .controlSize(.small)
+                    .disabled(!downloads.canRemoveAll)
+                }
+            }
+
+            // How the last removal ended, when it fell short: red when items could not be removed.
+            if let caption = downloads.wipeCaption {
+                Text(caption.text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(caption.isFailure ? AnyShapeStyle(Color.red) : AnyShapeStyle(HierarchicalShapeStyle.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
+        }
+        .confirmationDialog(
+            MusicDownloadSettingsText.confirmationTitle,
+            isPresented: $showRemoveDownloadsConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(MusicDownloadSettingsText.confirmButton, role: .destructive) {
+                Task { await downloads.removeAll() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(downloads.confirmationMessage)
+        }
+        // Reads the counts and the size when the tab shows, and again whenever the download set changes.
+        .task { await downloads.watch() }
     }
 
     // MARK: - Data
