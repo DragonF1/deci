@@ -17,22 +17,11 @@
  *       captured: boolean,           (true only for real tab capture)
  *       control: string,             one of:
  *                                      "capture"  captured (gain, EQ and device in Deci)
- *                                      "page"     not captured, but its track has auto mode
- *                                                 on and its page routes media in-page
- *                                                 (volume, boost and EQ only, no device)
- *                                      "armed"    not captured, its track has auto mode on and
- *                                                 its web page routes nothing yet: volume,
- *                                                 boost and EQ are kept and apply once its
- *                                                 media routes. Never for a tab that sounds
- *                                                 with no media element seen, or whose frame
- *                                                 reported media it cannot route
- *                                      "none"     none of these
- *                                    (missing means an older extension: use captured;
- *                                     an older app reads "armed" as "none")
+ *                                      "none"     not captured
+ *                                    (missing means an older extension: use captured)
  *       volume: number 0..1,         (base volume, NOT multiplied by boost)
  *       boost: 1 | 2 | 3 | 4,
- *       muted: boolean,              (captured ? Deci gain mute : Chrome tab mute;
- *                                     mute is never done in-page)
+ *       muted: boolean,              (captured ? Deci gain mute : Chrome tab mute)
  *       eqBands: [10 numbers, dB],
  *       deviceName: string,          ("" means system default; a CoreAudio device name)
  *       deviceNames: [string],       the outputs of a tab in multi-output mode (see
@@ -46,7 +35,6 @@
  *       deviceStatus: string         one of:
  *                                      "default"  no device chosen (system default output)
  *                                      "pending"  a device is chosen, tab not captured yet
- *                                                 (also for control "page": devices need capture)
  *                                      "routed"   captured and playing on the chosen device,
  *                                                 or in multi mode on at least one chosen device
  *                                      "notFound" captured, no output matches (in multi mode:
@@ -136,8 +124,8 @@
  * URL and favicon never leave Chrome. TAB_LIST is still sent while everything is hidden
  * (with tabs: []), so the app sees the tracking echo and the connection stays alive; the
  * app resends SET_TRACKING when the echo differs from what it wants. Tracking changes only
- * what is reported: capture, auto mode, page control, badges and per-tab volume, boost,
- * EQ and device work exactly as before, and SET_TAB_* commands are still honored.
+ * what is reported: capture, badges and per-tab volume, boost, EQ and device work
+ * exactly as before, and SET_TAB_* commands are still honored.
  *
  * PRIVACY GATE. The stored switch can be stale, so it never decides what a new connection
  * hears. Every new native port (and every worker start) begins with the gate CLOSED: all
@@ -149,41 +137,6 @@
  * The stored value, or the default { tabs: true, incognito: false } when nothing is stored,
  * only fills in the field a one-boolean SET_TRACKING leaves out and tells whether a
  * SET_TRACKING changed anything.
- *
- * AUTO MODE. Enabling Deci on one tab (toolbar click or command) turns on auto mode
- * for that tab's track: "normal" tabs or "incognito" tabs, the two never mix. Tabs
- * of an auto track that are not captured get volume, boost and EQ from the content
- * script page-audio.js, which routes the page's media through Web Audio. Real
- * capture still wins when present. The toolbar action's context menu checkbox
- * 'deci-auto' turns a track off and on again.
- *
- * Content script (page-audio.js, no target field) <-> service worker:
- *   PAGE_HELLO {}                  page to worker, once per frame, when the frame first
- *                                  sees a media element. Reply { on: boolean, volume,
- *                                  boost, eqBands } ("on" = route this tab's media).
- *   PAGE_STATUS { routed: true }   page to worker, when the frame routes its first media
- *                                  element (again after being switched off and on). Sets
- *                                  the tab's pageControl, which makes control "page".
- *   PAGE_STATUS { routed: false, unreachable: true }
- *                                  page to worker, when a playing media element cannot be
- *                                  routed (encrypted, a stream, its own output device,
- *                                  cross-origin, or a source node the page owns). Sets the
- *                                  tab's pageUnreachable: no "armed" control.
- *   PAGE_STATUS { routed: false, unsafe: true }
- *                                  page to worker, when a routed element starts playing
- *                                  media Web Audio cannot read (silent until reload). The
- *                                  tab goes dry, loses pageControl, and the origin joins
- *                                  'pageBlocked': no frame of it is switched on again
- *                                  this browser session.
- *   PAGE_ASK { type: "PAGE_ASK" }  worker to every frame of a tab with no state yet, when
- *                                  auto turns on: frames that saw media send PAGE_HELLO
- *                                  again.
- *   PAGE_STATE { type: "PAGE_STATE", on, volume, boost, eqBands }
- *                                  worker to every frame of a tab (chrome.tabs.sendMessage)
- *                                  on volume, boost or EQ changes, when auto turns on or
- *                                  off, and when capture starts or stops. on = auto mode
- *                                  for the track AND the tab not captured. Off means the
- *                                  page plays dry (a routed element stays routed).
  *
  * Service worker <-> offscreen document messages carry target 'offscreen' or
  * target 'background'; each side ignores messages not addressed to it.
@@ -226,16 +179,7 @@
  * STORAGE
  *   chrome.storage.session  'tab:<id>'  -> { volume, boost, muted, eqBands, deviceName,
  *                                            deviceNames, deviceMissing, deviceStatus,
- *                                            captured, pageControl, pageOrigin,
- *                                            pageMedia, pageUnreachable }
- *                           pageControl: a frame of the tab routes its media in-page.
- *                           pageMedia: a frame of the tab saw a media element (PAGE_HELLO).
- *                           pageUnreachable: a frame reported media it cannot route.
- *                           pageOrigin: origin of the tab URL when one of these was reported;
- *                           all three reset when the tab navigates to another origin.
- *   chrome.storage.local    'autoTracks' -> { normal: boolean, incognito: boolean }
- *                           (default both false; set true by a successful capture start from
- *                           a click or the command, either one changed by the menu checkbox)
+ *                                            captured }
  *   chrome.storage.local    'tracking' -> { tabs: boolean, incognito: boolean }
  *                           (written by SET_TRACKING only when the value changed; default
  *                           both true; read at worker start to merge a one-boolean
@@ -248,12 +192,10 @@
  *   chrome.storage.session  'tapLatency' -> [ { deviceName, seconds } ] (the last SET_TAP_LATENCY,
  *                           sanitized; restored at worker start so a restart keeps it)
  *   chrome.storage.session  'knownTabs' -> [tab ids that were audible this session]
- *   chrome.storage.session  'pageBlocked' -> [origins whose media turned unreadable in-page]
  *   chrome.storage.local    'siteDefaults' -> { hostname: { volume, boost } }
  *                           (only volume is applied, when capture starts)
- *     Written on volume or boost changes of a captured, page-controlled or armed,
- *     non-incognito tab.
- *     Read when a tab with no per-tab state yet starts capture or sends PAGE_HELLO.
+ *     Written on volume or boost changes of a captured, non-incognito tab.
+ *     Read when a tab with no per-tab state yet starts capture.
  *     Never applied on reload or navigation, never stores mute.
  */
 
@@ -271,15 +213,8 @@ const RETRY_MAX_MS = 30000;
 const STABLE_CONNECTION_MS = 5000;
 const MIN_SITE_VOLUME = 0.05;
 const BADGE_COLOR = '#4688F1';
-const BADGE_COLOR_PAGE = '#6B7280';
 const TITLE_OFF = "Deci: click to control this tab's audio";
 const TITLE_ON = 'Deci: controlling this tab (click to stop)';
-const TITLE_PAGE = 'Deci: controlling this tab in-page. Click for full capture (output device)';
-const TITLE_ARMED = 'Deci: auto mode is on, this tab is controlled once it plays audio. Click for full capture (output device)';
-const TITLE_UNREACHED = "Deci: auto mode can't reach this tab's audio. Click to control it";
-const MENU_AUTO_ID = 'deci-auto';
-const MENU_AUTO_TITLE = 'Control every tab automatically';
-const PAGE_AUDIO_FILE = 'page-audio.js';
 const YTM_SWITCH_FILE = 'ytm-switch.js';
 const YTM_URL_PATTERN = 'https://music.youtube.com/*';
 const DEVICE_STATUSES = ['default', 'pending', 'routed', 'notFound', 'noAccess'];
@@ -357,11 +292,7 @@ function defaultState() {
     deviceNames: [],
     deviceMissing: [],
     deviceStatus: 'default',
-    captured: false,
-    pageControl: false,
-    pageOrigin: '',
-    pageMedia: false,
-    pageUnreachable: false
+    captured: false
   };
 }
 
@@ -400,10 +331,6 @@ function normalizeState(raw) {
   s.deviceName = typeof raw.deviceName === 'string' ? raw.deviceName : '';
   s.deviceNames = normalizeNames(raw.deviceNames);
   s.captured = raw.captured === true;
-  s.pageControl = raw.pageControl === true;
-  s.pageOrigin = typeof raw.pageOrigin === 'string' ? raw.pageOrigin : '';
-  s.pageMedia = raw.pageMedia === true;
-  s.pageUnreachable = raw.pageUnreachable === true;
   s.deviceStatus = s.captured && DEVICE_STATUSES.includes(raw.deviceStatus)
     ? raw.deviceStatus : unresolvedDeviceStatus(s);
   s.deviceMissing = s.captured
@@ -434,21 +361,10 @@ function hostOf(url) {
   try { return new URL(url).hostname || null; } catch (e) { return null; }
 }
 
-function originOf(url) {
-  try { return new URL(url).origin; } catch (e) { return ''; }
-}
-
-// Auto mode keeps normal and incognito tabs apart.
-function trackOf(tab) {
-  return tab && tab.incognito ? 'incognito' : 'normal';
-}
-
-// How Deci controls a tab: real capture, the in-page fallback (auto mode on
-// for the tab's track and a frame routes its media), or not at all. This is
-// the TAB_LIST "control" field. st may be undefined (no state yet).
-function controlOf(st, track, tracks) {
-  if (st && st.captured) return 'capture';
-  return st && st.pageControl && tracks[track] ? 'page' : 'none';
+// How Deci controls a tab: real capture, or not at all. This is the TAB_LIST
+// "control" field. st may be undefined (no state yet).
+function controlOf(st) {
+  return st && st.captured ? 'capture' : 'none';
 }
 
 function faviconOrNull(url) {
@@ -465,47 +381,6 @@ function logError(context) {
 
 async function getTab(tabId) {
   try { return await chrome.tabs.get(tabId); } catch (e) { return null; }
-}
-
-// ---------------------------------------------------------------------------
-// Auto mode tracks (chrome.storage.local 'autoTracks'), warm in memory:
-// loaded by ready(), so anything that awaited it can read autoTracks.
-// ---------------------------------------------------------------------------
-
-let autoTracks = { normal: false, incognito: false };
-let autoTracksLoaded = false;
-
-function normalizeAutoTracks(raw) {
-  const r = raw && typeof raw === 'object' ? raw : {};
-  return { normal: r.normal === true, incognito: r.incognito === true };
-}
-
-async function loadAutoTracks() {
-  if (autoTracksLoaded) return;
-  // A failed read leaves the flags unloaded (off for now, read again next
-  // time), so a later write cannot overwrite the stored other track.
-  const stored = await chrome.storage.local.get('autoTracks');
-  if (autoTracksLoaded) return;
-  autoTracks = normalizeAutoTracks(stored.autoTracks);
-  autoTracksLoaded = true;
-}
-
-// controlOf for a real tab, with the live track flags.
-// controlOf plus "armed": a web page of an auto track that routes nothing
-// yet but will once it plays. Not armed while it sounds with no media
-// element seen (Web Audio or plugins, which page-audio never reaches) or
-// after a frame reported media it cannot route.
-function tabControl(st, tab) {
-  const control = controlOf(st, trackOf(tab), autoTracks);
-  if (control !== 'none' || !tab || !isPageUrl(tab.url) || !pageAllowed(tab)) return control;
-  if (st && st.pageUnreachable) return 'none';
-  if (tab.audible && !(st && st.pageMedia)) return 'none';
-  return 'armed';
-}
-
-// Captured or routing in-page right now (what lists a silent tab).
-function isActiveControl(control) {
-  return control === 'capture' || control === 'page';
 }
 
 // ---------------------------------------------------------------------------
@@ -595,16 +470,12 @@ let storeSync = null; // same object ready() resolves to, for synchronous peeks
 function ready() {
   if (!readyPromise) {
     readyPromise = (async () => {
-      await loadAutoTracks().catch(logError('autoTracks read'));
       const all = await chrome.storage.session.get(null);
-      const store = { tabs: new Map(), known: new Set(), blocked: new Set() };
+      const store = { tabs: new Map(), known: new Set() };
       for (const [key, value] of Object.entries(all)) {
         if (!key.startsWith('tab:')) continue;
         const id = Number(key.slice(4));
         if (Number.isInteger(id)) store.tabs.set(id, normalizeState(value));
-      }
-      if (Array.isArray(all.pageBlocked)) {
-        for (const origin of all.pageBlocked) if (typeof origin === 'string') store.blocked.add(origin);
       }
       if (Array.isArray(all.knownTabs)) {
         for (const id of all.knownTabs) if (Number.isInteger(id)) store.known.add(id);
@@ -858,13 +729,10 @@ function openPermissionPageOnce() {
 
 const BADGES = {
   capture: { text: 'ON', color: BADGE_COLOR, title: TITLE_ON },
-  page: { text: 'ON', color: BADGE_COLOR_PAGE, title: TITLE_PAGE },
-  armed: { text: 'ON', color: BADGE_COLOR_PAGE, title: TITLE_ARMED },
-  unreached: { text: '', color: null, title: TITLE_UNREACHED },
   off: { text: '', color: null, title: TITLE_OFF }
 };
 
-// mode: 'capture' | 'page' | 'armed' | 'unreached' | 'off'
+// mode: 'capture' | 'off'
 function setBadge(tabId, mode) {
   const ignore = () => {};
   const badge = BADGES[mode] || BADGES.off;
@@ -873,22 +741,15 @@ function setBadge(tabId, mode) {
   chrome.action.setTitle({ tabId, title: badge.title }).catch(ignore);
 }
 
-// A tab's badge: ON (blue) when captured, ON (grey) when its control is
-// "page" or "armed", so a new tab shows at once that Deci has it, and on
-// non-web tabs of an auto track. A web page whose sound auto mode cannot
-// reach shows no ON (the app shows it as not controlled), nor does a
-// blocked origin. st may be undefined.
-function badgeFor(st, tab) {
-  const control = tabControl(st, tab);
-  if (control !== 'none') return control;
-  if (!pageAllowed(tab)) return 'off';
-  return isPageUrl(tab.url) ? 'unreached' : 'armed';
+// A tab's badge: ON when captured, none otherwise. st may be undefined.
+function badgeFor(st) {
+  return controlOf(st) === 'capture' ? 'capture' : 'off';
 }
 
-// Re-derives a tab's badge from its stored state and its track's auto flag.
+// Re-derives a tab's badge from its stored state.
 async function refreshBadge(store, tabId) {
   const tab = await getTab(tabId);
-  if (tab) setBadge(tabId, badgeFor(store.tabs.get(tabId), tab));
+  if (tab) setBadge(tabId, badgeFor(store.tabs.get(tabId)));
 }
 
 // ---------------------------------------------------------------------------
@@ -909,7 +770,6 @@ async function reconcileCaptures(store, refreshAllBadges) {
       st.captured = true;
       persistTab(tabId, st);
       setBadge(tabId, 'capture');
-      sendPageState(tabId, st, null); // dry: the capture owns the gain
       adopted = true;
     } else if (refreshAllBadges) {
       if (isLive) setBadge(tabId, 'capture');
@@ -925,7 +785,6 @@ async function reconcileCaptures(store, refreshAllBadges) {
     persistTab(tabId, st);
     setBadge(tabId, 'capture');
     sendToOffscreen({ type: 'SET_STATE', tabId, ...audioFields(st) });
-    sendPageState(tabId, st, null);
     adopted = true;
   }
   // Adopted captures may have reported their device status to nobody.
@@ -945,20 +804,14 @@ function markUncaptured(store, tabId) {
     if (st.muted) chrome.tabs.update(tabId, { muted: true }).catch(() => {});
     schedulePush();
   }
-  // Back to in-page control when the tab's track has auto mode on.
-  resumePageMode(store, tabId).catch(logError('resume page mode'));
 }
 
 async function stopCapture(store, tabId) {
   const st = store.tabs.get(tabId);
-  // Read before the stream stops so the page gets its gain back right after,
-  // with no wait in between (the tab plays unprocessed until then).
-  const tab = await getTab(tabId);
   // Mute through the tabs API before releasing the stream so a muted tab
   // never blips back at full level.
   if (st && st.muted) await chrome.tabs.update(tabId, { muted: true }).catch(() => {});
   await sendToOffscreen({ type: 'STOP_CAPTURE', tabId });
-  if (st && tab) sendPageState(tabId, { ...st, captured: false }, tab);
   markUncaptured(store, tabId);
 }
 
@@ -994,14 +847,9 @@ async function startCapture(store, tabId, streamId) {
   // edit the stored object in place.
   const sent = audioFields(next);
   await ensureOffscreen();
-  // The page goes dry before the capture graph is live, so a boosted tab is
-  // never boosted twice (until then it plays unprocessed, not doubled).
-  const pageWet = !!autoTracks[trackOf(tab)];
-  if (pageWet) await sendPageState(tabId, { ...next, captured: true }, tab);
   const resp = await sendToOffscreen({ type: 'START_CAPTURE', tabId, streamId, ...sent });
   if (!resp || !resp.ok) {
     console.warn(`Deci: capture of tab ${tabId} failed:`, resp ? resp.error : 'no response');
-    if (pageWet) sendPageState(tabId, store.tabs.get(tabId) || next, tab); // back to page control
     return false;
   }
   // The document has the tap latency already; sending it again costs nothing and makes sure. Not awaited.
@@ -1018,8 +866,6 @@ async function startCapture(store, tabId, streamId) {
   // Unmute via the API only after the gain (muted) owns the audio.
   if (apiMuted) chrome.tabs.update(tabId, { muted: false }).catch(() => {});
   setBadge(tabId, 'capture');
-  // The capture owns the gain now: the page goes dry so it is not applied twice.
-  if (autoTracks[trackOf(tab)]) sendPageState(tabId, final, tab);
   schedulePush();
   return true;
 }
@@ -1040,7 +886,6 @@ async function toggleCapture(tabId, streamIdRequest) {
       store.tabs.set(tabId, healed);
       persistTab(tabId, healed);
       setBadge(tabId, 'capture');
-      sendPageState(tabId, healed, null);
       sendToOffscreen({ type: 'RESOLVE_DEVICES' }); // its status may have gone unrecorded
       schedulePush();
       return;
@@ -1048,12 +893,7 @@ async function toggleCapture(tabId, streamIdRequest) {
     console.warn(`Deci: cannot capture tab ${tabId}:`, result.error);
     return;
   }
-  // A capture started by hand turns auto mode on for the tab's track.
-  if (await startCapture(store, tabId, result.id)) {
-    const tab = await getTab(tabId);
-    // Not awaited: applying to every tab must not hold this tab's toggle guard.
-    if (tab) setAutoTrack(trackOf(tab), true).catch(logError('auto mode on'));
-  }
+  await startCapture(store, tabId, result.id);
 }
 
 function requestStreamId(tabId) {
@@ -1142,69 +982,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ---------------------------------------------------------------------------
-// Auto mode: tabs that are not captured get volume, boost and EQ in-page
+// YouTube Music switch script
 // ---------------------------------------------------------------------------
 
-function isPageUrl(url) {
-  return typeof url === 'string' && /^https?:/i.test(url);
-}
-
-// Whether page-audio may route media of this tab's page.
-function pageAllowed(tab) {
-  return !!tab && !!autoTracks[trackOf(tab)] && !(storeSync && storeSync.blocked.has(originOf(tab.url)));
-}
-
-// Tells every frame of a tab what to do. Errors are ignored: "Receiving end
-// does not exist" is normal for tabs without the content script. tab may be
-// null for a captured tab (always dry). Resolves once the frames have it.
-function sendPageState(tabId, st, tab) {
-  const on = !st.captured && pageAllowed(tab);
-  return chrome.tabs.sendMessage(tabId, {
-    type: 'PAGE_STATE',
-    on,
-    volume: st.volume,
-    boost: st.boost,
-    eqBands: st.eqBands.slice()
-  }).catch(() => {});
-}
-
-// The tab's state, created when it has none: volume seeded from the site
-// default, as startCapture does for a new tab.
-async function ensureTabState(store, tab) {
-  const existing = store.tabs.get(tab.id);
-  if (existing) return existing;
-  const st = defaultState();
-  const site = await getSiteDefault(tab.url);
-  if (site) st.volume = site.volume;
-  // Another path may have created the state while the site default was read.
-  const raced = store.tabs.get(tab.id);
-  if (raced) return raced;
-  store.tabs.set(tab.id, st);
-  persistTab(tab.id, st);
-  return st;
-}
-
-// After a capture ends, a tab on an auto track goes back to page mode.
-async function resumePageMode(store, tabId) {
-  const tab = await getTab(tabId);
-  const st = store.tabs.get(tabId);
-  if (!tab) return;
-  setBadge(tabId, badgeFor(st, tab));
-  if (st && autoTracks[trackOf(tab)]) sendPageState(tabId, st, tab);
-}
-
-// Manifest content scripts never reach tabs that were open before the
-// extension was installed or reloaded, so those are injected by hand. Errors
-// (closed tab, restricted page) are expected.
-async function injectPageAudio(tabId) {
-  try {
-    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: [PAGE_AUDIO_FILE] });
-  } catch (e) { /* not injectable */ }
-}
-
-// Same for ytm-switch.js: the copy in an open YouTube Music tab is orphaned by a
+// ytm-switch.js: the copy in an open YouTube Music tab is orphaned by a
 // reload, update or disable and stops, so without this the tab never clicks
-// "Switch" until the user reloads it. Top frame only, as in the manifest.
+// "Switch" until the user reloads it. Manifest content scripts never reach tabs
+// that were open before the extension was installed or reloaded either. Top
+// frame only, as in the manifest.
 async function injectYTMSwitch() {
   const tabs = await chrome.tabs.query({ url: YTM_URL_PATTERN });
   await Promise.all(tabs.filter((tab) => !tab.discarded).map((tab) =>
@@ -1212,183 +997,9 @@ async function injectYTMSwitch() {
   ));
 }
 
-// Brings one tab in line with its track's flag. A tab with no state gets no
-// state here: its frames that saw media ask for it (PAGE_ASK, then
-// PAGE_HELLO), the others when their first media appears.
-async function applyAutoToTab(store, tab, on) {
-  const st = store.tabs.get(tab.id);
-  if (!on && st && (st.pageControl || st.pageUnreachable)) {
-    st.pageControl = false; // rows fall back
-    st.pageUnreachable = false; // frames report again when auto turns back on
-    persistTab(tab.id, st);
-  }
-  setBadge(tab.id, badgeFor(st, tab));
-  if (on) {
-    if (!isPageUrl(tab.url) || tab.discarded) return;
-    await injectPageAudio(tab.id);
-  }
-  if (st) sendPageState(tab.id, st, tab);
-  else if (on) chrome.tabs.sendMessage(tab.id, { type: 'PAGE_ASK' }).catch(() => {});
-}
-
-async function applyAutoTrack(store, track) {
-  const on = autoTracks[track];
-  const tabs = await chrome.tabs.query({});
-  await Promise.all(tabs
-    .filter((t) => Number.isInteger(t.id) && t.id >= 0 && trackOf(t) === track)
-    .map((t) => applyAutoToTab(store, t, on).catch(logError(`auto mode for tab ${t.id}`))));
-  schedulePush();
-}
-
-async function setAutoTrack(track, on) {
-  const store = await ready();
-  await loadAutoTracks(); // throws when the stored flags still cannot be read
-  if (autoTracks[track] !== on) {
-    autoTracks = { ...autoTracks, [track]: on };
-    chrome.storage.local.set({ autoTracks }).catch(logError('autoTracks write'));
-    syncAutoMenu();
-    await applyAutoTrack(store, track);
-  }
-  syncAutoMenu();
-}
-
-// PAGE_HELLO: a frame saw its first media element and asks what to do.
-async function pageHello(tab) {
-  const store = await ready();
-  if (!pageAllowed(tab) || removedTabs.has(tab.id)) return { on: false };
-  const st = await ensureTabState(store, tab);
-  if (!st.pageMedia || st.pageOrigin !== originOf(tab.url)) {
-    markPage(st, tab, 'pageMedia');
-    setBadge(tab.id, badgeFor(st, tab));
-    schedulePush();
-  }
-  if (st.captured) return { on: false };
-  return { on: true, volume: st.volume, boost: st.boost, eqBands: st.eqBands.slice() };
-}
-
-// Sets one of the per-origin page flags (see STORAGE) for the tab's origin.
-function markPage(st, tab, flag) {
-  const origin = originOf(tab.url);
-  if (st.pageOrigin !== origin) {
-    st.pageControl = false;
-    st.pageMedia = false;
-    st.pageUnreachable = false;
-    st.pageOrigin = origin;
-  }
-  st[flag] = true;
-  persistTab(tab.id, st);
-}
-
-// PAGE_STATUS: a frame of the tab routes its media in-page.
-async function pageRouted(tab) {
-  const store = await ready();
-  if (!pageAllowed(tab) || removedTabs.has(tab.id)) return;
-  const st = await ensureTabState(store, tab);
-  markPage(st, tab, 'pageControl');
-  setBadge(tab.id, badgeFor(st, tab));
-  schedulePush();
-}
-
-// PAGE_STATUS unreachable: a frame of the tab plays media it cannot route.
-async function pageCannotRoute(tab) {
-  const store = await ready();
-  if (!pageAllowed(tab) || removedTabs.has(tab.id)) return;
-  const st = await ensureTabState(store, tab);
-  if (st.pageUnreachable && st.pageOrigin === originOf(tab.url)) return;
-  markPage(st, tab, 'pageUnreachable');
-  setBadge(tab.id, badgeFor(st, tab));
-  schedulePush();
-}
-
-// PAGE_STATUS unsafe: a routed element of the tab plays media Web Audio
-// cannot read. Nothing brings that element back but a reload, so the tab
-// goes dry and its origin is never routed again this session.
-async function pageUnsafe(tab) {
-  const store = await ready();
-  const origin = originOf(tab.url);
-  console.warn(`Deci: in-page audio stopped for ${origin || 'a page'}: a routed element turned unreadable; reload the tab to restore it`);
-  if (origin && !store.blocked.has(origin)) {
-    store.blocked.add(origin);
-    chrome.storage.session.set({ pageBlocked: [...store.blocked] }).catch(logError('session write'));
-  }
-  const st = store.tabs.get(tab.id);
-  if (!st) return;
-  if (st.pageControl) {
-    st.pageControl = false;
-    persistTab(tab.id, st);
-  }
-  setBadge(tab.id, badgeFor(st, tab));
-  sendPageState(tab.id, st, tab);
-  schedulePush();
-}
-
-// Messages from the content script: no target field, the sender is a tab.
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  const tab = sender && sender.tab;
-  if (!msg || !tab || !Number.isInteger(tab.id) || tab.id < 0) return false;
-  if (msg.type === 'PAGE_HELLO') {
-    pageHello(tab).then(sendResponse, (err) => {
-      logError('PAGE_HELLO')(err);
-      sendResponse({ on: false });
-    });
-    return true; // answered asynchronously
-  }
-  if (msg.type === 'PAGE_STATUS') {
-    if (msg.routed === true) pageRouted(tab).catch(logError('PAGE_STATUS'));
-    else if (msg.unsafe === true) pageUnsafe(tab).catch(logError('PAGE_STATUS unsafe'));
-    else if (msg.unreachable === true) pageCannotRoute(tab).catch(logError('PAGE_STATUS unreachable'));
-    sendResponse({ ok: true });
-  }
-  return false;
-});
-
-// The toolbar action's right-click menu: one checkbox for the active tab's track.
-function createAutoMenu() {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: MENU_AUTO_ID,
-      type: 'checkbox',
-      title: MENU_AUTO_TITLE,
-      contexts: ['action'],
-      checked: false
-    }, () => {
-      if (chrome.runtime.lastError) console.warn('Deci: menu create failed:', chrome.runtime.lastError.message);
-      syncAutoMenu();
-    });
-  });
-}
-
-// Shows the auto flag of the track of the tab in front.
-function syncAutoMenu() {
-  ready().then(async () => {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    chrome.contextMenus.update(MENU_AUTO_ID, { checked: !!autoTracks[trackOf(tab)] }, () => {
-      void chrome.runtime.lastError; // the item does not exist yet on first install
-    });
-  }).catch(() => {});
-}
-
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== MENU_AUTO_ID) return;
-  (async () => {
-    const target = tab || (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
-    // The live flag, not info.checked: the checkbox may show another window's track.
-    const track = trackOf(target);
-    await setAutoTrack(track, !autoTracks[track]);
-  })().catch(logError('auto menu'));
-});
-
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  syncAutoMenu();
   ready().then((store) => refreshBadge(store, tabId)).catch(logError('badge refresh'));
 });
-
-// A new tab of an auto track shows ON before it loads anything.
-chrome.tabs.onCreated.addListener((tab) => {
-  if (!Number.isInteger(tab.id) || tab.id < 0) return;
-  ready().then((store) => setBadge(tab.id, badgeFor(store.tabs.get(tab.id), tab))).catch(logError('badge'));
-});
-chrome.windows.onFocusChanged.addListener(() => syncAutoMenu());
 
 // ---------------------------------------------------------------------------
 // TAB_LIST
@@ -1428,9 +1039,9 @@ async function sendTabList() {
     }
     const st = store.tabs.get(t.id);
     const captured = !!(st && st.captured);
-    const control = tabControl(st, t);
-    // A page-controlled tab is listed like a captured one; an armed one only once known.
-    if (!t.audible && !isActiveControl(control) && !store.known.has(t.id)) continue;
+    const control = controlOf(st);
+    // A captured tab is listed even while silent; any other only once it was audible.
+    if (!t.audible && control !== 'capture' && !store.known.has(t.id)) continue;
     // Hidden by the tracking switch, or the gate is still closed on this port.
     // Bookkeeping above and all audio handling are unchanged; only the report
     // leaves the tab out.
@@ -1501,24 +1112,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!listChange && !('url' in changeInfo)) return;
   ready().then((store) => {
     const st = store.tabs.get(tabId);
-    // The page flags belong to the origin that reported them.
-    if (st && (st.pageControl || st.pageMedia || st.pageUnreachable) && 'url' in changeInfo &&
-      originOf(changeInfo.url) !== st.pageOrigin) {
-      st.pageControl = false;
-      st.pageMedia = false;
-      st.pageUnreachable = false;
-      persistTab(tabId, st);
-      schedulePush();
-    }
-    const control = tabControl(st, tab);
-    // Navigation can reset per-tab action state, the new origin may be blocked,
-    // and sound with no media element seen ends "armed".
-    if ('status' in changeInfo || 'url' in changeInfo || 'audible' in changeInfo) setBadge(tabId, badgeFor(st, tab));
+    const control = controlOf(st);
+    // Navigation can reset per-tab action state.
+    if ('status' in changeInfo || 'url' in changeInfo) setBadge(tabId, badgeFor(st));
     if (changeInfo.audible === true && !store.known.has(tabId)) {
       store.known.add(tabId);
       persistKnown(store);
     }
-    if (listChange && (tab.audible || isActiveControl(control) || store.known.has(tabId))) schedulePush();
+    if (listChange && (tab.audible || control === 'capture' || store.known.has(tabId))) schedulePush();
   }).catch(logError('tab update'));
 });
 
@@ -1604,7 +1205,6 @@ async function updateTabState(tabId, mutate) {
   store.tabs.set(tabId, st);
   persistTab(tabId, st);
   if (st.captured) sendToOffscreen({ type: 'SET_STATE', tabId, ...audioFields(st) });
-  else if (autoTracks[trackOf(tab)]) sendPageState(tabId, st, tab);
   schedulePush();
   return { st, tab };
 }
@@ -1642,7 +1242,7 @@ async function setTabVolume(tabId, volume, boost) {
   });
   if (!result) return;
   const { st, tab } = result;
-  if (tabControl(st, tab) !== 'none' && !tab.incognito) {
+  if (controlOf(st) === 'capture' && !tab.incognito) {
     const host = hostOf(tab.url);
     if (host) queueSiteDefault(host, st.volume, st.boost);
   }
@@ -1806,15 +1406,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 chrome.runtime.onStartup.addListener(() => connect());
-chrome.runtime.onInstalled.addListener(() => {
-  connect();
-  createAutoMenu();
-  // Tabs already open never get the manifest content script: inject into
-  // the tracks that are on (install, update and reload all land here).
-  ready().then((store) => Promise.all(
-    Object.keys(autoTracks).filter((track) => autoTracks[track]).map((track) => applyAutoTrack(store, track))
-  )).catch(logError('inject on install'));
-});
+chrome.runtime.onInstalled.addListener(() => connect());
 
 // ---------------------------------------------------------------------------
 // Worker startup
@@ -1826,12 +1418,15 @@ chrome.alarms.get(RECONNECT_ALARM).then((alarm) => {
   return undefined;
 }).catch(logError('alarm setup'));
 
+// Values an older version stored and nothing reads any more. Idempotent: a no-op once gone.
+chrome.storage.local.remove('autoTracks').catch(logError('stale key remove'));
+chrome.storage.session.remove('pageBlocked').catch(logError('stale key remove'));
+
 ready().catch(logError('startup state load'));
 loadTracking().catch(logError('tracking read'));
 // Every worker start, not onInstalled: re-enabling the extension orphans the
 // tab's copy too and fires no onInstalled. A live copy ignores the repeat.
 injectYTMSwitch().catch(logError('inject ytm-switch'));
-syncAutoMenu();
 // Never throws (async); if the Permissions API is unusable here, the
 // offscreen document and permissions.html still report access.
 watchMicPermission().catch(() => {});
