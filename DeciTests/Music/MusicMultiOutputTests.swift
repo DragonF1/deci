@@ -84,6 +84,15 @@ private nonisolated final class ChangeCounter: @unchecked Sendable {
     var count = 0
 }
 
+/// The mixer's clock in the tests: it starts at the real time, so a start recorded without a clock (a settings file
+/// prepared by hand) is on the same scale, and moves only when a test moves it.
+@MainActor
+private final class RigClock {
+    private(set) var now = Date()
+
+    func advance(by seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
+}
+
 /// A mixer with fakes around it. `devices` are the connected output devices.
 @MainActor
 private final class Rig {
@@ -94,6 +103,7 @@ private final class Rig {
     let aggregates: FakeOutputAggregates
     let engine: LoggingPlaybackEngine
     let state: MusicMixerState
+    let clock = RigClock()
 
     init(
         devices: [String] = [],
@@ -110,7 +120,10 @@ private final class Rig {
         aggregates = FakeOutputAggregates(log: log)
         aggregates.bluetoothUIDs = bluetooth
         engine = LoggingPlaybackEngine(log: log)
-        state = MusicMixerState(settings: settings, environment: environment, aggregates: aggregates)
+        let clock = clock
+        state = MusicMixerState(
+            settings: settings, environment: environment, aggregates: aggregates, now: { clock.now }
+        )
         if attach { state.attach(engine: engine) }
     }
 
@@ -121,6 +134,9 @@ private final class Rig {
         environment.outputDevices = uids.map { FakeMusicMixerEnvironment.device($0) }
         state.outputDevicesChanged()
     }
+
+    /// When the music entered Multi, as the settings hold it.
+    var multiSince: Date? { settings.getMultiOutputSince(for: musicKey) }
 
     /// Ticks these devices in Multi mode.
     func playOn(_ uids: Set<String>) {
@@ -430,20 +446,23 @@ struct MusicMultiOutputTests {
         #expect(rig.state.multiOutputDeviceUIDs == ["a", "b"])
     }
 
-    @Test("a selected device unplugged rebuilds on the rest, and down to one leaves the aggregate")
-    func disconnectRebuilds() {
+    @Test("a selected device unplugged sends the music back to Single instead of rebuilding on the rest")
+    func disconnectLeavesMulti() {
         let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
         rig.playOn(["a", "b", "c"])
+        #expect(rig.aggregates.stacks.count == 1)
 
         rig.connect(["a", "c"])
-        #expect(rig.aggregates.stacks.last == MusicOutputStack(subDeviceUIDs: ["a", "c"]))
-        #expect(rig.engine.outputDevices.last == .some("agg-2"))
-        #expect(rig.aggregates.live.map(\.uid) == ["agg-2"])
-
-        rig.connect(["c"])
-        #expect(rig.engine.outputDevices.last == .some("c"))
+        #expect(rig.state.deviceSelectionMode == .single, "two devices are still there, and it left Multi anyway")
+        #expect(rig.aggregates.stacks.count == 1, "no new aggregate for the rest")
+        #expect(rig.engine.outputDevices.last == .some(nil))
         #expect(rig.aggregates.live.isEmpty)
         #expect(rig.state.multiOutputDeviceUIDs.isEmpty)
+
+        rig.connect(["c"])
+        #expect(rig.state.deviceSelectionMode == .single, "a second drop finds it in Single already")
+        #expect(rig.engine.outputDevices.last == .some(nil))
+        #expect(rig.aggregates.stacks.count == 1)
     }
 
     @Test("a failed aggregate plays on the clock device alone rather than not at all")
@@ -489,15 +508,15 @@ struct MusicMultiOutputTests {
         #expect(rig.state.multiOutputDeviceUIDs == ["a", "b", "c"])
     }
 
-    @Test("a stack that failed to build is tried again when its devices went away and came back")
+    @Test("a stack that failed to build is tried again when the selection went down to one device and came back")
     func failedStackRetriesAfterAnAbsence() {
         let rig = Rig(devices: ["a", "b"], defaultUID: "a")
         rig.aggregates.failsToMake = true
         rig.playOn(["a", "b"])
-        rig.connect(["a"])  // down to one device: played directly, no stack wanted
+        rig.state.setSelectedDeviceUIDs(["a"])  // down to one device: played directly, no stack wanted
         rig.aggregates.failsToMake = false
 
-        rig.connect(["a", "b"])
+        rig.state.setSelectedDeviceUIDs(["a", "b"])
 
         #expect(rig.aggregates.stacks.count == 2)
         #expect(rig.engine.outputDevices.last == .some("agg-1"))
@@ -511,7 +530,7 @@ struct MusicMultiOutputTests {
         rig.playOn(["a", "b"])
         rig.aggregates.failsToMake = false
         rig.state.setSelectedDeviceUIDs(["a", "b", "c"])  // built
-        rig.connect(["a", "b"])                           // c drops: [a, b] is a different stack than the live one
+        rig.state.setSelectedDeviceUIDs(["a", "b"])       // [a, b] is a different stack than the live one
 
         #expect(rig.aggregates.stacks.last == MusicOutputStack(subDeviceUIDs: ["a", "b"]))
         #expect(rig.engine.outputDevices.last == .some("agg-2"), "[a, b] failed before but nothing remembers that now")
@@ -580,13 +599,22 @@ struct MusicMultiOutputTests {
         #expect(rig.aggregates.live.map(\.uid) == ["agg-2"])
     }
 
-    @Test("a device connecting or dropping out of the selection rebuilds in the same order")
+    @Test("a selected device connecting rebuilds in the same order")
     func deviceEventOrder() {
+        let rig = Rig(devices: ["a", "b"], defaultUID: "a")
+        rig.playOn(["a", "b", "c"])
+        let mark = rig.log.events.count
+        rig.connect(["a", "b", "c"])
+        #expect(rig.events(since: mark) == [.made("agg-2"), .player("agg-2"), .destroyed("agg-1")])
+    }
+
+    @Test("a selected device dropping out sets the player back on the single output and then destroys the aggregate")
+    func disconnectOrder() {
         let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
         rig.playOn(["a", "b", "c"])
         let mark = rig.log.events.count
         rig.connect(["a", "b"])
-        #expect(rig.events(since: mark) == [.made("agg-2"), .player("agg-2"), .destroyed("agg-1")])
+        #expect(rig.events(since: mark) == [.player(nil), .destroyed("agg-1")])
     }
 
     @Test("dropping to one device sets the player first and then destroys the aggregate")
@@ -696,6 +724,252 @@ struct MusicMultiOutputTests {
         #expect(rig.state.multiOutputDeviceUIDs.isEmpty)
     }
 
+    // MARK: A disconnect sends the music back to Single
+
+    @Test("entering Multi records the time, and asking for Multi again keeps the first")
+    func enteringMultiRecordsTheTime() {
+        let rig = Rig(devices: ["a", "b"], defaultUID: "a")
+        #expect(rig.multiSince == nil)
+
+        let start = rig.clock.now
+        rig.playOn(["a", "b"])
+        #expect(rig.multiSince == start)
+
+        rig.clock.advance(by: 30)
+        rig.state.setDeviceSelectionMode(.multi)
+        rig.state.setSelectedDeviceUIDs(["a"])
+        #expect(rig.multiSince == start, "nothing restarts the clock while it stays in Multi")
+    }
+
+    @Test("leaving Multi clears the time, and coming back starts a fresh one")
+    func leavingMultiClearsTheTime() {
+        let rig = Rig(devices: ["a", "b"], defaultUID: "a")
+        rig.playOn(["a", "b"])
+        rig.clock.advance(by: 120)
+        rig.state.setDeviceSelectionMode(.single)
+        #expect(rig.multiSince == nil)
+
+        rig.clock.advance(by: 120)
+        rig.state.setDeviceSelectionMode(.multi)
+        #expect(rig.multiSince == rig.clock.now)
+    }
+
+    @Test("a short session with no device chosen returns to System Audio, and the selection is kept")
+    func shortSessionReturnsToSystemAudio() {
+        let rig = Rig(devices: ["a", "b"], defaultUID: "a")
+        rig.playOn(["a", "b"])
+        rig.clock.advance(by: 600)
+        let mark = rig.log.events.count
+        rig.connect(["a"])
+
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.state.isFollowingDefault)
+        #expect(rig.events(since: mark) == [.player(nil), .destroyed("agg-1")])
+        #expect(rig.settings.getDeviceSelectionMode(for: musicKey) == .single)
+        #expect(rig.settings.getDeviceRouting(for: musicKey) == nil)
+        #expect(rig.state.selectedDeviceUIDs == ["a", "b"])
+        #expect(rig.settings.getSelectedDeviceUIDs(for: musicKey) == ["a", "b"])
+        #expect(rig.multiSince == nil)
+    }
+
+    @Test("a session just under the window returns to the device chosen before Multi")
+    func shortSessionReturnsToTheChosenDevice() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
+        rig.state.selectDevice(uid: "c")
+        rig.playOn(["a", "b"])
+        rig.clock.advance(by: MultiOutputRevert.rememberWindow - 1)
+        let mark = rig.log.events.count
+        rig.connect(["a", "c"])
+
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.state.selectedDeviceUID == "c")
+        #expect(rig.state.outputDeviceUID == "c")
+        #expect(rig.events(since: mark) == [.player("c"), .destroyed("agg-1")])
+        #expect(rig.settings.getDeviceRouting(for: musicKey) == "c")
+        #expect(rig.settings.getSelectedDeviceUIDs(for: musicKey) == ["a", "b"])
+    }
+
+    @Test("a session of the full window goes to System Audio and forgets the device chosen before")
+    func longSessionGoesToSystemAudio() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
+        rig.state.selectDevice(uid: "c")
+        rig.playOn(["a", "b"])
+        rig.clock.advance(by: MultiOutputRevert.rememberWindow)
+        rig.connect(["a", "c"])
+
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.state.isFollowingDefault)
+        #expect(rig.state.selectedDeviceUID == nil)
+        #expect(rig.settings.getDeviceRouting(for: musicKey) == nil)
+        #expect(rig.engine.outputDevices.last == .some(nil))
+
+        // The forgotten device does not pull the music back when it comes and goes.
+        rig.connect(["a", "b", "c"])
+        rig.connect(["a", "b"])
+        #expect(rig.state.isFollowingDefault)
+        #expect(rig.engine.outputDevices.last == .some(nil))
+    }
+
+    @Test("a Multi choice with no recorded start goes to System Audio")
+    func noRecordedStartGoesToSystemAudio() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a", prepare: {
+            $0.setDeviceRouting(for: musicKey, deviceUID: "c")
+            $0.setDeviceSelectionMode(for: musicKey, to: .multi)
+            $0.setSelectedDeviceUIDs(for: musicKey, to: ["a", "b"])
+            $0.setMultiOutputSince(nil, for: musicKey)  // a file from before the start was recorded
+        })
+        #expect(rig.state.deviceSelectionMode == .multi)
+        #expect(rig.multiSince == nil)
+
+        rig.connect(["a", "c"])
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.state.selectedDeviceUID == nil)
+        #expect(rig.settings.getDeviceRouting(for: musicKey) == nil)
+    }
+
+    @Test("a chosen device that is the one that dropped stays the saved choice and returns when it does")
+    func chosenDeviceThatDroppedStaysChosen() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
+        rig.state.selectDevice(uid: "c")
+        rig.playOn(["a", "c"])
+        rig.clock.advance(by: 60)
+        rig.connect(["a", "b"])
+
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.state.selectedDeviceUID == "c", "no new fallback: the choice stays")
+        #expect(rig.settings.getDeviceRouting(for: musicKey) == "c")
+        #expect(rig.state.outputDeviceUID == nil)
+        #expect(rig.state.isChosenDeviceMissing)
+        #expect(rig.engine.outputDevices.last == .some(nil), "the music plays on the default meanwhile")
+
+        rig.connect(["a", "b", "c"])
+        #expect(rig.state.outputDeviceUID == "c")
+        #expect(rig.engine.outputDevices.last == .some("c"))
+        #expect(rig.state.deviceSelectionMode == .single)
+    }
+
+    @Test("the device coming back does not rejoin Multi, and flipping back by hand builds the saved selection")
+    func noAutoRejoinAndManualFlipBack() {
+        let rig = Rig(devices: ["a", "b"], defaultUID: "a")
+        rig.playOn(["a", "b"])
+        rig.connect(["a"])
+        rig.connect(["a", "b"])
+
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.engine.outputDevices.last == .some(nil))
+        #expect(rig.aggregates.stacks.count == 1)
+        #expect(rig.aggregates.live.isEmpty)
+
+        rig.clock.advance(by: 5)
+        rig.state.setDeviceSelectionMode(.multi)
+        #expect(rig.state.deviceSelectionMode == .multi)
+        #expect(rig.aggregates.stacks.last == MusicOutputStack(subDeviceUIDs: ["a", "b"]))
+        #expect(rig.engine.outputDevices.last == .some("agg-2"))
+        #expect(rig.multiSince == rig.clock.now)
+    }
+
+    @Test("a session that left Multi and came back is timed from the second entry")
+    func freshClockAfterLeavingMulti() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
+        rig.state.selectDevice(uid: "c")
+        rig.playOn(["a", "b"])
+        rig.clock.advance(by: 7200)
+        rig.state.setDeviceSelectionMode(.single)
+        rig.state.setDeviceSelectionMode(.multi)
+        rig.clock.advance(by: 60)
+        rig.connect(["a", "c"])
+
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.state.selectedDeviceUID == "c", "a minute into the second session, not two hours")
+    }
+
+    @Test("a device that is not ticked dropping changes nothing")
+    func unselectedDeviceChangesNothing() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
+        rig.playOn(["a", "b"])
+        let start = rig.multiSince
+        rig.clock.advance(by: 10)
+        let mark = rig.log.events.count
+        rig.connect(["a", "b"])
+
+        #expect(rig.state.deviceSelectionMode == .multi)
+        #expect(rig.events(since: mark).isEmpty)
+        #expect(rig.multiSince == start)
+    }
+
+    @Test("a device dropping while the music is in Single changes nothing, whatever was ticked")
+    func singleModeIgnoresALeftoverSelection() {
+        let rig = Rig(devices: ["a", "b", "c"], defaultUID: "a")
+        rig.playOn(["a", "b"])
+        rig.state.setDeviceSelectionMode(.single)
+        let mark = rig.log.events.count
+        rig.connect(["a", "c"])
+
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.state.isFollowingDefault)
+        #expect(rig.events(since: mark).isEmpty)
+        #expect(rig.state.selectedDeviceUIDs == ["a", "b"])
+    }
+
+    @Test("a device away at launch is not a disconnect, and joins when it arrives")
+    func awayAtLaunchIsNotADisconnect() {
+        let rig = Rig(devices: ["a"], defaultUID: "a", prepare: {
+            $0.setDeviceSelectionMode(for: musicKey, to: .multi)
+            $0.setSelectedDeviceUIDs(for: musicKey, to: ["a", "b"])
+        })
+        rig.connect(["a"])
+        #expect(rig.state.deviceSelectionMode == .multi)
+
+        rig.connect(["a", "b"])
+        #expect(rig.state.deviceSelectionMode == .multi)
+        #expect(rig.state.multiOutputDeviceUIDs == ["a", "b"])
+    }
+
+    @Test("devices the engine reports after the mixer was built are arrivals, and only a later drop reverts")
+    func devicesAppearingAfterLaunchAreNotDisconnects() {
+        let rig = Rig(devices: [], prepare: {
+            $0.setDeviceSelectionMode(for: musicKey, to: .multi)
+            $0.setSelectedDeviceUIDs(for: musicKey, to: ["a", "b"])
+        })
+        rig.connect(["a"])
+        rig.connect(["a", "b"])
+        #expect(rig.state.deviceSelectionMode == .multi)
+        #expect(rig.state.multiOutputDeviceUIDs == ["a", "b"])
+
+        rig.connect(["a"])
+        #expect(rig.state.deviceSelectionMode == .single)
+    }
+
+    @Test("unticking every device keeps the devices it plays on counted, so their drop still reverts")
+    func emptiedSelectionStillCounts() {
+        let rig = Rig(devices: ["a", "b"], defaultUID: "a")
+        rig.playOn(["a", "b"])
+        rig.state.setSelectedDeviceUIDs([])
+        #expect(rig.state.multiOutputDeviceUIDs == ["a", "b"])
+
+        rig.connect(["a"])
+        #expect(rig.state.deviceSelectionMode == .single)
+        #expect(rig.engine.outputDevices.last == .some(nil))
+        #expect(rig.aggregates.live.isEmpty)
+    }
+
+    @Test("a mixer built without a clock times the session by the real time")
+    func defaultClockIsTheRealOne() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("deci-multi-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let settings = SettingsManager(directory: directory)
+        let state = MusicMixerState(
+            settings: settings,
+            environment: FakeMusicMixerEnvironment(),
+            aggregates: FakeOutputAggregates(log: MultiOutputEventLog())
+        )
+        let before = Date()
+        state.setDeviceSelectionMode(.multi)
+        let since = try #require(settings.getMultiOutputSince(for: musicKey))
+        #expect(since >= before)
+        #expect(since <= Date())
+    }
+
     // MARK: multiOutputDeviceUIDs
 
     @Test("multiOutputDeviceUIDs lists the devices in the aggregate and is empty with fewer than two")
@@ -709,10 +983,10 @@ struct MusicMultiOutputTests {
         rig.state.setSelectedDeviceUIDs(["a", "c", "gone"])
         #expect(rig.state.multiOutputDeviceUIDs == ["a", "c"], "only the connected ones")
 
-        rig.connect(["a"])
+        rig.state.setSelectedDeviceUIDs(["a", "gone"])
         #expect(rig.state.multiOutputDeviceUIDs.isEmpty, "down to one")
 
-        rig.connect(["a", "b", "c"])
+        rig.state.setSelectedDeviceUIDs(["a", "c", "gone"])
         #expect(rig.state.multiOutputDeviceUIDs == ["a", "c"])
 
         rig.state.setDeviceSelectionMode(.single)

@@ -1023,3 +1023,167 @@ struct MenuBarIconStyleTests {
         }
     }
 }
+
+// MARK: - Multi-output start times
+
+@Suite("SettingsManager multi-output since")
+@MainActor
+struct SettingsManagerMultiOutputSinceTests {
+
+    private let id = "com.deci.tests.App"
+    private let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+
+    private func makeDirectory() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    }
+
+    @Test("The start-time map round-trips through JSON")
+    func mapRoundTrips() throws {
+        var original = SettingsManager.Settings()
+        original.appMultiOutputSince = ["com.test.app": Date(timeIntervalSince1970: 1_700_000_000)]
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: data)
+
+        #expect(decoded.appMultiOutputSince == original.appMultiOutputSince)
+    }
+
+    @Test("A file written before the feature decodes to an empty map")
+    func olderFilesDecodeEmpty() throws {
+        let json = #"{"version": 12, "appDeviceSelectionMode": {"com.test.app": "multi"}}"#
+        let decoded = try JSONDecoder().decode(SettingsManager.Settings.self, from: Data(json.utf8))
+        #expect(decoded.appMultiOutputSince.isEmpty)
+        #expect(decoded.appDeviceSelectionMode["com.test.app"] == .multi)
+    }
+
+    @Test("Entering Multi records the time, and an unknown identifier has none")
+    func enteringMultiRecordsTheTime() {
+        let manager = SettingsManager(directory: makeDirectory())
+        #expect(manager.getMultiOutputSince(for: id) == nil)
+
+        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0)
+
+        #expect(manager.getMultiOutputSince(for: id) == t0)
+        #expect(manager.getDeviceSelectionMode(for: id) == .multi)
+    }
+
+    @Test("Setting Multi again keeps the first start time")
+    func repeatedMultiKeepsTheClock() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0)
+
+        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0.addingTimeInterval(500))
+
+        #expect(manager.getMultiOutputSince(for: id) == t0)
+    }
+
+    @Test("Leaving Multi clears the time, and Multi to Single to Multi starts a fresh clock")
+    func leavingMultiClearsAndReentryRestarts() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0)
+
+        manager.setDeviceSelectionMode(for: id, to: .single, at: t0.addingTimeInterval(100))
+        #expect(manager.getMultiOutputSince(for: id) == nil)
+
+        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0.addingTimeInterval(7200))
+        #expect(manager.getMultiOutputSince(for: id) == t0.addingTimeInterval(7200))
+    }
+
+    @Test("Going to Single from no recorded mode records nothing")
+    func singleFromNothingRecordsNothing() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setDeviceSelectionMode(for: id, to: .single, at: t0)
+        #expect(manager.getMultiOutputSince(for: id) == nil)
+    }
+
+    @Test("The default time is now")
+    func defaultTimeIsNow() {
+        let manager = SettingsManager(directory: makeDirectory())
+        let before = Date()
+        manager.setDeviceSelectionMode(for: id, to: .multi)
+        let since = manager.getMultiOutputSince(for: id)
+        #expect(since != nil)
+        #expect((since ?? .distantPast) >= before)
+        #expect((since ?? .distantFuture) <= Date())
+    }
+
+    @Test("setMultiOutputSince writes and removes a time")
+    func explicitSetter() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setMultiOutputSince(t0, for: id)
+        #expect(manager.getMultiOutputSince(for: id) == t0)
+        manager.setMultiOutputSince(nil, for: id)
+        #expect(manager.getMultiOutputSince(for: id) == nil)
+    }
+
+    @Test("The start times survive a relaunch")
+    func survivesRelaunch() {
+        let dir = makeDirectory()
+        let first = SettingsManager(directory: dir)
+        first.setDeviceSelectionMode(for: id, to: .multi, at: t0)
+        first.flushSync()
+
+        let second = SettingsManager(directory: dir)
+
+        #expect(second.getMultiOutputSince(for: id) == t0)
+        #expect(second.getDeviceSelectionMode(for: id) == .multi)
+    }
+
+    @Test("Hiding an app drops its start time")
+    func ignoreAppClearsTheTime() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0)
+
+        manager.ignoreApp(id, info: IgnoredAppInfo(persistenceIdentifier: id, displayName: "App", bundleID: id))
+
+        #expect(manager.getMultiOutputSince(for: id) == nil)
+    }
+
+    @Test("Resetting all settings drops every start time")
+    func resetClearsTheTimes() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0)
+        manager.setDeviceSelectionMode(for: "com.deci.tests.Other", to: .multi, at: t0)
+
+        manager.resetAllSettings()
+
+        #expect(manager.getMultiOutputSince(for: id) == nil)
+        #expect(manager.getMultiOutputSince(for: "com.deci.tests.Other") == nil)
+    }
+
+    @Test("A time with no selection mode behind it is pruned with the stale app")
+    func pruneDropsOrphanTimes() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setMultiOutputSince(t0, for: id)
+
+        manager.pruneStaleSettings(keeping: [])
+
+        #expect(manager.getMultiOutputSince(for: id) == nil)
+    }
+
+    @Test("A Multi app keeps its time through pruning")
+    func pruneKeepsMultiApps() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0)
+
+        manager.pruneStaleSettings(keeping: [])
+
+        #expect(manager.getMultiOutputSince(for: id) == t0)
+    }
+
+    @Test("multiOutputIdentifiers lists only Multi items that have the device selected")
+    func identifiersContainingADevice() {
+        let manager = SettingsManager(directory: makeDirectory())
+        manager.setDeviceSelectionMode(for: "a", to: .multi, at: t0)
+        manager.setSelectedDeviceUIDs(for: "a", to: ["uid-1", "uid-2"])
+        manager.setDeviceSelectionMode(for: "b", to: .multi, at: t0)
+        manager.setSelectedDeviceUIDs(for: "b", to: ["uid-2"])
+        manager.setDeviceSelectionMode(for: "c", to: .single, at: t0)
+        manager.setSelectedDeviceUIDs(for: "c", to: ["uid-1"])
+        manager.setSelectedDeviceUIDs(for: "d", to: ["uid-1"])  // no mode recorded
+
+        #expect(Set(manager.multiOutputIdentifiers(containing: "uid-1")) == ["a"])
+        #expect(Set(manager.multiOutputIdentifiers(containing: "uid-2")) == ["a", "b"])
+        #expect(manager.multiOutputIdentifiers(containing: "uid-9").isEmpty)
+    }
+}

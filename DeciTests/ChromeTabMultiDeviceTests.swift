@@ -829,4 +829,564 @@ struct ChromeTabMultiDeviceTests {
         let uncaptured = captionTab(control: .none, names: [])
         #expect(ChromeTabRow.multiOutputNote(for: uncaptured, supportsMultiDevice: true, engineFansOutChrome: true) == nil)
     }
+
+    // MARK: - A disconnect sends a Multi tab back to Single
+
+    // When an output device in a tab's Multi selection disconnects, the tab goes back to Single right away: to
+    // its pre-Multi single choice when it entered Multi under an hour ago, else to System Audio (the old choice is
+    // cleared). A tab adopted from the extension has no recorded start. Nothing rejoins when the device returns.
+
+    /// A manager whose clock the test moves. `advance(_:)` shifts it.
+    private final class TestClock {
+        var now = Date()
+        func advance(_ seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
+    }
+
+    private func makeClockedManager(
+        tabs: [[String: Any]]? = nil,
+        multiDevice: Bool = true
+    ) -> (manager: ChromeExtensionManager, sent: SentLog, clock: TestClock) {
+        let (manager, sent) = makeManager(tabs: tabs, multiDevice: multiDevice)
+        let clock = TestClock()
+        manager.connectionClock = { clock.now }
+        return (manager, sent, clock)
+    }
+
+    /// A tab on `deviceName` (its single choice) that is switched to Multi and then plays on a list of two outputs.
+    private func tabPlayingAList(
+        deviceName: String = "Headphones", uids: Set<String> = ["uid-speakers", "uid-hdmi"]
+    ) -> (manager: ChromeExtensionManager, sent: SentLog, clock: TestClock) {
+        let (manager, sent, clock) = makeClockedManager(tabs: [tabJSON(deviceName: deviceName)])
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.setTabDevices(tabId: 1, deviceUIDs: uids)
+        manager.flushMessages()
+        sent.messages.removeAll()
+        return (manager, sent, clock)
+    }
+
+    @Test("entering Multi records the time, leaving clears it, and re-entering starts a fresh clock")
+    func multiSinceFollowsTheMode() {
+        let (manager, _, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "Headphones")])
+        #expect(tab(manager).multiSince == nil)
+
+        let entered = clock.now
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        #expect(tab(manager).multiSince == entered)
+
+        clock.advance(100)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-speakers", "uid-hdmi"])
+        #expect(tab(manager).multiSince == entered, "ticking more devices is the same session")
+
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        #expect(tab(manager).multiSince == nil)
+
+        clock.advance(100)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        #expect(tab(manager).multiSince == clock.now)
+    }
+
+    @Test("ticking devices on a single tab enters Multi and records the time")
+    func tickingFromSingleRecordsTheTime() {
+        let (manager, _, clock) = makeClockedManager()
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-speakers", "uid-hdmi"])
+        #expect(tab(manager).multiSince == clock.now)
+    }
+
+    @Test("a later TAB_LIST keeps the recorded time")
+    func tabListKeepsTheTime() {
+        let (manager, _, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "Headphones")])
+        let entered = clock.now
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+
+        manager.handleChromeMessageString(listString([tabJSON(title: "Renamed", deviceName: "Headphones")]))
+
+        #expect(tab(manager).title == "Renamed")
+        #expect(tab(manager).multiSince == entered)
+    }
+
+    @Test("merge carries the recorded time from the existing tab")
+    func mergeCarriesTheTime() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        var old = ChromeTab(id: 1, title: "Tab", volume: 1)
+        old.deviceSelectionMode = .multi
+        old.selectedDeviceUIDs = ["uid-speakers", "uid-hdmi"]
+        old.multiSince = now.addingTimeInterval(-90)
+        let fresh = ChromeTab(id: 1, title: "Tab", volume: 1)
+
+        let merged = ChromeExtensionManager.merge(existing: [old], incoming: [fresh], pendingUntil: [:], now: now)
+
+        #expect(merged[0].multiSince == now.addingTimeInterval(-90))
+        #expect(merged[0].deviceSelectionMode == .multi)
+    }
+
+    @Test("a list the extension plays is adopted as Multi with no recorded time")
+    func adoptedMultiHasNoRecordedTime() {
+        let (manager, _) = makeManager(tabs: [tabJSON(deviceNames: ["Speakers", "HDMI"], deviceStatus: "routed")])
+        #expect(tab(manager).deviceSelectionMode == .multi)
+        #expect(tab(manager).multiSince == nil)
+    }
+
+    @Test("a short session returns a playing list to the pre-Multi single choice")
+    func shortSessionReturnsToTheSingleChoice() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "Headphones")
+        clock.advance(600)
+
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+
+        let single = sent.messages(ofType: "SET_TAB_DEVICE")
+        #expect(single.count == 1)
+        #expect(single.first?["deviceName"] as? String == "Headphones")
+        #expect(sent.messages(ofType: "SET_TAB_DEVICES").isEmpty)
+        #expect(tab(manager).deviceSelectionMode == .single)
+        #expect(tab(manager).deviceName == "Headphones")
+        #expect(tab(manager).deviceNames.isEmpty)
+        #expect(tab(manager).multiSince == nil)
+        // The ticks are kept, so flipping back by hand behaves as before.
+        #expect(tab(manager).selectedDeviceUIDs == ["uid-speakers", "uid-hdmi"])
+    }
+
+    @Test("a short session for a tab that followed the default returns it to following the default")
+    func shortSessionReturnsToTheDefault() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "")
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-speakers")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "")
+        #expect(tab(manager).deviceSelectionMode == .single)
+        #expect((tab(manager).deviceName ?? "").isEmpty)
+        #expect(tab(manager).deviceStatus == .defaultOutput)
+    }
+
+    @Test("a session just under an hour still restores the pre-Multi choice, an hour does not")
+    func theWindowEdge() {
+        let (under, underSent, underClock) = tabPlayingAList(deviceName: "Headphones")
+        underClock.advance(MultiOutputRevert.rememberWindow - 1)
+        under.outputDeviceDisconnected(uid: "uid-hdmi")
+        under.flushMessages()
+        #expect(underSent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Headphones")
+
+        let (over, overSent, overClock) = tabPlayingAList(deviceName: "Headphones")
+        overClock.advance(MultiOutputRevert.rememberWindow)
+        over.outputDeviceDisconnected(uid: "uid-hdmi")
+        over.flushMessages()
+        #expect(overSent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "")
+    }
+
+    @Test("a long session goes to System Audio and forgets the old single choice")
+    func longSessionGoesToSystemAudio() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "Headphones")
+        clock.advance(2 * MultiOutputRevert.rememberWindow)
+
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "")
+        #expect(tab(manager).deviceSelectionMode == .single)
+        #expect((tab(manager).deviceName ?? "").isEmpty, "the old choice must not come back later")
+        #expect(tab(manager).deviceStatus == .defaultOutput)
+        #expect(tab(manager).selectedDeviceUIDs == ["uid-speakers", "uid-hdmi"])
+    }
+
+    @Test("a tab with no recorded start goes to System Audio")
+    func noRecordedStartGoesToSystemAudio() {
+        let (manager, sent) = makeManager(tabs: [
+            tabJSON(deviceName: "Headphones", deviceNames: ["Speakers", "HDMI"], deviceStatus: "routed"),
+        ])
+
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "")
+        #expect(tab(manager).deviceSelectionMode == .single)
+        #expect((tab(manager).deviceName ?? "").isEmpty)
+    }
+
+    @Test("when the pre-Multi single choice is the device that dropped, it stays the choice")
+    func theSingleChoiceThatDroppedStays() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "Headphones", uids: ["uid-headphones", "uid-hdmi"])
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        // The extension's own single-mode handling of a missing device takes it from here.
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Headphones")
+        #expect(tab(manager).deviceName == "Headphones")
+        #expect(tab(manager).deviceSelectionMode == .single)
+    }
+
+    @Test("a tab that was only seeded for Multi leaves it without sending anything in a short session")
+    func seededTabShortSessionSendsNothing() {
+        let (manager, sent, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "Headphones")])
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)  // seeded with the headphones, nothing plays on a list
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        #expect(sent.messages.isEmpty, "the tab never left its single device")
+        #expect(tab(manager).deviceSelectionMode == .single)
+        #expect(tab(manager).deviceName == "Headphones")
+    }
+
+    @Test("a seeded tab in a long session is moved to System Audio when it was on a specific device")
+    func seededTabLongSessionClearsTheChoice() {
+        let (manager, sent, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "Headphones")])
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(MultiOutputRevert.rememberWindow + 1)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "")
+        #expect((tab(manager).deviceName ?? "").isEmpty)
+        #expect(tab(manager).deviceSelectionMode == .single)
+    }
+
+    @Test("a seeded tab that already followed the default needs no message in a long session")
+    func seededDefaultTabLongSessionSendsNothing() {
+        let (manager, sent, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "")])
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)  // seeds the default, uid-speakers
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(MultiOutputRevert.rememberWindow + 1)
+
+        manager.outputDeviceDisconnected(uid: "uid-speakers")
+        manager.flushMessages()
+
+        #expect(sent.messages.isEmpty)
+        #expect(tab(manager).deviceSelectionMode == .single)
+    }
+
+    @Test("nothing rejoins when the device returns, and flipping to Multi by hand uses the kept selection")
+    func noRejoinAndManualFlipBack() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "Headphones")
+        clock.advance(60)
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+        sent.messages.removeAll()
+
+        manager.updateOutputDevices([speakers, headphones], defaultDeviceUID: "uid-speakers")  // the HDMI is gone
+        manager.updateOutputDevices(allDevices, defaultDeviceUID: "uid-speakers")  // and back
+        manager.flushMessages()
+        #expect(sent.messages.isEmpty, "the returning device does not bring the list back")
+        #expect(tab(manager).deviceSelectionMode == .single)
+
+        clock.advance(30)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        #expect(tab(manager).deviceSelectionMode == .multi)
+        #expect(tab(manager).selectedDeviceUIDs == ["uid-speakers", "uid-hdmi"])
+        #expect(tab(manager).multiSince == clock.now, "a fresh clock")
+    }
+
+    @Test("Multi to Single to Multi starts a fresh clock, so a long first session does not count")
+    func freshClockAfterLeavingMulti() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "Headphones")
+        clock.advance(2 * MultiOutputRevert.rememberWindow)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-speakers", "uid-hdmi"])
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Headphones")
+    }
+
+    @Test("a device that is not in the tab's selection changes nothing")
+    func unselectedDeviceChangesNothing() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "Headphones", uids: ["uid-speakers", "uid-hdmi"])
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        #expect(sent.messages.isEmpty)
+        #expect(tab(manager).deviceSelectionMode == .multi)
+        #expect(tab(manager).deviceNames == ["Speakers", "HDMI"])
+        #expect(tab(manager).multiSince != nil)
+    }
+
+    @Test("a single-mode tab is not touched by the disconnect of a device left in its kept selection")
+    func singleTabIsLeftAlone() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "Headphones")
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+
+        #expect(sent.messages.isEmpty)
+        #expect(tab(manager).deviceSelectionMode == .single)
+    }
+
+    @Test("only the tabs whose selection has the device go back to Single")
+    func onlyAffectedTabsRevert() {
+        let (manager, sent, clock) = makeClockedManager(tabs: [
+            tabJSON(id: 1, deviceName: "Headphones"),
+            tabJSON(id: 2, deviceName: "Headphones"),
+        ])
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-speakers", "uid-hdmi"])
+        manager.setTabDevices(tabId: 2, deviceUIDs: ["uid-speakers", "uid-headphones"])
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+
+        #expect(tab(manager, id: 1).deviceSelectionMode == .single)
+        #expect(tab(manager, id: 2).deviceSelectionMode == .multi)
+        let single = sent.messages(ofType: "SET_TAB_DEVICE")
+        #expect(single.count == 1)
+        #expect(single.first?["tabId"] as? Int == 1)
+        #expect(manager.multiOutputDeviceUIDs == ["uid-speakers", "uid-headphones"])
+    }
+
+    @Test("the multi-output devices are recomputed after the revert")
+    func multiOutputsFollowTheRevert() {
+        let (manager, _, clock) = tabPlayingAList(deviceName: "Headphones")
+        #expect(manager.multiOutputDeviceUIDs == ["uid-speakers", "uid-hdmi"])
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+
+        #expect(manager.multiOutputDeviceUIDs.isEmpty)
+    }
+
+    // MARK: - The pre-Multi single choice survives the one-output fallbacks
+
+    // Without multi support in the extension, or while the engine plays the Chrome row on several outputs, a tab with
+    // several ticks is pinned to its first tick, which overwrites `deviceName`. The revert must still go back to
+    // what the tab was on before Multi, not to that first tick.
+
+    @Test("without multi support, a short session restores the pre-Multi choice and not the first tick the fallback pinned")
+    func fallbackPinDoesNotReplaceThePreMultiChoice() {
+        let (manager, sent, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "Speakers")], multiDevice: false)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-headphones", "uid-hdmi"])
+        manager.flushMessages()
+        #expect(tab(manager).deviceName == "Headphones", "the fallback pinned the first tick")
+        sent.messages.removeAll()
+        clock.advance(600)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Speakers")
+        #expect(tab(manager).deviceName == "Speakers")
+        #expect(tab(manager).deviceSelectionMode == .single)
+    }
+
+    @Test("ticking straight from Single without multi support also keeps the pre-Multi choice")
+    func tickingStraightFromSingleKeepsThePreMultiChoice() {
+        let (manager, sent, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "Speakers")], multiDevice: false)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-headphones", "uid-hdmi"])
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(600)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Speakers")
+    }
+
+    @Test("a tab that followed the default before Multi goes back to following it, not to the fallback's first tick")
+    func fallbackPinDoesNotReplaceTheDefault() {
+        let (manager, sent, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "")], multiDevice: false)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-headphones", "uid-hdmi"])
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(600)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "")
+        #expect((tab(manager).deviceName ?? "").isEmpty)
+    }
+
+    @Test("while the engine fans Chrome out, a tab pulled to its first tick still goes back to its pre-Multi choice")
+    func fanOutPinDoesNotReplaceThePreMultiChoice() {
+        let (manager, sent, clock) = tabPlayingAList(deviceName: "Speakers", uids: ["uid-headphones", "uid-hdmi"])
+        manager.setEngineFansOutChrome(true)
+        manager.flushMessages()
+        #expect(tab(manager).deviceName == "Headphones", "pulled to its first tick")
+        sent.messages.removeAll()
+        clock.advance(600)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Speakers")
+        #expect(tab(manager).deviceName == "Speakers")
+    }
+
+    // MARK: - Flipping back by hand uses the same choice as the revert
+
+    @Test("a hand flip back to Single restores the pre-Multi choice the fallback pin had replaced")
+    func handFlipRestoresThePreMultiChoice() {
+        let (manager, sent, _) = makeClockedManager(tabs: [tabJSON(deviceName: "Speakers")], multiDevice: false)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-headphones", "uid-hdmi"])
+        manager.flushMessages()
+        #expect(tab(manager).deviceName == "Headphones", "the fallback pinned the first tick")
+        #expect(tab(manager).deviceNames.isEmpty, "no list plays on this path")
+        sent.messages.removeAll()
+
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Speakers")
+        #expect(tab(manager).deviceName == "Speakers")
+        #expect(tab(manager).deviceSelectionMode == .single)
+        #expect(tab(manager).multiSince == nil)
+        #expect(tab(manager).preMultiDeviceName == nil)
+        #expect(tab(manager).selectedDeviceUIDs == ["uid-headphones", "uid-hdmi"], "the ticks are kept")
+    }
+
+    @Test("a hand flip back with a list playing restores the pre-Multi choice too")
+    func handFlipWithAListRestoresThePreMultiChoice() {
+        let (manager, sent, _) = tabPlayingAList(deviceName: "Speakers", uids: ["uid-headphones", "uid-hdmi"])
+        #expect(!tab(manager).deviceNames.isEmpty)
+
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Speakers")
+        #expect(sent.messages(ofType: "SET_TAB_DEVICES").isEmpty)
+        #expect(tab(manager).deviceName == "Speakers")
+        #expect(tab(manager).deviceNames.isEmpty)
+    }
+
+    @Test("a hand flip back for a tab that followed the default goes back to following it, not to the fallback's tick")
+    func handFlipRestoresTheDefault() {
+        let (manager, sent, _) = makeClockedManager(tabs: [tabJSON(deviceName: "")], multiDevice: false)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-headphones", "uid-hdmi"])
+        manager.flushMessages()
+        #expect(tab(manager).deviceName == "Headphones")
+        sent.messages.removeAll()
+
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "")
+        #expect((tab(manager).deviceName ?? "").isEmpty)
+        #expect(tab(manager).deviceStatus == .defaultOutput)
+    }
+
+    @Test("a hand flip back sends nothing when the tab is already on its pre-Multi choice and no list plays")
+    func handFlipOnTheSameChoiceSendsNothing() {
+        let (manager, sent, _) = makeClockedManager(tabs: [tabJSON(deviceName: "Speakers")], multiDevice: false)
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .multi)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-speakers"])
+        manager.flushMessages()
+        #expect(tab(manager).deviceName == "Speakers")
+        sent.messages.removeAll()
+
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        manager.flushMessages()
+
+        #expect(sent.messages.isEmpty)
+    }
+
+    @Test("an adopted tab (start unknown) keeps its device name on a hand flip back")
+    func handFlipOnAnAdoptedTabKeepsTheDeviceName() {
+        let (manager, sent, _) = makeClockedManager(
+            tabs: [tabJSON(deviceName: "Headphones", deviceNames: ["Speakers", "HDMI"])]
+        )
+        #expect(tab(manager).deviceSelectionMode == .multi)
+        #expect(tab(manager).multiSince == nil, "adopted, not entered by hand")
+        #expect(tab(manager).preMultiDeviceName == nil)
+
+        manager.setTabDeviceSelectionMode(tabId: 1, to: .single)
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "Headphones")
+        #expect(tab(manager).deviceName == "Headphones")
+        #expect(tab(manager).deviceSelectionMode == .single)
+    }
+
+    @Test("each Multi session remembers the single choice it started from")
+    func eachSessionRemembersItsOwnStart() {
+        let (manager, sent, clock) = makeClockedManager(tabs: [tabJSON(deviceName: "Speakers")], multiDevice: false)
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-headphones", "uid-hdmi"])
+        clock.advance(60)
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+        #expect(tab(manager).deviceName == "Speakers")
+
+        manager.setTabDevice(tabId: 1, deviceName: "HDMI")
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-speakers", "uid-headphones"])
+        manager.flushMessages()
+        sent.messages.removeAll()
+        clock.advance(60)
+
+        manager.outputDeviceDisconnected(uid: "uid-headphones")
+        manager.flushMessages()
+
+        #expect(sent.messages(ofType: "SET_TAB_DEVICE").first?["deviceName"] as? String == "HDMI")
+    }
+
+    @Test("merge carries the pre-Multi choice from the existing tab")
+    func mergeCarriesThePreMultiChoice() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        var old = ChromeTab(id: 1, title: "Tab", volume: 1)
+        old.deviceSelectionMode = .multi
+        old.preMultiDeviceName = "Speakers"
+        let fresh = ChromeTab(id: 1, title: "Tab", volume: 1)
+
+        let merged = ChromeExtensionManager.merge(existing: [old], incoming: [fresh], pendingUntil: [:], now: now)
+
+        #expect(merged[0].preMultiDeviceName == "Speakers")
+    }
+
+    // MARK: - A reverted tab is not pulled back into Multi by a stale list
+
+    @Test("an extension that still reports the old list after the pending window does not pull a reverted tab back into Multi")
+    func staleListIsNotReadopted() async {
+        let (manager, _, clock) = tabPlayingAList(deviceName: "Headphones")
+        clock.advance(60)
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+        #expect(tab(manager).deviceSelectionMode == .single)
+
+        try? await Task.sleep(for: .milliseconds(1700))  // past the 1.5 s window in which local changes win
+        let stale = tabJSON(deviceName: "Headphones", deviceNames: ["Speakers", "HDMI"], deviceStatus: "routed")
+        manager.handleChromeMessageString(listString([stale]))
+        #expect(tab(manager).deviceSelectionMode == .single, "the extension has not caught up yet")
+        #expect(tab(manager).multiSince == nil)
+
+        manager.handleChromeMessageString(listString([tabJSON(deviceName: "Headphones")]))
+        #expect(tab(manager).deviceSelectionMode == .single, "the extension reports its single state")
+
+        manager.handleChromeMessageString(listString([stale]))
+        #expect(tab(manager).deviceSelectionMode == .multi, "once it has reported single, a list it plays is adopted again")
+    }
+
+    @Test("ticking devices again after a revert plays the new list even if the extension had not caught up")
+    func tickingAgainEndsTheGuard() {
+        let (manager, _, clock) = tabPlayingAList(deviceName: "Headphones")
+        clock.advance(60)
+        manager.outputDeviceDisconnected(uid: "uid-hdmi")
+        manager.flushMessages()
+
+        manager.setTabDevices(tabId: 1, deviceUIDs: ["uid-speakers", "uid-headphones"])
+
+        #expect(tab(manager).deviceSelectionMode == .multi)
+        #expect(tab(manager).deviceNames == ["Speakers", "Headphones"])
+    }
 }

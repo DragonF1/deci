@@ -36,6 +36,14 @@ final class AudioEngine {
     /// Called with the new `multiRouteBundleIDs` whenever the set changes.
     var onMultiRouteBundleIDsChange: (@MainActor (Set<String>) -> Void)?
 
+    /// Called with the UID of an output device that disconnected, after the engine has handled it (Multi apps that had the
+    /// device selected are back on Single by then). Chrome's tabs are not the engine's apps, so the app wires the
+    /// extension manager's own revert to this.
+    var onOutputDeviceDisconnected: (@MainActor (String) -> Void)?
+
+    /// Receives the text of the "device disconnected" notification instead of the system notification center. For tests.
+    var onDisconnectNotification: (@MainActor (String) -> Void)?
+
     /// Called when what Deci's tap of Chrome adds to its outputs changes: each tapped output device UID mapped to the
     /// tap's measured through-latency in seconds, or an empty map once the figure stops applying (no Chrome tap, a
     /// mixdown tap, or nothing measured). Chrome cannot see this delay, so the extension adds it when it lines
@@ -73,6 +81,9 @@ final class AudioEngine {
 
     /// Quiet period before a changed process list rebuilds a tap (coalesces bursts of helper spawns).
     private let processRebuildDebounce: Duration
+
+    /// The time, for how long an app has been in Multi. Overridable for testing.
+    private let currentTime: @MainActor () -> Date
 
     /// One-shot HAL listeners for devices that were present but not alive during priority resolution.
     /// Keyed by AudioDeviceID. Each entry holds the device UID, listener block, and a timeout task.
@@ -311,7 +322,8 @@ final class AudioEngine {
         staleTapGrace: Duration = .seconds(30),
         staleTapPollInterval: Duration = .seconds(30),
         processRebuildDebounce: Duration = .milliseconds(100),
-        startMonitorsAutomatically: Bool = true
+        startMonitorsAutomatically: Bool = true,
+        now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.permission = permission
         let manager = settingsManager
@@ -333,6 +345,7 @@ final class AudioEngine {
         self.staleTapGrace = staleTapGrace
         self.staleTapPollInterval = staleTapPollInterval
         self.processRebuildDebounce = processRebuildDebounce
+        self.currentTime = now
 
         // If a custom deviceProvider is given, use it directly.
         // Otherwise create a real AudioDeviceMonitor (needed by DeviceVolumeMonitor and default tap factory).
@@ -531,6 +544,7 @@ final class AudioEngine {
 
         deviceMonitor.onDeviceDisconnected = { [weak self] deviceUID, deviceName in
             self?.handleDeviceDisconnected(deviceUID, name: deviceName)
+            self?.onOutputDeviceDisconnected?(deviceUID)
             self?.inProcessAudio?.outputDevicesChanged()
             self?.bluetoothDeviceMonitor.refresh()
         }
@@ -704,7 +718,7 @@ final class AudioEngine {
     }
 
     func setDeviceSelectionModeForInactive(identifier: String, to mode: DeviceSelectionMode) {
-        appListCoordinator.setDeviceSelectionModeForInactive(identifier: identifier, to: mode)
+        appListCoordinator.setDeviceSelectionModeForInactive(identifier: identifier, to: mode, at: currentTime())
         if mode == .multi {
             seedInactiveMultiSelection(identifier: identifier)
         }
@@ -1182,7 +1196,7 @@ final class AudioEngine {
     /// Triggers tap reconfiguration when mode changes.
     func setDeviceSelectionMode(for app: AudioApp, to mode: DeviceSelectionMode) {
         let previousMode = volumeState.getDeviceSelectionMode(for: app.id)
-        volumeState.setDeviceSelectionMode(for: app.id, to: mode, identifier: app.persistenceIdentifier)
+        volumeState.setDeviceSelectionMode(for: app.id, to: mode, identifier: app.persistenceIdentifier, at: currentTime())
 
         guard previousMode != mode else { return }
 
@@ -1549,7 +1563,7 @@ final class AudioEngine {
     /// Routes followsDefault apps and switches their taps if default changes.
     /// Returns the resolved target UID.
     @discardableResult
-    private func reEvaluateOutputDefault(excluding: String? = nil) -> String? {
+    private func reEvaluateOutputDefault(excluding: String? = nil, skipping skippedPIDs: Set<pid_t> = []) -> String? {
         guard let target = Self.resolveHighestPriority(
             priorityOrder: settingsManager.devicePriorityOrder,
             connectedDevices: outputDevices,
@@ -1566,7 +1580,7 @@ final class AudioEngine {
         }
 
         lastConfirmedDefaultUID = target.uid
-        routeFollowsDefaultApps(to: target.uid)
+        routeFollowsDefaultApps(to: target.uid, skipping: skippedPIDs)
         return target.uid
     }
 
@@ -1595,7 +1609,9 @@ final class AudioEngine {
     /// switching back to single mode follows the default again) but are never moved here. A multi
     /// app with none of its devices connected is on the fallback and moves like a single app.
     /// Early-exits if all apps are already routed to the target (avoids unnecessary tap switches).
-    private func routeFollowsDefaultApps(to targetUID: String) {
+    /// `skippedPIDs` are apps whose tap another switch is already moving (a Multi app that just went back to Single):
+    /// their routing is set like the rest, but their tap is not switched a second time.
+    private func routeFollowsDefaultApps(to targetUID: String, skipping skippedPIDs: Set<pid_t> = []) {
         let movable = followsDefault.filter { !isOnOwnMultiRoute($0) }
         guard !movable.allSatisfy({ appDeviceRouting[$0] == targetUID }) else { return }
 
@@ -1608,7 +1624,7 @@ final class AudioEngine {
         // app would resume on the old device (appliedPIDs blocks any later re-route).
         var tapsToSwitch: [(app: AudioApp, tap: any ProcessTapControlling)] = []
         for pid in taps.keys.sorted() {
-            guard movable.contains(pid), let tap = taps[pid] else { continue }
+            guard movable.contains(pid), !skippedPIDs.contains(pid), let tap = taps[pid] else { continue }
             tapsToSwitch.append((tap.app, tap))
         }
         guard !tapsToSwitch.isEmpty else { return }
@@ -1636,6 +1652,113 @@ final class AudioEngine {
         volumeState.setSelectedDeviceUIDs(for: app.id, to: selection, identifier: nil, persist: false)
     }
 
+    /// An app that went back to Single because a device of its Multi selection disconnected.
+    private struct MultiRevert {
+        let app: AudioApp
+        /// Where the app plays now, nil when no output device is available.
+        let targetUID: String?
+        /// Whether it is on System Audio, so its tap is the stream-specific one on the default device.
+        let followsDefault: Bool
+    }
+
+    /// Sends every active app in Multi mode with `deviceUID` in its selection back to Single, right away, even when
+    /// other selected devices are still connected. Within `MultiOutputRevert.rememberWindow` of entering Multi it
+    /// returns to its pre-Multi single setting: its saved device, or System Audio if it followed the default. Longer, or
+    /// with no recorded start, it goes to System Audio and the saved device is cleared. A saved device that is itself
+    /// away is kept, and the app plays on the default meanwhile, as in Single mode today. Both the live and the saved
+    /// selection are left as they are, and nothing rejoins when the device returns. Updates the mode, the saved
+    /// settings and the in-memory routing; the caller switches the taps.
+    private func revertMultiApps(afterDisconnectOf deviceUID: String, fallbackDevice: AudioDevice?) -> [MultiRevert] {
+        var candidates: [pid_t: AudioApp] = [:]
+        for tap in taps.values { candidates[tap.app.id] = tap.app }
+        for app in apps where candidates[app.id] == nil { candidates[app.id] = app }
+
+        // System Audio: the current default, unless that is the device that just went away.
+        let systemAudioUID: String? = {
+            if let current = deviceVolumeMonitor.defaultDeviceUID, current != deviceUID, isOutputConnected(current) {
+                return current
+            }
+            return fallbackDevice?.uid
+        }()
+
+        // Processes of one app share its saved settings: the first one decides, because leaving Multi clears the start.
+        var decided: [String: (target: MultiOutputRevert.Target, savedDeviceUID: String?)] = [:]
+        var reverts: [MultiRevert] = []
+        for pid in candidates.keys.sorted() {
+            guard let app = candidates[pid] else { continue }
+            let identifier = app.persistenceIdentifier
+            let mode = volumeState.getDeviceSelectionMode(for: pid) == .multi
+                ? DeviceSelectionMode.multi
+                : settingsManager.getDeviceSelectionMode(for: identifier)
+            let selected = volumeState.getSelectedDeviceUIDs(for: pid)
+                .union(settingsManager.getSelectedDeviceUIDs(for: identifier) ?? [])
+            guard MultiOutputRevert.disconnectAffects(mode: mode, selected: selected, uid: deviceUID) else { continue }
+
+            // Read both before the mode changes: leaving Multi clears the start.
+            let decision = decided[identifier] ?? (
+                target: MultiOutputRevert.target(multiSince: settingsManager.getMultiOutputSince(for: identifier), now: currentTime()),
+                savedDeviceUID: settingsManager.getDeviceRouting(for: identifier)
+            )
+            decided[identifier] = decision
+            let target = decision.target
+            let savedDeviceUID = decision.savedDeviceUID
+            volumeState.setDeviceSelectionMode(for: pid, to: .single, identifier: identifier, at: currentTime())
+
+            let placed = applyRevertTarget(
+                target, to: pid, identifier: identifier, savedDeviceUID: savedDeviceUID,
+                droppedUID: deviceUID, systemAudioUID: systemAudioUID
+            )
+            if placed.uid == nil {
+                logger.error("No device available for \(app.name) after it left Multi")
+            }
+            reverts.append(MultiRevert(app: app, targetUID: placed.uid, followsDefault: placed.onSystemAudio))
+        }
+        return reverts
+    }
+
+    /// Where a reverted app plays, and the bookkeeping that goes with it, in memory and in the saved settings. System
+    /// Audio follows the default and clears the saved device. The pre-Multi single setting keeps a saved device that is
+    /// connected; a saved device that is away (or is the one that just dropped) stays the saved choice, and meanwhile the
+    /// app plays on System Audio in memory, as in Single mode today. Returns the device it plays on now (nil when none is
+    /// available) and whether that is System Audio.
+    private func applyRevertTarget(
+        _ target: MultiOutputRevert.Target, to pid: pid_t, identifier: String,
+        savedDeviceUID: String?, droppedUID: String, systemAudioUID: String?
+    ) -> (uid: String?, onSystemAudio: Bool) {
+        var destination = systemAudioUID
+        var onSystemAudio = true
+        switch target {
+        case .systemAudio:
+            settingsManager.setFollowDefault(for: identifier)
+            followsDefault.insert(pid)
+        case .previousSingle:
+            if let savedDeviceUID, savedDeviceUID != droppedUID, isOutputConnected(savedDeviceUID) {
+                followsDefault.remove(pid)
+                destination = savedDeviceUID
+                onSystemAudio = false
+            } else {
+                // It followed the default, or its device is away: the saved choice is untouched, and in memory the app
+                // plays on the default until the device is back (handleDeviceConnected restores a saved pin).
+                followsDefault.insert(pid)
+            }
+        }
+        if let destination {
+            appDeviceRouting[pid] = destination
+        }
+        return (destination, onSystemAudio)
+    }
+
+    /// The saved-settings half of `revertMultiApps`, for items with no live app: inactive pinned apps. The music
+    /// player is left out, since its mixer reverts itself.
+    private func revertMultiSettings(afterDisconnectOf deviceUID: String) {
+        for identifier in settingsManager.multiOutputIdentifiers(containing: deviceUID).sorted()
+        where identifier != MusicMixerState.settingsKey {
+            let target = MultiOutputRevert.target(multiSince: settingsManager.getMultiOutputSince(for: identifier), now: currentTime())
+            settingsManager.setDeviceSelectionMode(for: identifier, to: .single, at: currentTime())
+            if target == .systemAudio { settingsManager.setFollowDefault(for: identifier) }
+        }
+    }
+
     /// Called when device disappears - updates routing and switches taps immediately
     private func handleDeviceDisconnected(_ deviceUID: String, name deviceName: String) {
         // Clean up alive watcher — use UID lookup since device is already removed from monitor
@@ -1659,8 +1782,31 @@ final class AudioEngine {
         )
 
         var affectedApps: [AudioApp] = []
-        var singleModeTapsToSwitch: [(tap: any ProcessTapControlling, fallbackUID: String)] = []
+        // Where the affected apps went, for the notification, each place once.
+        var destinationNames: [String] = []
+        func noteDestination(_ name: String) {
+            if !destinationNames.contains(name) { destinationNames.append(name) }
+        }
+        var singleModeTapsToSwitch: [(tap: any ProcessTapControlling, targetUID: String, followsDefault: Bool, sourceDead: Bool)] = []
         var multiModeTapsToUpdate: [(tap: any ProcessTapControlling, remainingUIDs: [String])] = []
+
+        // Multi apps that had this device selected go back to Single first, so the loop below sees them as single
+        // apps already handled. The other devices of their selection do not keep them in Multi.
+        let reverts = revertMultiApps(afterDisconnectOf: deviceUID, fallbackDevice: fallbackDevice)
+        var revertedPIDs: Set<pid_t> = []
+        for revert in reverts {
+            revertedPIDs.insert(revert.app.id)
+            guard let tap = taps[revert.app.id], let targetUID = revert.targetUID else { continue }
+            let wasOnDevice = tap.currentDeviceUIDs.contains(deviceUID)
+            if wasOnDevice {
+                affectedApps.append(revert.app)
+                noteDestination(revert.followsDefault ? "System Audio" : (outputDevices.first { $0.uid == targetUID }?.name ?? targetUID))
+            }
+            if tap.currentDeviceUIDs != [targetUID] {
+                singleModeTapsToSwitch.append((tap: tap, targetUID: targetUID, followsDefault: revert.followsDefault, sourceDead: wasOnDevice))
+            }
+        }
+        revertMultiSettings(afterDisconnectOf: deviceUID)
 
         // Iterate over taps instead of apps - apps list may be empty if disconnected device
         // was the system default (CoreAudio removes app from process list when output disappears)
@@ -1668,10 +1814,14 @@ final class AudioEngine {
             let app = tap.app
             let mode = getDeviceSelectionMode(for: app)
 
+            // Already back on Single above
+            guard !revertedPIDs.contains(app.id) else { continue }
+
             // Check if this tap uses the disconnected device
             guard tap.currentDeviceUIDs.contains(deviceUID) else { continue }
 
             affectedApps.append(app)
+            noteDestination(fallbackDevice?.name ?? "none")
 
             if mode == .multi && tap.currentDeviceUIDs.count > 1 {
                 // Multi-device mode: remove disconnected device, keep others
@@ -1693,7 +1843,7 @@ final class AudioEngine {
                 // Set to follow default in-memory (UI shows "System Audio")
                 // Don't persist - original device preference stays in settings for reconnection
                 followsDefault.insert(app.id)
-                singleModeTapsToSwitch.append((tap: tap, fallbackUID: fallback.uid))
+                singleModeTapsToSwitch.append((tap: tap, targetUID: fallback.uid, followsDefault: true, sourceDead: true))
             } else {
                 logger.error("No fallback device available for \(app.name)")
             }
@@ -1702,12 +1852,13 @@ final class AudioEngine {
         // Execute device switches
         if !singleModeTapsToSwitch.isEmpty || !multiModeTapsToUpdate.isEmpty {
             Task {
-                // Handle single-mode switches — source device is dead, skip crossfade
-                for (tap, fallbackUID) in singleModeTapsToSwitch {
+                // Handle single-mode switches (and Multi apps back on Single). When the tap was on the dead
+                // device its source is dead, skip crossfade.
+                for (tap, targetUID, onSystemAudio, sourceDead) in singleModeTapsToSwitch {
                     do {
-                        let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: [fallbackUID], isFollowsDefault: true)
-                        try await tap.switchDevice(to: fallbackUID, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: true)
-                        self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: [fallbackUID])
+                        let preferredTapSourceUID = self.preferredTapSourceDeviceUID(forOutputUIDs: [targetUID], isFollowsDefault: onSystemAudio)
+                        try await tap.switchDevice(to: targetUID, preferredTapSourceDeviceUID: preferredTapSourceUID, sourceDeviceDead: sourceDead)
+                        self.applyTapOutputState(to: tap, for: tap.app.id, deviceUIDs: [targetUID])
                         self.applyAutoEQToTap(tap)
                     } catch {
                         self.logger.error("Failed to switch \(tap.app.name) to fallback: \(error.localizedDescription)")
@@ -1729,17 +1880,21 @@ final class AudioEngine {
             }
         }
 
+        if !reverts.isEmpty {
+            logger.info("\(deviceName) disconnected, \(reverts.count) Multi app(s) went back to Single")
+        }
+
         if !affectedApps.isEmpty {
-            let fallbackName = fallbackDevice?.name ?? "none"
             logger.info("\(deviceName) disconnected, \(affectedApps.count) app(s) affected")
             if settingsManager.appSettings.showDeviceDisconnectAlerts {
-                showDisconnectNotification(deviceName: deviceName, fallbackName: fallbackName, affectedApps: affectedApps)
+                showDisconnectNotification(deviceName: deviceName, destinations: destinationNames, affectedApps: affectedApps)
             }
         }
 
-        // If the disconnected device was the system default, override to priority fallback
+        // If the disconnected device was the system default, override to priority fallback. The taps of the apps that
+        // just went back to Single are already being moved; they are not switched a second time.
         if wasDefaultOutput {
-            reEvaluateOutputDefault(excluding: deviceUID)
+            reEvaluateOutputDefault(excluding: deviceUID, skipping: revertedPIDs)
         }
     }
 
@@ -1981,10 +2136,22 @@ final class AudioEngine {
         }
     }
 
-    private func showDisconnectNotification(deviceName: String, fallbackName: String, affectedApps: [AudioApp]) {
+    /// The text of the notification: where the apps went, each place once, so an app that returned to its saved device or
+    /// to System Audio is not reported as moved to the priority fallback.
+    static func disconnectNotificationBody(deviceName: String, appCount: Int, destinations: [String]) -> String {
+        let places = destinations.isEmpty ? "none" : destinations.joined(separator: ", ")
+        return "\"\(deviceName)\" disconnected. \(appCount) app(s) switched to \(places)"
+    }
+
+    private func showDisconnectNotification(deviceName: String, destinations: [String], affectedApps: [AudioApp]) {
+        let body = Self.disconnectNotificationBody(deviceName: deviceName, appCount: affectedApps.count, destinations: destinations)
+        if let onDisconnectNotification {
+            onDisconnectNotification(body)
+            return
+        }
         let content = UNMutableNotificationContent()
         content.title = "Audio Device Disconnected"
-        content.body = "\"\(deviceName)\" disconnected. \(affectedApps.count) app(s) switched to \(fallbackName)"
+        content.body = body
         content.sound = nil
 
         let request = UNNotificationRequest(

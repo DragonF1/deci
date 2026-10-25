@@ -224,6 +224,7 @@ final class SettingsManager {
         var systemSoundsFollowsDefault: Bool = true  // Whether system sounds follows macOS default
         var appDeviceSelectionMode: [String: DeviceSelectionMode] = [:]  // bundleID → selection mode
         var appSelectedDeviceUIDs: [String: [String]] = [:]  // bundleID → array of device UIDs for multi mode
+        var appMultiOutputSince: [String: Date] = [:]  // bundleID → when it entered Multi (present only while in Multi)
         var lockedInputDeviceUID: String? = nil  // Current locked input device (updated on fallback)
         var preferredInputDeviceUID: String? = nil  // User's intended input device (survives disconnect)
         var pinnedApps: Set<String> = []  // Persistence identifiers of pinned apps
@@ -284,6 +285,7 @@ final class SettingsManager {
             systemSoundsFollowsDefault = try c.decodeIfPresent(Bool.self, forKey: .systemSoundsFollowsDefault) ?? true
             appDeviceSelectionMode = try c.decodeIfPresent([String: DeviceSelectionMode].self, forKey: .appDeviceSelectionMode) ?? [:]
             appSelectedDeviceUIDs = try c.decodeIfPresent([String: [String]].self, forKey: .appSelectedDeviceUIDs) ?? [:]
+            appMultiOutputSince = try c.decodeIfPresent([String: Date].self, forKey: .appMultiOutputSince) ?? [:]
             lockedInputDeviceUID = try c.decodeIfPresent(String.self, forKey: .lockedInputDeviceUID)
             preferredInputDeviceUID = try c.decodeIfPresent(String.self, forKey: .preferredInputDeviceUID)
             pinnedApps = try c.decodeIfPresent(Set<String>.self, forKey: .pinnedApps) ?? []
@@ -403,9 +405,44 @@ final class SettingsManager {
         settings.appDeviceSelectionMode[identifier]
     }
 
-    func setDeviceSelectionMode(for identifier: String, to mode: DeviceSelectionMode) {
+    /// Saves the mode. Entering Multi records `date` as the start of the Multi session (asking for Multi again keeps
+    /// the first start); leaving it clears the start, so Multi to Single to Multi begins a fresh clock.
+    func setDeviceSelectionMode(for identifier: String, to mode: DeviceSelectionMode, at date: Date = Date()) {
+        let wasMulti = settings.appDeviceSelectionMode[identifier] == .multi
         settings.appDeviceSelectionMode[identifier] = mode
+        if mode != .multi {
+            settings.appMultiOutputSince.removeValue(forKey: identifier)
+        } else if !wasMulti {
+            settings.appMultiOutputSince[identifier] = date
+        }
         scheduleSave()
+    }
+
+    /// When the item entered Multi. nil when it is not in Multi, or when the start was never recorded (a file written
+    /// before the start was kept).
+    func getMultiOutputSince(for identifier: String) -> Date? {
+        settings.appMultiOutputSince[identifier]
+    }
+
+    /// Writes or, with nil, removes the start of a Multi session.
+    func setMultiOutputSince(_ date: Date?, for identifier: String) {
+        if let date {
+            settings.appMultiOutputSince[identifier] = date
+        } else {
+            settings.appMultiOutputSince.removeValue(forKey: identifier)
+        }
+        scheduleSave()
+    }
+
+    /// The items in Multi mode that have this output device selected, in no particular order.
+    func multiOutputIdentifiers(containing deviceUID: String) -> [String] {
+        settings.appDeviceSelectionMode.compactMap { identifier, mode in
+            MultiOutputRevert.disconnectAffects(
+                mode: mode,
+                selected: Set(settings.appSelectedDeviceUIDs[identifier] ?? []),
+                uid: deviceUID
+            ) ? identifier : nil
+        }
     }
 
     // MARK: - Selected Device UIDs (Multi Mode)
@@ -479,6 +516,7 @@ final class SettingsManager {
         settings.appEQSettings.removeValue(forKey: identifier)
         settings.appDeviceSelectionMode.removeValue(forKey: identifier)
         settings.appSelectedDeviceUIDs.removeValue(forKey: identifier)
+        settings.appMultiOutputSince.removeValue(forKey: identifier)
         scheduleSave()
     }
 
@@ -773,6 +811,7 @@ final class SettingsManager {
             .union(settings.appEQSettings.keys)
             .union(settings.appDeviceSelectionMode.keys)
             .union(settings.appSelectedDeviceUIDs.keys)
+            .union(settings.appMultiOutputSince.keys)
 
         var pruned = 0
         for identifier in allIdentifiers {
@@ -811,6 +850,7 @@ final class SettingsManager {
             settings.appEQSettings.removeValue(forKey: identifier)
             settings.appDeviceSelectionMode.removeValue(forKey: identifier)
             settings.appSelectedDeviceUIDs.removeValue(forKey: identifier)
+            settings.appMultiOutputSince.removeValue(forKey: identifier)
             pruned += 1
         }
 
@@ -1022,6 +1062,7 @@ final class SettingsManager {
         settings.favoriteAutoEQProfiles.removeAll()
         settings.appDeviceSelectionMode.removeAll()
         settings.appSelectedDeviceUIDs.removeAll()
+        settings.appMultiOutputSince.removeAll()
         settings.userEQPresets.removeAll()
 
         // Also unregister from launch at login

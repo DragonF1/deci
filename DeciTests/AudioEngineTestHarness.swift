@@ -50,6 +50,19 @@ final class EngineProbes {
     }
 }
 
+// MARK: - Clock
+
+/// The engine's injected `now`. Starts at a fixed instant and only moves when a test advances it, so the
+/// "how long was it in Multi" rule never depends on the wall clock.
+@MainActor
+final class EngineClock {
+    private(set) var now = Date(timeIntervalSince1970: 2_000_000)
+
+    func advance(by seconds: TimeInterval) {
+        now = now.addingTimeInterval(seconds)
+    }
+}
+
 // MARK: - Harness
 
 @MainActor
@@ -61,6 +74,8 @@ struct EngineHarness {
     let processMonitor: StubProcessMonitor
     let device: AudioDevice
     let probes: EngineProbes
+    /// The engine's clock: tests advance it to make a Multi session short or long.
+    let clock: EngineClock
     /// Debounce used for process-list rebuilds, exposed so tests can wait a multiple of it.
     let debounce: Duration
 
@@ -96,6 +111,7 @@ struct EngineHarness {
 
         let processMonitor = StubProcessMonitor()
         let probes = EngineProbes()
+        let clock = EngineClock()
 
         // ensureTapExists guards on permission.status == .authorized; the TCC preflight
         // is unknown under xctest, so force it (same trick as the initial-state suite).
@@ -121,7 +137,8 @@ struct EngineHarness {
             staleTapGrace: staleGrace,
             staleTapPollInterval: stalePoll,
             processRebuildDebounce: debounce,
-            startMonitorsAutomatically: false
+            startMonitorsAutomatically: false,
+            now: { clock.now }
         )
 
         self.engine = engine
@@ -131,6 +148,7 @@ struct EngineHarness {
         self.processMonitor = processMonitor
         self.device = device
         self.probes = probes
+        self.clock = clock
         self.debounce = debounce
     }
 

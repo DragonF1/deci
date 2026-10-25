@@ -293,8 +293,8 @@ final class ChromeExtensionManager: NSObject {
     /// so it is carried over from the existing tab. `deviceStatus` is extension-owned
     /// state with no local counterpart, so it is always adopted, pending or not. The output list
     /// (`deviceNames`, `missingDeviceNames`) follows the device choice: local while pending, the
-    /// extension's after. The picker's own state (`deviceSelectionMode`, `selectedDeviceUIDs`) exists
-    /// only here and is always carried over.
+    /// extension's after. The picker's own state (`deviceSelectionMode`, `selectedDeviceUIDs`, `multiSince`,
+    /// `preMultiDeviceName`) exists only here and is always carried over.
     static func merge(
         existing: [ChromeTab],
         incoming: [ChromeTab],
@@ -315,6 +315,10 @@ final class ChromeExtensionManager: NSObject {
 
             tab.deviceSelectionMode = old.deviceSelectionMode
             tab.selectedDeviceUIDs = old.selectedDeviceUIDs
+            tab.multiSince = old.multiSince
+            tab.preMultiDeviceName = old.preMultiDeviceName
+            // Cleared once the extension itself reports one output for the tab.
+            tab.revertAwaitsExtension = old.revertAwaitsExtension && !fresh.deviceNames.isEmpty
 
             if let until = pendingUntil[tab.id], until > now {
                 tab.volume = old.volume
@@ -642,6 +646,7 @@ final class ChromeExtensionManager: NSObject {
         let names = outputNames(forUIDs: deviceUIDs)
 
         var tab = chromeTabs[index]
+        if tab.deviceSelectionMode != .multi { tab.enterMulti(at: connectionClock()) }
         tab.deviceSelectionMode = .multi
         tab.selectedDeviceUIDs = deviceUIDs
 
@@ -673,23 +678,64 @@ final class ChromeExtensionManager: NSObject {
 
     /// Flips the tab between one output and several. The first flip to Multi ticks the device the tab plays on now (the
     /// default when it follows the default or its device is gone) and sends nothing: the tab does not move until a
-    /// second device is ticked. Flipping back keeps the selection for next time and, when a list was playing, puts the
-    /// tab back on its single choice.
+    /// second device is ticked. Flipping back keeps the selection for next time and puts the tab back on its single choice
+    /// (the one it had before Multi) when a list was playing or the fallback pin moved it.
     func setTabDeviceSelectionMode(tabId: Int, to mode: DeviceSelectionMode) {
         guard let index = chromeTabs.firstIndex(where: { $0.id == tabId }),
               chromeTabs[index].deviceSelectionMode != mode else { return }
         switch mode {
         case .multi:
             var tab = chromeTabs[index]
+            tab.enterMulti(at: connectionClock())
             tab.deviceSelectionMode = .multi
             if tab.selectedDeviceUIDs.isEmpty {
                 tab.selectedDeviceUIDs = seedSelection(for: tab)
             }
             chromeTabs[index] = tab
         case .single:
+            // Same choice the disconnect revert uses. A tab entered by hand (`multiSince` set) goes back to what it
+            // had before Multi, since the one-output fallbacks may have replaced `deviceName` with a tick. An
+            // adopted tab (start unknown) has no record and keeps `deviceName`. Read both before `leaveMulti()`.
+            let current = chromeTabs[index].deviceName
+            let restored = chromeTabs[index].multiSince != nil ? chromeTabs[index].preMultiDeviceName : current
+            let playingAList = !chromeTabs[index].deviceNames.isEmpty
             chromeTabs[index].deviceSelectionMode = .single
-            if !chromeTabs[index].deviceNames.isEmpty {
-                setTabDevice(tabId: tabId, deviceName: chromeTabs[index].deviceName)
+            chromeTabs[index].leaveMulti()
+            if playingAList || (restored ?? "") != (current ?? "") {
+                setTabDevice(tabId: tabId, deviceName: restored)
+            }
+        }
+        refreshMultiOutputs()
+    }
+
+    /// An output device disconnected (not one that was never there at launch). Every tab in multi mode with that device
+    /// ticked goes back to single right away, even when its other ticked devices are still connected. Under
+    /// `MultiOutputRevert.rememberWindow` of entering Multi it returns to its pre-Multi single choice, else to System
+    /// Audio and the old choice is cleared. A single choice that is itself away stays the choice: the extension handles a
+    /// missing device in single mode. The ticks are kept, and nothing rejoins when the device returns. A message goes to
+    /// the extension only when it has something to undo: a list was playing, or a cleared choice was a specific device.
+    func outputDeviceDisconnected(uid: String) {
+        let now = connectionClock()
+        for tab in chromeTabs where MultiOutputRevert.disconnectAffects(
+            mode: tab.deviceSelectionMode, selected: tab.selectedDeviceUIDs, uid: uid
+        ) {
+            let target = MultiOutputRevert.target(multiSince: tab.multiSince, now: now)
+            let playingAList = !tab.deviceNames.isEmpty
+            if let index = chromeTabs.firstIndex(where: { $0.id == tab.id }) {
+                chromeTabs[index].deviceSelectionMode = .single
+                chromeTabs[index].leaveMulti()
+                chromeTabs[index].revertAwaitsExtension = playingAList
+            }
+            switch target {
+            case .previousSingle:
+                // The one-output fallbacks overwrote `deviceName` with a tick, so the choice from before Multi is the
+                // one recorded when the tab entered it.
+                let previous = tab.preMultiDeviceName
+                if playingAList || (previous ?? "") != (tab.deviceName ?? "") {
+                    setTabDevice(tabId: tab.id, deviceName: previous)
+                }
+            case .systemAudio:
+                if playingAList || !(tab.deviceName ?? "").isEmpty { setTabDevice(tabId: tab.id, deviceName: nil) }
             }
         }
         refreshMultiOutputs()
@@ -735,7 +781,7 @@ final class ChromeExtensionManager: NSObject {
     /// the app restarted while Chrome kept going), is shown as multi with the devices those names are.
     private func adoptingExtensionMultiState(_ tabs: [ChromeTab]) -> [ChromeTab] {
         tabs.map { tab in
-            guard tab.deviceSelectionMode == .single, !tab.deviceNames.isEmpty else { return tab }
+            guard tab.deviceSelectionMode == .single, !tab.deviceNames.isEmpty, !tab.revertAwaitsExtension else { return tab }
             var adopted = tab
             adopted.deviceSelectionMode = .multi
             if adopted.selectedDeviceUIDs.isEmpty {
@@ -997,6 +1043,30 @@ struct ChromeTab: Identifiable, Equatable {
     var deviceSelectionMode: DeviceSelectionMode = .single
     /// The devices ticked in multi mode. Kept when flipping back to single, like the engine keeps it. Exists only in Deci.
     var selectedDeviceUIDs: Set<String> = []
+    /// When the tab entered multi mode; nil in single mode, and for a tab adopted from the extension already playing a
+    /// list (its start is not known). Decides where the tab goes when one of its outputs disconnects. Exists only in Deci.
+    var multiSince: Date? = nil
+    /// The single choice the tab had when it entered Multi (a device name; nil means System Audio). The fallbacks that
+    /// play a Multi tab on one output overwrite `deviceName`, so the disconnect revert restores this instead. Nil in
+    /// single mode. Exists only in Deci.
+    var preMultiDeviceName: String? = nil
+    /// Set when a disconnect sent a tab that was playing a list back to one output, until the extension reports that it
+    /// no longer plays a list. A TAB_LIST that still carries the old list in between must not be adopted as Multi again.
+    /// Exists only in Deci.
+    var revertAwaitsExtension: Bool = false
+
+    /// The tab goes from one output to several: remembers when, and the single choice it is leaving.
+    mutating func enterMulti(at date: Date) {
+        multiSince = date
+        preMultiDeviceName = (deviceName ?? "").isEmpty ? nil : deviceName
+        revertAwaitsExtension = false
+    }
+
+    /// The tab leaves Multi, by hand or through a disconnect: the session's records go.
+    mutating func leaveMulti() {
+        multiSince = nil
+        preMultiDeviceName = nil
+    }
 
     /// A volume as a tab without a capture plays it: a plain level from 0 (silent) to 1 (full). Boost, which can
     /// push past full, needs a capture. A value that is not a number reads as full, like a missing one on the wire.

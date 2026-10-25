@@ -131,16 +131,24 @@ final class MusicMixerState: InProcessAudioSink {
     @ObservationIgnored private var heldSelectionUIDs: Set<String> = []
     /// Set on quit: no aggregate is made after it.
     @ObservationIgnored private var isShutDown = false
+    /// The time, for how long the music has been in Multi.
+    @ObservationIgnored private let now: @MainActor () -> Date
+    /// The output devices seen connected at the last device event, so a device that is gone from the list now is a real
+    /// disconnect. A device that was never seen (away at launch) is not one.
+    @ObservationIgnored private var knownConnectedUIDs: Set<String> = []
 
-    /// `aggregates` makes the output aggregate; tests pass a fake.
+    /// `aggregates` makes the output aggregate and `now` is the clock for the Multi session; tests pass fakes.
     init(
         settings: SettingsManager,
         environment: any MusicMixerEnvironment,
-        aggregates: any MusicOutputAggregating = CoreAudioMusicOutputAggregates()
+        aggregates: any MusicOutputAggregating = CoreAudioMusicOutputAggregates(),
+        now: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.aggregates = aggregates
         self.settings = settings
         self.environment = environment
+        self.now = now
+        knownConnectedUIDs = Set(environment.outputDevices.map(\.uid))
         loudnessCompensationOn = environment.loudnessCompensationEnabled
 
         let key = Self.settingsKey
@@ -268,7 +276,7 @@ final class MusicMixerState: InProcessAudioSink {
     func setDeviceSelectionMode(_ mode: DeviceSelectionMode) {
         guard mode != deviceSelectionMode else { return }
         deviceSelectionMode = mode
-        settings.setDeviceSelectionMode(for: Self.settingsKey, to: mode)
+        settings.setDeviceSelectionMode(for: Self.settingsKey, to: mode, at: now())
         if mode == .multi { seedMultiSelection() }
         deviceChoiceChanged()
     }
@@ -318,6 +326,7 @@ final class MusicMixerState: InProcessAudioSink {
         // The mixer is built before the engine's device monitors have filled in the devices, so what init resolved (no
         // device, no AutoEQ, a device volume of 1) can be stale by now, and no device event is sent for devices that
         // were already there. Resolve again before the engine is told anything.
+        knownConnectedUIDs = Set(environment.outputDevices.map(\.uid))
         resolveOutputDevice()
         refreshAutoEQ()
         updateLoudness()
@@ -431,10 +440,35 @@ final class MusicMixerState: InProcessAudioSink {
     }
 
     func outputDevicesChanged() {
+        let connected = Set(environment.outputDevices.map(\.uid))
+        let dropped = knownConnectedUIDs.subtracting(connected)
+        knownConnectedUIDs = connected
+        // A device that was connected and is gone, and that the music plays on in Multi: back to Single at once, even if
+        // other ticked devices are still there. The new mode is in place before the player is pointed anywhere.
+        let playsOn = selectedDeviceUIDs.isEmpty ? heldSelectionUIDs : selectedDeviceUIDs
+        if dropped.contains(where: {
+            MultiOutputRevert.disconnectAffects(mode: deviceSelectionMode, selected: playsOn, uid: $0)
+        }) {
+            revertMultiAfterDisconnect()
+        }
         resolveOutputDevice()
         pushOutputDevice()
         refreshAutoEQ()
         updateLoudness()
+    }
+
+    /// Leaves Multi after a ticked device disconnected. A short session returns to the single choice it had before (a
+    /// device, or the default output if it followed that); a long one, or one with no recorded start, follows the default
+    /// output and forgets the device. The ticked devices are kept, and nothing rejoins when the device returns.
+    private func revertMultiAfterDisconnect() {
+        let target = MultiOutputRevert.target(multiSince: settings.getMultiOutputSince(for: Self.settingsKey), now: now())
+        if target == .systemAudio {
+            selectedDeviceUID = nil
+            settings.setFollowDefault(for: Self.settingsKey)
+        }
+        // The caller resolves and points the player once.
+        deviceSelectionMode = .single
+        settings.setDeviceSelectionMode(for: Self.settingsKey, to: .single, at: now())
     }
 
     /// Everything went back to its default. The settings were cleared already, so nothing is written here.

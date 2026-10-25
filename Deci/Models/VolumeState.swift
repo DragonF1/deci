@@ -127,20 +127,21 @@ final class VolumeState {
         states[pid]?.deviceSelectionMode ?? .single
     }
 
-    func setDeviceSelectionMode(for pid: pid_t, to mode: DeviceSelectionMode, identifier: String? = nil) {
+    /// `date` is when the change happened: it becomes the start of a Multi session when `mode` is Multi.
+    func setDeviceSelectionMode(for pid: pid_t, to mode: DeviceSelectionMode, identifier: String? = nil, at date: Date = Date()) {
         if var state = states[pid] {
             state.deviceSelectionMode = mode
             if let identifier = identifier {
                 state.persistenceIdentifier = identifier
             }
             states[pid] = state
-            settingsManager?.setDeviceSelectionMode(for: state.persistenceIdentifier, to: mode)
+            settingsManager?.setDeviceSelectionMode(for: state.persistenceIdentifier, to: mode, at: date)
         } else if let identifier = identifier {
             let defaultVolume = settingsManager?.appSettings.defaultNewAppVolume ?? 1.0
             var newState = AppAudioState(volume: defaultVolume, muted: false, persistenceIdentifier: identifier)
             newState.deviceSelectionMode = mode
             states[pid] = newState
-            settingsManager?.setDeviceSelectionMode(for: identifier, to: mode)
+            settingsManager?.setDeviceSelectionMode(for: identifier, to: mode, at: date)
         }
     }
 

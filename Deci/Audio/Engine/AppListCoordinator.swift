@@ -113,8 +113,8 @@ final class AppListCoordinator {
         settingsManager.getDeviceSelectionMode(for: identifier) ?? .single
     }
 
-    func setDeviceSelectionModeForInactive(identifier: String, to mode: DeviceSelectionMode) {
-        settingsManager.setDeviceSelectionMode(for: identifier, to: mode)
+    func setDeviceSelectionModeForInactive(identifier: String, to mode: DeviceSelectionMode, at date: Date = Date()) {
+        settingsManager.setDeviceSelectionMode(for: identifier, to: mode, at: date)
     }
 
     func getSelectedDeviceUIDsForInactive(identifier: String) -> Set<String> {

@@ -210,6 +210,10 @@ struct DeciApp: App {
         engine.onMultiRouteBundleIDsChange = { bundleIDs in
             ChromeExtensionManager.shared.setEngineFansOutChrome(bundleIDs.contains(ChromeExtensionInstaller.chromeBundleID))
         }
+        // A disconnected output sends the Chrome tabs that had it ticked back to Single, like the engine does for apps.
+        engine.onOutputDeviceDisconnected = { uid in
+            ChromeExtensionManager.shared.outputDeviceDisconnected(uid: uid)
+        }
         // What the engine's own Chrome tap adds to each output it taps, so the extension can wait for it when it
         // lines Chrome's outputs up. Chrome cannot see that delay.
         engine.onChromeTapLatencyChange = { byUID in
