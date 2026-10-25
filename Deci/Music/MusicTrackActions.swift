@@ -35,6 +35,10 @@ enum MusicTrackAction: Hashable, Sendable {
     case removeFromPlaylist
     /// Pin to Home, Unpin from Home, or the refusal while Home is full. The pin is Deci's own.
     case pinHome(MusicHomePinState)
+    /// Save the song's audio on this Mac, so it plays from the file.
+    case download
+    /// Delete the song's download, or stop it while it is queued or running.
+    case removeDownload
     /// Like, or Remove like when the song is liked. A song only: an album, playlist or artist has no like here.
     case like(removing: Bool)
     /// Dislike, or Remove dislike when the song is disliked.
@@ -52,6 +56,8 @@ enum MusicTrackAction: Hashable, Sendable {
         case .saveToPlaylist: "Save to playlist"
         case .removeFromPlaylist: "Remove from playlist"
         case .pinHome(let state): state.title
+        case .download: "Download"
+        case .removeDownload: "Remove download"
         case .like(let removing): removing ? "Remove like" : "Like"
         case .dislike(let removing): removing ? "Remove dislike" : "Dislike"
         case .goToAlbum: "Go to album"
@@ -93,7 +99,7 @@ enum MusicTrackAction: Hashable, Sendable {
     var group: Group {
         switch self {
         case .playNext, .addToQueue: .queue
-        case .saveToPlaylist, .pinHome: .library
+        case .saveToPlaylist, .pinHome, .download, .removeDownload: .library
         case .like, .dislike: .rate
         case .goToAlbum, .goToArtist, .related: .navigate
         case .removeFromPlaylist, .removeFromQueue: .remove
@@ -110,13 +116,21 @@ enum MusicTrackActions {
     /// (not for the song that is playing), and Remove from queue only on an Up next row. Like and Dislike show only
     /// when the user `canRate` (signed in) and the song has an id to rate; `likeStatus` is what is known of the song,
     /// nil while it is unknown, and it turns the entry that is on into its Remove. Related songs shows for any song
-    /// that has an id to ask about.
+    /// that has an id to ask about. `download` is the song's download state; nil leaves both download entries out, and
+    /// so does an id that cannot be downloaded. Download shows when nothing is downloaded or the last try failed, Remove
+    /// download when the song is queued, downloading or downloaded.
     static func available(
         for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil, offersQueue: Bool = false,
-        canRate: Bool = false, likeStatus: MusicLikeStatus? = nil
+        canRate: Bool = false, likeStatus: MusicLikeStatus? = nil, download: MusicDownloadState? = nil
     ) -> [MusicTrackAction] {
         var actions: [MusicTrackAction] = offersQueue ? [.playNext, .addToQueue, .saveToPlaylist] : [.saveToPlaylist]
         if let home { actions.append(.pinHome(home)) }
+        if let download, MusicDownloadStore.isValidVideoId(track.videoId) {
+            switch download {
+            case .none, .failed: actions.append(.download)
+            case .queued, .downloading, .downloaded: actions.append(.removeDownload)
+            }
+        }
         if canRate, hasId(track) {
             actions.append(.like(removing: likeStatus == .like))
             actions.append(.dislike(removing: likeStatus == .dislike))

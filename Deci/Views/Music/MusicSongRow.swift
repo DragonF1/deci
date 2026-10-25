@@ -137,6 +137,10 @@ struct MusicSongRow: View {
     /// Pinned to Home: the cover wears the pin badge.
     private var isPinned: Bool { menu?.isPinned(track) == true }
 
+    /// Where the song's download stands. Read in the row's body, so the row redraws as the download moves; a downloading
+    /// row is the only one that follows the progress.
+    private var downloadState: MusicDownloadState { menu?.downloadState(track) ?? MusicDownloadState.none }
+
     private func perform(_ action: MusicTrackAction) {
         menu?.perform(action, track, context)
     }
@@ -150,6 +154,7 @@ struct MusicSongRow: View {
     private var accessibilityText: String {
         var text = "\(track.title), \(track.artist)"
         if isPinned { text += ", pinned" }
+        if let spoken = MusicDownloadGlyph.spokenState(downloadState) { text += ", \(spoken)" }
         if isPlaying { text += ", playing" }
         return text
     }
@@ -307,8 +312,8 @@ struct MusicSongRow: View {
 
     // MARK: - Trailing end
 
-    /// The spectrum of the playing row, a Liked row's heart, and the duration with the "..." circle over it. The
-    /// duration keeps its room while the circle shows, so the text never re-cuts when the pointer arrives.
+    /// The spectrum of the playing row, a Liked row's heart, the download mark, and the duration with the "..." circle
+    /// over it. The duration keeps its room while the circle shows, so the text never re-cuts when the pointer arrives.
     @ViewBuilder
     private func trailing(actions: [MusicTrackAction], showsMore: Bool) -> some View {
         HStack(spacing: layout.trailingGap) {
@@ -321,7 +326,26 @@ struct MusicSongRow: View {
                     .foregroundStyle(accent.solid.opacity(layout.heartOpacity))
                     .accessibilityHidden(true)
             }
+            downloadMark
             durationAndMore(actions: actions, showsMore: showsMore)
+        }
+    }
+
+    /// The glyph of a song saved on this Mac, the ring of one that waits or is being saved, or the exclamation circle of
+    /// one whose download failed. A song with no download shows nothing.
+    @ViewBuilder
+    private var downloadMark: some View {
+        switch downloadState {
+        case .downloaded:
+            MusicDownloadedGlyph()
+        case .queued:
+            MusicDownloadRing(fraction: 0)
+        case .downloading(let fraction):
+            MusicDownloadRing(fraction: fraction)
+        case .failed:
+            MusicDownloadFailedGlyph()
+        case .none:
+            EmptyView()
         }
     }
 

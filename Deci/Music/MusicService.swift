@@ -60,6 +60,8 @@ final class MusicService {
     /// The artists, playlists, albums and songs pinned to the top of Home. Remembered across launches, and kept
     /// through sign-out and account switches: they belong to the app, not to an account.
     let pinnedItems: MusicPinnedItems
+    /// The downloaded songs, which play from their files. Nil in a service built without them (a preview, most tests).
+    let downloads: MusicDownloadService?
     /// Next is on while a track follows. At the last track it stays on when something can still follow: Loop playlist
     /// wraps to the first track, a page waits for its next page or the radio that is loading, and Autoplay (with Loop
     /// playlist off) plays the staged radio or asks for a new one. A mix that can still grow always has more. With Autoplay
@@ -180,6 +182,9 @@ final class MusicService {
     @ObservationIgnored private(set) var playTask: Task<Void, Never>?
     @ObservationIgnored private(set) var signInTask: Task<Void, Never>?
     @ObservationIgnored private(set) var reportTask: Task<Void, Never>?
+    /// The background fetch of a downloaded song's ping URLs, which the song's file does not have; nil when none runs.
+    /// Read by the tests, which await it.
+    @ObservationIgnored private(set) var trackingTask: Task<Void, Never>?
     @ObservationIgnored private(set) var signOutTask: Task<Void, Never>?
     @ObservationIgnored private(set) var identityTask: Task<Void, Never>?
     @ObservationIgnored private(set) var channelSwitchTask: Task<Void, Never>?
@@ -254,6 +259,7 @@ final class MusicService {
         sleep: @escaping Sleep = { seconds in try? await Task.sleep(for: .seconds(seconds)) },
         // Where the session is remembered between launches; nil (a test's default) remembers nothing.
         sessionStore: MusicSessionStore? = nil,
+        downloads: MusicDownloadService? = nil,
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -264,6 +270,7 @@ final class MusicService {
         self.related = MusicRelatedStore(backend: backend, browse: browse)
         self.lyrics = lyrics
         self.pinnedItems = MusicPinnedItems(items: pinnedItems, save: savePinnedItems)
+        self.downloads = downloads
         self.player = player
         self.presentSignIn = presentSignIn
         self.presentChannelPicker = presentChannelPicker
@@ -296,6 +303,7 @@ final class MusicService {
         player.onEnded = { [weak self] in self?.handleTrackEnded() }
         player.onFailed = { [weak self] in self?.handlePlayerFailure() }
         player.onStateChange = { [weak self] in self?.playerStateChanged() }
+        player.onLocalFileChange = { [weak self] videoId in self?.downloads?.noteLocalPlayback(of: videoId) }
         nowPlaying.onCommand = { [weak self] command in self?.handleRemote(command) }
         browse.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         trackActions.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
@@ -327,6 +335,7 @@ final class MusicService {
         radioTask?.cancel()
         queueRetryTask?.cancel()
         prefetchTask?.cancel()
+        trackingTask?.cancel()
         #if DEBUG
         memoryProbe?.cancel()
         #endif
@@ -619,6 +628,9 @@ final class MusicService {
         reportTask = nil
         pendingPings = []
         isSendingPings = false
+        // A ping URL still on its way is the old account's too.
+        trackingTask?.cancel()
+        trackingTask = nil
     }
 
     private func cancelWork() {
@@ -628,6 +640,8 @@ final class MusicService {
         playTask?.cancel()
         searchTask = nil
         playTask = nil
+        trackingTask?.cancel()
+        trackingTask = nil
         isSearching = false
         #if DEBUG
         memoryProbe?.cancel()
@@ -723,7 +737,7 @@ final class MusicService {
         }
         let stream: ResolvedStream
         do {
-            stream = try await backend.resolve(videoId: track.videoId)
+            stream = try await streamForSource(of: track.videoId)
         } catch {
             guard generation == playGeneration, !Task.isCancelled, !Self.isCancellation(error) else { return }
             // Nothing plays and the neighbours are not tried: the session is dropped whole.
@@ -749,6 +763,7 @@ final class MusicService {
             stream: stream, track: track,
             at: snapshot.clampedPosition(duration: stream.durationSeconds ?? Double(track.durationSeconds ?? 0))
         )
+        fetchTrackingURLs(for: stream, generation: generation)
         topUpQueue()
     }
 
@@ -1145,6 +1160,8 @@ final class MusicService {
         playGeneration += 1
         let generation = playGeneration
         cancelPrefetch()
+        trackingTask?.cancel()
+        trackingTask = nil
         pendingAdvance = nil
         refreshError = nil
         lastError = nil
@@ -1170,6 +1187,7 @@ final class MusicService {
                 watchtimeURL: stream.watchtimeTrackingURL
             )
             player.load(stream: stream, track: track)
+            fetchTrackingURLs(for: stream, generation: generation)
             scheduleMemoryProbe()
         } catch {
             guard generation == playGeneration else { return }
@@ -1179,35 +1197,86 @@ final class MusicService {
 
     /// The stream resolved ahead of time when it is still good, otherwise a fresh one.
     private func streamForPlayback(of track: MusicTrack) async throws -> ResolvedStream {
-        if let ready = prefetched, ready.videoId == track.videoId, ready.expiresAt > Date().addingTimeInterval(60) {
+        // A downloaded song plays from its file, whatever was prefetched for it before the download finished.
+        if let local = await downloadedStream(of: track.videoId) {
+            if prefetched?.videoId == track.videoId { prefetched = nil }
+            return local
+        }
+        // A prefetched file is not used once its download is gone: it would only fail and take the retry.
+        if let ready = prefetched, ready.videoId == track.videoId, !ready.url.isFileURL,
+           ready.expiresAt > Date().addingTimeInterval(60) {
             prefetched = nil
             return ready
         }
-        return try await backend.resolve(videoId: track.videoId)
+        return try await streamForSource(of: track.videoId)
+    }
+
+    /// The song's file as a stream when it is downloaded and on disk, otherwise a fresh stream from the backend. The
+    /// restore, playback and prefetch sites all start here. A refresh after a failure does not: it goes to the network.
+    private func streamForSource(of videoId: String) async throws -> ResolvedStream {
+        if let local = await downloadedStream(of: videoId) { return local }
+        return try await backend.resolve(videoId: videoId)
+    }
+
+    /// The downloaded file, waiting first for the downloads of earlier launches to be read from disk.
+    private func downloadedStream(of videoId: String) async -> ResolvedStream? {
+        guard let downloads else { return nil }
+        await downloads.waitUntilLoaded()
+        return downloads.localStream(for: videoId)
     }
 
     /// Used by the player to replace a dead or expired stream. The playback session carries on.
     private func resolveFreshStream(for track: MusicTrack) async throws -> ResolvedStream {
         let generation = playGeneration
+        // A downloaded file that fails gets the network stream as its one retry. No id or path in the line.
+        if player.isPlayingLocalFile { logger.error("downloaded file failed to play, retrying through the network") }
         do {
             let stream = try await backend.resolve(videoId: track.videoId)
             // Another track may have started meanwhile: its session and error line are not this refresh's to touch.
             guard generation == playGeneration, !Task.isCancelled else { throw CancellationError() }
             refreshError = nil
-            if session?.watchtimeURL == nil { session?.watchtimeURL = stream.watchtimeTrackingURL }
-            if session?.trackingURL == nil, let url = stream.playbackTrackingURL {
-                session?.trackingURL = url
-                // The 30 s may have passed while there was nowhere to send the ping.
-                if session?.accumulator.claim() == true {
-                    sendOpeningPings(playback: url, mediaTime: player.currentTime)
-                }
-            }
+            attachTrackingURLs(from: stream)
             return stream
         } catch {
             guard generation == playGeneration, !Task.isCancelled else { throw error }
             refreshError = error
             handle(error)
             throw error
+        }
+    }
+
+    /// Gives the session the ping URLs of `stream` that it does not have yet. The 30 s may have passed while there was
+    /// nowhere to send the playback ping: then it goes now.
+    private func attachTrackingURLs(from stream: ResolvedStream) {
+        if session?.watchtimeURL == nil { session?.watchtimeURL = stream.watchtimeTrackingURL }
+        if session?.trackingURL == nil, let url = stream.playbackTrackingURL {
+            session?.trackingURL = url
+            if session?.accumulator.claim() == true {
+                sendOpeningPings(playback: url, mediaTime: player.currentTime)
+            }
+        }
+    }
+
+    /// A song that plays from its file has no ping URLs, so its listening would never reach History. The file starts at
+    /// once; this asks the backend for the song's stream in the background and takes only the ping URLs from it. Offline,
+    /// or when the answer fails, the song plays on without pings: nothing is shown, and the file is not touched. An answer
+    /// that arrives after another song began, or after the session was cancelled, is dropped.
+    private func fetchTrackingURLs(for stream: ResolvedStream, generation: Int) {
+        trackingTask?.cancel()
+        trackingTask = nil
+        guard stream.url.isFileURL else { return }
+        let videoId = stream.videoId
+        trackingTask = Task { [weak self, backend] in
+            let fresh: ResolvedStream
+            do {
+                fresh = try await backend.resolve(videoId: videoId)
+            } catch {
+                // No id in the line.
+                logger.info("tracking URLs for a downloaded song unavailable")
+                return
+            }
+            guard let self, generation == self.playGeneration, !Task.isCancelled else { return }
+            self.attachTrackingURLs(from: fresh)
         }
     }
 
@@ -1626,9 +1695,9 @@ final class MusicService {
         guard duration > Self.prefetchLead * 2, duration - position <= Self.prefetchLead,
               let next = target, prefetchAttempt != next.videoId else { return }
         prefetchAttempt = next.videoId
-        prefetchTask = Task { [weak self, backend] in
-            guard let stream = try? await backend.resolve(videoId: next.videoId) else { return }
-            guard let self, !Task.isCancelled, self.prefetchAttempt == next.videoId else { return }
+        prefetchTask = Task { [weak self] in
+            guard let self, let stream = try? await self.streamForSource(of: next.videoId) else { return }
+            guard !Task.isCancelled, self.prefetchAttempt == next.videoId else { return }
             self.prefetched = stream
         }
     }

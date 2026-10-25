@@ -11,6 +11,9 @@ struct MusicTrackMenuHandler: Sendable {
     /// The pointer reached the song's row, or its menu is about to open: reads the song's rating, so the menu can word
     /// Like and Dislike for it. Reads each song once. A row calls it from its hover or its menu, never from its body.
     var reveal: @MainActor (MusicTrack, MusicTrackContext) -> Void = { _, _ in }
+    /// Where the song's download stands, for the glyph or the progress ring at the end of its row. Reads the download
+    /// service, so a row that calls it from its body redraws when the state changes.
+    var downloadState: @MainActor (MusicTrack) -> MusicDownloadState = { _ in .none }
 }
 
 private struct MusicTrackMenuKey: EnvironmentKey {

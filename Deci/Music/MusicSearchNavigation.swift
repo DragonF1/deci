@@ -702,7 +702,8 @@ final class MusicSearchNavigation {
         let offersQueue = track.videoId != playing?.videoId
         return MusicTrackActions.available(
             for: track, in: context, home: home, offersQueue: offersQueue,
-            canRate: service.authState == .signedIn, likeStatus: likeStatus(of: track, in: context)
+            canRate: service.authState == .signedIn, likeStatus: likeStatus(of: track, in: context),
+            download: service.downloads?.state(for: track.videoId)
         )
     }
 
@@ -725,6 +726,7 @@ final class MusicSearchNavigation {
     /// store, which shows what happened as a short line; Pin to Home is Deci's own list, changed on the spot; Play
     /// next, Add to queue and Remove from queue edit the play order and say so the same way. Like, Remove like, Dislike
     /// and Remove dislike set the song's rating and say what came of it where the hotkeys' outcome shows (`rate`).
+    /// Download queues the song's audio for saving on this Mac; Remove download deletes it, or stops it while it runs.
     func perform(_ action: MusicTrackAction, for track: MusicTrack, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
@@ -745,6 +747,10 @@ final class MusicSearchNavigation {
             service.removeFromQueue(track)
         case .pinHome:
             if let item = MusicPinnedItem(track: track) { service.pinnedItems.toggle(item) }
+        case .download:
+            service.downloads?.download(track)
+        case .removeDownload:
+            service.downloads?.remove(videoId: track.videoId)
         case .like, .dislike:
             if let status = action.ratingStatus { rate(status, track) }
         }
@@ -777,8 +783,8 @@ final class MusicSearchNavigation {
 
     /// Runs a tile's menu item, with the same effects as the song menu's: Save to playlist opens the save menu for the
     /// whole album or playlist, Go to album and Go to artist open the page, Related songs opens the Related panel for
-    /// the first song of the tile's page, Pin to Home changes Deci's own list. The song-only entries do nothing on a
-    /// tile.
+    /// the first song of the tile's page, Pin to Home changes Deci's own list. The song-only entries, and the downloads
+    /// (an album or playlist has none yet), do nothing on a tile.
     func perform(_ action: MusicTrackAction, for collection: MusicCollection, in context: MusicTrackContext) {
         switch action {
         case .goToAlbum:
@@ -791,7 +797,7 @@ final class MusicSearchNavigation {
             service.trackActions.openPicker(for: collection)
         case .pinHome:
             if let item = MusicPinnedItem(collection: collection) { service.pinnedItems.toggle(item) }
-        case .playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist, .like, .dislike:
+        case .playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist, .like, .dislike, .download, .removeDownload:
             break
         }
     }

@@ -44,10 +44,20 @@ final class MusicPlayer {
     @ObservationIgnored var onFailed: (@MainActor () -> Void)?
     /// Anything the Now Playing widget or the Chrome auto-Switch cares about changed.
     @ObservationIgnored var onStateChange: (@MainActor () -> Void)?
+    /// Fires when the downloaded file under the player changes: with the song's video id when a file is loaded, with nil
+    /// when the stream is from the network or nothing is loaded. The downloads use it to keep a file that was removed
+    /// while it played until playback has left it.
+    @ObservationIgnored var onLocalFileChange: (@MainActor (_ videoId: String?) -> Void)?
 
     @ObservationIgnored private let engine: any PlaybackEngine
     @ObservationIgnored private let now: () -> Date
-    @ObservationIgnored private var stream: ResolvedStream?
+    @ObservationIgnored private var stream: ResolvedStream? {
+        didSet {
+            let current = Self.localFileID(of: stream)
+            guard current != Self.localFileID(of: oldValue) else { return }
+            onLocalFileChange?(current)
+        }
+    }
     @ObservationIgnored private var recoveryUsed = false
     /// True once the track played to its end, until something restarts or replaces it.
     @ObservationIgnored private(set) var hasEnded = false
@@ -74,6 +84,14 @@ final class MusicPlayer {
 
     /// False when the current track's stream never resolved, so there is nothing to resume.
     var hasStream: Bool { stream != nil }
+    /// Whether the stream loaded is a file on disk (a downloaded song) and not an address on the network.
+    var isPlayingLocalFile: Bool { stream?.url.isFileURL == true }
+
+    /// The video id of `stream` when it is a file on disk, nil for a network stream or none.
+    private static func localFileID(of stream: ResolvedStream?) -> String? {
+        guard let stream, stream.url.isFileURL else { return nil }
+        return stream.videoId
+    }
 
     /// Playing, or about to: loading, or wanting to play through a stall. False when paused, ended or failed.
     var isActive: Bool {

@@ -167,7 +167,8 @@ private struct MusicActionsModifier: ViewModifier {
             actions: { navigation.actions(for: $0, in: $1) },
             perform: { navigation.perform($0, for: $1, in: $2) },
             isPinned: { service.pinnedItems.isPinned($0) },
-            reveal: { navigation.revealLikeStatus(of: $0, in: $1) }
+            reveal: { navigation.revealLikeStatus(of: $0, in: $1) },
+            downloadState: { service.downloads?.state(for: $0.videoId) ?? MusicDownloadState.none }
         )
     }
 

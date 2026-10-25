@@ -60,8 +60,10 @@ final class MusicServiceHost {
         let store = sessionStore ?? (makeService == nil ? MusicSessionStore.live() : nil)
         self.sessionStore = store
         self.makeService = makeService ?? {
-            MusicService(
-                backend: MusicBackendLive.live(),
+            // One backend for playback and for downloads, so both sign in as the same account.
+            let backend = MusicBackendLive.live()
+            return MusicService(
+                backend: backend,
                 player: MusicServiceHost.makePlayer(mixer: mixer),
                 lyrics: .live(),
                 listenerLevel: { [weak mixer] in mixer?.watchtimeLevel ?? (WatchtimeTracker.fullVolume, false) },
@@ -71,7 +73,9 @@ final class MusicServiceHost {
                 // The items pinned to Home are remembered in settings.json too.
                 pinnedItems: settings?.appSettings.musicPinnedItems ?? [],
                 savePinnedItems: MusicServiceHost.savePinnedItems(to: settings),
-                sessionStore: store
+                sessionStore: store,
+                // Downloaded songs live under Application Support/Deci/Downloads and play from there.
+                downloads: .live(resolve: { try await backend.resolve(videoId: $0) })
             )
         }
         MusicMemoryLog.log("launch")
