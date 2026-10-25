@@ -351,10 +351,11 @@ final class MusicService {
     }
 
     /// A sign-in is in place: the account's details are read, and so is the state of a song that was already playing,
-    /// which was skipped while signed out.
+    /// which was skipped while signed out. The downloaded playlists and albums are synced once per launch, from here.
     private func didSignIn() {
         refreshIdentity()
         loadLikeStatus()
+        downloads?.signInKnown()
     }
 
     func signIn() {
@@ -615,6 +616,8 @@ final class MusicService {
         sendFinalPing()
         player.stop()
         session = nil
+        // The downloads index is written a moment after each song, so a change may still be waiting for its timer.
+        downloads?.flushOnQuit()
         backend.flushCookies()
     }
 

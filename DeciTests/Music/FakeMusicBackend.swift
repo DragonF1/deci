@@ -167,6 +167,9 @@ actor FakeMusicBackend: MusicBackend {
     private var moreLibraryGates: [MoreLibraryCall: MusicTestGate] = [:]
     private var browsePages: [String: MusicBrowsePage] = [:]
     private var pageErrors: [String: any Error] = [:]
+    /// Errors thrown one per call before the scripted answer is served, per page and per continuation.
+    private var queuedPageErrors: [String: [any Error]] = [:]
+    private var queuedMoreTracksErrors: [MoreTracksCall: [any Error]] = [:]
     private var pageGates: [String: MusicTestGate] = [:]
     private var moreTracksPages: [MoreTracksCall: MusicQueuePage] = [:]
     private var moreTracksErrors: [MoreTracksCall: any Error] = [:]
@@ -366,9 +369,18 @@ actor FakeMusicBackend: MusicBackend {
 
     func setPage(_ page: MusicBrowsePage) { browsePages[page.browseId] = page }
     func setPageError(_ browseId: String, _ error: (any Error)?) { pageErrors[browseId] = error }
+    /// The next calls for the page throw these, one each, and then it is served as scripted.
+    func queuePageErrors(_ browseId: String, _ errors: [any Error]) { queuedPageErrors[browseId] = errors }
+    func queueMoreTracksErrors(browseId: String, continuation: String, _ errors: [any Error]) {
+        queuedMoreTracksErrors[MoreTracksCall(browseId: browseId, continuation: continuation)] = errors
+    }
     func setPageGate(_ browseId: String, _ gate: MusicTestGate?) { pageGates[browseId] = gate }
-    func setMoreTracks(browseId: String, continuation: String, tracks: [Deci.MusicTrack], next: String? = nil) {
-        moreTracksPages[MoreTracksCall(browseId: browseId, continuation: continuation)] = MusicQueuePage(tracks: tracks, continuation: next)
+    func setMoreTracks(
+        browseId: String, continuation: String, tracks: [Deci.MusicTrack], next: String? = nil, unavailable: [String] = []
+    ) {
+        moreTracksPages[MoreTracksCall(browseId: browseId, continuation: continuation)] = MusicQueuePage(
+            tracks: tracks, continuation: next, unavailableVideoIds: unavailable
+        )
     }
     func setMoreTracksError(browseId: String, continuation: String, _ error: (any Error)?) {
         moreTracksErrors[MoreTracksCall(browseId: browseId, continuation: continuation)] = error
@@ -508,7 +520,12 @@ actor FakeMusicBackend: MusicBackend {
 
     func page(browseId: String) async throws -> MusicBrowsePage {
         pageCalls.append(browseId)
-        let gate = pageGates[browseId], error = pageErrors[browseId]
+        let gate = pageGates[browseId]
+        var error = pageErrors[browseId]
+        if var queued = queuedPageErrors[browseId], !queued.isEmpty {
+            error = queued.removeFirst()
+            queuedPageErrors[browseId] = queued
+        }
         let page = browsePages[browseId]
             ?? MusicBrowsePage(browseId: browseId, title: "", subtitle: nil, thumbnailURL: nil, tracks: [], continuation: nil, shelves: [])
         if let gate { await gate.wait() }
@@ -519,7 +536,12 @@ actor FakeMusicBackend: MusicBackend {
     func moreTracks(browseId: String, continuation: String) async throws -> MusicQueuePage {
         let call = MoreTracksCall(browseId: browseId, continuation: continuation)
         moreTracksCalls.append(call)
-        let gate = moreTracksGates[call], error = moreTracksErrors[call]
+        let gate = moreTracksGates[call]
+        var error = moreTracksErrors[call]
+        if var queued = queuedMoreTracksErrors[call], !queued.isEmpty {
+            error = queued.removeFirst()
+            queuedMoreTracksErrors[call] = queued
+        }
         let page = moreTracksPages[call] ?? MusicQueuePage(tracks: [], continuation: nil)
         if let gate { await gate.wait() }
         if let error { throw error }

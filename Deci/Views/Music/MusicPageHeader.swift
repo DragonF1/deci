@@ -8,6 +8,9 @@ struct MusicPageHeader: View {
     let kind: MusicPageKind
     let coverURL: URL?
     let text: MusicPageHeroText
+    /// The downloads, for a page that can be downloaded: the meta line adds the page's download line, reading it itself.
+    var downloads: MusicDownloadService?
+    var browseId = ""
 
     var body: some View {
         HStack(alignment: .center, spacing: MusicBrowseLayout.pageArtGap) {
@@ -29,12 +32,7 @@ struct MusicPageHeader: View {
                         .foregroundStyle(MusicStyle.Palette.textPageSub)
                         .lineLimit(1)
                 }
-                if let meta = text.meta {
-                    Text(meta)
-                        .musicText(MusicStyle.Typeface.secondary)
-                        .foregroundStyle(MusicStyle.Palette.textMeta)
-                        .lineLimit(1)
-                }
+                MusicPageMetaLine(meta: text.meta, downloads: downloads, browseId: browseId)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -57,6 +55,24 @@ struct MusicPageHeader: View {
                 cornerRadius: MusicBrowseLayout.pageArtRadius
             )
             .accessibilityHidden(true)
+        }
+    }
+}
+
+/// The quiet line under a page's title, with the page's download line after it. A view of its own: a download's progress
+/// changes this one line, and the header and the page around it are not drawn again.
+private struct MusicPageMetaLine: View {
+    let meta: String?
+    let downloads: MusicDownloadService?
+    let browseId: String
+
+    var body: some View {
+        let state = downloads?.collectionState(for: browseId) ?? .none
+        if let line = MusicPageHeroText.appending(download: state, to: meta) {
+            Text(line)
+                .musicText(MusicStyle.Typeface.secondary)
+                .foregroundStyle(MusicStyle.Palette.textMeta)
+                .lineLimit(1)
         }
     }
 }

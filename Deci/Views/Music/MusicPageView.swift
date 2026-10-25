@@ -36,6 +36,11 @@ struct MusicPageView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             content
         }
+        // A downloaded page opened is synced (at most once every ten minutes: the service holds the throttle).
+        .task(id: collection.browseId) {
+            guard MusicDownloadPage.canDownload(browseId: collection.browseId) else { return }
+            service.downloads?.pageOpened(collection.browseId)
+        }
     }
 
     // MARK: - Content
@@ -83,20 +88,28 @@ struct MusicPageView: View {
 
     private func header(page: MusicBrowsePage) -> some View {
         let isComplete = page.continuation == nil
+        let text = MusicPageHeroText.resolve(
+            kind: kind,
+            title: shownTitle(of: page),
+            subtitle: page.subtitle,
+            firstArtist: page.tracks.first?.artist,
+            isEditable: page.isEditable,
+            songCount: isComplete ? page.tracks.count : nil,
+            totalSeconds: MusicPageDuration.total(of: page.tracks.map(\.durationSeconds), isComplete: isComplete),
+            albumCount: MusicPageHeroText.albumCount(in: page.shelves)
+        )
         return MusicPageHeader(
             kind: kind,
             coverURL: page.thumbnailURL ?? collection.thumbnailURL,
-            text: MusicPageHeroText.resolve(
-                kind: kind,
-                title: shownTitle(of: page),
-                subtitle: page.subtitle,
-                firstArtist: page.tracks.first?.artist,
-                isEditable: page.isEditable,
-                songCount: isComplete ? page.tracks.count : nil,
-                totalSeconds: MusicPageDuration.total(of: page.tracks.map(\.durationSeconds), isComplete: isComplete),
-                albumCount: MusicPageHeroText.albumCount(in: page.shelves)
-            )
+            text: text,
+            downloads: canDownload ? service.downloads : nil,
+            browseId: collection.browseId
         )
+    }
+
+    /// Whether this page has the Download pill: a playlist, Liked music or an album, with downloads built into the service.
+    private var canDownload: Bool {
+        service.downloads != nil && MusicDownloadPage.canDownload(browseId: collection.browseId)
     }
 
     /// The page's title as its header and buttons say it: an artist's songs list reads "<Artist> songs".
@@ -111,7 +124,9 @@ struct MusicPageView: View {
         let items = menuItems(page: page)
         // Play and Shuffle wait while the list does: the songs loaded so far are not in the order the list will have.
         let hasTracks = !page.tracks.isEmpty && !browse.isOrderPending(page.browseId)
-        let pills = MusicPagePills.pills(kind: kind, hasTracks: hasTracks, hasMenuItems: !items.isEmpty)
+        let pills = MusicPagePills.pills(
+            kind: kind, hasTracks: hasTracks, hasMenuItems: !items.isEmpty, canDownload: canDownload
+        )
         if !pills.isEmpty {
             HStack(spacing: MusicBrowseLayout.actionsGap) {
                 ForEach(pills, id: \.self) { pill in
@@ -132,9 +147,24 @@ struct MusicPageView: View {
             }
         case .shuffle:
             MusicShufflePill(title: shownTitle(of: page)) { service.playShuffled(page) }
+        case .download:
+            // The pill reads the download state itself, so this body does not and a download's progress redraws only it.
+            if let downloads = service.downloads {
+                MusicDownloadPillHost(downloads: downloads, title: shownTitle(of: page), request: downloadRequest(page: page))
+            }
         case .more:
             MusicPageMoreMenu(title: shownTitle(of: page), items: items) { perform($0, page: page) }
         }
+    }
+
+    /// What the Download pill asks for: the page's own browse id, its title and subtitle, and the cover it shows.
+    private func downloadRequest(page: MusicBrowsePage) -> MusicCollectionRequest {
+        MusicDownloadPage.request(
+            browseId: collection.browseId,
+            title: kind == .liked ? MusicPageHeroText.likedTitle : shownTitle(of: page),
+            subtitle: kind == .liked ? MusicPageHeroText.likedSub : page.subtitle,
+            coverURL: page.thumbnailURL ?? collection.thumbnailURL
+        )
     }
 
     // MARK: - Menu

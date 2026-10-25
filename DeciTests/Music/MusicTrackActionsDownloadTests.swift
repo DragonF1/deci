@@ -14,10 +14,11 @@ struct MusicTrackActionsDownloadTests {
 
     private func actions(
         _ track: Deci.MusicTrack, download: MusicDownloadState?, home: MusicHomePinState? = nil,
-        canRate: Bool = false, queue: Bool = false
+        canRate: Bool = false, queue: Bool = false, collectionOnly: Bool = false
     ) -> [MusicTrackAction] {
         MusicTrackActions.available(
-            for: track, in: .none, home: home, offersQueue: queue, canRate: canRate, download: download
+            for: track, in: .none, home: home, offersQueue: queue, canRate: canRate, download: download,
+            downloadHeldByCollectionOnly: collectionOnly
         )
     }
 
@@ -54,6 +55,31 @@ struct MusicTrackActionsDownloadTests {
             #expect(!offered.contains(.download), "\(id.debugDescription)")
             #expect(!offered.contains(.removeDownload), "\(id.debugDescription)")
         }
+    }
+
+    // MARK: - A song only a downloaded page holds
+
+    @Test("a song held only by a downloaded page, queued, downloading or downloaded, offers neither entry")
+    func collectionOnlyOffersNeither() {
+        for state in [MusicDownloadState.queued, .downloading(fraction: 0), .downloading(fraction: 0.5), .downloaded] {
+            #expect(actions(track, download: state, collectionOnly: true) == [.saveToPlaylist, .related], "\(state)")
+        }
+    }
+
+    @Test("a song of a page that has not arrived, or failed, still offers Download")
+    func collectionOnlyStillOffersDownload() {
+        #expect(actions(track, download: MusicDownloadState.none, collectionOnly: true) == [.saveToPlaylist, .download, .related])
+        #expect(actions(track, download: .failed, collectionOnly: true) == [.saveToPlaylist, .download, .related])
+    }
+
+    @Test("a song downloaded on its own offers Remove download whether or not a page lists it")
+    func standaloneOffersRemove() {
+        #expect(actions(track, download: .downloaded, collectionOnly: false) == [.saveToPlaylist, .removeDownload, .related])
+    }
+
+    @Test("the flag changes nothing for a menu with no download state")
+    func collectionOnlyWithoutState() {
+        #expect(actions(track, download: nil, collectionOnly: true) == [.saveToPlaylist, .related])
     }
 
     // MARK: - Where they sit
@@ -98,7 +124,7 @@ struct MusicTrackActionsDownloadTests {
         #expect(MusicTrackAction.removeDownload.ratingStatus == nil)
     }
 
-    @Test("a tile offers no download entry yet")
+    @Test("a tile offers no download entry")
     func tileOffersNone() {
         let tiles = [
             MusicSamples.collection("MPREbTile", kind: .album, title: "Album", audioPlaylistId: "OLAK5uy_tile"),
@@ -162,6 +188,34 @@ struct MusicSearchNavigationDownloadTests {
 
         #expect(h.rig.service.state(for: idA) == .none)
         #expect(h.nav.actions(for: track, in: .none).contains(.download))
+    }
+
+    @Test("a song only a downloaded page holds offers neither entry until it is downloaded on its own")
+    func collectionSongMenu() async {
+        let backend = FakeMusicBackend()
+        let h = DownloadNavHarness(rig: DownloadServiceRig(backend: backend))
+        defer { h.rig.cleanUp() }
+        await h.rig.script("VLPLone", tracks: [track])
+        h.rig.service.downloadCollection(h.rig.request("VLPLone"))
+        await h.rig.service.waitUntilIdle()
+
+        #expect(h.rig.service.state(for: idA) == .downloaded)
+        #expect(!h.nav.actions(for: track, in: .none).contains(.download))
+        #expect(!h.nav.actions(for: track, in: .none).contains(.removeDownload))
+
+        h.nav.perform(.download, for: track, in: .none)
+        await h.rig.service.waitUntilIdle()
+
+        #expect(h.nav.actions(for: track, in: .none).contains(.removeDownload))
+        #expect(!h.nav.actions(for: track, in: .none).contains(.download))
+
+        h.nav.perform(.removeDownload, for: track, in: .none)
+        await h.rig.service.waitUntilIdle()
+
+        // The page still holds the file, so the song is downloaded and the menu offers neither again.
+        #expect(h.rig.service.state(for: idA) == .downloaded)
+        #expect(!h.nav.actions(for: track, in: .none).contains(.download))
+        #expect(!h.nav.actions(for: track, in: .none).contains(.removeDownload))
     }
 
     @Test("Download starts the song's download with the song's own details")

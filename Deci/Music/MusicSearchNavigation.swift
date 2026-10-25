@@ -703,7 +703,8 @@ final class MusicSearchNavigation {
         return MusicTrackActions.available(
             for: track, in: context, home: home, offersQueue: offersQueue,
             canRate: service.authState == .signedIn, likeStatus: likeStatus(of: track, in: context),
-            download: service.downloads?.state(for: track.videoId)
+            download: service.downloads?.state(for: track.videoId),
+            downloadHeldByCollectionOnly: service.downloads?.isCollectionOnly(track.videoId) ?? false
         )
     }
 

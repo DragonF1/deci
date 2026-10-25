@@ -50,15 +50,28 @@ final class MusicServiceHost {
     /// the caller passes it, so a test never reads the real folder.
     @ObservationIgnored private let sessionStore: MusicSessionStore?
 
+    /// Whether the downloads folder holds a downloaded playlist or album, asked off the main thread at launch. The real
+    /// app reads the folder; a host built with its own `makeService` asks nothing unless the caller passes this, so a
+    /// test never reads the real folder.
+    @ObservationIgnored private let hasStoredCollections: (@Sendable () -> Bool)?
+
     init(
         mixer: MusicMixerState? = nil,
         settings: SettingsManager? = nil,
         sessionStore: MusicSessionStore? = nil,
-        makeService: (@MainActor () -> MusicService)? = nil
+        makeService: (@MainActor () -> MusicService)? = nil,
+        hasStoredCollections: (@Sendable () -> Bool)? = nil
     ) {
         self.mixer = mixer
         let store = sessionStore ?? (makeService == nil ? MusicSessionStore.live() : nil)
         self.sessionStore = store
+        if let hasStoredCollections {
+            self.hasStoredCollections = hasStoredCollections
+        } else if makeService == nil {
+            self.hasStoredCollections = { MusicDownloadStore.indexHasCollections(at: MusicDownloadStore.liveRoot()) }
+        } else {
+            self.hasStoredCollections = nil
+        }
         self.makeService = makeService ?? {
             // One backend for playback and for downloads, so both sign in as the same account.
             let backend = MusicBackendLive.live()
@@ -75,7 +88,11 @@ final class MusicServiceHost {
                 savePinnedItems: MusicServiceHost.savePinnedItems(to: settings),
                 sessionStore: store,
                 // Downloaded songs live under Application Support/Deci/Downloads and play from there.
-                downloads: .live(resolve: { try await backend.resolve(videoId: $0) })
+                // Whole playlists and albums are read through the same backend.
+                downloads: .live(
+                    resolve: { try await backend.resolve(videoId: $0) },
+                    source: MusicCollectionSource(backend: backend)
+                )
             )
         }
         MusicMemoryLog.log("launch")
@@ -148,6 +165,20 @@ final class MusicServiceHost {
         guard service == nil, let sessionStore, sessionStore.load() != nil else { return }
         loadIfNeeded()
         service?.restoreSession()
+    }
+
+    /// Launch path: when the downloads folder holds a downloaded playlist or album, builds the service now, which signs in
+    /// and syncs them (see `MusicDownloadService.signInKnown`) without the Music popup being opened. With none, or with a
+    /// service already built, nothing happens and the service stays lazy. The folder is read off the main thread; the
+    /// returned task ends once the service is built or the answer was no.
+    @discardableResult
+    func syncDownloadsIfAny() -> Task<Void, Never> {
+        guard service == nil, let hasStoredCollections else { return Task {} }
+        return Task { [weak self] in
+            let any = await Task.detached(priority: .utility) { hasStoredCollections() }.value
+            guard any else { return }
+            self?.loadIfNeeded()
+        }
     }
 
     /// Escape in the Music popup: closes the account card if it is open. True when it was open, so the

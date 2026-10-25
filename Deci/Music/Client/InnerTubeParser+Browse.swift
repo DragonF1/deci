@@ -206,7 +206,8 @@ extension InnerTubeParser {
             isEditable: isEditablePlaylist(root: root, browseId: browseId, rows: rowRenderers),
             audioPlaylistId: audioPlaylistId,
             allSongsBrowseId: header.isArtist ? rows.flatMap(allSongsBrowseId(in:)) : nil,
-            discographyLinks: header.isArtist ? discographyLinks(in: sections) : []
+            discographyLinks: header.isArtist ? discographyLinks(in: sections) : [],
+            unavailableVideoIds: unavailableVideoIds(in: rowRenderers)
         )
     }
 
@@ -257,11 +258,27 @@ extension InnerTubeParser {
         guard let payload = continuationPayload(in: root, keys: ["musicPlaylistShelfContinuation", "musicShelfContinuation"]) else {
             throw MusicError.parse("tracks continuation has no rows")
         }
-        let tracks = payload.items.compactMap { ($0["musicResponsiveListItemRenderer"] as? [String: Any]).flatMap(browseTrack(from:)) }
+        let rows = payload.items.compactMap { $0["musicResponsiveListItemRenderer"] as? [String: Any] }
         return MusicQueuePage(
-            tracks: uniqueTracks(tracks),
-            continuation: continuationToken(in: payload.container, items: payload.items)
+            tracks: uniqueTracks(rows.compactMap(browseTrack(from:))),
+            continuation: continuationToken(in: payload.container, items: payload.items),
+            unavailableVideoIds: unavailableVideoIds(in: rows)
         )
+    }
+
+    /// The video ids of the rows a page lists that `browseTrack` leaves out: greyed out by YouTube (removed or unavailable
+    /// songs, which stay in the playlist) and podcast episodes. Each once, in page order. Only a download's sync reads
+    /// them, to know the playlist still lists the song; the page shows none of these rows.
+    private static func unavailableVideoIds(in rows: [[String: Any]]) -> [String] {
+        var seen = Set<String>()
+        var ids: [String] = []
+        for row in rows where browseTrack(from: row) == nil {
+            guard let id = videoId(in: row, titleRuns: flexColumnRuns(of: row).first ?? []), seen.insert(id).inserted else {
+                continue
+            }
+            ids.append(id)
+        }
+        return ids
     }
 
     /// A row that plays: not greyed out by YouTube (removed or unavailable songs) and not a podcast episode.

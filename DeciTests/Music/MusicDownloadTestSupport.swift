@@ -80,6 +80,16 @@ nonisolated enum DownloadSamples {
     static let idB = "BBBBBBBBBBB"
     static let idC = "CCCCCCCCCCC"
 
+    /// The nth valid video id: "SONG0000007". Eleven characters, so a playlist of any size gets ids that pass the check.
+    static func id(_ number: Int) -> String {
+        "SONG" + String(format: "%07d", number)
+    }
+
+    /// The tracks numbered `range`, each with a title that names its number.
+    static func tracks(_ range: ClosedRange<Int>) -> [MusicTrack] {
+        range.map { track(id($0), title: "Song \($0)") }
+    }
+
     static func track(_ id: String = idA, title: String = "Song", seconds: Int? = 200) -> MusicTrack {
         MusicTrack(videoId: id, title: title, artist: "Artist", album: "Album", durationSeconds: seconds, thumbnailURL: nil)
     }

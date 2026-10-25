@@ -116,6 +116,87 @@ struct MusicShufflePill: View {
     }
 }
 
+/// The Download pill of a page, in a view of its own so that the progress of a download redraws only the pill and not the
+/// page around it: it reads the page's download state itself, which the page's body never does.
+struct MusicDownloadPillHost: View {
+    let downloads: MusicDownloadService
+    let title: String
+    let request: MusicCollectionRequest
+
+    var body: some View {
+        MusicDownloadPill(
+            title: title,
+            state: downloads.collectionState(for: request.browseId),
+            start: { downloads.downloadCollection(request) },
+            cancel: { downloads.cancelCollectionDownload(request.browseId) },
+            remove: { downloads.removeCollection(request.browseId) }
+        )
+    }
+}
+
+/// The round Download pill, the size of the "..." button. Not downloaded: the open arrow circle, and a click starts the
+/// download. Downloading: a ring of the whole page's progress, and a click opens the menu with Cancel download.
+/// Downloaded: the filled arrow circle, and a click opens the menu with Remove download. A downloaded page fetching new
+/// songs wears the ring and its menu holds both. A plain SwiftUI menu, which draws as the native dark menu in the popup's
+/// forced dark window.
+struct MusicDownloadPill: View {
+    let title: String
+    let state: MusicCollectionDownloadState
+    let start: () -> Void
+    /// Cancel download: stops a download that runs (a first one is dropped, a downloaded page keeps what it has).
+    let cancel: () -> Void
+    /// Remove download: drops the page's download and deletes its songs.
+    let remove: () -> Void
+
+    var body: some View {
+        let entries = MusicDownloadPage.menuEntries(for: state)
+        Group {
+            if !entries.isEmpty {
+                Menu {
+                    ForEach(entries, id: \.self) { entry in
+                        Button(entry.title) {
+                            switch entry {
+                            case .cancel: cancel()
+                            case .remove: remove()
+                            }
+                        }
+                    }
+                } label: {
+                    face
+                }
+                .menuStyle(.button)
+                .menuIndicator(.hidden)
+                .buttonStyle(.plain)
+                .fixedSize()
+            } else {
+                Button(action: start) { face }
+                    .buttonStyle(MusicPillPress())
+            }
+        }
+        .help(MusicDownloadPage.tooltip(for: state))
+        .accessibilityLabel(MusicDownloadPage.accessibilityLabel(for: state, title: title))
+        .accessibilityValue(MusicDownloadPage.accessibilityValue(for: state) ?? "")
+    }
+
+    private var face: some View {
+        glyph
+            .frame(width: MusicBrowseLayout.actionsHeight, height: MusicBrowseLayout.actionsHeight)
+            .overlay(Circle().strokeBorder(MusicStyle.Palette.strokeButton, lineWidth: 1))
+            .contentShape(Circle())
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        if let fraction = MusicDownloadPage.ringFraction(for: state) {
+            MusicDownloadRing(fraction: fraction)
+        } else {
+            Image(systemName: MusicDownloadPage.symbol(for: state))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.70))
+        }
+    }
+}
+
 /// The round "..." button with the page's own actions. A plain SwiftUI menu, which draws as the native dark menu in the
 /// popup's forced dark window: text only, like the song menu.
 struct MusicPageMoreMenu: View {

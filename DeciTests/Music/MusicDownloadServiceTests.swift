@@ -19,23 +19,43 @@ struct DownloadServiceRig {
     let transport: FakeDownloadTransport
     let store: MusicDownloadStore
     let service: MusicDownloadService
+    /// The backend collection pages come from; nil on a rig that downloads single songs only (or reads from a source built
+    /// by hand).
+    let backend: FakeMusicBackend?
+    /// Every wait the service made (gaps between songs, back-offs). None of them really waits.
+    let pause: RecordingPause
 
     init(
         folder: DownloadTestFolder = DownloadTestFolder(),
         clock: MutableClock = MutableClock(),
         payload: Data = DownloadSamples.payload(35),
         handler: FakeDownloadTransport.Handler? = nil,
-        storeNow: @escaping @Sendable () -> Date = { DownloadSamples.fixedDate }
+        storeNow: @escaping @Sendable () -> Date = { DownloadSamples.fixedDate },
+        backend: FakeMusicBackend? = nil,
+        source: MusicCollectionSource? = nil,
+        covers: (any MusicCoverFetching)? = nil,
+        resolver: FakeDownloadResolver = FakeDownloadResolver(),
+        pause: RecordingPause = RecordingPause(),
+        beforeCollectionChange: (@Sendable (String) -> Void)? = nil
     ) {
         self.folder = folder
         self.clock = clock
-        store = MusicDownloadStore(root: folder.root, now: storeNow)
+        self.backend = backend
+        self.pause = pause
+        store = MusicDownloadStore(root: folder.root, now: storeNow, beforeCollectionChange: beforeCollectionChange)
         transport = FakeDownloadTransport(handler: handler ?? FakeDownloadTransport.serving(payload))
         let downloader = MusicDownloader(
-            store: store, transport: transport, resolve: FakeDownloadResolver().closure, chunkSize: 10,
+            store: store, transport: transport, resolve: resolver.closure, chunkSize: 10,
             now: { clock.now }
         )
-        service = MusicDownloadService(store: store, downloader: downloader, now: { clock.now })
+        service = MusicDownloadService(
+            store: store,
+            downloader: downloader,
+            source: source ?? backend.map { MusicCollectionSource(backend: $0) },
+            covers: covers,
+            pause: pause.closure,
+            now: { clock.now }
+        )
     }
 
     /// Removes the folder once the service has nothing left to write. A removal answers at once and the disk follows, so

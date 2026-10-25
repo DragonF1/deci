@@ -166,6 +166,9 @@ struct MusicQueuePage: Sendable, Equatable {
     let tracks: [MusicTrack]
     /// Token for the following page; nil when YouTube has no more.
     let continuation: String?
+    /// The video ids of rows the page lists but shows no song for (greyed out, podcast episodes), in page order. Only a
+    /// download's sync reads them.
+    var unavailableVideoIds: [String] = []
 }
 
 /// An album, playlist (mixes included) or artist, as a tile on Home or a row in Library.
@@ -285,6 +288,9 @@ struct MusicBrowsePage: Sendable, Equatable {
     /// An artist page's discography pages, one for each Albums or Singles shelf that links to one, without repeats.
     /// Release dates are read from them. Empty on every other page.
     var discographyLinks: [MusicDiscographyLink] = []
+    /// The video ids of rows the page lists but shows no song for (greyed out, podcast episodes), in page order. Only a
+    /// download's sync reads them; no page shows them.
+    var unavailableVideoIds: [String] = []
 
     /// The playlist a mix page ("RD..." with or without the "VL" prefix) is, or nil for any other id. A curated
     /// "RDCLAK5uy_" playlist is a playlist, not a mix.

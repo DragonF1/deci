@@ -71,6 +71,8 @@ enum MusicInk: Equatable, Sendable {
 enum MusicPagePill: Hashable, Sendable {
     case play
     case shuffle
+    /// The round button that downloads the page's songs, on a playlist or an album.
+    case download
     /// The round button with the menu of the page's own actions.
     case more
 }
@@ -96,13 +98,18 @@ enum MusicPageMenuItem: Hashable, Sendable {
 
 enum MusicPagePills {
     /// The pills a page shows, in order. Play and Shuffle need songs to act on, and an artist's page has no list to
-    /// shuffle through. The round menu button is there only when the page has an action to put in it.
-    static func pills(kind: MusicPageKind, hasTracks: Bool, hasMenuItems: Bool) -> [MusicPagePill] {
+    /// shuffle through. The Download pill follows them whenever the page can be downloaded (`canDownload`), with songs
+    /// or without, so a downloaded page can always be removed. The round menu button is there only when the page has an
+    /// action to put in it.
+    static func pills(
+        kind: MusicPageKind, hasTracks: Bool, hasMenuItems: Bool, canDownload: Bool = false
+    ) -> [MusicPagePill] {
         var pills: [MusicPagePill] = []
         if hasTracks {
             pills.append(.play)
             if kind != .artist { pills.append(.shuffle) }
         }
+        if canDownload { pills.append(.download) }
         if hasMenuItems { pills.append(.more) }
         return pills
     }
@@ -260,6 +267,14 @@ struct MusicPageHeroText: Equatable {
         }
     }
 
+    /// The header's meta line with the page's download line after it ("40 songs \u{00B7} Downloaded"). The line alone when
+    /// the header has no meta; `meta` as it was when the page is not downloaded.
+    static func appending(download: MusicCollectionDownloadState, to meta: String?) -> String? {
+        guard let line = MusicDownloadPage.metaText(download) else { return meta }
+        guard let meta, !meta.isEmpty else { return line }
+        return meta + separator + line
+    }
+
     /// The parts YouTube gave, then the count and the length where it gave none.
     private static func meta(_ given: [String], songCount: Int?, totalSeconds: Int?) -> String? {
         var parts = given
@@ -319,5 +334,118 @@ nonisolated enum MusicPageDuration {
             total += duration
         }
         return total
+    }
+}
+
+// MARK: - Download pill
+
+/// One entry of the Download pill's menu.
+nonisolated enum MusicDownloadMenuEntry: Equatable, Sendable {
+    /// Stops the fetching and keeps what is on disk (or drops a first download that has not finished).
+    case cancel
+    /// Drops the page's download and deletes its songs.
+    case remove
+
+    var title: String {
+        switch self {
+        case .cancel: "Cancel download"
+        case .remove: "Remove download"
+        }
+    }
+}
+
+/// The rules of the Download pill on a playlist or album page, kept apart from the drawing: which pages get it, what its
+/// state says in the header, as a tooltip and to VoiceOver, what its menu holds, and the request it makes.
+nonisolated enum MusicDownloadPage {
+    /// Whether the page can be downloaded whole: a playlist, Liked music or an album. Not an artist, a mix or any other.
+    static func canDownload(browseId: String) -> Bool {
+        MusicCollectionEnumerator.isDownloadable(browseId: browseId)
+    }
+
+    /// What the header's meta line adds: how far a download has got, "Downloaded", or how many songs of a page arrived
+    /// when some did not. Nil for a page that is not downloaded.
+    static func metaText(_ state: MusicCollectionDownloadState) -> String? {
+        switch state {
+        case .none:
+            return nil
+        case .downloading(let done, let total, _), .updating(let done, let total, _):
+            return total > 0 ? "Downloading \(done) of \(total)" : "Downloading"
+        case .downloaded(let done, let total):
+            return done >= total ? "Downloaded" : "\(done) of \(total) downloaded"
+        }
+    }
+
+    /// The pill's glyph: the open arrow circle until the page is downloaded, then the filled one (also when some songs
+    /// failed; the header says how many). A download in progress draws the ring instead (`ringFraction`).
+    static func symbol(for state: MusicCollectionDownloadState) -> String {
+        switch state {
+        case .none, .downloading, .updating: "arrow.down.circle"
+        case .downloaded: "arrow.down.circle.fill"
+        }
+    }
+
+    /// The ring's share (0 through 1) while the page downloads; nil when there is no ring.
+    static func ringFraction(for state: MusicCollectionDownloadState) -> Double? {
+        switch state {
+        case .downloading(_, _, let fraction), .updating(_, _, let fraction):
+            return MusicDownloadGlyph.litShare(of: fraction)
+        case .none, .downloaded:
+            return nil
+        }
+    }
+
+    /// What the pill's menu holds, empty where the pill has no menu and a click starts the download. A first download
+    /// offers Cancel download (it drops the page); a finished one Remove download; a finished one that is fetching new
+    /// songs both, Cancel download only stopping the fetching there.
+    static func menuEntries(for state: MusicCollectionDownloadState) -> [MusicDownloadMenuEntry] {
+        switch state {
+        case .none: []
+        case .downloading: [.cancel]
+        case .updating: [.cancel, .remove]
+        case .downloaded: [.remove]
+        }
+    }
+
+    static func tooltip(for state: MusicCollectionDownloadState) -> String {
+        switch state {
+        case .none: "Download"
+        case .downloading, .updating: "Downloading"
+        case .downloaded: "Downloaded"
+        }
+    }
+
+    /// What VoiceOver says for the pill, with the page's title as the other pills do. A page with songs that failed says
+    /// how many.
+    static func accessibilityLabel(for state: MusicCollectionDownloadState, title: String) -> String {
+        switch state {
+        case .none:
+            return "Download \(title)"
+        case .downloading, .updating:
+            return "Downloading \(title)"
+        case .downloaded(let done, let total):
+            let failed = total - done
+            return failed > 0 ? "Downloaded \(title), \(failed) failed" : "Downloaded \(title)"
+        }
+    }
+
+    /// The count VoiceOver hears as the pill's value while it downloads; nil while the page is still being read.
+    static func accessibilityValue(for state: MusicCollectionDownloadState) -> String? {
+        switch state {
+        case .downloading(let done, let total, _), .updating(let done, let total, _):
+            return total > 0 ? "\(done) of \(total)" : nil
+        case .none, .downloaded:
+            return nil
+        }
+    }
+
+    /// What the pill asks the downloads for. An album is told by its id; the subtitle is empty where the page has none.
+    static func request(browseId: String, title: String, subtitle: String?, coverURL: URL?) -> MusicCollectionRequest {
+        MusicCollectionRequest(
+            browseId: browseId,
+            title: title,
+            subtitle: subtitle ?? "",
+            kind: MusicCollectionEnumerator.kind(ofBrowseId: browseId),
+            coverURL: coverURL
+        )
     }
 }

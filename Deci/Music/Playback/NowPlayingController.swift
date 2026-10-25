@@ -238,9 +238,16 @@ enum ArtworkFactory {
 enum MusicArtworkURL {
     /// Edge YouTube Music's own web player uses for the big cover.
     static let largeEdge = 544
+    /// Edge a saved copy of a cover is fetched at: a row or a card shows it at a fraction of this.
+    static let smallEdge = 226
 
     /// The same art at `largeEdge` px for Google image hosts (`=w120-h120-...` or `=s120-...`); anything else unchanged.
-    static func large(_ url: URL) -> URL {
+    static func large(_ url: URL) -> URL { scaled(url, edge: largeEdge) }
+
+    /// The same art at `smallEdge` px, on the same terms as `large`.
+    static func small(_ url: URL) -> URL { scaled(url, edge: smallEdge) }
+
+    private static func scaled(_ url: URL, edge: Int) -> URL {
         guard let host = url.host?.lowercased(),
               host.hasSuffix(".googleusercontent.com") || host.hasSuffix(".ggpht.com") else { return url }
         let text = url.absoluteString
@@ -248,9 +255,9 @@ enum MusicArtworkURL {
         let options = text[text.index(after: marker)...]
         let resized: String
         if let match = options.firstMatch(of: /^w\d+-h\d+/) {
-            resized = "w\(largeEdge)-h\(largeEdge)" + options[match.range.upperBound...]
+            resized = "w\(edge)-h\(edge)" + options[match.range.upperBound...]
         } else if let match = options.firstMatch(of: /^s\d+/) {
-            resized = "s\(largeEdge)" + options[match.range.upperBound...]
+            resized = "s\(edge)" + options[match.range.upperBound...]
         } else {
             return url
         }

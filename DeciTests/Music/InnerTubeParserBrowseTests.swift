@@ -531,6 +531,48 @@ struct InnerTubeParserBrowseTests {
         #expect(page.shelves.isEmpty)
     }
 
+    @Test("Playlist capture: the greyed-out row is reported as listed but unplayable, and shows no song")
+    func playlistGreyedRowReported() throws {
+        let page = try InnerTubeParser.browsePage(from: fixture("browse-playlist.json"), browseId: "VLPL4fGSI1pDJn6puJdseH2Rt9sMvt9E2M4i")
+        #expect(page.unavailableVideoIds == ["Owv1GBWXkwY"])
+        #expect(page.tracks.map(\.videoId) == ["fcnDmrtj6Sk", "xvT1jH8B9AM", "fRIhCiUVaKs"])
+    }
+
+    @Test("A page with no greyed-out row reports none")
+    func playlistWithoutGreyedRows() throws {
+        let page = try InnerTubeParser.browsePage(from: fixture("browse-playlist-long.json"), browseId: "VLPLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI")
+        #expect(page.unavailableVideoIds.isEmpty)
+        let more = try InnerTubeParser.tracksContinuationPage(from: fixture("browse-playlist-continuation.json"))
+        #expect(more.unavailableVideoIds.isEmpty)
+    }
+
+    @Test("Hand-built continuation: greyed-out rows and podcast episodes are reported once each, in order, and show no song")
+    func continuationUnavailableRows() throws {
+        let rows = [
+            historyRow(id: "playable0001"),
+            historyRow(id: "greyedOut001", greyed: true),
+            historyRow(id: "greyedOut002", greyed: true),
+            historyRow(id: "greyedOut001", greyed: true),
+            podcastRow(id: "podcastEp001"),
+        ].joined(separator: ",")
+        let json = #"{"continuationContents":{"musicPlaylistShelfContinuation":{"contents":[\#(rows)]}}}"#
+
+        let page = try InnerTubeParser.tracksContinuationPage(from: Data(json.utf8))
+
+        #expect(page.tracks.map(\.videoId) == ["playable0001"])
+        #expect(page.unavailableVideoIds == ["greyedOut001", "greyedOut002", "podcastEp001"])
+    }
+
+    /// A row whose play target is a podcast episode, which a playlist page lists and the app does not play.
+    private func podcastRow(id: String) -> String {
+        let music = #""watchEndpointMusicSupportedConfigs":{"watchEndpointMusicConfig":{"musicVideoType":"MUSIC_VIDEO_TYPE_PODCAST_EPISODE"}}"#
+        return """
+        {"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":"\(id)"},\
+        "flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Episode","navigationEndpoint":{"watchEndpoint":{"videoId":"\(id)",\(music)}}}]}}},\
+        {"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Show"}]}}}]}}
+        """
+    }
+
     @Test("Long playlist capture: the page token is the track list's own, not the related-shelves one")
     func longPlaylistContinuation() throws {
         let page = try InnerTubeParser.browsePage(from: fixture("browse-playlist-long.json"), browseId: "VLPLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI")

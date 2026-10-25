@@ -44,11 +44,12 @@ actor MusicDownloader {
         self.now = now
     }
 
-    /// Downloads `track` and returns its entry. `progress` gets the fraction written, on the main actor: as the bytes of a
-    /// chunk arrive once the size of the file is known, and when a chunk is on disk. A value equal to the last is not
-    /// repeated.
+    /// Downloads `track` and returns its entry. `standalone` is whether the song was asked for on its own (the store keeps
+    /// its file until that is withdrawn) or only as part of a downloaded playlist or album. `progress` gets the fraction
+    /// written, on the main actor: as the bytes of a chunk arrive once the size of the file is known, and when a chunk is
+    /// on disk. A value equal to the last is not repeated.
     func download(
-        _ track: MusicTrack, progress: @escaping @MainActor @Sendable (Double) -> Void
+        _ track: MusicTrack, standalone: Bool = true, progress: @escaping @MainActor @Sendable (Double) -> Void
     ) async throws -> MusicDownloadStore.Entry {
         let videoId = track.videoId
         guard MusicDownloadStore.isValidVideoId(videoId) else { throw MusicDownloadError.invalidVideoId }
@@ -62,7 +63,9 @@ actor MusicDownloader {
         try Task.checkCancellation()
         let part = try await store.beginPart(videoId: videoId)
         do {
-            let entry = try await fetchAll(track, firstStream: first, into: part, progress: progress)
+            let entry = try await fetchAll(
+                track, standalone: standalone, firstStream: first, into: part, progress: progress
+            )
             return entry
         } catch {
             await store.discardPart(videoId: videoId)
@@ -72,6 +75,7 @@ actor MusicDownloader {
 
     private func fetchAll(
         _ track: MusicTrack,
+        standalone: Bool,
         firstStream: ResolvedStream,
         into part: URL,
         progress: @escaping @MainActor @Sendable (Double) -> Void
@@ -142,7 +146,7 @@ actor MusicDownloader {
         try handle.synchronize()
         isClosed = true
         try handle.close()
-        return try await store.commit(track, expectedBytes: written, durationSeconds: duration)
+        return try await store.commit(track, expectedBytes: written, durationSeconds: duration, standalone: standalone)
     }
 
     /// One ranged GET. While its body arrives, and once `total` (the size of the whole file) is known, the share of the

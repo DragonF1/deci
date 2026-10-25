@@ -17,14 +17,19 @@ struct MusicDownloadStoreTests {
         MusicDownloadStore(root: folder.root, now: { DownloadSamples.fixedDate })
     }
 
-    /// Puts `count` bytes in the id's .part file the way the downloader does, and commits them.
+    /// Puts `count` bytes in the id's .part file the way the downloader does, and commits them. Then flushes the index,
+    /// which the store otherwise writes a moment later: the tests here look at the disk right after.
     @discardableResult
     private func download(
         _ id: String, bytes count: Int = 40, into store: MusicDownloadStore, duration: Double? = 201.5
     ) async throws -> MusicDownloadStore.Entry {
         let part = try await store.beginPart(videoId: id)
         try DownloadSamples.payload(count).write(to: part)
-        return try await store.commit(DownloadSamples.track(id), expectedBytes: Int64(count), durationSeconds: duration)
+        let entry = try await store.commit(
+            DownloadSamples.track(id), expectedBytes: Int64(count), durationSeconds: duration
+        )
+        await store.flushIndex()
+        return entry
     }
 
     // MARK: - The index
@@ -263,7 +268,7 @@ struct MusicDownloadStoreTests {
                 DownloadSamples.track("../../etc/passwd"), expectedBytes: 1, durationSeconds: nil
             )
         }
-        #expect(await store.remove(videoId: "../../etc/passwd") == false)
+        #expect(await store.remove(videoId: "../../etc/passwd") == .untouched)
         #expect(!folder.exists(folder.root))
     }
 
@@ -347,7 +352,7 @@ struct MusicDownloadStoreTests {
 
         let removed = await store.remove(videoId: idA)
 
-        #expect(removed)
+        #expect(removed == .deleted)
         #expect(folder.audioFiles == ["\(idB).m4a"])
         #expect(await store.entries.keys.sorted() == [idB])
         #expect(await store.isDownloaded(idA) == false)
@@ -363,7 +368,7 @@ struct MusicDownloadStoreTests {
         _ = await store.load()
         try await download(idA, into: store)
 
-        #expect(await store.remove(videoId: idB) == false)
+        #expect(await store.remove(videoId: idB) == .untouched)
         #expect(await store.isDownloaded(idA))
     }
 
@@ -392,7 +397,7 @@ struct MusicDownloadStoreTests {
 
         let removed = await store.remove(videoId: idA, keepingFile: true)
 
-        #expect(removed)
+        #expect(removed == .deleted)
         #expect(await store.entries.keys.sorted() == [idB])
         #expect(folder.audioFiles == ["\(idA).m4a", "\(idB).m4a"])
         let index = try #require(folder.read(folder.indexURL).flatMap(MusicDownloadStore.Index.decode))

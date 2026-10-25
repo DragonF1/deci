@@ -370,6 +370,8 @@ struct DeciApp: App {
         // A session saved within the last hour comes back paused on its song, so the chip shows it without the Music popup
         // being opened. With none, nothing starts and the service stays lazy. After the chip, which then sees it appear.
         DispatchQueue.main.async { [music] in music.restoreSessionIfAny() }
+        // A Mac with downloaded playlists or albums builds the service too, so they are synced once sign-in is known.
+        DispatchQueue.main.async { [music] in music.syncDownloadsIfAny() }
 
         // Pass engine to AppDelegate
         _appDelegate.wrappedValue.audioEngine = engine

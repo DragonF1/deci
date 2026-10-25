@@ -118,17 +118,22 @@ enum MusicTrackActions {
     /// nil while it is unknown, and it turns the entry that is on into its Remove. Related songs shows for any song
     /// that has an id to ask about. `download` is the song's download state; nil leaves both download entries out, and
     /// so does an id that cannot be downloaded. Download shows when nothing is downloaded or the last try failed, Remove
-    /// download when the song is queued, downloading or downloaded.
+    /// download when the song is queued, downloading or downloaded. `downloadHeldByCollectionOnly` is a song that a
+    /// downloaded playlist or album lists and that was not downloaded on its own: while it is queued, downloading or
+    /// downloaded it offers neither entry (the page's pill removes it); one not yet fetched, or that failed, still
+    /// offers Download.
     static func available(
         for track: MusicTrack, in context: MusicTrackContext, home: MusicHomePinState? = nil, offersQueue: Bool = false,
-        canRate: Bool = false, likeStatus: MusicLikeStatus? = nil, download: MusicDownloadState? = nil
+        canRate: Bool = false, likeStatus: MusicLikeStatus? = nil, download: MusicDownloadState? = nil,
+        downloadHeldByCollectionOnly: Bool = false
     ) -> [MusicTrackAction] {
         var actions: [MusicTrackAction] = offersQueue ? [.playNext, .addToQueue, .saveToPlaylist] : [.saveToPlaylist]
         if let home { actions.append(.pinHome(home)) }
         if let download, MusicDownloadStore.isValidVideoId(track.videoId) {
             switch download {
             case .none, .failed: actions.append(.download)
-            case .queued, .downloading, .downloaded: actions.append(.removeDownload)
+            case .queued, .downloading, .downloaded:
+                if !downloadHeldByCollectionOnly { actions.append(.removeDownload) }
             }
         }
         if canRate, hasId(track) {
