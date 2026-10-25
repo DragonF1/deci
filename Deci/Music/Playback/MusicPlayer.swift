@@ -98,6 +98,14 @@ final class MusicPlayer {
         install(stream, track: track, startAt: 0, autoplay: true)
     }
 
+    /// Loads the track and leaves it paused at `position`: no sound until `play()`. For a session picked up from the last
+    /// launch. It never shows as loading, so nothing outside sees the player as busy before the listener plays it.
+    func loadPaused(stream: ResolvedStream, track: MusicTrack, at position: TimeInterval) {
+        loadGeneration += 1
+        recoveryUsed = false
+        install(stream, track: track, startAt: position, autoplay: false, loading: false)
+    }
+
     func play() {
         defer { notifyStateChange() }
         guard nowPlaying != nil, let stream else { return }
@@ -177,13 +185,15 @@ final class MusicPlayer {
 
     // MARK: - Loading
 
-    private func install(_ stream: ResolvedStream, track: MusicTrack, startAt: TimeInterval, autoplay: Bool) {
+    private func install(
+        _ stream: ResolvedStream, track: MusicTrack, startAt: TimeInterval, autoplay: Bool, loading: Bool = true
+    ) {
         refreshTask?.cancel()
         refreshTask = nil
         self.stream = stream
         nowPlaying = track
         error = nil
-        isLoading = true
+        isLoading = loading
         isPlaying = false
         hasEnded = false
         wantsPlay = autoplay

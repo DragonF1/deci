@@ -86,6 +86,23 @@ struct InnerTubeParserTests {
         #expect(InnerTubeParser.bootstrapConfig(fromHTML: own).brandPageId == nil)
     }
 
+    @Test("channelKey is a stable hash of DATASYNC_ID that tells channels apart and never holds the id")
+    func bootstrapChannelKey() throws {
+        let brand = try #require(InnerTubeParser.channelKey(dataSyncId: "brand123||user456"))
+        let own = try #require(InnerTubeParser.channelKey(dataSyncId: "user456||"))
+        #expect(brand == InnerTubeParser.channelKey(dataSyncId: "brand123||user456"))
+        #expect(brand != own)
+        #expect(brand.count == 16)
+        #expect(!brand.contains("brand123"))
+        #expect(!own.contains("user456"))
+        #expect(InnerTubeParser.channelKey(dataSyncId: "") == nil)
+        #expect(InnerTubeParser.channelKey(dataSyncId: nil) == nil)
+
+        let html = #"ytcfg.set({"INNERTUBE_CLIENT_VERSION":"4.4","DATASYNC_ID":"brand123||user456"});"#
+        #expect(InnerTubeParser.bootstrapConfig(fromHTML: html).channelKey == brand)
+        #expect(InnerTubeParser.bootstrapConfig(fromHTML: "<html></html>").channelKey == nil)
+    }
+
     // MARK: - Player JS
 
     @Test("The player hash is the path segment after /s/player/")

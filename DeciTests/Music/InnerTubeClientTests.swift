@@ -360,6 +360,25 @@ struct InnerTubeClientTests {
         #expect(await makeClient(brand, store: MemorySecretStore(data: nil)).channelIdentity() == nil)
     }
 
+    @Test("sessionIdentity is a key for the signed-in channel, differs per channel, and is nil when signed out or unreadable")
+    func sessionIdentity() async throws {
+        let brand = FakeYouTube {
+            $0.bootstrapHTML = #"<script>ytcfg.set({"INNERTUBE_CLIENT_VERSION":"1.2","DATASYNC_ID":"brand123||user456"});</script>"#
+        }
+        let own = FakeYouTube {
+            $0.bootstrapHTML = #"<script>ytcfg.set({"INNERTUBE_CLIENT_VERSION":"1.2","DATASYNC_ID":"user456||"});</script>"#
+        }
+        let brandKey = try #require(await makeClient(brand).sessionIdentity())
+        let ownKey = try #require(await makeClient(own).sessionIdentity())
+        #expect(brandKey != ownKey)
+        #expect(!brandKey.contains("brand123"))
+        #expect(await makeClient(brand).sessionIdentity() == brandKey)
+        #expect(await makeClient(FakeYouTube { $0.bootstrapStatus = 500 }).sessionIdentity() == nil)
+        #expect(await makeClient(brand, store: MemorySecretStore(data: nil)).sessionIdentity() == nil)
+        // A page that never names the channel gives no key rather than a shared one.
+        #expect(await makeClient().sessionIdentity() == nil)
+    }
+
     @Test("On a brand channel every call but player names it as onBehalfOfUser; the own channel sends no user")
     func brandChannelOnBehalfOfUser() async throws {
         let brand = FakeYouTube {

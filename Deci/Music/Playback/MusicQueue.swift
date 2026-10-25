@@ -11,7 +11,7 @@ import Foundation
 /// listener has not reached, and the radio's next page, out of `tracks` until Autoplay is on again: the songs the listener
 /// queued stay and the current song plays and stops (`parkRadio()`, `restoreRadio()`).
 /// A plain value; `MusicService` decides when to fetch and what to play.
-struct MusicQueue: Equatable {
+struct MusicQueue: Equatable, Codable {
     /// Fetch the next radio page, or ask for a radio to follow, when this many tracks, or fewer, are left after the
     /// current one.
     static let refillThreshold = 3
@@ -26,7 +26,7 @@ struct MusicQueue: Equatable {
     static let fullLoadCap = 2000
 
     /// Where the queue's later pages come from.
-    enum Source: Equatable {
+    enum Source: Equatable, Codable {
         /// The radio seeded from this track; later pages are `moreRadio`.
         case radio(seedVideoId: String)
         /// A playlist or album page; later pages are `moreTracks`.
@@ -497,6 +497,42 @@ struct MusicQueue: Equatable {
 
     mutating func clear() {
         self = MusicQueue()
+    }
+
+    // MARK: - Storing
+
+    /// A copy cut to fit a stored session: at most `maxPlayed` songs before the current one and `maxUpcoming` after it,
+    /// and the staged and the parked radio cut to `maxUpcoming`. A list that lost its tail loses the page that followed
+    /// it too, because that page would no longer join where it left off. A queue within the limits comes back equal.
+    func trimmed(maxPlayed: Int, maxUpcoming: Int) -> MusicQueue {
+        var copy = self
+        if let currentIndex {
+            let lower = max(0, currentIndex - maxPlayed)
+            let upper = min(tracks.count, currentIndex + 1 + maxUpcoming)
+            if lower > 0 || upper < tracks.count {
+                copy.tracks = Array(tracks[lower..<upper])
+                copy.currentIndex = currentIndex - lower
+                if upper < tracks.count { copy.continuation = nil }
+            }
+        }
+        if autoplay.count > maxUpcoming {
+            copy.autoplay = Array(autoplay.prefix(maxUpcoming))
+            copy.autoplayContinuation = nil
+        }
+        if parked.count > maxUpcoming {
+            copy.parked = Array(parked.prefix(maxUpcoming))
+            copy.parkedContinuation = nil
+        }
+        guard copy != self else { return self }
+        // What the cut songs left behind goes with them. The songs the listener took out and the radios already asked
+        // for stay, so nothing comes back that was turned down.
+        let kept = Set((copy.tracks + copy.autoplay + copy.parked).map(\.videoId))
+        copy.naturalRank = naturalRank.filter { kept.contains($0.key) }
+        copy.queuedIds.formIntersection(kept)
+        copy.endIds.formIntersection(kept)
+        copy.radioIds.formIntersection(kept)
+        copy.reachedIds.formIntersection(kept)
+        return copy
     }
 
     // MARK: - Parked radio

@@ -133,6 +133,8 @@ final class MusicService {
     /// A queue page that failed for a reason that may pass (network, 5xx) is asked for again this many times, each
     /// wait twice the last, before the queue waits for the next track change.
     private static let maxQueueRetries = 3
+    /// While a song plays its place is saved this often, on the player's own position ticks.
+    private static let sessionSaveInterval: TimeInterval = 10
 
     @ObservationIgnored private let backend: any MusicBackend
     @ObservationIgnored private let presentSignIn: SignInPresenter
@@ -195,6 +197,26 @@ final class MusicService {
         didSet { noteQueueFilling() }
     }
     @ObservationIgnored private(set) var prefetchTask: Task<Void, Never>?
+
+    // The remembered session (see `MusicSessionSnapshot`). Nil store: the service remembers nothing.
+    @ObservationIgnored private let sessionStore: MusicSessionStore?
+    /// The signed-in channel's key, the owner of every snapshot written; nil until `backend.sessionIdentity()` answers
+    /// and while signed out. Nothing is written without it.
+    @ObservationIgnored private var sessionChannelKey: String?
+    @ObservationIgnored private(set) var sessionKeyTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var restoreTask: Task<Void, Never>?
+    /// The auth check started at creation, so a restore at launch waits for it instead of asking twice.
+    @ObservationIgnored private var authRefreshTask: Task<Void, Never>?
+    /// The song the last launch left, from the restore until the listener first touches a control. While set nothing is
+    /// saved: a session that was only put back has not been listened to, and must not run its hour again.
+    @ObservationIgnored private var restoredVideoId: String?
+    /// The last snapshot handed to the store, so a tick that changes nothing writes nothing.
+    @ObservationIgnored private var lastSavedSession: MusicSessionSnapshot?
+    /// Set when the app quits: the file stays as the quit left it, whatever the shutdown does to the queue.
+    @ObservationIgnored private var sessionClosed = false
+    @ObservationIgnored private var lastPeriodicSave = Date.distantPast
+    @ObservationIgnored private var wasPlaying = false
+
     @ObservationIgnored private var searchGeneration = 0
     @ObservationIgnored private var playGeneration = 0
     /// Each account fetch names itself with the next number and only lands while it is still the latest,
@@ -230,6 +252,8 @@ final class MusicService {
         artistGrace: Duration = .milliseconds(1500),
         queueRetryDelay: Duration = .seconds(2),
         sleep: @escaping Sleep = { seconds in try? await Task.sleep(for: .seconds(seconds)) },
+        // Where the session is remembered between launches; nil (a test's default) remembers nothing.
+        sessionStore: MusicSessionStore? = nil,
         refreshOnCreate: Bool = true
     ) {
         self.backend = backend
@@ -250,6 +274,7 @@ final class MusicService {
         self.artistGrace = artistGrace
         self.queueRetryDelay = queueRetryDelay
         self.sleep = sleep
+        self.sessionStore = sessionStore
         self.listenerLevel = listenerLevel
         self.isShuffleOn = preferences.shuffle
         self.loopMode = preferences.loop
@@ -284,11 +309,13 @@ final class MusicService {
         }
         browse.onPageLoaded = { [weak self] page, opener in self?.pageLoaded(page, opener: opener) }
         if refreshOnCreate {
-            Task { [weak self] in await self?.refreshAuth() }
+            authRefreshTask = Task { [weak self] in await self?.refreshAuth() }
         }
     }
 
     isolated deinit {
+        restoreTask?.cancel()
+        sessionKeyTask?.cancel()
         searchTask?.cancel()
         playTask?.cancel()
         signInTask?.cancel()
@@ -365,6 +392,7 @@ final class MusicService {
         authState = .signedOut
         identityTask?.cancel()
         channelSwitchTask?.cancel()
+        dropSessionKey()
         isBrandChannel = nil
         isSwitchingChannel = false
         clearAccount()
@@ -385,6 +413,7 @@ final class MusicService {
     private func refreshIdentity() {
         refreshChannelIdentity()
         refreshAccount()
+        refreshSessionKey()
     }
 
     /// Reads the account menu for the card. Nothing about it is worth a banner: a failed read leaves
@@ -471,6 +500,7 @@ final class MusicService {
         lastError = nil
         authState = .signedIn
         identityTask?.cancel()
+        dropSessionKey()
         isBrandChannel = nil
         browse.reset()
         lyrics.reset()
@@ -537,6 +567,9 @@ final class MusicService {
                 guard self.authState == .signedIn else { return }
                 // Stay in "switching" until the new identity is known.
                 self.identityTask?.cancel()
+                // The queue keeps playing under the picked channel: its snapshots take that channel's key once it is read.
+                self.dropSessionKey()
+                self.refreshSessionKey()
                 self.isBrandChannel = nil
                 // Home and the library belong to the channel: what is loaded is the old one's.
                 self.browse.reset()
@@ -562,6 +595,11 @@ final class MusicService {
     /// Stops playback and pending work, and writes any cookie change still held back to the Keychain.
     /// Called when the app quits.
     func stop() {
+        // The session is written, with a fresh time, before the queue is wound up: from here the file is left as it is.
+        restoreTask?.cancel()
+        saveSession(force: true)
+        sessionStore?.flush()
+        sessionClosed = true
         cancelWork()
         endQueue()
         // Before the player resets its position; the quit path does not wait for it, as the ping is fire and forget.
@@ -594,6 +632,124 @@ final class MusicService {
         #if DEBUG
         memoryProbe?.cancel()
         #endif
+    }
+
+    // MARK: - Remembered session
+
+    /// Reads the signed-in channel's key. Every snapshot is written under it, so the first one goes out the moment it is
+    /// known. A key that cannot be read leaves the old one in place and writes nothing new.
+    private func refreshSessionKey() {
+        guard sessionStore != nil else { return }
+        sessionKeyTask?.cancel()
+        sessionKeyTask = Task { [weak self, backend] in
+            let key = await backend.sessionIdentity()
+            guard let self, !Task.isCancelled, self.authState == .signedIn, let key else { return }
+            self.sessionChannelKey = key
+            self.saveSession()
+        }
+    }
+
+    private func dropSessionKey() {
+        sessionKeyTask?.cancel()
+        sessionKeyTask = nil
+        sessionChannelKey = nil
+    }
+
+    /// Hands the session as it stands to the store, which writes at most once a second. Nothing is saved while signed out,
+    /// before the account is known, or while a restored session is untouched; and only with a song loaded that the queue
+    /// is on, so a tick left over from a queue that ended cannot bring its deleted file back. `force` writes even when
+    /// nothing changed since the last save, so the quit starts the hour again.
+    private func saveSession(force: Bool = false) {
+        guard let sessionStore, restoredVideoId == nil, !sessionClosed, authState == .signedIn,
+              let key = sessionChannelKey, let current = queue.current,
+              player.nowPlaying?.videoId == current.videoId else { return }
+        lastPeriodicSave = now()
+        let snapshot = MusicSessionSnapshot(
+            savedAt: now(), channelKey: key, position: player.hasEnded ? 0 : player.currentTime, queue: queue
+        )
+        if !force, let last = lastSavedSession, snapshot.hasSameState(as: last) { return }
+        sessionStore.save(snapshot)
+        lastSavedSession = snapshot
+    }
+
+    /// The listener did something: a restored session is theirs from here and is saved again.
+    private func touchSession() {
+        guard restoredVideoId != nil else { return }
+        restoredVideoId = nil
+        lastSavedSession = nil
+    }
+
+    /// The queue is gone (it ended, playback was stopped, the account left): the file goes with it. Not at quit, where
+    /// the queue is wound up after the file was written.
+    private func forgetSession() {
+        guard !sessionClosed else { return }
+        restoredVideoId = nil
+        lastSavedSession = nil
+        sessionStore?.delete()
+    }
+
+    /// Launch path: puts the last session back, paused, when the store still holds a usable one. Waits for the sign-in
+    /// check and the account, then resolves the song's stream, and only then changes anything, all at once, so the chip
+    /// never shows a song that cannot play. A song the listener starts meanwhile wins (the play generation moves on).
+    func restoreSession() {
+        guard sessionStore != nil, restoreTask == nil, queue.isEmpty, player.nowPlaying == nil else { return }
+        let generation = playGeneration
+        restoreTask = Task { [weak self] in
+            await self?.runRestore(generation: generation)
+        }
+    }
+
+    private func runRestore(generation: Int) async {
+        guard let sessionStore else { return }
+        if authState == .unknown {
+            if let refresh = authRefreshTask { await refresh.value } else { await refreshAuth() }
+        }
+        guard generation == playGeneration, !Task.isCancelled else { return }
+        guard authState == .signedIn else {
+            sessionStore.delete()
+            return
+        }
+        // Without the account a session cannot be told to be this one's: left on disk for the next launch.
+        guard let key = await backend.sessionIdentity() else {
+            logger.info("session not restored: account unknown")
+            return
+        }
+        guard generation == playGeneration, !Task.isCancelled, authState == .signedIn else { return }
+        sessionChannelKey = key
+        guard let snapshot = sessionStore.load(forChannel: key) else { return }
+        guard let track = snapshot.queue.current else {
+            sessionStore.delete()
+            return
+        }
+        let stream: ResolvedStream
+        do {
+            stream = try await backend.resolve(videoId: track.videoId)
+        } catch {
+            guard generation == playGeneration, !Task.isCancelled, !Self.isCancellation(error) else { return }
+            // Nothing plays and the neighbours are not tried: the session is dropped whole.
+            logger.error("session restore failed: \(Self.logDescription(of: error), privacy: .public)")
+            sessionStore.delete()
+            if Self.isSignedOut(error) { handle(error) }
+            return
+        }
+        guard generation == playGeneration, !Task.isCancelled else { return }
+        queue = snapshot.queue
+        direction = .forward
+        failureStreak = 0
+        queueRetryAttempts = 0
+        session = Session(
+            cpn: CPN.make(),
+            startedAt: now(),
+            trackingURL: stream.playbackTrackingURL,
+            watchtimeURL: stream.watchtimeTrackingURL
+        )
+        restoredVideoId = track.videoId
+        lastSavedSession = snapshot
+        player.loadPaused(
+            stream: stream, track: track,
+            at: snapshot.clampedPosition(duration: stream.durationSeconds ?? Double(track.durationSeconds ?? 0))
+        )
+        topUpQueue()
     }
 
     // MARK: - Search
@@ -811,6 +967,7 @@ final class MusicService {
         guard queue.playNext(track) else { return }
         noteActivity()
         queueEdited()
+        saveSession()
         trackActions.post("Playing next")
     }
 
@@ -821,6 +978,7 @@ final class MusicService {
         guard queue.addToQueue(track) else { return }
         noteActivity()
         queueEdited()
+        saveSession()
         trackActions.post("Added to queue")
     }
 
@@ -830,6 +988,7 @@ final class MusicService {
         guard queue.remove(videoId: track.videoId) else { return }
         noteActivity()
         topUpQueue()
+        saveSession()
         trackActions.post("Removed from queue")
     }
 
@@ -853,6 +1012,7 @@ final class MusicService {
     /// whole queue back in its natural order and carries on from the current track.
     func setShuffle(_ on: Bool) {
         guard on != isShuffleOn else { return }
+        touchSession()
         isShuffleOn = on
         if !queue.isEmpty {
             if on {
@@ -863,14 +1023,17 @@ final class MusicService {
         }
         savePlaybackPreferences()
         topUpQueue()
+        saveSession()
     }
 
     func setLoopMode(_ mode: MusicLoopMode) {
         guard mode != loopMode else { return }
+        touchSession()
         loopMode = mode
         savePlaybackPreferences()
         // A queue standing at the end of its page may now hand over to the radio.
         topUpQueueAfterModeChange()
+        saveSession()
     }
 
     /// The loop button: Off, Loop playlist, Loop song, Off.
@@ -886,11 +1049,13 @@ final class MusicService {
     /// the top-up goes on from there. A queue that ended while Autoplay was off is not started again.
     func setAutoplay(_ on: Bool) {
         guard on != isAutoplayOn else { return }
+        touchSession()
         isAutoplayOn = on
         savePlaybackPreferences()
         if on { queue.restoreRadio(using: &shuffleGenerator) } else { queue.parkRadio() }
         topUpQueueAfterModeChange()
         noteQueueFilling()
+        saveSession()
     }
 
     private func savePlaybackPreferences() {
@@ -970,10 +1135,12 @@ final class MusicService {
         _ = session?.accumulator.record(position: player.currentTime, isPlaying: false, canFire: false)
         // The stretch heard before it and the one after are two stretches of the watchtime ping.
         session?.watchtime.seek(to: player.currentTime)
+        saveSession()
     }
 
     /// Starts one queue item as its own playback session.
     private func begin(_ track: MusicTrack) {
+        touchSession()
         playTask?.cancel()
         playGeneration += 1
         let generation = playGeneration
@@ -989,6 +1156,7 @@ final class MusicService {
             await self?.resolveAndLoad(track, generation: generation)
         }
         topUpQueue()
+        saveSession()
     }
 
     private func resolveAndLoad(_ track: MusicTrack, generation: Int) async {
@@ -1146,6 +1314,13 @@ final class MusicService {
         guard player.nowPlaying != nil else { return }
         let cause = refreshError
         refreshError = nil
+        if restoredVideoId != nil {
+            // The song the last launch left cannot be played: nothing is started in its place, and the session is dropped.
+            logger.error("restored session failed: \(cause.map(Self.logDescription(of:)) ?? "engine", privacy: .public)")
+            player.stop()
+            endQueue()
+            return
+        }
         if authState == .signedOut {
             player.stop()
             endQueue()
@@ -1193,6 +1368,7 @@ final class MusicService {
         pendingAdvance = nil
         prefetched = nil
         queue.clear()
+        forgetSession()
     }
 
     /// Parks `advance` until the radio's next page lands. False when no page is on its way, so the caller ends as before.
@@ -1314,6 +1490,8 @@ final class MusicService {
     private func fetchQueuePage(
         source: MusicQueue.Source, continuation: String?, generation: Int, mixId: String? = nil, emptyPages: Int = 0
     ) async {
+        // Whatever the page did to the queue (songs added, staged or parked, a continuation dropped) is remembered.
+        defer { saveSession() }
         let page: MusicQueuePage
         do {
             page = try await requestQueuePage(source: source, continuation: continuation, mixPlaylistId: mixId)
@@ -1476,6 +1654,13 @@ final class MusicService {
 
     private func playerStateChanged() {
         if player.isPlaying { failureStreak = 0 }
+        // Play and pause are saved as they happen: the engine has just reported the exact place a pause stopped at. Sound
+        // from a restored song means the listener started it, whatever the way.
+        if player.isPlaying != wasPlaying {
+            wasPlaying = player.isPlaying
+            if wasPlaying { touchSession() }
+            saveSession()
+        }
         let active = player.isActive
         if active != nativePlaying {
             nativePlaying = active
@@ -1618,6 +1803,11 @@ final class MusicService {
     func handlePlaybackTick(position: TimeInterval, isPlaying: Bool) {
         // Before the session guard: the lyrics highlight needs the position whether or not History is tracking.
         lyrics.observePlayback(position: position, isPlaying: isPlaying)
+        // Before it as well: the remembered place moves on whether or not History is tracking.
+        if isPlaying, sessionStore != nil, now().timeIntervalSince(lastPeriodicSave) >= Self.sessionSaveInterval {
+            lastPeriodicSave = now()
+            saveSession()
+        }
         guard session != nil else { return }
         if isPlaying { prefetchNextIfNeeded(position: position) }
         let url = session?.trackingURL
@@ -1638,9 +1828,10 @@ final class MusicService {
 
     // MARK: - Watchtime
 
-    /// The listener touched a control: `lact` counts from now.
+    /// The listener touched a control: `lact` counts from now, and a restored session becomes theirs.
     private func noteActivity() {
         lastActivity = now()
+        touchSession()
     }
 
     /// Seconds since the session began, on the injected clock: the `rt` of its watchtime pings.
@@ -1747,6 +1938,9 @@ final class MusicService {
             // and the session ends without a final one, as in `signOut`, so a later sign-in never sends them.
             cancelReport()
             session = nil
+            // The remembered session belonged to the account that is gone.
+            dropSessionKey()
+            forgetSession()
             browse.reset()
             trackActions.reset()
             likes.reset()

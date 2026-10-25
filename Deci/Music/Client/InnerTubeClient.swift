@@ -10,6 +10,9 @@ struct InnerTubeSession: Sendable, Equatable {
     var isBrandChannel: Bool?
     /// The brand channel's page id; nil on the account's own channel. Never logged.
     var brandPageId: String?
+    /// A hash of the page's channel id (never the id), so a saved session can tell whose it is; nil when the page
+    /// didn't say.
+    var channelKey: String?
 
     var playerHash: String? { playerJSURL.flatMap(InnerTubeParser.playerHash(fromPlayerJSURL:)) }
 }
@@ -100,6 +103,13 @@ actor InnerTubeClient {
         return try? await session().isBrandChannel
     }
 
+    /// An opaque key for the signed-in channel, or nil when signed out or when the page does not say. Used to tell
+    /// whose saved listening session this is.
+    func sessionIdentity() async -> String? {
+        guard currentJar().hasSignInCookies else { return nil }
+        return try? await session().channelKey
+    }
+
     func sessionCookies() -> [StoredCookie] {
         currentJar().cookies
     }
@@ -136,7 +146,8 @@ actor InnerTubeClient {
             visitorData: config.visitorData,
             playerJSURL: config.playerJSURL,
             isBrandChannel: config.isBrandChannel,
-            brandPageId: config.brandPageId
+            brandPageId: config.brandPageId,
+            channelKey: config.channelKey
         )
         if (config.clientVersion != nil || config.playerJSURL != nil), !Task.isCancelled, epoch == self.epoch {
             cachedSession = (session, now())

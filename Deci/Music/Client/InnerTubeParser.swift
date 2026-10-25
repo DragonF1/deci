@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// What the music.youtube.com home page tells a client about the current web build.
@@ -10,6 +11,9 @@ struct BootstrapConfig: Sendable, Equatable {
     /// The brand channel's page id, which API calls name as `onBehalfOfUser`; nil on the account's own
     /// channel. An account id: never logged.
     var brandPageId: String?
+    /// An opaque key for the signed-in channel (see `InnerTubeParser.channelKey`), so a saved session can tell
+    /// whose it is. Never the id itself.
+    var channelKey: String?
 }
 
 struct PlayerFormat: Sendable, Equatable {
@@ -60,8 +64,16 @@ enum InnerTubeParser {
             visitorData: string(merged["VISITOR_DATA"]) ?? string(client?["visitorData"]),
             playerJSURL: jsPath.flatMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL },
             isBrandChannel: dataSyncId.flatMap(isBrandChannel(dataSyncId:)),
-            brandPageId: brandPageId(delegatedSessionId: string(merged["DELEGATED_SESSION_ID"]), dataSyncId: dataSyncId)
+            brandPageId: brandPageId(delegatedSessionId: string(merged["DELEGATED_SESSION_ID"]), dataSyncId: dataSyncId),
+            channelKey: channelKey(dataSyncId: dataSyncId)
         )
+    }
+
+    /// The first 8 bytes of the SHA-256 of `DATASYNC_ID`, as hex. Stable per channel (the brand and the own channel
+    /// of one account differ) and safe to write to disk or compare, because the id cannot be read back from it.
+    static func channelKey(dataSyncId: String?) -> String? {
+        guard let dataSyncId, !dataSyncId.isEmpty else { return nil }
+        return SHA256.hash(data: Data(dataSyncId.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
     /// `DELEGATED_SESSION_ID` when the page has it, else the brand half of a brand channel's `DATASYNC_ID`.

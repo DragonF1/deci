@@ -363,6 +363,9 @@ struct DeciApp: App {
         )
         _musicChip = State(initialValue: chip)
         DispatchQueue.main.async { [chip] in chip.start() }
+        // A session saved within the last hour comes back paused on its song, so the chip shows it without the Music popup
+        // being opened. With none, nothing starts and the service stays lazy. After the chip, which then sees it appear.
+        DispatchQueue.main.async { [music] in music.restoreSessionIfAny() }
 
         // Pass engine to AppDelegate
         _appDelegate.wrappedValue.audioEngine = engine

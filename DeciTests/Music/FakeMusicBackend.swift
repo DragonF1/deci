@@ -223,6 +223,7 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var reportAttempts: [Report] = []
     private(set) var signInCookies: [[StoredCookie]] = []
     private var identity: Bool?
+    private var sessionKey: String? = "channel-a"
     private var account: MusicAccount?
     private var accountError: (any Error)?
     private var accountGate: MusicTestGate?
@@ -249,6 +250,8 @@ actor FakeMusicBackend: MusicBackend {
 
     func setSignedIn(_ value: Bool) { signedIn = value }
     func setChannelIdentity(_ value: Bool?) { identity = value }
+    /// Who a saved session says it belongs to; "channel-a" unless a test names another channel or none.
+    func setSessionIdentity(_ value: String?) { sessionKey = value }
     func setSessionCookies(_ value: [StoredCookie]) { currentCookies = value }
     /// What the account menu answers with. A gate holds the call until it is opened; passing nil removes a gate or an error.
     func setAccount(_ value: MusicAccount?) { account = value }
@@ -434,6 +437,8 @@ actor FakeMusicBackend: MusicBackend {
     }
 
     func channelIdentity() async -> Bool? { signedIn ? identity : nil }
+
+    func sessionIdentity() async -> String? { signedIn ? sessionKey : nil }
 
     func sessionCookies() async -> [StoredCookie] { currentCookies }
 

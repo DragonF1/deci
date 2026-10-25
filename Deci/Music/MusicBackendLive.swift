@@ -42,6 +42,10 @@ actor MusicBackendLive: MusicBackend {
         await client.channelIdentity()
     }
 
+    func sessionIdentity() async -> String? {
+        await client.sessionIdentity()
+    }
+
     func sessionCookies() async -> [StoredCookie] {
         await client.sessionCookies()
     }

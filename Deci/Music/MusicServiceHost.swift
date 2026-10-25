@@ -46,12 +46,19 @@ final class MusicServiceHost {
 
     @ObservationIgnored private let makeService: @MainActor () -> MusicService
 
+    /// The remembered session on disk. The real app has one; a host built with its own `makeService` has none unless
+    /// the caller passes it, so a test never reads the real folder.
+    @ObservationIgnored private let sessionStore: MusicSessionStore?
+
     init(
         mixer: MusicMixerState? = nil,
         settings: SettingsManager? = nil,
+        sessionStore: MusicSessionStore? = nil,
         makeService: (@MainActor () -> MusicService)? = nil
     ) {
         self.mixer = mixer
+        let store = sessionStore ?? (makeService == nil ? MusicSessionStore.live() : nil)
+        self.sessionStore = store
         self.makeService = makeService ?? {
             MusicService(
                 backend: MusicBackendLive.live(),
@@ -63,7 +70,8 @@ final class MusicServiceHost {
                 savePreferences: MusicServiceHost.savePreferences(to: settings),
                 // The items pinned to Home are remembered in settings.json too.
                 pinnedItems: settings?.appSettings.musicPinnedItems ?? [],
-                savePinnedItems: MusicServiceHost.savePinnedItems(to: settings)
+                savePinnedItems: MusicServiceHost.savePinnedItems(to: settings),
+                sessionStore: store
             )
         }
         MusicMemoryLog.log("launch")
@@ -126,6 +134,16 @@ final class MusicServiceHost {
             videoId: { [weak service] in service?.player.nowPlaying?.videoId },
             reduceMotion: { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
         )
+    }
+
+    /// Launch path: when the last session is still inside its hour, builds the service now (the menu bar chip has to
+    /// show the paused song without the Music popup ever being opened) and has it pick the session up. With no session,
+    /// or one that is stale or unreadable, nothing is built and the service stays lazy. A service that already exists
+    /// is left alone.
+    func restoreSessionIfAny() {
+        guard service == nil, let sessionStore, sessionStore.load() != nil else { return }
+        loadIfNeeded()
+        service?.restoreSession()
     }
 
     /// Escape in the Music popup: closes the account card if it is open. True when it was open, so the

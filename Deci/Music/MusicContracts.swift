@@ -5,7 +5,7 @@ import Foundation
 // `actor MusicBackendLive: MusicBackend` with `static func live() -> MusicBackendLive`.
 
 /// A song row from search, home or library.
-struct MusicTrack: Sendable, Hashable, Identifiable {
+struct MusicTrack: Sendable, Hashable, Identifiable, Codable {
     let videoId: String
     let title: String
     /// Artists joined for display, e.g. "Daft Punk, Pharrell Williams".
@@ -51,7 +51,7 @@ struct MusicPlaylistOption: Sendable, Hashable, Identifiable {
 }
 
 /// An artist's name under a song with the page it opens.
-struct MusicArtistLink: Sendable, Hashable {
+struct MusicArtistLink: Sendable, Hashable, Codable {
     let name: String
     /// The artist's channel id ("UC...").
     let browseId: String
@@ -361,6 +361,9 @@ protocol MusicBackend: Sendable {
     /// Whether the session plays as a brand channel (History is kept per channel), or nil when
     /// signed out or the home page doesn't say. Runs the bootstrap if it hasn't run yet.
     func channelIdentity() async -> Bool?
+    /// An opaque, stable key for the signed-in channel (a hash of the bootstrap's DATASYNC_ID, never the id itself), so
+    /// a saved session can tell whose it is. Nil when signed out or when the bootstrap does not say.
+    func sessionIdentity() async -> String?
     /// The session's cookies, for the channel picker window to start from.
     func sessionCookies() async -> [StoredCookie]
     /// Name, handle and avatar of the signed-in channel (account menu). Nil when the menu has no
