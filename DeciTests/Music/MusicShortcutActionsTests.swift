@@ -7,6 +7,13 @@ import Foundation
 import Testing
 @testable import Deci
 
+/// The sign-in window and the channel picker the service opened, held open so a test can finish them.
+@MainActor
+private final class AccountWindows {
+    var signIn: (@MainActor ([StoredCookie]?) -> Void)?
+    var channelPicker: (@MainActor ([StoredCookie]?) -> Void)?
+}
+
 @MainActor
 private struct ShortcutActionsHarness {
     let backend: FakeMusicBackend
@@ -15,6 +22,7 @@ private struct ShortcutActionsHarness {
     let host: MusicServiceHost
     let opener: FakePopupOpener
     let actions: MusicShortcutActions
+    let windows = AccountWindows()
     /// The wait before a disliked song is skipped: instant, so the skip runs as soon as it is scheduled.
     let skipSleep = DislikeSkipSleep()
 
@@ -23,11 +31,12 @@ private struct ShortcutActionsHarness {
         let backend = FakeMusicBackend(signedIn: signedIn)
         self.backend = backend
         let skipSleep = self.skipSleep
+        let windows = self.windows
         let service = MusicService(
             backend: backend,
             player: MusicPlayer(engine: engine),
-            presentSignIn: { _ in },
-            presentChannelPicker: { _, _ in },
+            presentSignIn: { windows.signIn = $0 },
+            presentChannelPicker: { _, completion in windows.channelPicker = completion },
             closeSignInWindow: {},
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: FakeNowPlayingSurface(), fetchArtwork: { _ in nil }),
@@ -273,6 +282,8 @@ struct MusicOutcomeReporterTests {
             h.opener.isOpen = popupOpen
             h.opener.isOnScreen = popupOpen
             reporter = MusicOutcomeReporter(musicHost: h.host, popupOpener: h.opener, hud: hud)
+            // The app's wiring (DeciApp): the host hands the service's account failures to the reporter.
+            h.host.outcomes = reporter
         }
 
         var notice: MusicTrackActionsStore.Notice? { h.service.trackActions.notice }
@@ -393,6 +404,81 @@ struct MusicOutcomeReporterTests {
         #expect(s.notice?.text == "Couldn't reach YouTube Music")
         #expect(s.notice?.isError == true)
         #expect(s.hud.messages.isEmpty)
+    }
+
+    // MARK: Failures with their own words
+
+    /// What a failed Add account and a failed Switch channel say. Longer than the outcomes' lines, so the HUD wraps them.
+    nonisolated private static let accountFailures = [
+        "Couldn't add the account. Still signed in as before.",
+        "Couldn't switch the channel. Still playing as before.",
+    ]
+
+    @Test("A failure with its own words shows in the open popup's notice line, as an error, and not on the HUD", arguments: MusicOutcomeReporterTests.accountFailures)
+    func failureTextUsesTheNoticeLine(text: String) async {
+        let s = await Setup(popupOpen: true)
+
+        s.reporter.reportFailure(text)
+
+        #expect(s.notice?.text == text)
+        #expect(s.notice?.isError == true)
+        #expect(s.hud.messages.isEmpty)
+        #expect(!text.contains("\u{2014}"))
+    }
+
+    @Test("With the popup closed a failure with its own words shows on the HUD and not in the notice line", arguments: MusicOutcomeReporterTests.accountFailures)
+    func failureTextUsesTheHud(text: String) async {
+        let s = await Setup(popupOpen: false)
+
+        s.reporter.reportFailure(text)
+
+        #expect(s.hud.messages == [HUDMessage(symbol: "exclamationmark.triangle", text: text)])
+        #expect(s.notice == nil)
+    }
+
+    @Test("A signed-out popup draws no notice line, so a failure with its own words goes to the HUD")
+    func failureTextSignedOutUsesTheHud() async {
+        let s = await Setup(signedIn: false, popupOpen: true)
+
+        s.reporter.reportFailure(Self.accountFailures[0])
+
+        #expect(s.hud.messages == [HUDMessage(symbol: "exclamationmark.triangle", text: Self.accountFailures[0])])
+        #expect(s.notice == nil)
+    }
+
+    @Test("A channel switch that failed shows in the open popup's notice line and leaves lastError alone")
+    func failedSwitchShowsInTheNoticeLine() async {
+        let s = await Setup(popupOpen: true)
+        await s.h.backend.setSessionCookies([StoredCookie(MusicSamples.cookie("SAPISID", domain: ".youtube.com"))])
+        await s.h.backend.setSignInError(MusicError.signedOut)
+
+        s.h.service.switchChannel()
+        await s.h.service.channelSwitchTask?.value
+        s.h.windows.channelPicker?([StoredCookie(MusicSamples.cookie("__Secure-3PAPISID", domain: ".youtube.com"))])
+        await s.h.service.channelSwitchTask?.value
+
+        #expect(s.notice?.text == "Couldn't switch the channel. Still playing as before.")
+        #expect(s.notice?.isError == true)
+        #expect(s.hud.messages.isEmpty)
+        #expect(s.h.service.lastError == nil)
+        #expect(s.h.service.authState == .signedIn)
+    }
+
+    @Test("An account that could not be added shows on the HUD when the popup is closed by then, and leaves lastError alone")
+    func failedAddShowsOnTheHud() async {
+        let s = await Setup(popupOpen: false)
+        await s.h.backend.setSignInError(MusicError.signedOut)
+
+        s.h.service.useAnotherAccount()
+        s.h.windows.signIn?([StoredCookie(MusicSamples.cookie("__Secure-3PAPISID", domain: ".youtube.com"))])
+        await s.h.service.addAccountTask?.value
+
+        #expect(s.hud.messages == [HUDMessage(symbol: "exclamationmark.triangle", text: Self.accountFailures[0])])
+        #expect(s.notice == nil)
+        #expect(s.h.service.lastError == nil)
+        #expect(s.h.service.authState == .signedIn)
+        // The line wraps on the tile, so it stays up longer than the short ones.
+        #expect(s.hud.messages.first?.hideDelay(base: .milliseconds(1100)) == .milliseconds(2500))
     }
 }
 

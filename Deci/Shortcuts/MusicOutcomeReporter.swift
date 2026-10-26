@@ -1,11 +1,13 @@
 // Deci/Shortcuts/MusicOutcomeReporter.swift
 import Foundation
 
-/// Shows what a Like, Dislike or Save shortcut could not do. `ShortcutsRegistry` holds one, so tests can stand in for
-/// it.
+/// Shows what a Like, Dislike or Save shortcut could not do, and what an account action could not do. `ShortcutsRegistry`
+/// holds one, so tests can stand in for it.
 @MainActor
 protocol MusicOutcomeReporting: AnyObject {
     func report(_ outcome: MusicActionOutcome)
+    /// Shows a failure that has its own words, in the place `report` shows an outcome.
+    func reportFailure(_ text: String)
 }
 
 /// Puts a shortcut's outcome where the user is looking. With the Music popup open it is the popup's notice line: the
@@ -30,10 +32,27 @@ final class MusicOutcomeReporter: MusicOutcomeReporting {
     /// refusal or a failure shows where the user is looking.
     func report(_ outcome: MusicActionOutcome) {
         guard let message = outcome.hudMessage else { return }
-        if popupOpener.isOpen, let service = musicHost.service, service.authState == .signedIn {
+        if let service = serviceWithNoticeLine {
             service.trackActions.post(outcome)
         } else {
             hud.showMessage(message)
         }
+    }
+
+    /// A failure that has its own words, as an account action's. It shows as an error, on the same terms as an outcome.
+    /// The Add account window and the channel picker are windows of their own, so the popup may be closed by the time
+    /// the failure lands; then the HUD shows it, and a line too long for one row wraps there.
+    func reportFailure(_ text: String) {
+        if let service = serviceWithNoticeLine {
+            service.trackActions.post(text, isError: true)
+        } else {
+            hud.showMessage(HUDMessage(symbol: "exclamationmark.triangle", text: text))
+        }
+    }
+
+    /// The service whose popup is open and draws a notice line; nil when the HUD has to show it.
+    private var serviceWithNoticeLine: MusicService? {
+        guard popupOpener.isOpen, let service = musicHost.service, service.authState == .signedIn else { return nil }
+        return service
     }
 }

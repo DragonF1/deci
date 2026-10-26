@@ -21,6 +21,8 @@ private final class SignInProbe {
     var windowRaises = 0
     /// Every value `onNativePlayingChange` reported, in order.
     var nativeChanges: [Bool] = []
+    /// Every line `onAccountFailure` was told, in order.
+    var accountFailures: [String] = []
 }
 
 /// The Mixer row's volume and mute as the service sees them, changed by a test mid-listen.
@@ -76,6 +78,7 @@ private struct Harness {
             refreshOnCreate: false
         )
         service.onNativePlayingChange = { probe.nativeChanges.append($0) }
+        service.onAccountFailure = { probe.accountFailures.append($0) }
     }
 
     /// Waits until the play and radio work started so far, including follow-ups they start, has finished.
@@ -251,6 +254,8 @@ struct MusicServiceAuthTests {
 
         #expect(h.service.authState == .signedOut)
         #expect(h.service.lastError?.contains("403") == true)
+        // The signed-out screen has its caption; only the two signed-in account actions go through the account line.
+        #expect(h.probe.accountFailures.isEmpty)
     }
 
     @Test("signOut wipes the backend, results and playback")
@@ -404,6 +409,7 @@ struct MusicServiceChannelSwitchTests {
         #expect(h.service.isBrandChannel == true)
         #expect(!h.service.isSwitchingChannel)
         #expect(h.service.lastError == nil)
+        #expect(h.probe.accountFailures.isEmpty)
     }
 
     @Test("closing the picker keeps the session as it was")
@@ -417,6 +423,7 @@ struct MusicServiceChannelSwitchTests {
         #expect(h.service.authState == .signedIn)
         #expect(h.service.isBrandChannel == false)
         #expect(!h.service.isSwitchingChannel)
+        #expect(h.probe.accountFailures.isEmpty)
     }
 
     @Test("a second switchChannel while the picker is open is ignored")
@@ -460,7 +467,7 @@ struct MusicServiceChannelSwitchTests {
         #expect(h.probe.pickerSessions.isEmpty)
     }
 
-    @Test("a failed switch keeps the session and says so")
+    @Test("a failed switch keeps the session and says so through the account line, not lastError")
     func failedSwitch() async {
         let h = await signedInHarness()
         await h.backend.setSignInError(MusicError.signedOut)
@@ -470,8 +477,117 @@ struct MusicServiceChannelSwitchTests {
         await h.service.channelSwitchTask?.value
 
         #expect(h.service.authState == .signedIn)
-        #expect(h.service.lastError?.contains("Still playing as before") == true)
+        #expect(h.probe.accountFailures == ["Couldn't switch the channel. Still playing as before."])
+        #expect(h.service.lastError == nil)
         #expect(!h.service.isSwitchingChannel)
+    }
+
+    @Test("a failed switch does not turn a search that found nothing into a failed search")
+    func failedSwitchLeavesSearchAlone() async {
+        let h = await signedInHarness()
+        let nav = MusicSearchNavigation(service: h.service)
+        await h.backend.setSearch("nothing", results: [])
+        h.service.query = "nothing"
+        nav.submit()
+        await h.service.searchTask?.value
+        #expect(nav.panel == .noResults)
+
+        await h.backend.setSignInError(MusicError.signedOut)
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(Self.picked)
+        await h.service.channelSwitchTask?.value
+
+        #expect(h.probe.accountFailures.count == 1)
+        #expect(nav.panel == .noResults)
+    }
+
+    @Test("opening the picker leaves a failed search failed: the line belongs to the search, not to this window")
+    func openingPickerLeavesFailedSearch() async {
+        let h = await signedInHarness()
+        let nav = MusicSearchNavigation(service: h.service)
+        await h.backend.setSearchError("bad", URLError(.notConnectedToInternet))
+        h.service.query = "bad"
+        nav.submit()
+        await h.service.searchTask?.value
+        #expect(nav.panel == .failed)
+
+        h.service.switchChannel()
+        #expect(nav.panel == .failed)
+        await h.service.channelSwitchTask?.value
+        #expect(h.probe.pickerSessions == [Self.current])
+        #expect(nav.panel == .failed)
+    }
+
+    @Test("a dead session between the pick and the sign-in reports no failure: the signed-out screen shows, and the switch ends")
+    func deadSessionBeforeSignInReportsNothing() async {
+        let h = await signedInHarness()
+        await h.backend.setSignInError(URLError(.notConnectedToInternet))
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        // The pick lands and the session dies before the task that signs the picked one in has run.
+        h.probe.pickerCompletion?(Self.picked)
+        h.service.trackActions.onSessionExpired?()
+        await h.service.channelSwitchTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(h.probe.accountFailures.isEmpty)
+        #expect(!h.service.isSwitchingChannel)
+    }
+
+    @Test("a dead session while the pick is going in does not leave Switch channel stuck: after signing in again it opens the picker")
+    func deadSessionDuringSwitchFreesTheFlag() async {
+        let h = await signedInHarness()
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(Self.picked)
+        h.service.trackActions.onSessionExpired?()
+        await h.service.channelSwitchTask?.value
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(!h.service.isSwitchingChannel)
+        #expect(h.probe.accountFailures.isEmpty)
+
+        h.service.signIn()
+        h.probe.completion?(Self.current)
+        await h.service.signInTask?.value
+        #expect(h.service.authState == .signedIn)
+
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(h.probe.pickerSessions.count == 2)
+        #expect(h.probe.windowRaises == 0)
+    }
+
+    @Test("a switch cut off by a sign-out reports nothing and leaves a newer switch's flag alone, though signed in again")
+    func staleSwitchStaysSilent() async {
+        let h = await signedInHarness()
+        let gate = MusicTestGate()
+        await h.backend.setSignInError(URLError(.notConnectedToInternet))
+        await h.backend.setSignInGate(gate)
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        h.probe.pickerCompletion?(Self.picked)
+        let stale = h.service.channelSwitchTask
+        let parked = await h.eventually { await h.backend.signInCookies.count == 1 }
+        #expect(parked)
+
+        // The sign-out cancels the switch; the session is back before its sign-in comes back with the failure.
+        h.service.signOut()
+        await h.service.signOutTask?.value
+        await h.backend.setSignedIn(true)
+        await h.service.refreshAuth()
+        #expect(h.service.authState == .signedIn)
+        h.service.switchChannel()
+        await h.service.channelSwitchTask?.value
+        #expect(h.service.isSwitchingChannel)
+
+        await gate.open()
+        await stale?.value
+
+        #expect(h.probe.accountFailures.isEmpty)
+        #expect(h.service.isSwitchingChannel)
     }
 
     @Test("a sign-out while the picker is open drops the pick")
@@ -1055,7 +1171,7 @@ struct MusicServiceUseAnotherAccountTests {
 
     // MARK: Failure
 
-    @Test("a refused sign-in keeps the old session, account and playback, and says so")
+    @Test("a refused sign-in keeps the old session, account and playback, and says so through the account line, not lastError")
     func failureKeepsSession() async {
         let h = await signedInHarness()
         await h.backend.setSignInError(MusicError.signedOut)
@@ -1069,7 +1185,66 @@ struct MusicServiceUseAnotherAccountTests {
         #expect(h.service.browse.home == .loaded([MusicSamples.shelf("Quick picks", "VLPL1")]))
         #expect(h.player.nowPlaying?.videoId == "a")
         #expect(h.queuedIDs == ["a", "b", "c"])
-        #expect(h.service.lastError?.contains("Still signed in as before") == true)
+        #expect(h.probe.accountFailures == ["Couldn't add the account. Still signed in as before."])
+        #expect(h.service.lastError == nil)
+    }
+
+    @Test("a refused sign-in does not turn a search that found nothing into a failed search")
+    func failureLeavesSearchAlone() async {
+        let h = await signedInHarness()
+        let nav = MusicSearchNavigation(service: h.service)
+        await h.backend.setSearch("nothing", results: [])
+        h.service.query = "nothing"
+        nav.submit()
+        await h.service.searchTask?.value
+        #expect(nav.panel == .noResults)
+
+        await h.backend.setSignInError(MusicError.signedOut)
+        h.service.useAnotherAccount()
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+
+        #expect(h.probe.accountFailures.count == 1)
+        #expect(nav.panel == .noResults)
+    }
+
+    @Test("opening the window leaves a failed search failed: the line belongs to the search, not to this window")
+    func openingLeavesFailedSearch() async {
+        let h = await signedInHarness()
+        let nav = MusicSearchNavigation(service: h.service)
+        await h.backend.setSearchError("bad", URLError(.notConnectedToInternet))
+        h.service.query = "bad"
+        nav.submit()
+        await h.service.searchTask?.value
+        #expect(nav.panel == .failed)
+
+        h.service.useAnotherAccount()
+        #expect(nav.panel == .failed)
+        h.probe.completion?(nil)
+        #expect(nav.panel == .failed)
+    }
+
+    @Test("a refused sign-in after the session died is the signed-out screen's line, not a claim of still being signed in")
+    func failureAfterDeadSession() async {
+        let h = await signedInHarness()
+        await h.backend.setSearchError("q", MusicError.signedOut)
+        h.service.useAnotherAccount()
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        await h.service.signOutTask?.value
+        #expect(h.service.authState == .signedOut)
+        #expect(h.service.isAddingAccount)
+
+        let refusal = URLError(.notConnectedToInternet)
+        await h.backend.setSignInError(refusal)
+        h.probe.completion?(Self.other)
+        await h.service.addAccountTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(!h.service.isAddingAccount)
+        #expect(h.probe.accountFailures.isEmpty)
+        #expect(h.service.lastError == MusicService.message(for: refusal))
     }
 
     // MARK: Races

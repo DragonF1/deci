@@ -15,6 +15,8 @@ final class HUDWindowController: MediaKeyHUDPresenting {
     private var hostingView: NSHostingView<AnyView>?
     private var hideTask: Task<Void, Never>?
     private var styleAtLastShow: HUDStyle = .tahoe
+    /// The message on screen, nil while the volume HUD is. It sets how long the tile stays, also after a hover.
+    private var messageAtLastShow: HUDMessage?
 
     /// Slider fraction in [0, 1]. The wiring site converts to gain using the current device's tier.
     var volumeWriter: ((Double) -> Void)?
@@ -29,6 +31,8 @@ final class HUDWindowController: MediaKeyHUDPresenting {
     var frameProvider: () -> NSRect? = { NSScreen.main?.visibleFrame ?? NSScreen.screens.first?.visibleFrame }
     private(set) var showCallCount: Int = 0
     private(set) var showDidUpdatePanel: Bool = false
+    /// The delay the hide timer was last started with, for tests.
+    private(set) var scheduledHideDelay: Duration?
     /// The panel's window level; nil until the first show builds the panel.
     var panelLevel: NSWindow.Level? { panel?.level }
 
@@ -96,6 +100,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         let style = settingsManager.appSettings.hudStyle
         let appearance = settingsManager.appSettings.appearance
         styleAtLastShow = style
+        messageAtLastShow = nil
         let panel = ensurePanel()
         // The panel is shared with the messages, so each show sets its own level.
         panel.level = Self.volumeLevel
@@ -165,15 +170,17 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         postAccessibilityAnnouncement(panel: panel, sliderFraction: sliderFraction, mute: mute, deviceName: deviceName)
     }
 
-    /// Shows one short line with a symbol, for what a hotkey came to. Same panel, place and timing as the volume HUD. It
-    /// bypasses the fullscreen guard and the popup guard because the user explicitly invoked it: the caller decides
-    /// whether a popup shows the line instead (`MusicOutcomeReporter`).
+    /// Shows one short line with a symbol, for what a hotkey came to. Same panel, place and timing as the volume HUD,
+    /// except that a line that wraps stays longer (`HUDMessage.hideDelay(base:)`). It bypasses the fullscreen guard and
+    /// the popup guard because the user explicitly invoked it: the caller decides whether a popup shows the line instead
+    /// (`MusicOutcomeReporter`).
     func showMessage(_ message: HUDMessage) {
         showCallCount += 1
         showDidUpdatePanel = false
 
         let appearance = settingsManager.appSettings.appearance
         styleAtLastShow = .tahoe
+        messageAtLastShow = message
         let panel = ensurePanel()
         panel.level = Self.messageLevel
         panel.appearance = appearance.nsAppearance
@@ -316,9 +323,17 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         return p
     }
 
+    /// The volume HUD's delay, or the message's own while a message is up. A test's override applies to both.
+    private func currentHideDelay(for style: HUDStyle) -> Duration {
+        let base = hideDelay(for: style)
+        guard hideDelayOverride == nil, let message = messageAtLastShow else { return base }
+        return message.hideDelay(base: base)
+    }
+
     private func scheduleHide(for style: HUDStyle) {
         hideTask?.cancel()
-        let delay = hideDelay(for: style)
+        let delay = currentHideDelay(for: style)
+        scheduledHideDelay = delay
         hideTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
@@ -426,10 +441,11 @@ private struct MessageHUD: View {
                 .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(DesignTokens.Colors.hudTileActive)
                 .frame(width: Self.iconSize, height: Self.iconSize)
+            // Two rows: an account failure's line ("Couldn't switch the channel. Still playing as before.") is wider than one.
             Text(message.text)
                 .font(TahoeStyleHUD.nameFont)
                 .foregroundStyle(DesignTokens.Colors.textPrimary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }

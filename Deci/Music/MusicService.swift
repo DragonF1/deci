@@ -107,6 +107,11 @@ final class MusicService {
     /// Told, with the kind, when a rating YouTube Music did not take goes back, so a burst or removal of that kind still
     /// showing is cut short. A song that is not playing is not told.
     @ObservationIgnored var onRatingBurstCancel: (@MainActor (MusicRateBurst.Kind) -> Void)?
+    /// Told, with its words, when adding an account or switching the channel failed. The old session stays, so these are
+    /// not `lastError`, which belongs to the signed-out screen and marks a search as failed. The app shows them where the
+    /// listener is looking, the Music popup's notice line or else the HUD (`MusicOutcomeReporter`). The words hold no
+    /// cookies and no URLs. Without a listener the failure shows nowhere.
+    @ObservationIgnored var onAccountFailure: (@MainActor (String) -> Void)?
 
     /// One playback session: one CPN, one listening-time count, one playback ping and, when the stream has a
     /// watchtime URL, the watchtime pings with the same CPN: one with the playback ping, one per 40 s of playing
@@ -518,7 +523,6 @@ final class MusicService {
         }
         guard !isSwitchingChannel else { return }
         isAddingAccount = true
-        lastError = nil
         addAccountGeneration += 1
         let generation = addAccountGeneration
         presentSignIn { [weak self] cookies in
@@ -535,6 +539,7 @@ final class MusicService {
         addAccountTask = Task { [weak self] in
             // A sign-out or a new sign-in since the pick bumps the generation: the pick must not sign anyone back in.
             guard let self, !Task.isCancelled, generation == self.addAccountGeneration else { return }
+            var refusal: (any Error)?
             do {
                 try await self.backend.signIn(with: cookies)
                 guard !Task.isCancelled, generation == self.addAccountGeneration else { return }
@@ -542,9 +547,17 @@ final class MusicService {
             } catch {
                 guard generation == self.addAccountGeneration else { return }
                 logger.error("adding an account failed: \(Self.logDescription(of: error), privacy: .public)")
-                self.lastError = "Couldn't add the account. Still signed in as before."
+                refusal = error
             }
             self.isAddingAccount = false
+            guard let refusal else { return }
+            if self.authState == .signedIn {
+                self.onAccountFailure?("Couldn't add the account. Still signed in as before.")
+            } else {
+                // A dead session keeps the window open (see `handle`), so the pick can land on the signed-out screen:
+                // there is no old session to have kept, and that screen shows `lastError`.
+                self.lastError = Self.message(for: refusal)
+            }
         }
     }
 
@@ -602,11 +615,12 @@ final class MusicService {
             return
         }
         isSwitchingChannel = true
-        lastError = nil
         channelSwitchTask = Task { [weak self, backend] in
             let cookies = await backend.sessionCookies()
-            guard let self, !Task.isCancelled, self.authState == .signedIn, !cookies.isEmpty else {
-                self?.isSwitchingChannel = false
+            // A sign-out cancels this and puts the switch away itself; a newer switch may hold the flag by now.
+            guard let self, !Task.isCancelled else { return }
+            guard self.authState == .signedIn, !cookies.isEmpty else {
+                self.isSwitchingChannel = false
                 return
             }
             self.presentChannelPicker(cookies) { [weak self] picked in
@@ -622,36 +636,51 @@ final class MusicService {
             return
         }
         channelSwitchTask = Task { [weak self] in
-            // A sign-out since the pick cancels this; the picked session must not sign back in.
+            // A sign-out since the pick cancels this and puts the switch away itself; the picked session must not sign back in.
             guard let self, !Task.isCancelled else { return }
+            var failed = false
             do {
                 try await self.backend.signIn(with: cookies)
-                guard self.authState == .signedIn else { return }
-                // Stay in "switching" until the new identity is known.
-                self.identityTask?.cancel()
-                // The queue keeps playing under the picked channel: its snapshots take that channel's key once it is read.
-                self.dropSessionKey()
-                self.refreshSessionKey()
-                self.isBrandChannel = nil
-                // Home and the library belong to the channel: what is loaded is the old one's.
-                self.browse.reset()
-                self.trackActions.reset()
-                // The other channel has its own likes: the song playing is read again.
-                self.likes.reset()
-                self.related.reset()
-                self.loadLikeStatus()
-                // The card shows the channel that was picked, not the one that was left.
-                self.clearAccount()
-                self.refreshAccount()
-                let identity = await self.backend.channelIdentity()
-                guard !Task.isCancelled, self.authState == .signedIn else { return }
-                self.isBrandChannel = identity
+                await self.takeUpPickedChannel()
             } catch {
                 logger.error("channel switch failed: \(Self.logDescription(of: error), privacy: .public)")
-                self.lastError = "Couldn't switch the channel. Still playing as before."
+                failed = true
             }
+            // A cancel is a sign-out, which has reset the flag, and a newer switch may hold it now: this one touches nothing.
+            guard !Task.isCancelled else { return }
+            // Every other end of a started switch frees the flag, a dead session included: else Switch channel would
+            // only raise a window that is not there after the next sign-in.
             self.isSwitchingChannel = false
+            // A sign-out while the pick was going in leaves no session to have kept: the signed-out screen shows.
+            if failed, self.authState == .signedIn {
+                self.onAccountFailure?("Couldn't switch the channel. Still playing as before.")
+            }
         }
+    }
+
+    /// The backend holds the picked channel's session: what belonged to the channel left is dropped and read again.
+    /// A session that ended meanwhile, by a sign-out or a dead session, takes up nothing.
+    private func takeUpPickedChannel() async {
+        guard !Task.isCancelled, authState == .signedIn else { return }
+        // Stay in "switching" until the new identity is known.
+        identityTask?.cancel()
+        // The queue keeps playing under the picked channel: its snapshots take that channel's key once it is read.
+        dropSessionKey()
+        refreshSessionKey()
+        isBrandChannel = nil
+        // Home and the library belong to the channel: what is loaded is the old one's.
+        browse.reset()
+        trackActions.reset()
+        // The other channel has its own likes: the song playing is read again.
+        likes.reset()
+        related.reset()
+        loadLikeStatus()
+        // The card shows the channel that was picked, not the one that was left.
+        clearAccount()
+        refreshAccount()
+        let identity = await backend.channelIdentity()
+        guard !Task.isCancelled, authState == .signedIn else { return }
+        isBrandChannel = identity
     }
 
     /// Stops playback and pending work, and writes any cookie change still held back to the Keychain.

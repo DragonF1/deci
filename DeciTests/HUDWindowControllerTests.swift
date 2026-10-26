@@ -351,11 +351,99 @@ struct HUDWindowControllerMessageTests {
         #expect(hud.showDidUpdatePanel == true)
     }
 
-    @Test("The message HUD uses the same hide delay as the volume HUD")
+    @Test("A short message uses the same hide delay as the volume HUD")
     func sameTiming() {
         let hud = makeController()
+        defer { hud.shutdown() }
         hud.hideDelayOverride = nil
         #expect(hud.hideDelay(for: .tahoe) == .milliseconds(1100))
+
+        hud.showMessage(message)
+        #expect(hud.scheduledHideDelay == .milliseconds(1100))
+    }
+
+    @Test("A long message that wraps stays up longer, and the volume HUD after it is back to its own delay")
+    func longMessageStaysLonger() {
+        let hud = makeController()
+        defer { hud.shutdown() }
+        hud.hideDelayOverride = nil
+
+        hud.showMessage(HUDMessage(symbol: "exclamationmark.triangle", text: Self.longText))
+        #expect(hud.scheduledHideDelay == .milliseconds(2500))
+
+        hud.show(sliderFraction: 0.5, mute: false, deviceName: "")
+        #expect(hud.scheduledHideDelay == .milliseconds(1100))
+
+        hud.showMessage(message)
+        #expect(hud.scheduledHideDelay == .milliseconds(1100))
+    }
+
+    @Test("The override of a test wins over the longer delay of a long message")
+    func overrideWinsOverLongMessage() {
+        let hud = makeController()
+        defer { hud.shutdown() }
+        hud.hideDelayOverride = .milliseconds(20)
+
+        hud.showMessage(HUDMessage(symbol: "exclamationmark.triangle", text: Self.longText))
+
+        #expect(hud.scheduledHideDelay == .milliseconds(20))
+    }
+
+    private static let longText = "Couldn't add the account. Still signed in as before."
+}
+
+// MARK: - Message hide delay
+
+@Suite("HUDMessage: hide delay")
+struct HUDMessageHideDelayTests {
+    private let base = Duration.milliseconds(1100)
+
+    @Test("every line a hotkey outcome words keeps the base delay", arguments: MusicActionOutcome.allCases)
+    func outcomeLinesKeepTheBase(outcome: MusicActionOutcome) {
+        guard let message = outcome.hudMessage else { return }
+        #expect(message.hideDelay(base: base) == base)
+    }
+
+    @Test("a rating that was made still has no line to time")
+    func someOutcomesHaveNoLine() {
+        #expect(MusicActionOutcome.allCases.compactMap(\.hudMessage).count == 4)
+    }
+
+    @Test("a line that wraps on the tile's second row stays 2.5 s", arguments: [
+        "Couldn't add the account. Still signed in as before.",
+        "Couldn't switch the channel. Still playing as before."
+    ])
+    func wrappingLinesStayLonger(text: String) {
+        let message = HUDMessage(symbol: "exclamationmark.triangle", text: text)
+        #expect(message.hideDelay(base: base) == .milliseconds(2500))
+    }
+
+    @Test("the line is long from 31 characters: 30 keep the base")
+    func boundary() {
+        let thirty = HUDMessage(symbol: "star", text: String(repeating: "a", count: 30))
+        let thirtyOne = HUDMessage(symbol: "star", text: String(repeating: "a", count: 31))
+        #expect(thirty.hideDelay(base: base) == base)
+        #expect(thirtyOne.hideDelay(base: base) == .milliseconds(2500))
+    }
+
+    @Test("characters are counted, not bytes: emoji and accents do not make a short line long")
+    func charactersNotBytes() {
+        let emoji = HUDMessage(symbol: "star", text: String(repeating: "\u{1F3B5}", count: 10))
+        let accents = HUDMessage(symbol: "star", text: String(repeating: "\u{E9}", count: 30))
+        #expect(emoji.hideDelay(base: base) == base)
+        #expect(accents.hideDelay(base: base) == base)
+    }
+
+    @Test("an empty line keeps the base")
+    func emptyLine() {
+        #expect(HUDMessage(symbol: "star", text: "").hideDelay(base: base) == base)
+    }
+
+    @Test("the base is passed through, so a longer line never gets less than a slow base")
+    func slowBaseIsKept() {
+        let slow = Duration.seconds(4)
+        let message = HUDMessage(symbol: "star", text: String(repeating: "a", count: 60))
+        #expect(message.hideDelay(base: slow) == slow)
     }
 }
 

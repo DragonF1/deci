@@ -114,6 +114,8 @@ actor FakeMusicBackend: MusicBackend {
 
     private var signedIn: Bool
     private var signInError: (any Error)?
+    /// Holds a `signIn(with:)` once its cookies are recorded, so a test can act while a sign-in is in flight.
+    private var signInGate: MusicTestGate?
     private var searchResults: [String: [Deci.MusicTrack]] = [:]
     private var searchErrors: [String: any Error] = [:]
     private var searchGates: [String: MusicTestGate] = [:]
@@ -261,6 +263,7 @@ actor FakeMusicBackend: MusicBackend {
     func setAccountError(_ error: (any Error)?) { accountError = error }
     func setAccountGate(_ gate: MusicTestGate?) { accountGate = gate }
     func setSignInError(_ error: (any Error)?) { signInError = error }
+    func setSignInGate(_ gate: MusicTestGate?) { signInGate = gate }
     func setSearch(_ query: String, results: [Deci.MusicTrack]) { searchResults[query] = results }
     func setSearchError(_ query: String, _ error: any Error) { searchErrors[query] = error }
     func setSearchGate(_ query: String, _ gate: MusicTestGate) { searchGates[query] = gate }
@@ -435,7 +438,10 @@ actor FakeMusicBackend: MusicBackend {
 
     func signIn(with cookies: [StoredCookie]) async throws {
         signInCookies.append(cookies)
-        if let signInError { throw signInError }
+        // The answer is what was scripted when the call was made, even if the gate holds it while the test scripts more.
+        let gate = signInGate, error = signInError
+        if let gate { await gate.wait() }
+        if let error { throw error }
         signedIn = true
     }
 

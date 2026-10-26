@@ -85,7 +85,7 @@ struct AccessibilityPromptStrip: View {
 
     private var message: String {
         showingGrantedFlourish
-            ? "Access granted — volume keys now control Deci."
+            ? "Access granted. Volume keys now control Deci."
             : "Deci needs Accessibility to intercept F10 / F11 / F12."
     }
 

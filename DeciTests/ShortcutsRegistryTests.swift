@@ -408,7 +408,9 @@ final class FakeMusicShortcuts: MusicShortcutActing {
 @MainActor
 final class RecordingOutcomeReporter: MusicOutcomeReporting {
     private(set) var outcomes: [MusicActionOutcome] = []
+    private(set) var failures: [String] = []
     func report(_ outcome: MusicActionOutcome) { outcomes.append(outcome) }
+    func reportFailure(_ text: String) { failures.append(text) }
 }
 
 @MainActor

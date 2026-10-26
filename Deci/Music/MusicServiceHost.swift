@@ -12,8 +12,8 @@ final class MusicServiceHost {
     /// the player is unmounted when the Music icon is hidden in Settings and built again when it is shown, and the
     /// view takes this one back, so an artist opened from the search results is still open (and Back still returns to the results).
     private(set) var navigation: MusicSearchNavigation?
-    /// Where a menu pick's Like or Dislike outcome shows, passed on to the navigation whenever either exists. Not held:
-    /// the reporter holds the host.
+    /// Where a menu pick's Like or Dislike outcome shows, passed on to the navigation whenever either exists, and where
+    /// the service's account failures show. Not held: the reporter holds the host.
     @ObservationIgnored weak var outcomes: (any MusicOutcomeReporting)? {
         didSet { navigation?.outcomes = outcomes }
     }
@@ -148,6 +148,8 @@ final class MusicServiceHost {
         service.onRatingBurst = { [weak self] kind in self?.burst.play(kind) }
         service.onRatingRemoval = { [weak self] kind in self?.burst.playRemoval(of: kind) }
         service.onRatingBurstCancel = { [weak self] kind in self?.burst.cancel(kind) }
+        // Read when the failure lands, not now: the reporter is set after the host is built, and may be set after this.
+        service.onAccountFailure = { [weak self] text in self?.outcomes?.reportFailure(text) }
         self.service = service
         let navigation = MusicSearchNavigation(service: service)
         navigation.outcomes = outcomes
