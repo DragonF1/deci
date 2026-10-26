@@ -1,5 +1,5 @@
 // FineTuneTests/SettingsManagerTests.swift
-// Tests for SettingsManager.Settings JSON round-trip, merge algorithm, and pruning.
+// Tests for SettingsManager.Settings JSON round-trip and merge algorithm.
 // Uses temp directories — no real settings files affected.
 
 import Testing
@@ -1149,26 +1149,6 @@ struct SettingsManagerMultiOutputSinceTests {
 
         #expect(manager.getMultiOutputSince(for: id) == nil)
         #expect(manager.getMultiOutputSince(for: "com.deci.tests.Other") == nil)
-    }
-
-    @Test("A time with no selection mode behind it is pruned with the stale app")
-    func pruneDropsOrphanTimes() {
-        let manager = SettingsManager(directory: makeDirectory())
-        manager.setMultiOutputSince(t0, for: id)
-
-        manager.pruneStaleSettings(keeping: [])
-
-        #expect(manager.getMultiOutputSince(for: id) == nil)
-    }
-
-    @Test("A Multi app keeps its time through pruning")
-    func pruneKeepsMultiApps() {
-        let manager = SettingsManager(directory: makeDirectory())
-        manager.setDeviceSelectionMode(for: id, to: .multi, at: t0)
-
-        manager.pruneStaleSettings(keeping: [])
-
-        #expect(manager.getMultiOutputSince(for: id) == t0)
     }
 
     @Test("multiOutputIdentifiers lists only Multi items that have the device selected")

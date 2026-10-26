@@ -800,66 +800,6 @@ final class SettingsManager {
         return result
     }
 
-    /// Removes per-app settings for apps that are no longer active, not pinned,
-    /// and have only default values. Preserves device routing (explicit user intent).
-    ///
-    /// - Parameter activeIdentifiers: Persistence identifiers of currently active apps.
-    func pruneStaleSettings(keeping activeIdentifiers: Set<String>) {
-        let allIdentifiers = Set(settings.appVolumes.keys)
-            .union(settings.appBoosts.keys)
-            .union(settings.appMutes.keys)
-            .union(settings.appEQSettings.keys)
-            .union(settings.appDeviceSelectionMode.keys)
-            .union(settings.appSelectedDeviceUIDs.keys)
-            .union(settings.appMultiOutputSince.keys)
-
-        var pruned = 0
-        for identifier in allIdentifiers {
-            // Keep active apps
-            if activeIdentifiers.contains(identifier) { continue }
-            // Keep pinned apps
-            if settings.pinnedApps.contains(identifier) { continue }
-            // Keep apps with explicit device routing (user intent)
-            if settings.appDeviceRouting[identifier] != nil { continue }
-
-            // Check if all remaining settings are default values
-            let volume = settings.appVolumes[identifier]
-            let mute = settings.appMutes[identifier]
-            let eq = settings.appEQSettings[identifier]
-            let selectionMode = settings.appDeviceSelectionMode[identifier]
-            let selectedUIDs = settings.appSelectedDeviceUIDs[identifier]
-
-            let boost = settings.appBoosts[identifier]
-
-            let isDefaultVolume = volume == nil || volume == 1.0
-            let isDefaultBoost = boost == nil || boost == BoostLevel.x1.rawValue
-            let isDefaultMute = mute == nil || mute == false
-            let isDefaultEQ = eq == nil || eq == .flat
-            let isDefaultSelectionMode = selectionMode == nil
-            let isDefaultSelectedUIDs = selectedUIDs == nil || selectedUIDs?.isEmpty == true
-
-            guard isDefaultVolume && isDefaultBoost && isDefaultMute && isDefaultEQ
-                    && isDefaultSelectionMode && isDefaultSelectedUIDs else {
-                continue
-            }
-
-            // All values are defaults — safe to prune
-            settings.appVolumes.removeValue(forKey: identifier)
-            settings.appBoosts.removeValue(forKey: identifier)
-            settings.appMutes.removeValue(forKey: identifier)
-            settings.appEQSettings.removeValue(forKey: identifier)
-            settings.appDeviceSelectionMode.removeValue(forKey: identifier)
-            settings.appSelectedDeviceUIDs.removeValue(forKey: identifier)
-            settings.appMultiOutputSince.removeValue(forKey: identifier)
-            pruned += 1
-        }
-
-        if pruned > 0 {
-            logger.info("Pruned \(pruned) stale app settings entries")
-            scheduleSave()
-        }
-    }
-
     // MARK: - Per-Device AutoEQ
 
     func getAutoEQSelection(for deviceUID: String) -> AutoEQSelection? {

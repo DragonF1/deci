@@ -79,8 +79,6 @@ final class MusicMixerState: InProcessAudioSink {
     private(set) var outputDeviceUID: String?
     /// True once an engine was attached. Stays true if that engine goes away: the state is only meaningful per app run.
     private(set) var hasEngine = false
-    /// The name of the AutoEQ profile in effect on the device in use. nil when none.
-    private(set) var autoEQProfileName: String?
     /// Whether the music plays on one output (the chosen device, else the default) or on several at once.
     private(set) var deviceSelectionMode: DeviceSelectionMode = .single
     /// The devices ticked for Multi mode. Kept while they are unplugged and while the mode is Single: it is the user's
@@ -520,9 +518,7 @@ final class MusicMixerState: InProcessAudioSink {
         }
     }
 
-    /// Hands the profile to the chain and keeps its name.
     private func applyAutoEQ(_ profile: AutoEQProfile?) {
         chain.setAutoEQProfile(profile)
-        autoEQProfileName = profile?.name
     }
 }

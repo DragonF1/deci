@@ -1035,7 +1035,6 @@ struct MusicMultiOutputTests {
         #expect(rig.aggregates.stacks.last?.clockDeviceUID == "b", "a is Bluetooth, so b clocks the stack")
         #expect(rig.state.effectiveDeviceUID == "a")
         #expect(rig.state.chain.autoEQProfile?.id == "for-a")
-        #expect(rig.state.autoEQProfileName == "for-a")
     }
 
     @Test("a stack does not borrow another device's profile when its primary has none")
@@ -1045,7 +1044,6 @@ struct MusicMultiOutputTests {
         rig.playOn(["a", "b"])
         #expect(rig.state.effectiveDeviceUID == "a")
         #expect(rig.state.chain.autoEQProfile == nil, "b has a profile and is the default, but a is the primary")
-        #expect(rig.state.autoEQProfileName == nil)
     }
 
     @Test("the manual EQ stays through Multi, and going back to Single returns to that device's profile")
