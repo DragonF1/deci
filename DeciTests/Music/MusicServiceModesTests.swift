@@ -291,7 +291,7 @@ struct MusicServiceShuffleTests {
     @Test("a page tapped with shuffle on starts on that row and mixes in every other row, earlier ones too")
     func pageWhileShuffled() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(shuffle: true))
-        await h.setLongRadio(seed: "h")
+        for id in letters { await h.setLongRadio(seed: id) }
         await h.startPage(letters, tap: "d")
 
         #expect(h.service.queue.current?.videoId == "d")
@@ -300,8 +300,10 @@ struct MusicServiceShuffleTests {
         #expect(h.service.queue.hasPrevious == false)
         #expect(Set(h.upcomingIDs) == Set(letters.filter { $0 != "d" }))
         #expect(h.loadedIDs == ["d"])
-        // The loaded page stages the radio of its last song in the page's order, which the shuffle leaves alone.
-        #expect(await h.backend.radioSeeds == ["h"])
+        // The loaded page stages the radio of its last song in the play order: the shuffle moved it off the page's last.
+        let last = h.queuedIDs.last!
+        #expect(last != "h", "the mix must not end where the page does, or this test shows nothing")
+        #expect(await h.backend.radioSeeds == [last])
     }
 
     @Test("a shuffled playlist holds every song once with the tapped one first, and Up next is the rest in the shuffled order")
@@ -2101,7 +2103,7 @@ struct MusicServiceAutoplayTests {
         #expect(await h.backend.radioSeeds == ["b", "a"])
     }
 
-    @Test("with shuffle on the radio is seeded with the last track of the page, and it plays after the last track of the mix")
+    @Test("with shuffle on the radio is seeded with the last track of the mix, and it plays right after it")
     func shuffledHandOver() async {
         let h = ModesHarness(preferences: MusicPlaybackPreferences(shuffle: true))
         let radio = ["r1", "r2", "r3", "r4", "r5"]
@@ -2112,7 +2114,7 @@ struct MusicServiceAutoplayTests {
 
         #expect(order.first == "a")
         #expect(last != "c", "the mix must not end where the page does, or this test shows nothing")
-        #expect(await h.backend.radioSeeds == ["c"])
+        #expect(await h.backend.radioSeeds == [last])
         #expect(h.service.queue.autoplay.map(\.videoId) == radio)
         for _ in 0..<2 {
             h.service.next()
@@ -2168,18 +2170,21 @@ struct MusicServiceAutoplayTests {
         #expect(h.queuedIDs == ["a", "b"] + radio)
     }
 
-    @Test("turning shuffle on mixes the page but never the staged radio, which still plays after the last song")
+    @Test("turning shuffle on mixes the page but never the staged radio, which is asked again for the new last song and plays after it")
     func shuffleKeepsTheStagedRadioApart() async {
         let h = ModesHarness()
         let radio = ["r1", "r2", "r3", "r4", "r5"]
-        await h.setLongRadio(seed: "d")
+        for id in ["a", "b", "c", "d"] { await h.setLongRadio(seed: id) }
         await h.startPage(["a", "b", "c", "d"])
         #expect(h.service.queue.autoplay.map(\.videoId) == radio)
 
         h.service.setShuffle(true)
+        await h.settle()
 
         #expect(Set(h.queuedIDs) == ["a", "b", "c", "d"])
         #expect(h.queuedIDs.first == "a")
+        #expect(h.queuedIDs.last != "d", "the mix must not end where the page does, or this test shows nothing")
+        #expect(await h.backend.radioSeeds == ["d", h.queuedIDs.last!])
         #expect(h.service.queue.autoplay.map(\.videoId) == radio)
         let order = h.queuedIDs
         for _ in 0..<3 {

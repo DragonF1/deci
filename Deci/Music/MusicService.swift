@@ -213,8 +213,14 @@ final class MusicService {
     @ObservationIgnored private(set) var dislikeSkip: Task<Void, Never>?
     /// The radio or page fetch in flight (first radio page or a continuation); nil when none is running.
     @ObservationIgnored private(set) var radioTask: Task<Void, Never>? {
-        didSet { noteQueueFilling() }
+        didSet {
+            if radioTask == nil { pageRadioSeed = nil }
+            noteQueueFilling()
+        }
     }
+    /// The song the radio in flight follows a playlist or album page after; nil when none is, or the fetch is of another
+    /// kind. A shuffle or an edit that moves the page's last own song makes it stale (see `dropStaleRadio`).
+    @ObservationIgnored private var pageRadioSeed: String?
     /// The wait before a failed queue page is asked for again; nil when no retry is due.
     @ObservationIgnored private(set) var queueRetryTask: Task<Void, Never>? {
         didSet { noteQueueFilling() }
@@ -1199,7 +1205,9 @@ final class MusicService {
 
     /// Turning shuffle on mixes a playlist or album whole, with the current track first, so Up next shows the entire
     /// page in its shuffled order; on a radio only what comes after the current track is mixed. Turning it off puts the
-    /// whole queue back in its natural order and carries on from the current track.
+    /// whole queue back in its natural order and carries on from the current track. A page's recommendations follow its
+    /// last song in the play order, so when the change moves that song they are asked again for the new one (see
+    /// `topUpQueue`).
     func setShuffle(_ on: Bool) {
         guard on != isShuffleOn else { return }
         touchSession()
@@ -1720,6 +1728,8 @@ final class MusicService {
         let generation = radioGeneration
         // The mix of a mix page's first ask: read now, the queue may be another one by the time the task runs.
         let mixId = queue.pendingMixPlaylistId
+        // The radio that follows a page is for the page's last own song: a change of that song makes the answer stale.
+        pageRadioSeed = queue.isPage && queue.mixPlaylistId == nil ? seed : nil
         radioTask = Task { [weak self] in
             await self?.fetchQueuePage(
                 source: .radio(seedVideoId: seed), continuation: nil, generation: generation, mixId: mixId,
@@ -1728,17 +1738,40 @@ final class MusicService {
         }
     }
 
+    /// Drops the radio of a playlist or album page that was asked for a song other than the page's last own song in the
+    /// play order, which a shuffle, its undoing and the listener's edits move: the staged one, and a request still
+    /// loading, whose answer is then ignored. The caller asks again for the new last song by the usual rules. True when
+    /// something was dropped.
+    @discardableResult
+    private func dropStaleRadio() -> Bool {
+        var dropped = false
+        if let seed = pageRadioSeed, queue.isStaleRadioSeed(seed) {
+            cancelRadio()
+            dropped = true
+        }
+        if queue.dropStaleAutoplay() { dropped = true }
+        return dropped
+    }
+
     /// Asks for the next page of the radio or of the playlist page, or for a radio to follow, when the queue needs it.
     /// One fetch at a time; a fetch that starts replaces a retry that was waiting. `emptyPages` counts pages in a row
-    /// that added nothing after de-duplication.
+    /// that added nothing after de-duplication. A page's radio that no longer fits its last song is dropped first.
     private func topUpQueue(emptyPages: Int = 0) {
         // No network (or no account, for a song from its file): no radio, mix or page is asked for. The ask that was held
         // back is made when the network returns (see `connectivityChanged`).
-        guard !holdsBackRequests, radioTask == nil, emptyPages < Self.maxEmptyPages else { return }
+        guard !holdsBackRequests, emptyPages < Self.maxEmptyPages else { return }
+        // A Next parked behind the radio that was dropped goes on to the song that is now next (a reshuffle can give it
+        // one); with none it waits for the new radio, or settles if none is asked.
+        let droppedStale = dropStaleRadio()
+        defer {
+            if droppedStale, !resumePendingAdvance(), radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
+        }
+        guard radioTask == nil else { return }
         // A queue running out with nothing left to page asks for a radio: the first radio of a tapped song with
         // Autoplay (Loop playlist or not), then with Autoplay and Loop playlist off the radio of the last track. A
         // playlist or album page stages it as soon as it has loaded in full, whatever the number of songs left, so
-        // Up next shows the recommendations from the start and the hand-over is gapless; it asks for at most
+        // Up next shows the recommendations from the start and the hand-over is gapless (it is for the page's last own
+        // song in the play order, so under a shuffle for the song that plays right before it); it asks for at most
         // `MusicQueue.eagerAskLimit` songs that way, so a radio that answers nothing is not asked for every song. A mix
         // page, a tapped-song radio and a radio that has run out ask when `MusicQueue.refillThreshold` songs are left;
         // a radio that has run out carries on from a new seed. A radio that could not be reached is asked for again by

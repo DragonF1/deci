@@ -1,6 +1,6 @@
 // DeciTests/Music/MusicQueueAutomixTests.swift
 // What a page queue remembers for the playlist automix: the playlist id its page asks it of, and the song it asks it
-// after, which is the last of the page's own songs in the page's order, however the play order is mixed.
+// after, which is the last of the page's own songs in the play order: the song that plays right before the automix does.
 
 import Foundation
 import Testing
@@ -132,37 +132,42 @@ struct MusicQueueAutomixTests {
         #expect(makePage(["a"], tap: "a").refillSeed == "a")
     }
 
-    @Test("a shuffled page seeds with the last song of the page's own order, not the last of the mix")
-    func shuffledSeedIsNaturalLast() {
+    @Test("a shuffled page seeds with the last song of the play order, the one that plays right before the automix")
+    func shuffledSeedIsPlayOrderLast() {
         let queue = atEnd(shuffled(makePage(tap: "a")))
         #expect(queue.tracks.last?.videoId != "l", "the mix must not end where the page does, or this test shows nothing")
-        #expect(queue.refillSeed == "l")
+        #expect(queue.refillSeed == queue.tracks.last?.videoId)
     }
 
-    @Test("a shuffled page seeds with the page's last song from the start, with the whole mix still to play")
+    @Test("a shuffled page seeds with the last song of the mix from the start, with the whole mix still to play")
     func shuffledSeedAtOnce() {
         let queue = shuffled(makePage(tap: "a"))
         #expect(queue.upcomingCount == 11)
         #expect(queue.tracks.last?.videoId != "l", "the mix must not end where the page does, or this test shows nothing")
-        #expect(queue.refillSeed == "l")
-        #expect(shuffled(makePage(tap: "d"), mixingEarlier: true).refillSeed == "l")
+        #expect(queue.refillSeed == queue.tracks.last?.videoId)
+        let early = shuffled(makePage(tap: "d"), mixingEarlier: true)
+        #expect(early.refillSeed == early.tracks.last?.videoId)
     }
 
-    @Test("the natural seed is the same for every shuffle and for the shuffled and unshuffled queue")
-    func shuffledSeedIsStable() {
+    @Test("the seed follows the play order of every shuffle, and the natural last song comes back with the natural order")
+    func shuffledSeedFollowsTheMix() {
+        var differs = 0
         for seed in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as [UInt64] {
-            let queue = atEnd(shuffled(makePage(tap: "a"), seed: seed))
-            #expect(queue.refillSeed == "l", "seed \(seed)")
+            let queue = shuffled(makePage(tap: "a"), seed: seed)
+            #expect(queue.refillSeed == queue.tracks.last?.videoId, "seed \(seed)")
+            if queue.refillSeed != "l" { differs += 1 }
         }
+        #expect(differs > 0, "no shuffle moved the last song, so this test shows nothing")
         var plain = shuffled(makePage(tap: "a"))
         plain.unshuffle()
+        #expect(plain.refillSeed == "l")
         #expect(atEnd(plain).refillSeed == "l")
     }
 
-    @Test("a page started from a middle row and mixed, with the earlier songs mixed in, still seeds with the page's last")
+    @Test("a page started from a middle row and mixed, with the earlier songs mixed in, seeds with the last song of the mix")
     func shuffledFromMiddle() {
         let queue = atEnd(shuffled(makePage(tap: "d"), mixingEarlier: true))
-        #expect(queue.refillSeed == "l")
+        #expect(queue.refillSeed == queue.tracks.last?.videoId)
     }
 
     @Test("a song added to the end of the page is not the page's last song")
@@ -181,13 +186,16 @@ struct MusicQueueAutomixTests {
         #expect(queue.refillSeed == "c")
     }
 
-    @Test("queued songs are skipped while shuffled too")
+    @Test("queued songs are skipped while shuffled too: the seed is the last of the page's own songs in the mix")
     func skipsQueuedWhileShuffled() {
         var queue = shuffled(makePage(tap: "a"))
         queue.addToQueue(song("z"))
         queue.playNext(song("y"))
         queue = atEnd(queue)
-        #expect(queue.refillSeed == "l")
+        #expect(queue.tracks.last?.videoId == "z")
+        let ownLast = queue.tracks.last { !["y", "z"].contains($0.videoId) }?.videoId
+        #expect(ownLast != "l", "the mix must not end where the page does, or this test shows nothing")
+        #expect(queue.refillSeed == ownLast)
     }
 
     @Test("a seed that was asked already is passed over for the page's last song before it")
@@ -199,20 +207,28 @@ struct MusicQueueAutomixTests {
         #expect(queue.refillSeed == "a")
     }
 
-    @Test("asked seeds are passed over in the page's own order while shuffled")
+    @Test("asked seeds are passed over in the play order while shuffled")
     func skipsAskedWhileShuffled() {
         var queue = atEnd(shuffled(makePage(tap: "a")))
-        queue.noteAsked("l")
-        #expect(queue.refillSeed == "k")
+        let order = queue.tracks.map(\.videoId)
+        queue.noteAsked(order[order.count - 1])
+        #expect(queue.refillSeed == order[order.count - 2])
+        queue.noteAsked(order[order.count - 2])
+        #expect(queue.refillSeed == order[order.count - 3])
     }
 
-    @Test("a song taken out of the page is not its last song")
+    @Test("a song taken out of the page is not its last song, shuffled or not")
     func skipsRemoved() {
         var queue = shuffled(makePage(tap: "a"))
-        let removed = queue.remove(videoId: "l")
+        let order = queue.tracks.map(\.videoId)
+        let removed = queue.remove(videoId: order[order.count - 1])
         #expect(removed)
         queue = atEnd(queue)
-        #expect(queue.refillSeed == "k")
+        #expect(queue.refillSeed == order[order.count - 2])
+
+        var plain = makePage(["a", "b", "c"], tap: "a")
+        plain.remove(videoId: "c")
+        #expect(plain.refillSeed == "b")
     }
 
     @Test("when every song of the page was asked, the last unasked song in play order is the seed, as before")
@@ -339,6 +355,171 @@ struct MusicQueueAutomixTests {
         #expect(queue.refillSeed == "i", "near the end it carries on from the song before the asked ones, as before")
         queue.noteAsked("i")
         #expect(queue.refillSeed == "h")
+    }
+
+    // MARK: - A staged radio whose song is no longer the last
+
+    /// `queue` with the radio of `seed` staged: two songs and a continuation, as an answer would bring.
+    private func staged(_ queue: MusicQueue, seed: String) -> MusicQueue {
+        var copy = queue
+        copy.stageAutoplay([song("r1"), song("r2")], continuation: "m1", seed: seed)
+        return copy
+    }
+
+    @Test("a radio staged for the page's last song is not stale, and dropping it does nothing")
+    func freshStagedRadio() {
+        var queue = staged(makePage(tap: "a"), seed: "l")
+        #expect(queue.hasStaleAutoplay == false)
+        #expect(queue.isStaleRadioSeed("l") == false)
+        let dropped = queue.dropStaleAutoplay()
+        #expect(dropped == false)
+        #expect(queue.autoplay.map(\.videoId) == ["r1", "r2"])
+        #expect(queue.refillSeed == nil)
+    }
+
+    @Test("a shuffle that moves the last song makes the staged radio stale; dropping it offers the new last song at once")
+    func shuffleMakesTheStagedRadioStale() {
+        var queue = shuffled(staged(makePage(tap: "a"), seed: "l"))
+        let last = queue.tracks.last!.videoId
+        #expect(last != "l", "the mix must not end where the page does, or this test shows nothing")
+        #expect(queue.hasStaleAutoplay)
+        #expect(queue.refillSeed == nil, "while it is staged the page offers no seed")
+
+        let dropped = queue.dropStaleAutoplay()
+        #expect(dropped)
+        #expect(queue.autoplay.isEmpty)
+        #expect(queue.hasStaleAutoplay == false)
+        #expect(queue.refillSeed == last)
+        #expect(queue.isStaleRadioSeed("l"))
+        #expect(queue.isStaleRadioSeed(last) == false)
+    }
+
+    @Test("undoing the shuffle makes the radio staged for the mix's last song stale, and the natural last song is offered again")
+    func unshuffleMakesTheStagedRadioStale() {
+        var queue = shuffled(makePage(tap: "a"))
+        let last = queue.tracks.last!.videoId
+        queue.stageAutoplay([song("r1")], continuation: nil, seed: last)
+        #expect(queue.hasStaleAutoplay == false)
+
+        queue.unshuffle()
+        #expect(queue.hasStaleAutoplay)
+        queue.dropStaleAutoplay()
+        #expect(queue.refillSeed == "l")
+    }
+
+    @Test("a staged radio that stays for the last song through the shuffle is kept")
+    func sameLastSongThroughTheShuffle() {
+        var queue = staged(makePage(["a", "b"], tap: "a"), seed: "b")
+        queue = shuffled(queue, mixingEarlier: true)
+        #expect(queue.tracks.map(\.videoId) == ["a", "b"])
+        #expect(queue.hasStaleAutoplay == false)
+        queue.unshuffle()
+        #expect(queue.hasStaleAutoplay == false)
+        #expect(queue.autoplay.map(\.videoId) == ["r1", "r2"])
+    }
+
+    @Test("the dropped seed leaves the asked ones, so the bound on eager asks does not count it")
+    func droppedSeedLeavesTheAskedOnes() {
+        var queue = makePage(tap: "a")
+        queue.stageAutoplay([], continuation: nil, seed: "l")
+        queue.stageAutoplay([], continuation: nil, seed: "k")
+        queue.stageAutoplay([song("r1")], continuation: nil, seed: "j")
+        queue = shuffled(queue)
+        let next = queue.tracks.last { $0.videoId != "l" && $0.videoId != "k" }!.videoId
+        #expect(next != "j", "the mix must not end where the page does, or this test shows nothing")
+        #expect(queue.hasStaleAutoplay)
+
+        queue.dropStaleAutoplay()
+        #expect(queue.refillSeed == next, "two asked seeds are left, one under the bound of three")
+        queue.noteAsked(next)
+        #expect(queue.refillSeed == nil, "three asked seeds again: the bound holds")
+    }
+
+    @Test("a radio staged one song back because the last song came back empty is for the last song to ask, so it is not stale")
+    func walkedBackSeedIsNotStale() {
+        var queue = makePage(tap: "a")
+        queue.stageAutoplay([], continuation: nil, seed: "l")
+        queue.stageAutoplay([song("r1")], continuation: nil, seed: "k")
+        #expect(queue.hasStaleAutoplay == false)
+        #expect(queue.isStaleRadioSeed("k") == false)
+        #expect(queue.isStaleRadioSeed("i"))
+    }
+
+    @Test("an ask in flight for a song other than the one to ask is stale, an ask for the song to ask is not")
+    func staleAskInFlight() {
+        let queue = makePage(tap: "a")
+        #expect(queue.isStaleRadioSeed("l") == false)
+        #expect(queue.isStaleRadioSeed("k"))
+        var asked = queue
+        asked.noteAsked("l")
+        #expect(asked.isStaleRadioSeed("k") == false)
+        #expect(asked.isStaleRadioSeed("j"))
+    }
+
+    @Test("moving the page's last song ahead, or taking it out, makes the radio staged for it stale; adding a song does not")
+    func editsMakeItStale() {
+        var played = staged(makePage(["a", "b", "c", "d"], tap: "a"), seed: "d")
+        played.playNext(song("d"))
+        #expect(played.hasStaleAutoplay)
+        played.dropStaleAutoplay()
+        #expect(played.refillSeed == "c")
+
+        var queued = staged(makePage(["a", "b", "c", "d"], tap: "a"), seed: "d")
+        queued.addToQueue(song("d"))
+        #expect(queued.hasStaleAutoplay)
+
+        var removed = staged(makePage(["a", "b", "c", "d"], tap: "a"), seed: "d")
+        removed.remove(videoId: "d")
+        #expect(removed.hasStaleAutoplay)
+        removed.dropStaleAutoplay()
+        #expect(removed.refillSeed == "c")
+
+        var added = staged(makePage(["a", "b", "c", "d"], tap: "a"), seed: "d")
+        added.addToQueue(song("z"))
+        added.playNext(song("y"))
+        #expect(added.hasStaleAutoplay == false)
+        var inner = staged(makePage(["a", "b", "c", "d"], tap: "a"), seed: "d")
+        inner.remove(videoId: "b")
+        #expect(inner.hasStaleAutoplay == false)
+    }
+
+    @Test("a mix page, a radio queue and a queue that took the radio over have no stale radio")
+    func notStaleElsewhere() {
+        var mix = MusicQueue()
+        mix.start(
+            page: MusicQueueAutomixTests.letters.map { song($0) }, playing: song("a"), browseId: "VLRDTMAK5uy_mix",
+            continuation: nil, mixPlaylistId: "RDTMAK5uy_mix"
+        )
+        mix.stageAutoplay([song("r1")], continuation: nil, seed: "l")
+        mix = shuffled(mix)
+        #expect(mix.hasStaleAutoplay == false)
+        #expect(mix.isStaleRadioSeed("l") == false)
+        let droppedFromMix = mix.dropStaleAutoplay()
+        #expect(droppedFromMix == false)
+        #expect(mix.autoplay.map(\.videoId) == ["r1"])
+
+        var radio = MusicQueue()
+        radio.start(with: song("a"))
+        radio.append(MusicQueueAutomixTests.letters.dropFirst().map { song($0) }, continuation: nil)
+        radio = shuffled(radio)
+        #expect(radio.hasStaleAutoplay == false)
+        #expect(radio.isStaleRadioSeed("k") == false)
+
+        var handedOver = staged(makePage(tap: "a"), seed: "l")
+        handedOver.takeAutoplay()
+        handedOver = shuffled(handedOver)
+        #expect(handedOver.hasStaleAutoplay == false)
+        #expect(handedOver.isStaleRadioSeed("l") == false)
+    }
+
+    @Test("an empty queue and a page without a staged radio have nothing stale")
+    func nothingStaged() {
+        var empty = MusicQueue()
+        #expect(empty.hasStaleAutoplay == false)
+        #expect(empty.isStaleRadioSeed("a") == false)
+        let dropped = empty.dropStaleAutoplay()
+        #expect(dropped == false)
+        #expect(makePage(tap: "a").hasStaleAutoplay == false)
     }
 
     @Test("every seed of a page is asked at most once, however many walk back through the page")

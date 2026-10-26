@@ -235,18 +235,21 @@ struct MusicServiceMixTests {
         #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "z", "m1", "m2"])
     }
 
-    @Test("with shuffle on the mix is asked after the page's last song, not the last of the mix, and joins the shuffled queue")
+    @Test("with shuffle on the mix is asked after the last song of the shuffled page, not the page's last, and joins the shuffled queue")
     func shuffled() async {
         let h = MixServiceHarness(preferences: MusicPlaybackPreferences(shuffle: true))
         let gate = MusicTestGate()
-        await h.backend.setMixGate(afterVideoId: "d", gate)
-        await h.setMix(after: "d")
+        for id in ["a", "b", "c", "d"] {
+            await h.backend.setMixGate(afterVideoId: id, gate)
+            await h.setMix(after: id)
+        }
         h.begin(h.page(["a", "b", "c", "d"]), tap: "a")
         #expect(await h.asked(1))
 
+        let last = h.queuedIDs.last!
         #expect(h.queuedIDs.first == "a")
-        #expect(h.queuedIDs.last != "d", "the mix must not end where the page does, or this test shows nothing")
-        #expect(await h.backend.mixCalls == [h.call("d")])
+        #expect(last != "d", "the mix must not end where the page does, or this test shows nothing")
+        #expect(await h.backend.mixCalls == [h.call(last)])
 
         await gate.open()
         await h.settle()

@@ -264,11 +264,11 @@ struct MusicQueueMixTests {
         #expect(makePage(["a", "b", "c"], tap: "c", continuation: "t1").refillSeed == nil)
     }
 
-    @Test("a shuffled mix page seeds with the last song of the page's own order, not the last of the mix")
-    func shuffledSeedIsNaturalLast() {
+    @Test("a shuffled mix page seeds with the last song of the play order, like any page")
+    func shuffledSeedIsPlayOrderLast() {
         let queue = atEnd(shuffled(makePage(tap: "a")))
         #expect(queue.tracks.last?.videoId != "l", "the mix must not end where the page does, or this test shows nothing")
-        #expect(queue.refillSeed == "l")
+        #expect(queue.refillSeed == queue.tracks.last?.videoId)
     }
 
     @Test("a mix that was forgotten leaves the page free to stage a radio, as any page does")

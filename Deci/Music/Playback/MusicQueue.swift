@@ -52,7 +52,8 @@ struct MusicQueue: Equatable, Codable {
     private var naturalRank: [String: Int] = [:]
     private var nextRank = 0
     /// The radio that plays after a finished page, fetched while the page's last tracks play. Not part of `tracks`
-    /// until `takeAutoplay()`, so Loop playlist and a reshuffle never touch it. Empty for a radio queue.
+    /// until `takeAutoplay()`, so Loop playlist never touches it; a reshuffle that moves the page's last song drops it
+    /// (see `dropStaleAutoplay()`). Empty for a radio queue.
     private(set) var autoplay: [MusicTrack] = []
     private var autoplayContinuation: String?
     private var autoplaySeed: String?
@@ -124,27 +125,58 @@ struct MusicQueue: Equatable, Codable {
     /// at once, whatever the number of songs left, so its recommendations are staged from the start; it does so for
     /// `eagerAskLimit` songs only, and after that it waits for `refillThreshold` like the rest. A mix page, a tapped-song
     /// radio and a radio that has run out wait for `refillThreshold`. A page hands over to the radio of its last own song
-    /// in the page's order, which a shuffle does not change; a radio that has run out carries on from the radio of its
-    /// last track.
+    /// in the play order, so under a shuffle that is the song that plays right before the radio does, not the page's last;
+    /// a radio that has run out carries on from the radio of its last track.
     var refillSeed: String? {
         guard !isEmpty, continuation == nil else { return nil }
         if case .page = source {
             if !autoplay.isEmpty { return nil }
             let eager = mixPlaylistId == nil && askedSeeds.count < Self.eagerAskLimit
             guard eager || upcomingCount <= Self.refillThreshold else { return nil }
-            if let seed = lastPageSong { return seed }
+            return handOverSeed()
         } else if upcomingCount > Self.refillThreshold {
             return nil
         }
         return tracks.last { !askedSeeds.contains($0.videoId) }?.videoId
     }
 
-    /// The last song of the page itself in the page's order: not one the listener queued, not one already asked.
-    /// While shuffled the natural rank gives the page's order back.
-    private var lastPageSong: String? {
-        let own = tracks.filter { !queuedIds.contains($0.videoId) && !askedSeeds.contains($0.videoId) }
-        guard isShuffled else { return own.last?.videoId }
-        return own.max { (naturalRank[$0.videoId] ?? Int.max) < (naturalRank[$1.videoId] ?? Int.max) }?.videoId
+    /// The last own song of the page in the play order: not one the listener queued, not one already asked. The play
+    /// order is `tracks` as it stands, so a shuffle moves it and an unshuffle moves it back. `seed` counts as not asked.
+    private func lastPageSong(reopening seed: String? = nil) -> String? {
+        tracks.last {
+            !queuedIds.contains($0.videoId) && (!askedSeeds.contains($0.videoId) || $0.videoId == seed)
+        }?.videoId
+    }
+
+    /// The song a page's radio is asked after: its last own song in the play order, or, when every own song was asked
+    /// already, the last track that was not. `seed` counts as not asked, so a radio staged or on its way for it can be
+    /// told apart from one for a song that came later.
+    private func handOverSeed(reopening seed: String? = nil) -> String? {
+        lastPageSong(reopening: seed) ?? tracks.last { !askedSeeds.contains($0.videoId) || $0.videoId == seed }?.videoId
+    }
+
+    /// The radio staged for this page was asked for a song that is not the one to ask now, because a shuffle, its undoing
+    /// or an edit moved the last own song. Never so for a mix page, a radio queue or a queue that took its radio over.
+    var hasStaleAutoplay: Bool {
+        guard !autoplay.isEmpty, let seed = autoplaySeed else { return false }
+        return isStaleRadioSeed(seed)
+    }
+
+    /// A radio asked for `seed`, staged or on its way, is no longer the one this page hands over to.
+    func isStaleRadioSeed(_ seed: String) -> Bool {
+        guard isPage, mixPlaylistId == nil else { return false }
+        return handOverSeed(reopening: seed) != seed
+    }
+
+    /// Drops the staged radio when it is stale. Its seed is not counted as asked any more, so a page that used up its
+    /// `eagerAskLimit` asks on it offers the new last song at once; one staged later, at the refill threshold, offers it
+    /// when `refillThreshold` songs are left. False, and nothing changes, when it is not stale.
+    @discardableResult
+    mutating func dropStaleAutoplay() -> Bool {
+        guard hasStaleAutoplay, let seed = autoplaySeed else { return false }
+        forgetAutoplay(keepingAsked: true)
+        askedSeeds.remove(seed)
+        return true
     }
 
     /// Replaces the queue with just this track and makes it the radio seed.
