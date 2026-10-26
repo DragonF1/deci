@@ -221,6 +221,11 @@ struct DeciApp: App {
         engine.onChromeTapLatencyChange = { byUID in
             ChromeExtensionManager.shared.setTapLatency(byUID)
         }
+        // Whether the extension sees an audible tab, so the stuck-tap watchdog does not probe a Chrome that is silent on
+        // purpose (Chrome keeps its output running while silent, and every probe glitches a Bluetooth output).
+        engine.chromeAudibleReport = {
+            ChromeExtensionManager.shared.audibleReport()
+        }
 
         // Media keys / HUD services — instantiated at app scope so the tap
         // and HUD panel outlive popup open/close cycles.

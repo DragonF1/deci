@@ -407,6 +407,148 @@ struct AudioEngineTapRescueTests {
         #expect(tap.rescueCalls == 1)
     }
 
+    // MARK: - Chrome audible gate
+
+    /// A launched app other than Chrome, whose output is running, with a tap that reads signal.
+    private func launchPlayingNonChrome() -> RecordingProcessTapController {
+        let app = h.makeApp(ids: [20], bundleID: "com.apple.QuickTimePlayerX")
+        let tap = h.launch(app)
+        h.probes.runningOutputPIDs.insert(app.id)
+        tap.readings = readings(silentFor: 0.0)
+        return tap
+    }
+
+    @Test("A Chrome tap the extension reports silent is never probed, however long it is silent")
+    func chromeReportedSilentIsNotProbed() async {
+        let (_, tap) = launchPlaying()
+        h.engine.chromeAudibleReport = { .silent }
+        for silence in [0.3, 0.55, 2.1, 4.1, 8.1, 28.1, 60] {
+            await tick(tap, silentFor: silence)
+        }
+        #expect(tap.rescueCalls == 0)
+        #expect(h.probes.createdTaps.count == 1)
+        #expect(tap.wasInvalidated == false)
+    }
+
+    @Test("A Chrome tap with an audible tab is first probed at 3.5 s of silence, not at 0.25 s")
+    func chromeReportedAudibleWaitsForTheHold() async {
+        let (_, tap) = launchPlaying()
+        h.engine.chromeAudibleReport = { .audible }
+        for silence in [0.3, 1.0, 2.0, 2.6, 3.4] {
+            await tick(tap, silentFor: silence)
+        }
+        #expect(tap.rescueCalls == 0, "a lingering audible flag proves nothing yet")
+        await tick(tap, silentFor: 3.6)
+        #expect(tap.rescueCalls == 1)
+    }
+
+    @Test("A Chrome tap with no report from the extension is probed at 0.25 s, as before")
+    func chromeUnknownReportIsProbed() async {
+        let (_, tap) = launchPlaying()
+        h.engine.chromeAudibleReport = { .unknown }
+        await tick(tap, silentFor: 0.3)
+        #expect(tap.rescueCalls == 1)
+    }
+
+    @Test("An app other than Chrome is probed at 0.25 s whatever the report, and the report is not even read")
+    func nonChromeIgnoresTheReport() async {
+        let tap = launchPlayingNonChrome()
+        var reads = 0
+        h.engine.chromeAudibleReport = {
+            reads += 1
+            return .silent
+        }
+        await tick(tap, silentFor: 0.3)
+        #expect(tap.rescueCalls == 1)
+        #expect(reads == 0)
+    }
+
+    @Test("The report is read only once a rule is close to firing: never while the tap hears Chrome")
+    func reportIsNotReadOnTheHotPath() async {
+        let (_, tap) = launchPlaying()
+        var reads = 0
+        h.engine.chromeAudibleReport = {
+            reads += 1
+            return .silent
+        }
+        for _ in 1...8 { await tick(tap, silentFor: 0.1) }
+        #expect(reads == 0)
+        #expect(h.probes.runningOutputQueryCount == 0)
+
+        await tick(tap, silentFor: 0.3)
+        #expect(reads == 1)
+        #expect(tap.rescueCalls == 0)
+    }
+
+    @Test("A Chrome tap that hears signal while its output is silent is still rebuilt, whatever the report says")
+    func chromeOutputSilentStillRebuilds() async {
+        let (app, tap) = launchPlaying()
+        h.engine.chromeAudibleReport = { .silent }
+        tap.readings = readings(silentFor: 0.0, outputSilentFor: 2.0)
+        await h.engine.runHealthTick()
+        #expect(tap.wasInvalidated, "live input with a silent output is the output rule's, not the report's")
+        #expect(h.tap(for: app.id) !== tap)
+    }
+
+    @Test("Chrome that was reported silent is probed again once a tab is audible and the tap stays dead")
+    func chromeAudibleAfterSilentIsProbedAgain() async {
+        let (_, tap) = launchPlaying()
+        var report = ChromeAudibleReport.silent
+        h.engine.chromeAudibleReport = { report }
+        // Ticks 1 to 4 (the 4th is the once-per-second read): the report stops the watchdog.
+        for silence in [0.3, 2.1, 4.1, 8.1] { await tick(tap, silentFor: silence) }
+        #expect(tap.rescueCalls == 0)
+
+        // A tab turns audible but the tap stays dead. Ticks 5 to 7 do not read (the watchdog is stopped); tick 8 is the
+        // next once-per-second read: the audible report is past the hold, so the app plays again and the ladder counts
+        // its silence from there (9.75 s).
+        report = .audible
+        for silence in [9.0, 9.25, 9.5, 9.75] { await tick(tap, silentFor: silence) }
+        #expect(tap.rescueCalls == 0, "silence counts from the play start, so rung 0's 0.25 s is still to come")
+
+        await tick(tap, silentFor: 10.0)
+        #expect(tap.rescueCalls == 1, "rung 0 fires 0.25 s after the play start")
+
+        // The silent candidate steps the ladder to rung 1: 2 s of silence from the play start (11.75 s).
+        for silence in [10.25, 10.5, 10.75, 11.0, 11.25, 11.5] { await tick(tap, silentFor: silence) }
+        #expect(tap.rescueCalls == 1)
+        await tick(tap, silentFor: 11.75)
+        #expect(tap.rescueCalls == 2)
+    }
+
+    @Test("A Chrome watchdog stopped by a silent report still rebuilds when signal returns and the output stays silent")
+    func chromeStoppedThenOutputSilentRebuilds() async {
+        let (app, tap) = launchPlaying()
+        h.engine.chromeAudibleReport = { .silent }
+        await tick(tap, silentFor: 0.3)  // the report stops the watchdog
+        #expect(tap.wasInvalidated == false)
+
+        tap.readings = readings(silentFor: 0.0, outputSilentFor: 2.0)
+        await h.engine.runHealthTick()
+        #expect(tap.wasInvalidated, "live input with a silent output is the output rule's, whatever happened before")
+        #expect(tap.rescueCalls == 0)
+        #expect(h.tap(for: app.id) !== tap)
+    }
+
+    @Test("The report is read only for a Chrome tap whose app runs output")
+    func reportNeedsRunningChrome() async {
+        let (app, tap) = launchPlaying()
+        var reads = 0
+        h.engine.chromeAudibleReport = {
+            reads += 1
+            return .audible
+        }
+        h.probes.runningOutputPIDs.remove(app.id)
+        await tick(tap, silentFor: 30)
+        #expect(h.probes.runningOutputQueryCount == 1, "IsRunningOutput was read")
+        #expect(reads == 0, "a Chrome that runs no output needs no report")
+        #expect(tap.rescueCalls == 0)
+
+        h.probes.runningOutputPIDs.insert(app.id)
+        for _ in 0..<3 { await tick(tap, silentFor: 30) }  // ticks 2 to 4; the 4th is the once-per-second read
+        #expect(reads == 1)
+    }
+
     @Test("The tick is 250 ms")
     func tickInterval() {
         #expect(AudioEngine.healthTickInterval == .milliseconds(250))

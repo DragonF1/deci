@@ -82,6 +82,8 @@ final class ChromeExtensionManager: NSObject {
     @ObservationIgnored var connectionClock: () -> Date = { Date() }
     @ObservationIgnored private var lastRequestAt: Date?
     @ObservationIgnored private var lastMessageAt: Date?
+    /// When `audibleReport()` last asked the extension for its tabs.
+    @ObservationIgnored private var lastAudibleRequestAt: Date?
     @ObservationIgnored private var connectionTimer: Timer?
     /// Set once the permission page was opened, so picking devices does not reopen it
     /// every time. Cleared when the extension reports access.
@@ -864,6 +866,30 @@ final class ChromeExtensionManager: NSObject {
         // sent is still in force in the extension until this one clears it.
         queueTapLatency(lastQueuedTapLatency)
         queueMessage(["type": "GET_TABS"])
+    }
+
+    /// How old the newest sign of life (a message from the extension, or a request to it) may be before
+    /// `audibleReport()` asks again.
+    static let audibleReportFreshness: TimeInterval = 30
+
+    /// Whether the extension sees an audible tab, for the engine's stuck-tap watchdog. The connection is only judged
+    /// after a request (`requestTabs`, which a popup open sends), so an extension that died or was disabled while the
+    /// last list showed no audible tab would read as silent for good. Every `audibleReportFreshness` seconds without
+    /// news this asks once, and a dead extension then times out to `.disconnected` (tabs dropped, report `.unknown`).
+    /// Never heard from means `.unknown` already, so nothing is asked then.
+    func audibleReport() -> ChromeAudibleReport {
+        if let lastMessageAt {
+            let now = connectionClock()
+            let newest = max(lastMessageAt, lastRequestAt ?? .distantPast, lastAudibleRequestAt ?? .distantPast)
+            if now.timeIntervalSince(newest) >= Self.audibleReportFreshness {
+                // Stamped here, not only by `requestTabs`: a request nobody answered does not move `lastRequestAt`
+                // (so repeated asks cannot postpone the verdict), which would make a dead extension get one request
+                // per call instead of one per window.
+                lastAudibleRequestAt = now
+                requestTabs()
+            }
+        }
+        return ChromeAudibleGate.report(connection: connectionState, trackingTabs: tracking.tabs, tabs: chromeTabs)
     }
 
     private func noteMessageReceived() {

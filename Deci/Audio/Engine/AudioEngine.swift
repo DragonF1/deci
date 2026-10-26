@@ -50,6 +50,11 @@ final class AudioEngine {
     /// Chrome's outputs up. Polled at 4 Hz and reported only on a real change (see `ChromeTapLatencyReporter`).
     var onChromeTapLatencyChange: (@MainActor ([String: Double]) -> Void)?
 
+    /// What the Chrome extension says about whether any tab makes sound right now (`.unknown` when it is not connected
+    /// or tab tracking is off). Read by the stuck-tap watchdog only, and only for Chrome's tap while that tap's input
+    /// is silent: Chrome keeps its output running while it is silent, so a quiet Chrome must not be probed.
+    var chromeAudibleReport: (@MainActor () -> ChromeAudibleReport)?
+
     /// Output device UIDs the engine's own taps play on through a multi-device route. The popup
     /// unions this with the music row's and Chrome tabs' multi-output devices (see
     /// `MenuBarPopupView.outputDevicesInUse`) to light the device list.
@@ -2619,9 +2624,23 @@ final class AudioEngine {
         var watchdog = tapWatchdogs[pid] ?? TapWatchdog()
         let needsRead = watchdog.needsPlayingState(readings)
             || (isSecondTick && readings.secondsSinceInputSignal >= TapWatchdog.rescueThreshold(rung: 0))
+        var appIsPlaying: Bool?
+        if needsRead {
+            let running = isProcessRunningOutput(tap.app)
+            // Chrome runs output IO while silent, so for its tap the extension's word on the tabs corrects the read.
+            // The report is only worth fetching for a Chrome that runs output at all.
+            let isChrome = ChromeTapLatencyReporter.isChrome(tap.app.bundleID)
+            let report = isChrome && running ? (chromeAudibleReport?() ?? .unknown) : .unknown
+            appIsPlaying = ChromeAudibleGate.appIsPlaying(
+                running: running,
+                isChrome: isChrome,
+                report: report,
+                inputSilence: readings.secondsSinceInputSignal
+            )
+        }
         let sample = TapHealthSample(
             readings: readings,
-            appIsPlaying: needsRead ? isProcessRunningOutput(tap.app) : nil,
+            appIsPlaying: appIsPlaying,
             isUserMuted: tap.isMuted,
             clock: now.timeIntervalSinceReferenceDate
         )
