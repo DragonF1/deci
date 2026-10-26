@@ -798,4 +798,125 @@ struct ChromeExtensionManagerTests {
         #expect(manager.chromeTabs.first?.isMuted == false)
         #expect(manager.chromeTabs.first?.volume == 0.6)
     }
+
+    // MARK: - Media keys
+
+    @Test("sendMediaKey queues a MEDIA_KEY message with the tab id and the key's wire name for next and previous", arguments: [
+        (PlaybackKey.next, "next"), (.previous, "previous"),
+    ])
+    func sendMediaKeyShape(key: PlaybackKey, wireName: String) {
+        let (manager, sent) = makeManager(tabs: [makeTab(id: 5)])
+        manager.sendMediaKey(tabId: 5, key: key)
+        #expect(sent.messages.isEmpty)  // batched like every other command
+        manager.flushMessages()
+
+        #expect(sent.messages.count == 1)
+        let message = sent.messages.first
+        #expect(message?["type"] as? String == "MEDIA_KEY")
+        #expect(message?["tabId"] as? Int == 5)
+        #expect(message?["key"] as? String == wireName)
+        #expect(Set(message?.keys.map { $0 } ?? []) == ["type", "tabId", "key"])
+    }
+
+    @Test("sendMediaKey for play/pause sends the existing TOGGLE_PLAYBACK, so an extension from before MEDIA_KEY still pauses")
+    func sendMediaKeyPlayPauseIsTogglePlayback() {
+        let (manager, sent) = makeManager(tabs: [makeTab(id: 5)])
+        manager.sendMediaKey(tabId: 5, key: .playPause)
+        manager.flushMessages()
+
+        #expect(sent.messages.count == 1)
+        let message = sent.messages.first
+        #expect(message?["type"] as? String == "TOGGLE_PLAYBACK")
+        #expect(message?["tabId"] as? Int == 5)
+        #expect(Set(message?.keys.map { $0 } ?? []) == ["type", "tabId"])
+        #expect(sent.messages(ofType: "MEDIA_KEY").isEmpty)
+    }
+
+    @Test("sendMediaKey for play/pause flips the tab's paused flag at once, like togglePlayback")
+    func sendMediaKeyFlipsPaused() throws {
+        let (manager, _) = makeManager(tabs: [makeTab(id: 5), makeTab(id: 6)])
+        manager.sendMediaKey(tabId: 5, key: .playPause)
+        #expect(manager.chromeTabs[0].paused)
+        #expect(manager.chromeTabs[0].lastSyncedAt != nil)
+        #expect(manager.chromeTabs[1].paused == false)
+
+        manager.sendMediaKey(tabId: 5, key: .playPause)
+        #expect(manager.chromeTabs[0].paused == false)
+    }
+
+    @Test("sendMediaKey for next and previous leaves the paused flag alone", arguments: [PlaybackKey.next, .previous])
+    func sendMediaKeyKeepsPaused(key: PlaybackKey) {
+        let (manager, _) = makeManager(tabs: [makeTab(id: 5)])
+        manager.sendMediaKey(tabId: 5, key: key)
+        #expect(manager.chromeTabs[0].paused == false)
+        #expect(manager.chromeTabs[0].lastSyncedAt == nil)
+    }
+
+    @Test("sendMediaKey for a tab that is not in the list still sends, and changes nothing")
+    func sendMediaKeyUnknownTab() {
+        let (manager, sent) = makeManager(tabs: [makeTab(id: 5)])
+        manager.sendMediaKey(tabId: 99, key: .playPause)
+        manager.sendMediaKey(tabId: 99, key: .next)
+        manager.flushMessages()
+        #expect(sent.messages(ofType: "TOGGLE_PLAYBACK").count == 1)
+        #expect(sent.messages(ofType: "MEDIA_KEY").count == 1)
+        #expect(manager.chromeTabs.map(\.paused) == [false])
+    }
+
+    @Test("media keys for two tabs send two messages")
+    func sendMediaKeyTwoTabs() {
+        let (manager, sent) = makeManager(tabs: [makeTab(id: 5), makeTab(id: 6)])
+        manager.sendMediaKey(tabId: 5, key: .next)
+        manager.sendMediaKey(tabId: 6, key: .previous)
+        manager.flushMessages()
+        let byTab = Dictionary(uniqueKeysWithValues: sent.messages(ofType: "MEDIA_KEY").compactMap { message -> (Int, String)? in
+            guard let id = message["tabId"] as? Int, let key = message["key"] as? String else { return nil }
+            return (id, key)
+        })
+        #expect(byTab == [5: "next", 6: "previous"])
+    }
+
+    @Test("the manager is what the playback key coordinator drives")
+    func managerIsTheChromeControl() {
+        let (manager, _) = makeManager(tabs: [makeTab(id: 5)])
+        let control: any PlaybackKeyChromeControlling = manager
+        #expect(control.chromeTabs.map(\.id) == [5])
+    }
+
+    // MARK: - The active tab
+
+    @Test("parseTabList reads active, and a missing or mistyped value reads as not active")
+    func parseActive() {
+        let json: [String: Any] = ["tabs": [
+            ["id": 1, "title": "A", "active": true],
+            ["id": 2, "title": "B", "active": false],
+            ["id": 3, "title": "C"],
+            ["id": 4, "title": "D", "active": "yes"],
+        ]]
+        let tabs = ChromeExtensionManager.parseTabList(json).tabs
+        #expect(tabs.map(\.id) == [1, 2, 3, 4])
+        #expect(tabs.map(\.isActive) == [true, false, false, false])
+    }
+
+    @Test("merge takes active from the fresh list, in both directions")
+    func mergeAdoptsActive() {
+        var wasActive = makeTab(id: 1)
+        wasActive.isActive = true
+        var nowActive = makeTab(id: 2)
+        nowActive.isActive = false
+        var becomes = makeTab(id: 1)
+        becomes.isActive = false
+        var becomesToo = makeTab(id: 2)
+        becomesToo.isActive = true
+
+        let merged = ChromeExtensionManager.merge(existing: [wasActive, nowActive], incoming: [becomes, becomesToo], pendingUntil: [:], now: now)
+        #expect(merged.map(\.isActive) == [false, true])
+    }
+
+    @Test("a TAB_LIST message carries active into the tab list")
+    func tabListMessageCarriesActive() {
+        let (manager, _) = makeManager()
+        manager.handleChromeMessageString(#"{"type":"TAB_LIST","tabs":[{"id":1,"title":"A","active":true,"isAudible":true},{"id":2,"title":"B","isAudible":true}]}"#)
+        #expect(manager.chromeTabs.map(\.isActive) == [true, false])
+    }
 }

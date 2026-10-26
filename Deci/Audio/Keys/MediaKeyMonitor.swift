@@ -75,6 +75,12 @@ final class MediaKeyMonitor {
     private var upRoute: PressRoute?
     private var downRoute: PressRoute?
 
+    /// The transport keys whose fresh press this monitor swallowed and that have not been released yet. A repeat or a
+    /// key-up is swallowed only for a key in here: one whose press was never swallowed (the setting was off, the tap was
+    /// down, the monitor was stopped) belongs to whoever got the press, so it passes through instead of leaving
+    /// that app with a key it never saw go down.
+    private var swallowedPlaybackKeys: Set<PlaybackKey> = []
+
     /// CGEventTaps are per-session; wake leaves them enabled-but-inert.
     private var workspaceObservers: [NSObjectProtocol] = []
 
@@ -86,6 +92,10 @@ final class MediaKeyMonitor {
 
     /// Plays the system volume-feedback pop on volume key steps. Wired by FineTuneApp after init.
     var feedbackPlayer: VolumeFeedbackPlayer?
+
+    /// Where the play/pause, next and previous keys go. Wired by DeciApp after init. The monitor swallows those keys
+    /// whether or not one is wired.
+    var playbackKeyHandler: PlaybackKeyHandling?
 
     init(
         decoder: any MediaKeyEventDecoding,
@@ -356,6 +366,10 @@ final class MediaKeyMonitor {
                 hudController.show(sliderFraction: currentSlider, mute: newMute, deviceName: deviceName)
             }
             iconCoordinator?.flashDevice()
+
+        case .playback:
+            // Transport keys go to `playbackKeyHandler` in `processMediaKey` and never change the volume.
+            break
         }
     }
 
@@ -374,6 +388,10 @@ final class MediaKeyMonitor {
 
     /// Kernel disabled the tap. One-shot re-enable; second disable inside 5s marks offline.
     func handleTapDisabled() {
+        // Presses may have gone by while the tap was off, so no remembered route or held key can be trusted for what
+        // follows.
+        forgetPressRoutes()
+
         // Runtime Accessibility revocation — tear down and let the permission card surface.
         // `isOffline` stays false here; it's reserved for kernel-stall ("Retry") scenarios.
         if !accessibility.isTrusted {
@@ -407,8 +425,6 @@ final class MediaKeyMonitor {
             self?.disableWatchdogTask = nil
         }
 
-        // Presses may have gone by while the tap was off, so no remembered route can be trusted for their repeats.
-        forgetPressRoutes()
         if let tap = tap {
             CGEvent.tapEnable(tap: tap, enable: true)
         }
@@ -418,19 +434,37 @@ final class MediaKeyMonitor {
 
     /// Returns `true` if the caller should swallow the event.
     fileprivate func processSystemDefined(_ cgEvent: CGEvent) -> Bool {
-        // Pass through if disabled mid-race; never silently eat another app's media keys.
-        guard settingsManager.appSettings.mediaKeyControlEnabled else { return false }
         guard let nsEvent = NSEvent(cgEvent: cgEvent) else { return false }
+        return processSystemDefined(
+            subtype: Int(nsEvent.subtype.rawValue),
+            data1: nsEvent.data1,
+            held: VolumeKeyCombo(flags: cgEvent.flags)
+        )
+    }
+
+    /// The tap's decision for a system-defined event, from the fields it reads. `true` swallows the event.
+    func processSystemDefined(subtype: Int, data1: Int, held: VolumeKeyCombo) -> Bool {
+        // Pass through if disabled mid-race; never silently eat another app's media keys. What is left of a held
+        // transport key goes with it, so the setting coming back on does not pair a later key-up with a press from
+        // before.
+        guard settingsManager.appSettings.mediaKeyControlEnabled else {
+            swallowedPlaybackKeys.removeAll()
+            return false
+        }
         // Subtype 8 is the media-key channel; aux-button / brightness are pass-through.
-        guard nsEvent.subtype.rawValue == 8 else { return false }
-        let data1 = nsEvent.data1
+        guard subtype == 8 else { return false }
         guard let mediaEvent = decoder.decode(data1: data1) else { return false }
-        return processMediaKey(mediaEvent, held: VolumeKeyCombo(flags: cgEvent.flags))
+        return processMediaKey(mediaEvent, held: held)
     }
 
     /// Decides what a decoded key does and returns `true` if the caller should swallow it. While a keybind row
     /// is recording, a volume key is that recording and changes no volume. A volume key no row fits is left
-    /// alone, not swallowed, so macOS makes its own change. Mute has no combos and is always handled.
+    /// alone, not swallowed, so macOS makes its own change. Mute has no combos and is always handled. The
+    /// play/pause, next and previous keys are swallowed from their fresh press until its key-up, so macOS never acts
+    /// on them (F8 would otherwise launch Apple Music); a repeat or key-up with no swallowed press before it passes
+    /// through. The verdict is returned at once and the handler hears the swallowed phases on the next turn of the main
+    /// queue, so the tap callback never waits on routing, Chrome or the player. They stay out of the volume HUD's
+    /// observations.
     func processMediaKey(_ event: MediaKeyEvent, held: VolumeKeyCombo) -> Bool {
         var stepping: VolumeKeyBinding?
         switch event {
@@ -446,10 +480,40 @@ final class MediaKeyMonitor {
             stepping = row
         case .muteToggle:
             break
+        case .playback(let key, let phase):
+            guard swallowsPlayback(key, phase) else { return false }
+            deliverPlayback(key, phase)
+            return true
         }
         hudController.swallowObserved()
         handle(event, held: held, stepping: stepping)
         return true
+    }
+
+    // MARK: - Transport keys
+
+    /// Whether a transport key event is swallowed, and the bookkeeping of which keys are held. A fresh press is always
+    /// taken; a repeat or key-up follows its press.
+    private func swallowsPlayback(_ key: PlaybackKey, _ phase: PlaybackKeyPhase) -> Bool {
+        switch phase {
+        case .down:
+            swallowedPlaybackKeys.insert(key)
+            return true
+        case .autoRepeat:
+            return swallowedPlaybackKeys.contains(key)
+        case .up:
+            return swallowedPlaybackKeys.remove(key) != nil
+        }
+    }
+
+    /// Hands a swallowed transport event to the handler on the next turn of the main queue. The main queue runs its
+    /// blocks in order, so quick presses reach the handler in the order they were made.
+    private func deliverPlayback(_ key: PlaybackKey, _ phase: PlaybackKeyPhase) {
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                self?.playbackKeyHandler?.handle(key, phase: phase)
+            }
+        }
     }
 
     // MARK: - Key repeat routing
@@ -466,7 +530,7 @@ final class MediaKeyMonitor {
         switch event {
         case .volumeUp(let value): (isUp, isRepeat) = (true, value)
         case .volumeDown(let value): (isUp, isRepeat) = (false, value)
-        case .muteToggle: return nil
+        case .muteToggle, .playback: return nil
         }
         let rows = settingsManager.appSettings.volumeKeyBindings
         let matched = rows.binding(matching: held)
@@ -487,6 +551,7 @@ final class MediaKeyMonitor {
     private func forgetPressRoutes() {
         upRoute = nil
         downRoute = nil
+        swallowedPlaybackKeys.removeAll()
     }
 }
 

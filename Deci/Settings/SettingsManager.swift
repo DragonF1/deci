@@ -42,7 +42,7 @@ nonisolated struct AppSettings: Codable, Equatable {
 
     // Media Keys & HUD
     var hudStyle: HUDStyle = .tahoe                // Visual style of the volume HUD
-    var mediaKeyControlEnabled: Bool = true        // Intercept F10/F11/F12 to drive the default output device
+    var mediaKeyControlEnabled: Bool = true        // Intercept the media keys: F10/F11/F12 drive the default output device, F7/F8/F9 drive Chrome and Deci
     // What F11 / F12 do under each set of held modifiers, and by how many percent of the slider; user-configurable
     var volumeKeyBindings: [VolumeKeyBinding] = VolumeKeyBinding.defaults
 

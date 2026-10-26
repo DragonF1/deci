@@ -49,7 +49,7 @@ struct ShortcutsTab: View {
         SettingsSection("Media Keys") {
             SettingsRow(
                 "Media Keys Control",
-                description: "Use F11/F12 (or volume keys) to control Deci"
+                description: "Use the media keys (F7 to F12) to control Deci"
             ) {
                 Toggle("", isOn: $settings.appSettings.mediaKeyControlEnabled)
                     .toggleStyle(.switch)

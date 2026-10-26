@@ -93,27 +93,35 @@ final class MusicPlayer {
         return stream.videoId
     }
 
-    /// Playing, or about to: loading, or wanting to play through a stall. False when paused, ended or failed.
+    /// Playing, or about to: the engine is playing, or the listener wants it to (a song that is loading, or stalled). A
+    /// song loading under a pause is not active. False when paused, ended or failed.
     var isActive: Bool {
-        nowPlaying != nil && (isPlaying || isLoading || wantsPlay)
+        nowPlaying != nil && (isPlaying || wantsPlay)
     }
 
     // MARK: - Public API
 
-    /// Shows the track as loading while its stream is being resolved. Silences whatever was playing.
+    /// Shows the track as loading while its stream is being resolved. Silences whatever was playing. The track is
+    /// wanted: it plays when its stream arrives, unless `pause()` comes first (and `play()` takes that back).
     func beginLoading(_ track: MusicTrack) {
         defer { notifyStateChange() }
         teardownCurrent()
         nowPlaying = track
         isLoading = true
+        wantsPlay = true
         error = nil
         duration = Double(track.durationSeconds ?? 0)
     }
 
+    /// Loads the resolved stream and plays it. A song that was showing as loading for this track (`beginLoading`) plays
+    /// only if it is still wanted: a pause pressed while its stream was resolving leaves it loaded and paused, like a
+    /// session picked up from the last launch. A load nobody began always plays.
     func load(stream: ResolvedStream, track: MusicTrack) {
+        let awaitedHere = isLoading && self.stream == nil && nowPlaying?.videoId == track.videoId
+        let autoplay = awaitedHere ? wantsPlay : true
         loadGeneration += 1
         recoveryUsed = false
-        install(stream, track: track, startAt: 0, autoplay: true)
+        install(stream, track: track, startAt: 0, autoplay: autoplay, loading: autoplay)
     }
 
     /// Loads the track and leaves it paused at `position`: no sound until `play()`. For a session picked up from the last
@@ -126,7 +134,12 @@ final class MusicPlayer {
 
     func play() {
         defer { notifyStateChange() }
-        guard nowPlaying != nil, let stream else { return }
+        guard nowPlaying != nil else { return }
+        guard let stream else {
+            // The stream is still being resolved: nothing to start yet, but the song plays as soon as it arrives.
+            if isLoading { wantsPlay = true }
+            return
+        }
         wantsPlay = true
         // A dead or expired stream is replaced before resuming; a new stream carries a new expiry, so this cannot loop.
         if error != nil || stream.expiresAt <= now() {
@@ -141,6 +154,8 @@ final class MusicPlayer {
         engine.play()
     }
 
+    /// Pauses, and stays paused through a load: the song no longer wants to play, so a stream that arrives later loads
+    /// without starting and the engine drops the autoplay it was holding.
     func pause() {
         wantsPlay = false
         engine.pause()

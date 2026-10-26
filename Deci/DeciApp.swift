@@ -338,6 +338,12 @@ struct DeciApp: App {
         let music = MusicServiceHost(mixer: mixer, settings: settings)
         // Only this boolean reaches Chrome: while Deci plays, the extension stops auto-clicking "Switch".
         music.onNativePlayingChange = { ChromeExtensionManager.shared.setNativeMusicPlaying($0) }
+        // The play/pause, next and previous keys go to the Chrome tab that is playing when Chrome is in front, else to Deci's
+        // player. The target reads the host, so it never builds the Music service.
+        monitor.playbackKeyHandler = PlaybackKeyCoordinator(
+            chrome: ChromeExtensionManager.shared,
+            deci: MusicPlaybackKeyTarget(musicHost: music)
+        )
         _musicHost = State(initialValue: music)
         // Settings reaches the downloads through the host: it never builds the Music service just to show a size, and builds
         // it only when Remove all has something to remove and no service exists yet.

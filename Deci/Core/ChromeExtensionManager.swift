@@ -252,6 +252,8 @@ final class ChromeExtensionManager: NSObject {
                 eqSettings: eqSettings,
                 deviceName: deviceName
             )
+            // Missing means an older extension, which never says: no tab is known to be active.
+            tab.isActive = raw["active"] as? Bool ?? false
             tab.boost = boost
             tab.isMuted = raw["muted"] as? Bool ?? false
             tab.isIncognito = raw["incognito"] as? Bool ?? false
@@ -932,6 +934,18 @@ final class ChromeExtensionManager: NSObject {
         queueMessage(["type": "TOGGLE_PLAYBACK", "tabId": tabId])
     }
 
+    /// A keyboard media key for a tab. Play/pause is `togglePlayback`, the command every extension version knows, so an
+    /// extension from before MEDIA_KEY still pauses. Next and previous ask the page to skip with MEDIA_KEY, which changes
+    /// nothing here until the extension's next TAB_LIST or MEDIA_STATE shows the new song.
+    func sendMediaKey(tabId: Int, key: PlaybackKey) {
+        switch key {
+        case .playPause:
+            togglePlayback(tabId: tabId)
+        case .next, .previous:
+            queueMessage(["type": "MEDIA_KEY", "tabId": tabId, "key": key.rawValue])
+        }
+    }
+
     /// Test hook: when set, outgoing messages go here instead of to DeciHost.
     var messageSink: (([String: Any]) -> Void)?
 
@@ -1017,6 +1031,9 @@ struct ChromeTab: Identifiable, Equatable {
     var isMuted: Bool = false
     var paused: Bool = false
     var isAudible: Bool = false
+    /// The selected tab of its window, as the extension last reported. Extension-owned: never set locally, always adopted
+    /// from TAB_LIST.
+    var isActive: Bool = false
     var control: ChromeTabControl = .none
     /// False until the user clicks the Deci toolbar button in Chrome for this tab. Volume and mute work either way;
     /// boost, EQ and output devices need a capture.

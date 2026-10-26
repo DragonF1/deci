@@ -2123,7 +2123,9 @@ final class MusicService {
         ))
     }
 
-    private func handleRemote(_ command: NowPlayingCommand) {
+    /// What a transport command does: from the Now Playing controls, and from the keyboard's play/pause, next and
+    /// previous keys.
+    func handleRemote(_ command: NowPlayingCommand) {
         switch command {
         case .play: resume()
         case .pause:

@@ -4755,7 +4755,7 @@ struct MusicPlayerTests {
         #expect(brokenCount == 1)
     }
 
-    @Test("isActive means a track that is playing, loading or wants to play")
+    @Test("isActive means a track that is playing or wants to play, which includes one that is loading")
     func isActiveRules() {
         let rig = Rig()
         #expect(rig.player.isActive == false)

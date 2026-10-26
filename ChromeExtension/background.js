@@ -14,6 +14,12 @@
  *       favIconUrl: string | null,   (null when missing or longer than 64 KB)
  *       incognito: boolean,
  *       isAudible: boolean,
+ *       active: boolean,             the tab is the selected tab of the window that was
+ *                                    focused last (the app uses it to pick among several
+ *                                    audible tabs for a media key). Pushed on a tab or window
+ *                                    switch only while two or more reported tabs are audible.
+ *                                    Missing means an older extension: the app reads it as
+ *                                    false.
  *       captured: boolean,           (true only for real tab capture)
  *       control: string,             one of:
  *                                      "capture"  captured (gain, EQ and device in Deci)
@@ -93,6 +99,17 @@
  *   OPEN_DEVICE_PERMISSION {}                open (or focus) permissions.html so the
  *                                            user can grant the one-time mic prompt
  *   TOGGLE_PLAYBACK { tabId }
+ *   MEDIA_KEY { tabId, key }                 a keyboard media key pressed for that tab. The app
+ *                                            sends "next" or "previous" (play/pause goes as
+ *                                            TOGGLE_PLAYBACK, which every version knows);
+ *                                            "playPause" is still accepted and does the same
+ *                                            as TOGGLE_PLAYBACK. Next and previous click the
+ *                                            page's own skip button (YouTube, YouTube Music,
+ *                                            Spotify, SoundCloud). With no button, previous
+ *                                            restarts the playing media and next does nothing.
+ *                                            Nothing happens for a tab the app may not hear
+ *                                            about (see TRACKING) or for any other key. No
+ *                                            reply.
  *   GET_MEDIA_STATE { tabId }                reply with one MEDIA_STATE (nothing for a
  *                                            hidden tab or while the gate is closed, see
  *                                            TRACKING)
@@ -1173,7 +1190,25 @@ async function injectYTMSwitch() {
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   ready().then((store) => refreshBadge(store, tabId)).catch(logError('badge refresh'));
+  pushIfActiveMatters();
 });
+
+// Switching to another window can change which tab is active as well.
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  if (windowId !== chrome.windows.WINDOW_ID_NONE) pushIfActiveMatters();
+});
+
+// `active` in TAB_LIST only decides which of several audible tabs a media key goes to, and nothing else in the list
+// changes when the user switches tabs or windows. So the switch pushes a fresh list only while two or more reported
+// tabs are audible, instead of a round trip on every switch.
+async function pushIfActiveMatters() {
+  try {
+    const audible = await chrome.tabs.query({ audible: true });
+    if (audible.filter((t) => isReported(t)).length >= 2) schedulePush();
+  } catch (err) {
+    logError('active refresh')(err);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // TAB_LIST
@@ -1181,6 +1216,16 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 
 const removedTabs = new Set(); // ids removed during this worker's lifetime
 let pushTimer = null;
+
+// The id of the normal window that was focused last, or null when there is none.
+async function lastFocusedWindowId() {
+  try {
+    const last = await chrome.windows.getLastFocused({ windowTypes: ['normal'] });
+    return last ? last.id : null;
+  } catch (e) {
+    return null; // no window has been focused yet
+  }
+}
 
 function schedulePush() {
   if (!port || pushTimer) return;
@@ -1193,10 +1238,11 @@ function schedulePush() {
 async function sendTabList() {
   if (!port) return;
   const store = await ready();
-  const [tabs, incognitoAllowed, access] = await Promise.all([
+  const [tabs, incognitoAllowed, access, focusedWindowId] = await Promise.all([
     chrome.tabs.query({}),
     chrome.extension.isAllowedIncognitoAccess(),
-    getDeviceAccess()
+    getDeviceAccess(),
+    lastFocusedWindowId()
   ]);
   // The gate and `tracking` are read from here to the post with no await in
   // between, so the filter and the echo always agree.
@@ -1227,6 +1273,8 @@ async function sendTabList() {
       favIconUrl: faviconOrNull(t.favIconUrl),
       incognito: !!t.incognito,
       isAudible: !!t.audible,
+      // Each window has an active tab, but only the last focused window's is the one the listener is looking at.
+      active: !!t.active && t.windowId === focusedWindowId,
       captured,
       control,
       volume: s.volume,
@@ -1343,6 +1391,43 @@ function togglePlayback() {
   }
 }
 
+// Clicks the page's own next or previous button. Self-contained: it runs in the page.
+// The selectors are the sites' own player controls, tried in order; the first one that is
+// shown and not disabled gets the click. No generic "Next" label match: on a page with a
+// form or a carousel that would click the wrong thing. With no previous button (a single
+// YouTube video), previous restarts the playing media instead. Returns whether it acted.
+function pressSkipButton(key) {
+  const selectors = key === 'next'
+    ? [
+      'ytmusic-player-bar .next-button',
+      '.ytp-next-button',
+      '[data-testid="control-button-skip-forward"]',
+      '.playControls__next',
+      '.skipControl__next'
+    ]
+    : [
+      'ytmusic-player-bar .previous-button',
+      '.ytp-prev-button',
+      '[data-testid="control-button-skip-back"]',
+      '.playControls__prev',
+      '.skipControl__previous'
+    ];
+  for (const selector of selectors) {
+    for (const el of document.querySelectorAll(selector)) {
+      if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+      if (el.getClientRects().length === 0) continue;
+      el.click();
+      return true;
+    }
+  }
+  if (key !== 'previous') return false;
+  const playing = Array.from(document.querySelectorAll('video, audio'))
+    .find((e) => !e.paused && !e.ended && e.readyState > 2);
+  if (!playing) return false;
+  playing.currentTime = 0;
+  return true;
+}
+
 async function sendMediaState(tabId) {
   try {
     // A hidden tab (or any tab while the gate is closed) is not asked at all, and
@@ -1363,6 +1448,21 @@ async function runTogglePlayback(tabId) {
     await chrome.scripting.executeScript({ target: { tabId }, func: togglePlayback });
   } catch (err) {
     console.warn(`Deci: toggle playback for tab ${tabId} failed:`, errorText(err));
+  }
+}
+
+async function runMediaKey(tabId, key) {
+  try {
+    // A tab the app may not hear about (hidden by the tracking switch, or the gate is closed) is not acted on either.
+    const tab = await getTab(tabId);
+    if (!isReported(tab)) return;
+    if (key === 'playPause') {
+      await chrome.scripting.executeScript({ target: { tabId }, func: togglePlayback });
+    } else if (key === 'next' || key === 'previous') {
+      await chrome.scripting.executeScript({ target: { tabId }, func: pressSkipButton, args: [key] });
+    }
+  } catch (err) {
+    console.warn(`Deci: media key ${key} for tab ${tabId} failed:`, errorText(err));
   }
 }
 
@@ -1492,6 +1592,9 @@ function handleNativeMessage(msg) {
       break;
     case 'TOGGLE_PLAYBACK':
       runTogglePlayback(tabId);
+      break;
+    case 'MEDIA_KEY':
+      runMediaKey(tabId, msg.key);
       break;
     case 'GET_MEDIA_STATE':
       sendMediaState(tabId);
