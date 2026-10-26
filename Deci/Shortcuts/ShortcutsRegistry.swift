@@ -59,22 +59,27 @@ final class ShortcutsRegistry {
     /// Like and Dislike wait on YouTube Music, so they run in a task that reports
     /// the outcome once the answer is in; that task is returned for tests to wait
     /// on. The other actions finish before this returns.
+    ///
+    /// Each press is logged by action, and each music outcome by case name, so a
+    /// hotkey that seemed to do nothing can be told from one that never fired.
+    /// Nothing about the song is logged.
     @discardableResult
     func dispatch(_ action: ShortcutAction) -> Task<Void, Never>? {
+        Self.logger.info("shortcut pressed: \(action.rawValue, privacy: .public)")
         switch action {
         case .togglePopup:
             popupController.toggle()
         case .saveSongToPlaylist:
-            show(music.saveToPlaylist())
+            show(music.saveToPlaylist(), for: action)
         case .likeSong:
             return Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.show(await self.music.toggleLike())
+                self.show(await self.music.toggleLike(), for: action)
             }
         case .dislikeSong:
             return Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.show(await self.music.dislike())
+                self.show(await self.music.dislike(), for: action)
             }
         }
         return nil
@@ -83,12 +88,14 @@ final class ShortcutsRegistry {
     // MARK: - Music dispatch
 
     /// Hands the outcome to where it is shown: the Music popup's notice line while that popup is open, else the HUD.
-    private func show(_ outcome: MusicActionOutcome) {
+    private func show(_ outcome: MusicActionOutcome, for action: ShortcutAction) {
+        Self.logger.info("shortcut \(action.rawValue, privacy: .public) came to: \(String(describing: outcome), privacy: .public)")
         outcomes.report(outcome)
     }
 
     /// Idempotent. Subsequent calls are no-ops. Safe to call from a SwiftUI
-    /// `.task` modifier on the popup content.
+    /// `.task` modifier on the popup content, and from the app's launch: the
+    /// registry is main-actor bound, so the two cannot interleave.
     func start() {
         guard !didStart else { return }
         didStart = true
@@ -105,7 +112,7 @@ final class ShortcutsRegistry {
             }
         }
 
-        Self.logger.debug("ShortcutsRegistry started; \(ShortcutAction.allCases.count) action(s) registered")
+        Self.logger.info("ShortcutsRegistry started; \(ShortcutAction.allCases.count) action(s) registered")
     }
 
     /// Returns a closure suitable for `KeyboardShortcuts.Recorder(for:onChange:)`.

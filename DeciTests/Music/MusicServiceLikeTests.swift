@@ -318,7 +318,7 @@ struct MusicServiceLikeTests {
         #expect(await h.rateCalls() == [.init(videoId: "a", status: .indifferent)])
     }
 
-    @Test("Like pressed before the song's state has landed waits for it, so a liked song loses its like")
+    @Test("Like pressed before the song's state has landed does not wait for it: the like is sent and shown at once")
     func likeBeforeTheReadLands() async {
         let h = await LikeServiceHarness.signedIn()
         let gate = MusicTestGate()
@@ -329,13 +329,19 @@ struct MusicServiceLikeTests {
         let service = h.service
 
         let task = Task { await service.toggleLike() }
-        await h.letLateWorkLand()
-        #expect(await h.rateCalls().isEmpty)
-        await gate.open()
+        let sent = await h.until { await h.rateCalls().count == 1 }
 
-        #expect(await task.value == .likeRemoved)
-        #expect(service.likeStatus == .indifferent)
-        #expect(await h.rateCalls() == [.init(videoId: "a", status: .indifferent)])
+        #expect(sent)
+        #expect(service.likeStatus == .like)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like)])
+
+        await gate.open()
+        #expect(await task.value == .liked)
+        await h.letLateWorkLand()
+
+        // The read that lands afterwards is older than the press, so it does not take the like away.
+        #expect(service.likeStatus == .like)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like)])
     }
 
     @Test("Dislike pressed while a like is out skips without waiting for it and is sent after it")

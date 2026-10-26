@@ -107,6 +107,43 @@ struct ShortcutsRegistryTests {
         #expect(reporter.outcomes == [.quiet, .quiet])
     }
 
+    @Test("A second Like press while the first is still waiting reaches the music side at once, not after the first answers")
+    func secondLikeDoesNotWaitForTheFirst() async {
+        let music = FakeMusicShortcuts()
+        music.outcome = .quiet
+        let gate = MusicTestGate()
+        music.gate = gate
+        let reporter = RecordingOutcomeReporter()
+        let registry = makeRegistry(music: music, outcomes: reporter)
+
+        let first = registry.dispatch(.likeSong)
+        let second = registry.dispatch(.likeSong)
+        for _ in 0..<20 { await Task.yield() }
+
+        #expect(music.calls == [.like, .like])
+        #expect(reporter.outcomes.isEmpty)
+
+        await gate.open()
+        await first?.value
+        await second?.value
+
+        #expect(reporter.outcomes == [.quiet, .quiet])
+    }
+
+    @Test("A Like press and a Dislike press each reach their own side, in the order pressed")
+    func likeAndDislikeStayApart() async {
+        let music = FakeMusicShortcuts()
+        music.outcome = .liked
+        let reporter = RecordingOutcomeReporter()
+        let registry = makeRegistry(music: music, outcomes: reporter)
+
+        await registry.dispatch(.likeSong)?.value
+        await registry.dispatch(.dislikeSong)?.value
+
+        #expect(music.calls == [.like, .dislike])
+        #expect(reporter.outcomes == [.liked, .liked])
+    }
+
     @Test("The popup toggle reports nothing")
     func toggleReportsNothing() {
         let reporter = RecordingOutcomeReporter()

@@ -146,7 +146,7 @@ struct DeciApp: App {
             musicHost: musicHost
         )
         .task {
-            // Idempotent: subsequent task runs (popup re-open) are no-ops inside start().
+            // Idempotent: the launch already started it, and later task runs (popup re-open) are no-ops inside start().
             shortcutsRegistry.start()
         }
     }
@@ -326,8 +326,10 @@ struct DeciApp: App {
 
         // Global hotkeys (KeyboardShortcuts SPM, Carbon-backed; no Accessibility
         // permission required for the hotkey itself). Registry start() is deferred
-        // to a SwiftUI `.task` on the popup content so the FluidMenuBarExtra
-        // status item has been materialized before any hotkey can fire.
+        // one turn of the main queue below, after the app's own setup; a hotkey that
+        // fires before a status item exists is ignored by the popup controller. It does not wait for
+        // the Mixer popup's `.task`: the Music popup is the one used most, and the
+        // Mixer popup may not be opened for a long time after a launch.
         let popupController = MenuBarPopupController()
         // The music player row (shown as Deci) plays inside Deci, where the process taps never reach: the engine tells this model about
         // the global audio switches and device events instead, and the model shapes the player's own audio.
@@ -362,6 +364,8 @@ struct DeciApp: App {
         )
         _menuBarPopupController = State(initialValue: popupController)
         _shortcutsRegistry = State(initialValue: registry)
+        // Idempotent: the Mixer popup's `.task` calls it too, and whichever comes second does nothing.
+        DispatchQueue.main.async { [registry] in registry.start() }
         // The icon follows the setting from here, not from the views: the scenes' own change handlers only
         // run while their views are live.
         settings.onShowMusicInMenuBarChange = { [popupService, music] shown in

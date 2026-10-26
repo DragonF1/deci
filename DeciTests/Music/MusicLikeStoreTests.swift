@@ -60,6 +60,13 @@ private struct LikeHarness {
     func rateCalls() async -> [FakeMusicBackend.RateCall] { await backend.rateCalls }
     func likeStatusCalls() async -> [String] { await backend.likeStatusCalls }
 
+    /// Starts a like toggle in a task and returns at once, so a press that waits on something shows as a failed
+    /// expectation on what it should have sent, not as a test that never ends.
+    func startToggle(_ videoId: String) -> Task<MusicActionOutcome, Never> {
+        let store = self.store
+        return Task { await store.toggleLike(videoId: videoId) }
+    }
+
     /// Starts a like toggle that is held at the backend until `gate` opens, and waits until the call is out.
     func heldToggle(_ videoId: String, gate: MusicTestGate) async -> Task<MusicActionOutcome, Never> {
         await backend.setRateGate(videoId: videoId, gate)
@@ -223,45 +230,152 @@ struct MusicLikeStoreTests {
 
     // MARK: - Like
 
-    @Test("Like on a song whose state is not known yet waits for the read, so a liked song loses its like")
-    func likeWaitsForTheRead() async {
+    @Test("Like on a song whose read is still out does not wait for it: the like shows and is sent at once")
+    func likeDoesNotWaitForTheRead() async {
         let h = LikeHarness()
-        let gate = MusicTestGate()
+        let readGate = MusicTestGate()
         await h.backend.setLikeStatus(videoId: "a", .like)
-        await h.backend.setLikeStatusGate(videoId: "a", gate)
+        await h.backend.setLikeStatusGate(videoId: "a", readGate)
         h.store.load(videoId: "a")
         _ = await h.until { await h.likeStatusCalls().count == 1 }
-        let store = h.store
-        let task = Task { await store.toggleLike(videoId: "a") }
+
+        // The read is held for the whole press, so a press that waited for it would send nothing.
+        let task = h.startToggle("a")
+        let sent = await h.until { await h.rateCalls().count == 1 }
+
+        #expect(sent)
+        #expect(h.store.status(of: "a") == .like)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like)])
+
+        await readGate.open()
+        #expect(await task.value == .liked)
+        #expect(await h.likeStatusCalls() == ["a"])
+    }
+
+    @Test("A read that lands while the like is out does not overwrite it, whatever the read says")
+    func lateReadDoesNotOverwriteALikeInFlight() async {
+        let h = LikeHarness()
+        let readGate = MusicTestGate()
+        let rateGate = MusicTestGate()
+        await h.backend.setLikeStatus(videoId: "a", .dislike)
+        await h.backend.setLikeStatusGate(videoId: "a", readGate)
+        await h.backend.setRateGate(videoId: "a", rateGate)
+        h.store.load(videoId: "a")
+        _ = await h.until { await h.likeStatusCalls().count == 1 }
+
+        let task = h.startToggle("a")
+        let sent = await h.until { await h.rateCalls().count == 1 }
+        await readGate.open()
         await h.letLateWorkLand()
 
-        #expect(await h.rateCalls().isEmpty)
-        await gate.open()
+        #expect(sent)
+        #expect(h.store.status(of: "a") == .like)
 
-        #expect(await task.value == .likeRemoved)
-        #expect(h.store.status(of: "a") == .indifferent)
-        #expect(await h.rateCalls() == [.init(videoId: "a", status: .indifferent)])
-        #expect(await h.likeStatusCalls() == ["a"])
+        await rateGate.open()
+        #expect(await task.value == .liked)
+        #expect(h.store.status(of: "a") == .like)
     }
 
-    @Test("Like on a song never loaded reads it first, then acts on what it is")
-    func likeReadsAnUnloadedSong() async {
+    @Test("A read that lands after the like has been sent does not overwrite it either")
+    func lateReadDoesNotOverwriteASentLike() async throws {
         let h = LikeHarness()
+        let readGate = MusicTestGate()
+        await h.backend.setLikeStatus(videoId: "a", .indifferent)
+        await h.backend.setLikeStatusGate(videoId: "a", readGate)
+        h.store.load(videoId: "a")
+        _ = await h.until { await h.likeStatusCalls().count == 1 }
+
+        let task = h.startToggle("a")
+        let sent = await h.until { await h.rateCalls().count == 1 }
+        try #require(sent)
+        let outcome = await task.value
+        await readGate.open()
+        await h.letLateWorkLand()
+
+        #expect(outcome == .liked)
+        #expect(h.store.status(of: "a") == .like)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like)])
+    }
+
+    @Test("Two quick Likes on a song whose state is not known: the first sends a like, the second sees it and takes it back")
+    func twoQuickLikesOnAnUnknownSong() async throws {
+        let h = LikeHarness()
+        let readGate = MusicTestGate()
+        let rateGate = MusicTestGate()
+        await h.backend.setLikeStatusGate(videoId: "a", readGate)
+        h.store.load(videoId: "a")
+        _ = await h.until { await h.likeStatusCalls().count == 1 }
+        await h.backend.setRateGate(videoId: "a", rateGate)
+
+        // The intended toggle: the first press shows the like at once, so the second press has a like to take back.
+        let first = h.startToggle("a")
+        let sent = await h.until { await h.rateCalls().count == 1 }
+        try #require(sent)
+        #expect(h.store.status(of: "a") == .like)
+        let second = await h.store.toggleLike(videoId: "a")
+
+        #expect(second == .quiet)
+        #expect(h.store.status(of: "a") == .indifferent)
+
+        await rateGate.open()
+        #expect(await first.value == .likeRemoved)
+        await readGate.open()
+        await h.letLateWorkLand()
+
+        #expect(h.store.status(of: "a") == .indifferent)
+        #expect(await h.rateCalls() == [
+            .init(videoId: "a", status: .like),
+            .init(videoId: "a", status: .indifferent),
+        ])
+    }
+
+    @Test("Like on a song never loaded sends the like at once and reads nothing")
+    func likeDoesNotReadAnUnloadedSong() async {
+        let h = LikeHarness()
+        // YouTube has the song liked, but the store cannot know that without a read, and a like sent twice does no harm.
         await h.backend.setLikeStatus(videoId: "a", .like)
 
-        #expect(await h.store.toggleLike(videoId: "a") == .likeRemoved)
-        #expect(await h.rateCalls() == [.init(videoId: "a", status: .indifferent)])
-        #expect(await h.likeStatusCalls() == ["a"])
+        #expect(await h.store.toggleLike(videoId: "a") == .liked)
+        #expect(h.store.status(of: "a") == .like)
+        #expect(await h.rateCalls() == [.init(videoId: "a", status: .like)])
+        #expect(await h.likeStatusCalls().isEmpty)
     }
 
-    @Test("Like on a song whose read failed likes it after that one read")
+    @Test("Like on a song whose read failed likes it without a second read")
     func likeAfterFailedRead() async {
         let h = LikeHarness()
         await h.backend.setLikeStatusError(videoId: "a", MusicError.http(500))
+        h.store.load(videoId: "a")
+        _ = await h.until { await h.likeStatusCalls().count == 1 }
+        await h.letLateWorkLand()
 
         #expect(await h.store.toggleLike(videoId: "a") == .liked)
         #expect(await h.rateCalls() == [.init(videoId: "a", status: .like)])
         #expect(await h.likeStatusCalls() == ["a"])
+    }
+
+    @Test("With a read out that answers liked, Like ends liked, and the next press takes the like back")
+    func nextPressAfterAnUnknownLike() async throws {
+        let h = LikeHarness()
+        let readGate = MusicTestGate()
+        await h.backend.setLikeStatus(videoId: "a", .like)
+        await h.backend.setLikeStatusGate(videoId: "a", readGate)
+        h.store.load(videoId: "a")
+        _ = await h.until { await h.likeStatusCalls().count == 1 }
+
+        let first = h.startToggle("a")
+        let sent = await h.until { await h.rateCalls().count == 1 }
+        try #require(sent)
+        await readGate.open()
+        #expect(await first.value == .liked)
+        await h.letLateWorkLand()
+        #expect(await h.store.toggleLike(videoId: "a") == .likeRemoved)
+
+        #expect(h.store.status(of: "a") == .indifferent)
+        #expect(await h.rateCalls() == [
+            .init(videoId: "a", status: .like),
+            .init(videoId: "a", status: .indifferent),
+        ])
     }
 
     @Test("Like on a song whose state is known reads nothing")
@@ -360,6 +474,9 @@ struct MusicLikeStoreTests {
     @Test("A like that fails on a song with no known state lets the song be read again")
     func failedLikeOnUnknownIsReread() async {
         let h = LikeHarness()
+        h.store.load(videoId: "a")
+        _ = await h.until { await h.likeStatusCalls().count == 1 }
+        await h.letLateWorkLand()
         await h.backend.setRateError(videoId: "a", MusicError.http(500))
         #expect(await h.store.toggleLike(videoId: "a") == .failed)
         await h.backend.setLikeStatus(videoId: "a", .dislike)
