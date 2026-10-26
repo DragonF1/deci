@@ -1022,11 +1022,6 @@ final class SettingsManager {
         }
     }
 
-    /// Returns the actual launch at login status from the system
-    var isLaunchAtLoginEnabled: Bool {
-        SMAppService.mainApp.status == .enabled
-    }
-
     // MARK: - Reset All Settings
 
     /// Resets all per-app settings and app-wide settings to defaults

@@ -193,14 +193,6 @@ struct BoostLevelTests {
         #expect(BoostLevel.x4.next == .x1)
     }
 
-    @Test("isBoosted is false only for x1")
-    func isBoosted() {
-        #expect(!BoostLevel.x1.isBoosted)
-        #expect(BoostLevel.x2.isBoosted)
-        #expect(BoostLevel.x3.isBoosted)
-        #expect(BoostLevel.x4.isBoosted)
-    }
-
     @Test("Labels match expected format",
           arguments: [
             (BoostLevel.x1, "1x"),

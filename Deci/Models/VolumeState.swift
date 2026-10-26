@@ -196,10 +196,6 @@ final class VolumeState {
 
     // MARK: - Cleanup
 
-    func removeVolume(for pid: pid_t) {
-        states.removeValue(forKey: pid)
-    }
-
     func cleanup(keeping pids: Set<pid_t>) {
         states = states.filter { pids.contains($0.key) }
     }

@@ -134,7 +134,7 @@ final class ChromeExtensionManager: NSObject {
             // Any message proves the extension is alive, whatever its type.
             noteMessageReceived()
 
-            if type == "TAB_LIST", let rawTabs = json["tabs"] as? [[String: Any]] {
+            if type == "TAB_LIST", json["tabs"] is [[String: Any]] {
                 let parsed = Self.parseTabList(json)
                 if incognitoAllowed != parsed.incognitoAllowed {
                     incognitoAllowed = parsed.incognitoAllowed

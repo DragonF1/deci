@@ -68,44 +68,6 @@ nonisolated extension AudioObjectID {
         }
         return unmanaged.takeRetainedValue() as String
     }
-
-    func readStringWithQualifier(
-        _ selector: AudioObjectPropertySelector,
-        scope: AudioScope = .output,
-        qualifier: UInt32
-    ) -> String? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: scope.propertyScope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectHasProperty(self, &address) else { return nil }
-
-        // Get actual data size — some HAL plugins write more than MemoryLayout<CFString>.size,
-        // corrupting the stack if we use a stack-allocated buffer.
-        var qual = qualifier
-        var dataSize: UInt32 = 0
-        var err = AudioObjectGetPropertyDataSize(
-            self, &address,
-            UInt32(MemoryLayout<UInt32>.size), &qual,
-            &dataSize
-        )
-        guard err == noErr, dataSize > 0 else { return nil }
-
-        // Heap-allocate to avoid stack buffer overflow from buggy drivers
-        let capacity = Swift.max(1, Int(dataSize) / MemoryLayout<CFString>.size)
-        let buffer = UnsafeMutablePointer<CFString>.allocate(capacity: capacity)
-        defer { buffer.deinitialize(count: 1); buffer.deallocate() }
-        buffer.initialize(to: "" as CFString)
-
-        err = AudioObjectGetPropertyData(
-            self, &address,
-            UInt32(MemoryLayout<UInt32>.size), &qual,
-            &dataSize, buffer
-        )
-        guard err == noErr else { return nil }
-        return buffer.pointee as String
-    }
 }
 
 // MARK: - Array Property Reading

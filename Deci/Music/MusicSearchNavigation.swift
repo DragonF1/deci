@@ -324,11 +324,6 @@ final class MusicSearchNavigation {
         return MusicArtistSearch.resolve(page: page, songsPage: loadedPage(page.allSongsBrowseId), terms: terms)
     }
 
-    /// The artist results cover the artist page.
-    var showsArtistSearch: Bool {
-        artistSearch != nil
-    }
-
     /// The Songs block over the filtered Library: the matches in Liked music, loaded or not yet. Nil without words.
     var likedSongs: MusicLikedSongs? {
         let terms = browseFilterTerms

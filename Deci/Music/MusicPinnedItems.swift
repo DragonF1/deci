@@ -329,11 +329,6 @@ final class MusicPinnedItems {
         return items.contains { $0.key == key }
     }
 
-    /// A pinned item can always be unpinned; a new one needs room.
-    func canToggle(_ item: MusicPinnedItem) -> Bool {
-        isPinned(item) || !isFull
-    }
-
     /// What the item's Pin to Home entry says and whether it is on.
     func state(for item: MusicPinnedItem) -> MusicHomePinState {
         isPinned(item) ? .pinned : (isFull ? .full : .canPin)

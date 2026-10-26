@@ -42,7 +42,7 @@ nonisolated final class AutoEQProfileLoader {
         return profiles
     }
 
-    // MARK: - Import / Delete on Disk
+    // MARK: - Import on Disk
 
     /// Import a ParametricEQ.txt file. Copies to import directory and returns parsed profile.
     func importProfile(from url: URL, name: String) -> AutoEQProfile? {
@@ -66,14 +66,5 @@ nonisolated final class AutoEQProfileLoader {
             logger.error("Failed to import profile: \(error.localizedDescription)")
             return nil
         }
-    }
-
-    /// Delete an imported profile's files from disk.
-    func deleteProfileFiles(id: String) {
-        let dir = importDirectory
-        let file = dir.appendingPathComponent("\(id).txt")
-        let nameFile = dir.appendingPathComponent("\(id).name")
-        try? FileManager.default.removeItem(at: file)
-        try? FileManager.default.removeItem(at: nameFile)
     }
 }

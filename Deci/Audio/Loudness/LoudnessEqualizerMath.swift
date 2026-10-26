@@ -13,10 +13,6 @@ enum LoudnessEqualizerMath {
         10 * log10(max(meanSquare, 1e-12))
     }
 
-    static func rmsFromMeanSquare(_ meanSquare: Float) -> Float {
-        sqrt(max(meanSquare, 0))
-    }
-
     static func clamp(_ value: Float, min: Float, max: Float) -> Float {
         Swift.min(Swift.max(value, min), max)
     }

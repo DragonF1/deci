@@ -195,17 +195,6 @@ struct MusicPinnedItemsTests {
         #expect(pins.items.last?.id == "UC31x")
     }
 
-    @Test("canToggle: a pinned item can always be unpinned, a new one only while there is room")
-    func canToggle() {
-        let (open, _) = make([item("UCa")])
-        #expect(open.canToggle(item("UCa")))
-        #expect(open.canToggle(item("UCb")))
-
-        let (closed, _) = make(full())
-        #expect(closed.canToggle(item("UC1")))
-        #expect(!closed.canToggle(item("UCextra")))
-    }
-
     @Test("toggle on a full list unpins a pinned item and refuses a new one")
     func toggleWhenFull() {
         let (pins, _) = make(full())

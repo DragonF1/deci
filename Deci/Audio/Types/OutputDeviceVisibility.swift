@@ -1,7 +1,6 @@
 // Deci/Audio/Types/OutputDeviceVisibility.swift
 
-/// Which output devices a picker lists. The Mixer popup and the Music player's output menu both use it, so they never
-/// disagree about which devices the user has hidden.
+/// Which output devices the Mixer popup's picker lists, leaving out the devices the user has hidden.
 nonisolated enum OutputDeviceVisibility {
     /// `sorted` (already in priority order) without the hidden devices. The current default output device is always
     /// kept, even if hidden. Falls back to the whole list when the filter leaves nothing: the default's UID can be briefly

@@ -1,39 +1,11 @@
 // DeciTests/Music/MusicPlayerLogicTests.swift
-// The rules of the player column and the panels beside it kept apart from the views: what the output control says, what
-// the Up next list shows and where it comes from, what the Up next header and the lyrics header and foot read, and
-// where the slider's knob sits.
+// The rules of the player column and the panels beside it kept apart from the views: what the Up next list shows and
+// where it comes from, and what the Up next header and the lyrics header and foot read.
 
 import SwiftUI
 import Testing
 
 @testable import Deci
-
-@MainActor
-@Suite("MusicOutputLabel")
-struct MusicOutputLabelTests {
-    @Test("a device with an EQ profile reads 'device · profile'")
-    func deviceAndProfile() {
-        #expect(MusicOutputLabel.text(deviceName: "Desk Speakers", profileName: "Flat Studio") == "Desk Speakers \u{00B7} Flat Studio")
-    }
-
-    @Test("a device without a profile reads as its name alone")
-    func deviceOnly() {
-        #expect(MusicOutputLabel.text(deviceName: "Desk Speakers", profileName: nil) == "Desk Speakers")
-        #expect(MusicOutputLabel.text(deviceName: "Desk Speakers", profileName: "  ") == "Desk Speakers")
-    }
-
-    @Test("no known device reads as the default output, and a profile alone is not shown without its device")
-    func unknownDevice() {
-        #expect(MusicOutputLabel.text(deviceName: nil, profileName: nil) == "Default output")
-        #expect(MusicOutputLabel.text(deviceName: "", profileName: "Flat Studio") == "Default output")
-        #expect(MusicOutputLabel.text(deviceName: "   ", profileName: nil) == "Default output")
-    }
-
-    @Test("names are trimmed")
-    func trimmed() {
-        #expect(MusicOutputLabel.text(deviceName: "  Desk Speakers\n", profileName: " Flat Studio ") == "Desk Speakers \u{00B7} Flat Studio")
-    }
-}
 
 @MainActor
 @Suite("MusicQueueListing")
@@ -475,29 +447,5 @@ struct MusicLyricsCaptionTests {
     @Test("text with emoji and accents is kept as it is")
     func stanzasUnicode() {
         #expect(MusicLyricsCaption.stanzas(of: "caf\u{00E9} \u{1F3B5}\n\nna\u{00EF}ve") == ["caf\u{00E9} \u{1F3B5}", "na\u{00EF}ve"])
-    }
-}
-
-@MainActor
-@Suite("MusicSliderGeometry")
-struct MusicSliderGeometryTests {
-    @Test("the knob's centre runs from half a knob in to half a knob short of the end, so it never leaves the track")
-    func knobStaysInside() {
-        #expect(MusicSliderGeometry.knobOffset(fraction: 0, width: 200, knob: 10) == 0)
-        #expect(MusicSliderGeometry.knobOffset(fraction: 1, width: 200, knob: 10) == 190)
-        #expect(MusicSliderGeometry.knobOffset(fraction: 0.5, width: 200, knob: 10) == 95)
-    }
-
-    @Test("a fraction outside 0...1 or not a number is held inside the track")
-    func fractionIsContained() {
-        #expect(MusicSliderGeometry.knobOffset(fraction: -3, width: 200, knob: 10) == 0)
-        #expect(MusicSliderGeometry.knobOffset(fraction: 9, width: 200, knob: 10) == 190)
-        #expect(MusicSliderGeometry.knobOffset(fraction: .nan, width: 200, knob: 10) == 0)
-    }
-
-    @Test("a track narrower than the knob keeps the knob at the start")
-    func narrowTrack() {
-        #expect(MusicSliderGeometry.knobOffset(fraction: 1, width: 4, knob: 10) == 0)
-        #expect(MusicSliderGeometry.knobOffset(fraction: 1, width: .nan, knob: 10) == 0)
     }
 }

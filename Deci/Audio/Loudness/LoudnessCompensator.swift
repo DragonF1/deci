@@ -36,7 +36,6 @@ final class LoudnessCompensator: BiquadProcessor, @unchecked Sendable {
         .init(kind: .peaking, frequency: 3200, q: 0.7),
         .init(kind: .highShelf, frequency: 10000, q: 0.85),
     ]
-    static let bandFrequencies = filterDefinitions.map(\.frequency)
     static let bandCount = filterDefinitions.count
 
     private static let fitGridPointCount = 96

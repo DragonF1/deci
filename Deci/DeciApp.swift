@@ -75,7 +75,6 @@ struct DeciApp: App {
     @State private var downloadsSettings: MusicDownloadsSettingsModel
     @State private var musicChip: MusicMenuBarChipController
     @StateObject private var updateManager = UpdateManager()
-    @State private var showMenuBarExtra = true
 
     /// Snapshot icon computed at launch from the user's chosen style and the current
     /// default-device volume/mute. The coordinator keeps it in sync afterwards.

@@ -94,9 +94,6 @@ final class AudioEngine {
     /// Keyed by AudioDeviceID. Each entry holds the device UID, listener block, and a timeout task.
     private var aliveWatchers: [AudioDeviceID: (uid: String, block: AudioObjectPropertyListenerBlock, timeout: Task<Void, Never>)] = [:]
 
-    /// Number of pending alive watchers (exposed for testing).
-    var pendingAliveWatcherCount: Int { aliveWatchers.count }
-
     private var appliedPIDs: Set<pid_t> = []
     private var appDeviceRouting: [pid_t: String] = [:]  // pid → deviceUID (always explicit)
     private var followsDefault: Set<pid_t> = []  // Apps that follow system default
@@ -966,11 +963,6 @@ final class AudioEngine {
     }
 
     // MARK: - Per-Device AutoEQ
-
-    func getAutoEQProfile(for deviceUID: String) -> AutoEQProfile? {
-        guard let selection = settingsManager.getAutoEQSelection(for: deviceUID) else { return nil }
-        return autoEQProfileManager.profile(for: selection.profileID)
-    }
 
     func setAutoEQProfile(for deviceUID: String, profileID: String?) {
         if let profileID {

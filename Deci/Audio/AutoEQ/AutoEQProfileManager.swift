@@ -52,7 +52,7 @@ final class AutoEQProfileManager {
         fetcher.catalog.first(where: { $0.id == id })
     }
 
-    // MARK: - Import / Delete
+    // MARK: - Import
 
     /// Import a ParametricEQ.txt file. Copies to app support and adds to catalog.
     func importProfile(from url: URL, name: String) -> AutoEQProfile? {
@@ -60,15 +60,6 @@ final class AutoEQProfileManager {
         profiles[profile.id] = profile
         rebuildSearchIndex()
         return profile
-    }
-
-    /// Delete an imported profile from disk and catalog.
-    func deleteImportedProfile(id: String) {
-        guard let profile = profiles[id], profile.source == .imported else { return }
-        profiles.removeValue(forKey: id)
-        loader.deleteProfileFiles(id: id)
-        rebuildSearchIndex()
-        logger.info("Deleted imported profile: \(profile.name)")
     }
 
     // MARK: - Profile Resolution

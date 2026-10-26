@@ -92,40 +92,4 @@ enum MockData {
             icon: NSImage(systemSymbolName: "airpodspro", accessibilityDescription: nil)
         ),
     ]
-
-    // MARK: - Default Device
-
-    static var defaultDevice: AudioDevice {
-        sampleDevices[0]
-    }
-
-    // MARK: - Sample Volumes
-
-    static let sampleVolumes: [pid_t: Float] = [
-        1001: 0.75,  // Spotify at 75%
-        1002: 1.0,   // Chrome at 100%
-        1003: 0.5,   // Zoom at 50%
-        1004: 0.85,  // Discord at 85%
-        1005: 0.6    // Music at 60%
-    ]
-
-    // MARK: - Sample Audio Levels (for VU meters)
-
-    static let sampleAudioLevels: [pid_t: Float] = [
-        1001: 0.65,  // Spotify playing loud
-        1002: 0.0,   // Chrome silent
-        1003: 0.35,  // Zoom moderate
-        1004: 0.45,  // Discord moderate
-        1005: 0.55   // Music moderate-loud
-    ]
-
-    // MARK: - Helpers
-
-    static func randomVolume() -> Float {
-        Float.random(in: 0...1)
-    }
-
-    static func randomAudioLevel() -> Float {
-        Float.random(in: 0...0.8)
-    }
 }

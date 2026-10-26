@@ -73,8 +73,6 @@ enum IOAVServiceLoader {
 // MARK: - DDC Error
 
 enum DDCError: Error {
-    case apiNotAvailable
-    case serviceCreationFailed
     case writeFailed(IOReturn)
     case readFailed(IOReturn)
     case checksumMismatch

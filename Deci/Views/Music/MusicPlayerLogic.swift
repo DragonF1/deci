@@ -2,22 +2,8 @@
 import SwiftUI
 
 // The rules of the player column and the panels beside it (Lyrics, Up next) kept apart from the views, so they are
-// tested without drawing anything: what the output control says, what Up next lists and what its header says, what the
-// lyrics header and footer read and where a slider's knob sits.
-
-/// The small label under the output control: where the music comes out, and the EQ profile in use on it.
-nonisolated enum MusicOutputLabel {
-    static let fallback = "Default output"
-
-    /// "Device name · profile", the device alone when it has no profile, or "Default output" when the device is not
-    /// known. A profile is never shown without its device.
-    static func text(deviceName: String?, profileName: String?) -> String {
-        let device = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !device.isEmpty else { return fallback }
-        let profile = profileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return profile.isEmpty ? device : device + " \u{00B7} " + profile
-    }
-}
+// tested without drawing anything: what Up next lists and what its header says, and what the lyrics header and footer
+// read.
 
 /// What the Up next screen lists: the song in the player, every song that will play after it in play order, and where
 /// the queue came from. After the queue's own songs come the next lap under Loop playlist (the songs before the current
@@ -176,19 +162,5 @@ enum MusicLyricsCaption {
         }
         if !current.isEmpty { stanzas.append(current.joined(separator: "\n")) }
         return stanzas
-    }
-}
-
-/// The measures of a thin slider (the volume): the knob, held inside the track.
-nonisolated enum MusicSliderGeometry {
-    /// The knob's leading edge along a track `width` wide: it runs from the start to one knob short of the end, so the
-    /// knob never leaves the track. A fraction outside 0...1 or not a number is held inside it.
-    static func knobOffset(fraction: Double, width: CGFloat, knob: CGFloat) -> CGFloat {
-        guard width.isFinite, knob.isFinite else { return 0 }
-        return max(0, width - knob) * CGFloat(clamped(fraction))
-    }
-
-    private static func clamped(_ fraction: Double) -> Double {
-        fraction.isFinite ? min(max(fraction, 0), 1) : 0
     }
 }

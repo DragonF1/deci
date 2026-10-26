@@ -26,7 +26,4 @@ enum BoostLevel: Float, CaseIterable, Codable {
         case .x4: .x1
         }
     }
-
-    /// Whether this boost level amplifies above unity
-    var isBoosted: Bool { self != .x1 }
 }
