@@ -66,7 +66,7 @@ struct InnerTubeClientAccountTests {
         await #expect(throws: MusicError.signedOut) { try await expired.accountInfo() }
         for status in [400, 403, 429, 500, 503] {
             let client = makeClient(FakeYouTube { $0.accountMenuStatus = status })
-            await #expect(throws: MusicError.http(status)) { try await client.accountInfo() }
+            await #expect(throws: MusicError.httpAnswer(status)) { try await client.accountInfo() }
         }
     }
 

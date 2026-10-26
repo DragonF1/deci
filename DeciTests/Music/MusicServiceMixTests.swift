@@ -481,7 +481,7 @@ struct MusicServiceMixTests {
 
     @Test("a refused mix is forgotten, and the page follows the Autoplay rules: the radio of the same last song is staged")
     func refusedMix() async {
-        for error in [MusicError.http(400), .http(403), .http(404), .parse("no queue")] {
+        for error in [MusicError.http(400), .http(403), .forbidden, .http(404), .parse("no queue")] {
             let h = MixServiceHarness()
             await h.backend.setMixError(afterVideoId: "c", error)
             await h.backend.setRadio(seed: "c", tracks: MusicSamples.tracks("c", "r1", "r2"))

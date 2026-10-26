@@ -153,8 +153,7 @@ actor InnerTubeClient {
             cachedSession = (session, now())
         }
         Self.log.info("bootstrap ok, client \(session.clientVersion, privacy: .public), player \(session.playerHash ?? "none", privacy: .public)")
-        let identity = session.isBrandChannel.map { $0 ? "brand channel" : "own channel" } ?? "unknown"
-        Self.log.notice("bootstrap identity: \(identity, privacy: .public)")
+        Self.log.notice("bootstrap identity: \(Self.identityLabel(of: session), privacy: .public)")
         return session
     }
 
@@ -309,10 +308,11 @@ actor InnerTubeClient {
     }
 
     /// Safe for logs: the kind of an answer that ends paging (unreadable, or the HTTP status), never a URL or response text.
-    private static func logKind(of error: any Error) -> String {
+    static func logKind(of error: any Error) -> String {
         switch error as? MusicError {
         case .parse: "parse"
         case .http(let status): "http \(status)"
+        case .forbidden: "http 403"
         default: "other"
         }
     }
@@ -663,20 +663,73 @@ actor InnerTubeClient {
         guard let url = URL(string: "https://music.youtube.com/youtubei/v1/\(endpoint)?prettyPrint=false\(query)") else {
             throw MusicError.parse("request url is not valid")
         }
-        guard let headers = authenticatedHeaders(for: url, session: session) else { throw MusicError.signedOut }
+        guard var headers = authenticatedHeaders(for: url, session: session) else { throw MusicError.signedOut }
         // The cookies pick the channel for the page, but browse, library, account and write calls only act
         // as a brand channel when they name it, as ytmusicapi does. Not on player: it answers 401 to that,
         // and streams and History work from the cookies alone.
         let onBehalfOf = endpoint == "player" ? nil : session.brandPageId
+        var sentOnBehalfOf = onBehalfOf != nil
         var response = try await send(url, headers: headers, body: body, session: session, onBehalfOf: onBehalfOf)
         absorbCookies(from: response, url: url, epoch: epoch)
-        // A 401 would sign the whole session out. One that answers the channel id gets one try without it.
-        if response.statusCode == 401, onBehalfOf != nil {
+        // A 401 would sign the whole session out. One that answers the channel id gets one try without it. So does a 403
+        // on a playlist edit: the brand channel may not own the playlist, and the cookies alone act as the signed-in
+        // channel. Any other 403 is kept.
+        if sentOnBehalfOf, Self.retriesWithoutChannel(endpoint: endpoint, status: response.statusCode) {
+            logFailure(endpoint: endpoint, response: response, session: session, sentOnBehalfOf: true)
+            // The refusal took time: stop if the task was cancelled or the session ended meanwhile, and sign the retry
+            // with the jar as the refusal left it, since its cookies may have rotated.
+            try Task.checkCancellation()
+            guard epoch == self.epoch else { throw MusicError.signedOut }
+            guard let fresh = authenticatedHeaders(for: url, session: session) else { throw MusicError.signedOut }
+            headers = fresh
             response = try await send(url, headers: headers, body: body, session: session, onBehalfOf: nil)
             absorbCookies(from: response, url: url, epoch: epoch)
+            sentOnBehalfOf = false
+            Self.log.notice("\(Self.retryDescription(status: response.statusCode), privacy: .public)")
         }
-        guard (200..<300).contains(response.statusCode) else { throw Self.error(for: response.statusCode) }
+        guard (200..<300).contains(response.statusCode) else {
+            logFailure(endpoint: endpoint, response: response, session: session, sentOnBehalfOf: sentOnBehalfOf)
+            throw Self.postError(for: response.statusCode)
+        }
         return response.data
+    }
+
+    /// The calls whose 403 gets one try without the channel id: the playlist edit, which the account's own channel may be
+    /// let make where the brand channel is not. A like is not here: without the channel it would land on the account's own
+    /// channel, and show as done on the wrong one.
+    private static let channelRetryEndpoints: Set<String> = ["browse/edit_playlist"]
+
+    /// Whether a refused answer is worth one more try without the channel id: a 401 on any call, or a 403 on a playlist edit.
+    static func retriesWithoutChannel(endpoint: String, status: Int) -> Bool {
+        status == 401 || (status == 403 && channelRetryEndpoints.contains(endpoint))
+    }
+
+    /// The line logged once a retry without the channel id has been answered: only the status.
+    static func retryDescription(status: Int) -> String {
+        "retried without channel: http \(status)"
+    }
+
+    /// Logs one refused answer: only the endpoint path, the status, the two plain tokens of the error body, whether the
+    /// channel id was sent and which channel the page said, never the message, an id or any other text of the body.
+    private func logFailure(endpoint: String, response: HTTPResponse, session: InnerTubeSession, sentOnBehalfOf: Bool) {
+        guard !(200..<300).contains(response.statusCode) else { return }
+        let line = Self.failureDescription(
+            endpoint: endpoint, status: response.statusCode, body: response.data,
+            sentOnBehalfOf: sentOnBehalfOf, identity: Self.identityLabel(of: session)
+        )
+        Self.log.error("\(line, privacy: .public)")
+    }
+
+    /// The line `logFailure` writes.
+    static func failureDescription(endpoint: String, status: Int, body: Data, sentOnBehalfOf: Bool, identity: String) -> String {
+        let summary = InnerTubeParser.apiErrorSummary(from: body)
+        return "\(endpoint) answered http \(status), status \(summary.status ?? "none"), reason \(summary.reason ?? "none"), "
+            + "onBehalfOf \(sentOnBehalfOf), identity \(identity)"
+    }
+
+    /// Which channel the home page said the session acts as: "brand channel", "own channel", or "unknown" when it did not say.
+    static func identityLabel(of session: InnerTubeSession) -> String {
+        session.isBrandChannel.map { $0 ? "brand channel" : "own channel" } ?? "unknown"
     }
 
     private func send(
@@ -719,6 +772,15 @@ actor InnerTubeClient {
 
     private static func error(for status: Int) -> MusicError {
         status == 401 ? .signedOut : .http(status)
+    }
+
+    /// The error of a refused `post`: a 401 is a signed-out session, a 403 is a channel that may not do that.
+    private static func postError(for status: Int) -> MusicError {
+        switch status {
+        case 401: .signedOut
+        case 403: .forbidden
+        default: .http(status)
+        }
     }
 
     // MARK: - Cookies

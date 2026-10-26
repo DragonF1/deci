@@ -124,7 +124,7 @@ struct InnerTubeClientMixTests {
     func refusedThrows() async throws {
         for status in [400, 403, 404] {
             let youtube = try mixYouTube { $0.nextStatuses[Self.playlistId] = status }
-            await #expect(throws: MusicError.http(status)) { try await mix(makeClient(youtube)) }
+            await #expect(throws: MusicError.httpAnswer(status)) { try await mix(makeClient(youtube)) }
             #expect(youtube.requests(path: Self.nextPath).count == 1, "status \(status)")
         }
         for garbage in ["<html>blocked</html>", "{}"] {

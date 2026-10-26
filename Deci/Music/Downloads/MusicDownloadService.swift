@@ -1347,8 +1347,8 @@ final class MusicDownloadService {
         let status: Int?
         if let download = error as? MusicDownloadError, case .badStatus(let code) = download {
             status = code
-        } else if let music = error as? MusicError, case .http(let code) = music {
-            status = code
+        } else if let music = error as? MusicError {
+            status = music.httpStatus
         } else {
             status = nil
         }

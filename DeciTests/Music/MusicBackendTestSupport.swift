@@ -317,6 +317,12 @@ nonisolated enum MusicTestJar {
 /// A scripted music.youtube.com: serves the fixtures, records every request, and lets a test
 /// change what the next response looks like.
 nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
+    struct BrandedAnswer: Sendable {
+        var status: Int
+        var body = Data("{}".utf8)
+        var headers: [String: String] = [:]
+    }
+
     struct Config: Sendable {
         var bootstrapHTML = (try? MusicFixtures.string("music-home-bootstrap.html")) ?? ""
         var bootstrapStatus = 200
@@ -362,6 +368,11 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var playerJS = "var g={};foo({referer:document.location.toString(),signatureTimestamp:20739},r);"
         var playerJSStatus = 200
         var statsStatus = 204
+        /// An answer per request path (for example "/youtubei/v1/browse/edit_playlist") for a request that names a brand
+        /// channel in its context (`context.user.onBehalfOfUser`). A request that does not, or a path with no entry,
+        /// gets the usual answer. It lets a test have the brand channel refused where the account's own channel is let
+        /// through, as the retry without the channel sees it.
+        var brandedAnswers: [String: BrandedAnswer] = [:]
         var delay: Duration?
         /// Holds every request until opened. Unlike `delay` it ignores cancellation, like a slow server would.
         var gate: MusicTestGate?
@@ -396,6 +407,9 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         if let delay = config.delay { try await Task.sleep(for: delay) }
         if let gate = config.gate { await gate.wait() }
         let url = request.url
+        if let branded = config.brandedAnswers[url.path], Self.namesBrandChannel(request) {
+            return HTTPResponse(statusCode: branded.status, headers: branded.headers, data: branded.body)
+        }
         switch (url.host, url.path) {
         case ("music.youtube.com", "/"):
             return HTTPResponse(statusCode: config.bootstrapStatus, headers: config.bootstrapHeaders, data: Data(config.bootstrapHTML.utf8))
@@ -446,6 +460,24 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
     static func jsonBody(_ request: HTTPRequest) -> [String: Any] {
         guard let body = request.body else { return [:] }
         return (try? JSONSerialization.jsonObject(with: body) as? [String: Any]) ?? [:]
+    }
+
+    /// The channel a request names as `context.user.onBehalfOfUser`; nil when it names none.
+    static func onBehalfOfUser(_ request: HTTPRequest) -> String? {
+        let context = jsonBody(request)["context"] as? [String: Any]
+        return (context?["user"] as? [String: Any])?["onBehalfOfUser"] as? String
+    }
+
+    static func namesBrandChannel(_ request: HTTPRequest) -> Bool {
+        onBehalfOfUser(request) != nil
+    }
+}
+
+extension MusicError {
+    /// What a call through the InnerTube client throws for a failed answer of `status` that is not 401 (that one is
+    /// `.signedOut`): a 403 is `.forbidden`, any other status carries its code as `.http`.
+    nonisolated static func httpAnswer(_ status: Int) -> MusicError {
+        status == 403 ? .forbidden : .http(status)
     }
 }
 

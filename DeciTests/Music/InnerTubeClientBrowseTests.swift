@@ -375,7 +375,7 @@ struct InnerTubeClientBrowseTests {
 
         for status in [400, 403, 429, 500, 503] {
             let client = makeClient(youtube { $0.browseStatus = status })
-            await #expect(throws: MusicError.http(status)) { try await client.history() }
+            await #expect(throws: MusicError.httpAnswer(status)) { try await client.history() }
         }
     }
 
@@ -423,7 +423,7 @@ struct InnerTubeClientBrowseTests {
 
         for status in [400, 403, 429, 500, 503] {
             let client = makeClient(youtube { $0.browseStatus = status })
-            await #expect(throws: MusicError.http(status)) { try await client.home() }
+            await #expect(throws: MusicError.httpAnswer(status)) { try await client.home() }
         }
     }
 

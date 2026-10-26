@@ -601,7 +601,7 @@ struct InnerTubeClientTests {
     func httpFailures() async {
         for status in [403, 429, 500, 503] {
             let client = makeClient(FakeYouTube { $0.searchStatus = status })
-            await #expect(throws: MusicError.http(status)) { try await client.search("a") }
+            await #expect(throws: MusicError.httpAnswer(status)) { try await client.search("a") }
         }
     }
 
@@ -732,8 +732,8 @@ struct InnerTubeClientTests {
         await #expect(throws: MusicError.signedOut) { try await expired.moreRadio(continuation: "x") }
         for status in [400, 403, 429, 500, 503] {
             let client = makeClient(FakeYouTube { $0.nextStatus = status })
-            await #expect(throws: MusicError.http(status)) { try await client.radio(seedVideoId: "x") }
-            await #expect(throws: MusicError.http(status)) { try await client.moreRadio(continuation: "x") }
+            await #expect(throws: MusicError.httpAnswer(status)) { try await client.radio(seedVideoId: "x") }
+            await #expect(throws: MusicError.httpAnswer(status)) { try await client.moreRadio(continuation: "x") }
         }
     }
 

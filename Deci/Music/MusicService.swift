@@ -2272,6 +2272,8 @@ final class MusicService {
                 return "Couldn't prepare the stream. Try again."
             case .rejected:
                 return "YouTube Music didn't accept that. Try again."
+            case .forbidden:
+                return "YouTube Music refused that request (403)."
             }
         }
         if error is URLError {
@@ -2291,6 +2293,7 @@ final class MusicService {
             case .noAudioFormat: return "noAudioFormat"
             case .solver: return "solver"
             case .rejected: return "rejected"
+            case .forbidden: return "forbidden"
             }
         }
         let nsError = error as NSError

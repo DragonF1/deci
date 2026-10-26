@@ -250,7 +250,7 @@ final class MusicTrackActionsStore {
         if (error as? MusicError) == .rejected {
             post("Not added. \(option.title) may already have it.", isError: true)
         } else {
-            post(MusicService.message(for: error), isError: true)
+            post(Self.playlistWriteMessage(for: error), isError: true)
         }
     }
 
@@ -351,7 +351,7 @@ final class MusicTrackActionsStore {
         } else if (error as? MusicError) == .rejected {
             post("Not removed from \(option.title).", isError: true)
         } else {
-            post(MusicService.message(for: error), isError: true)
+            post(Self.playlistWriteMessage(for: error), isError: true)
         }
     }
 
@@ -589,12 +589,23 @@ final class MusicTrackActionsStore {
         "\(sessionRun)|\(base)"
     }
 
-    /// A write that failed: the session going away signs out, anything else shows its line and leaves the page as it was.
+    /// A playlist write that failed: the session going away signs out, anything else shows its line and leaves the page as it was.
     private func failWrite(_ error: any Error, key: String, session: Int) {
         busy.remove(key)
         guard sessionRun == session else { return }
         logger.error("write failed: \(MusicService.logDescription(of: error), privacy: .public)")
-        if !expireIfSignedOut(error) { post(MusicService.message(for: error), isError: true) }
+        if !expireIfSignedOut(error) { post(Self.playlistWriteMessage(for: error), isError: true) }
+    }
+
+    /// What a refused edit of a playlist says when YouTube Music answers 403: the channel in use does not own the
+    /// playlist, which the generic line for a 403 cannot tell.
+    static let playlistForbiddenText =
+        "This channel can't edit that playlist. If it's on another channel, use Switch channel in the account card."
+
+    /// The line for a failed playlist write (remove from a playlist, add to a playlist, add a whole playlist). Every
+    /// other error keeps its generic line. Likes and the picker's list do not come through here.
+    private static func playlistWriteMessage(for error: any Error) -> String {
+        (error as? MusicError) == .forbidden ? playlistForbiddenText : MusicService.message(for: error)
     }
 
     /// Tells the service when the session is gone; says whether it was.

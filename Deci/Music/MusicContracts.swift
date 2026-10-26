@@ -341,15 +341,28 @@ enum MusicError: Error, Sendable, Equatable {
     case solver(String)
     /// A write call (save, remove, pin) came back without the success marker.
     case rejected
+    /// HTTP 403 from an InnerTube call made through the client's `post` (a browse, search, library, account or write
+    /// call): the session is good, but YouTube refused that request, such as an edit of a playlist that belongs to
+    /// another channel. Every place that sorted `.http(403)` sorts it the same way. The session bootstrap, the player
+    /// script fetch and `reportHistory` do not go through `post` and still throw `.http(403)`.
+    case forbidden
+
+    /// The HTTP status behind `.http` and `.forbidden`; nil for every other case.
+    var httpStatus: Int? {
+        switch self {
+        case .http(let status): status
+        case .forbidden: 403
+        default: nil
+        }
+    }
 
     /// A queue page error that retrying will not fix: an unreadable response or a rejected request. A timeout (408) or a
     /// rate limit (429) passes, so those wait for a retry.
     static func endsPaging(_ error: any Error) -> Bool {
-        switch error as? MusicError {
-        case .parse: true
-        case .http(let status): (400..<500).contains(status) && status != 408 && status != 429
-        default: false
-        }
+        guard let music = error as? MusicError else { return false }
+        if case .parse = music { return true }
+        guard let status = music.httpStatus else { return false }
+        return (400..<500).contains(status) && status != 408 && status != 429
     }
 }
 
@@ -436,11 +449,12 @@ protocol MusicBackend: Sendable {
     /// when signed out or the session is gone.
     func likeStatus(videoId: String) async throws -> MusicLikeStatus?
     /// Sets the like state of one song: `.like` and `.dislike` rate it, `.indifferent` takes the rating back. A 2xx answer
-    /// is success. Throws `.signedOut` when signed out or the session is gone, `.http` for any other failed status.
+    /// is success. Throws `.signedOut` when signed out or the session is gone, `.forbidden` for a 403, `.http` for any
+    /// other failed status.
     func rate(videoId: String, status: MusicLikeStatus) async throws
     /// The songs YouTube Music suggests after one song ("You might also like"), in its order. Empty when the song has
     /// no related tab or the answer has no song shelf. Throws `.signedOut` when signed out or the session is gone,
-    /// `.http` for any other failed status, `.parse` for an answer that is not what was expected.
+    /// `.forbidden` for a 403, `.http` for any other failed status, `.parse` for an answer that is not what was expected.
     func related(videoId: String) async throws -> [MusicTrack]
 }
 
