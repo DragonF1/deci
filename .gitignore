@@ -42,3 +42,6 @@ scripts/spikes/
 
 # Swift package checkouts (xcodebuild -clonedSourcePackagesDirPath SourcePackages)
 SourcePackages/
+
+# Personal notes (Jot)
+*.jot

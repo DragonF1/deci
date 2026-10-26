@@ -2,34 +2,34 @@
 
 **English** · [简体中文](autoeq.zh-CN.md)
 
-FineTune can apply headphone-specific frequency response corrections using profiles from the [AutoEQ](https://github.com/jaakkopasanen/AutoEq) project. This compensates for your headphones' natural frequency curve, giving you a flatter, more accurate sound.
+Deci can apply headphone-specific frequency response corrections using profiles from the [AutoEQ](https://github.com/jaakkopasanen/AutoEq) project. This compensates for your headphones' natural frequency curve, giving you a flatter, more accurate sound.
 
 ## How It Works
 
-Every pair of headphones colors the sound differently. Some boost bass, others are harsh in the treble. AutoEQ measures these deviations and generates corrective EQ filters. FineTune applies these filters per-device, so each pair of headphones gets its own correction profile.
+Every pair of headphones colors the sound differently. Some boost bass, others are harsh in the treble. AutoEQ measures these deviations and generates corrective EQ filters. Deci applies these filters per device, so each pair of headphones gets its own correction profile.
 
-Corrections are applied on top of FineTune's 10-band EQ, so you can still tweak the sound to your taste after applying a profile.
+Corrections are applied on top of Deci's 10-band EQ, so you can still tweak the sound to your taste after applying a profile.
 
 ## Browse Built-in Profiles
 
-1. Click the **wand icon** next to any headphone device in FineTune
+1. Click the **wand icon** on the device row of an output device that supports AutoEQ, such as headphones
 2. Search for your headphone model by name
 3. Select a profile. It's applied immediately.
 
-Profiles are fetched on demand from the AutoEQ database and cached locally for offline use. The database includes thousands of headphones from major brands (Sony, Sennheiser, Apple, Bose, Audio-Technica, Beyerdynamic, and more).
+Each profile is downloaded from the AutoEq project on GitHub the first time you pick it, then cached on disk for offline use. The catalog list is cached for 7 days. The catalog covers headphones from many brands.
 
-> **Tip:** If your exact model isn't listed, try searching for the product line — similar models often share frequency response characteristics.
+> **Tip:** If your exact model isn't listed, try searching for the product line. Similar models often share frequency response characteristics.
 
 ## Import Custom Profiles
 
 If you have a custom measurement or want to use a profile from another source:
 
-1. Click **"Import ParametricEQ.txt..."** at the bottom of the AutoEQ panel
+1. Click **"Import ParametricEQ.txt..."** in the AutoEQ panel
 2. Select your `.txt` file
 3. The profile is imported and applied to the selected device
 4. Use the **Correction** switch in the picker to A/B the profile without removing it
 
-FineTune accepts [EqualizerAPO](https://sourceforge.net/projects/equalizerapo/) ParametricEQ.txt files:
+Deci accepts [EqualizerAPO](https://sourceforge.net/projects/equalizerapo/) ParametricEQ.txt files:
 
 ```
 Preamp: -6.2 dB
@@ -46,18 +46,18 @@ Filter 3: ON HSC Fc 8000 Hz Gain 2.1 dB Q 0.71
 | `LS` / `LSC` | Low shelf | Boost or cut everything below a frequency |
 | `HS` / `HSC` | High shelf | Boost or cut everything above a frequency |
 
-Up to 10 filters per profile. The `Preamp` line sets a global gain offset to prevent clipping.
+Up to 10 filters per profile. The `Preamp` line sets a global gain offset, usually negative, to leave headroom and prevent clipping.
 
 ## Where to Get Profiles
 
-- **Built-in search** — The easiest way. Thousands of headphones are available directly in FineTune.
-- **[autoeq.app](https://www.autoeq.app/)** — Web-based tool with more options. Select **EqualizerAPO ParametricEq** as the equalizer app, download the file, and import it into FineTune.
-- **[AutoEQ GitHub](https://github.com/jaakkopasanen/AutoEq)** — The full repository of measurements and generated profiles.
-- **Custom measurements** — If you've measured your headphones yourself (e.g., with a MiniDSP EARS or similar), you can create a ParametricEQ.txt file in any text editor following the format above.
+- **Built-in search**: the easiest way. The catalog is available directly in Deci.
+- **[autoeq.app](https://www.autoeq.app/)**: web-based tool with more options. Select **EqualizerAPO ParametricEq** as the equalizer app, download the file, and import it into Deci.
+- **[AutoEQ GitHub](https://github.com/jaakkopasanen/AutoEq)**: the full repository of measurements and generated profiles.
+- **Custom measurements**: if you've measured your headphones yourself (e.g., with a MiniDSP EARS or similar), you can create a ParametricEQ.txt file in any text editor following the format above.
 
 ## Managing Profiles
 
 - Each device remembers its assigned profile independently
 - To temporarily bypass a profile, click the wand icon and turn **Correction** off
-- To remove a profile entirely, click the wand icon and select **No correction**
-- Favorite frequently-used profiles for quick access with the star icon — favorited profiles appear at the top of search results and are shown when the search field is empty
+- To remove a profile entirely, click the wand icon and click the remove button (**Remove correction profile**). The panel then shows "No correction active."
+- Favorite frequently used profiles with the star icon. Favorites appear at the top of search results and are shown when the search field is empty.
