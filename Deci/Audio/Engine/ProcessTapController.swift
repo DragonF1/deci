@@ -18,6 +18,11 @@ import os
 //    - Reads nonisolated(unsafe) vars; writes _peakLevel/_secondaryPeakLevel,
 //      _primaryCurrentVolume/_secondaryCurrentVolume, _lastRenderHostTime, _hasRenderedAudio
 //    - MUST NOT allocate, lock, log, or call ObjC. See .claude/rules/rt-safety.md
+//    - IO procs are created with a nil queue, so the HAL calls the block directly on its IO thread. A queue
+//      would make the HAL dispatch_sync every cycle onto it: a lock, shared by the primary and secondary taps.
+//    - So during a crossfade the two callbacks run at the same time. The secondary writes only _secondary* fields
+//      and crossfadeState.updateProgress; the primary role writes everything else. The only stores both make are
+//      _lastRenderHostTime and _hasRenderedAudio (last writer wins). Never add a read-modify-write both share.
 //
 // The nonisolated(unsafe) annotation marks variables that cross the thread boundary.
 // Aligned Float32/Bool/Int reads/writes are atomic on Apple ARM64/x86-64.
@@ -28,9 +33,6 @@ final class ProcessTapController: ProcessTapControlling {
     /// gains helper processes after the tap was built.
     private(set) var app: AudioApp
     private let logger: Logger
-    // Note: This queue is passed to AudioDeviceCreateIOProcIDWithBlock but the actual
-    // audio callback runs on CoreAudio's real-time HAL I/O thread, not this queue.
-    private let queue = DispatchQueue(label: "ProcessTapController", qos: .userInitiated)
 
     /// Weak reference to device monitor for O(1) device lookups during crossfade
     private weak var deviceMonitor: AudioDeviceMonitor?
@@ -940,7 +942,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _primaryCallbackID = nextCallbackID
         let activateCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&primaryResources.deviceProcID, primaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
+        err = AudioDeviceCreateIOProcIDWithBlock(&primaryResources.deviceProcID, primaryResources.aggregateDeviceID, nil) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -1524,7 +1526,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _secondaryCallbackID = nextCallbackID
         let secondaryCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&secondaryResources.deviceProcID, secondaryResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
+        err = AudioDeviceCreateIOProcIDWithBlock(&secondaryResources.deviceProcID, secondaryResources.aggregateDeviceID, nil) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
@@ -1735,7 +1737,7 @@ final class ProcessTapController: ProcessTapControlling {
         nextCallbackID += 1
         _primaryCallbackID = nextCallbackID
         let switchCallbackID = nextCallbackID
-        err = AudioDeviceCreateIOProcIDWithBlock(&newResources.deviceProcID, newResources.aggregateDeviceID, queue) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
+        err = AudioDeviceCreateIOProcIDWithBlock(&newResources.deviceProcID, newResources.aggregateDeviceID, nil) { @Sendable [weak self] _, inInputData, inInputTime, outOutputData, inOutputTime in
             guard let self else {
                 // Zero output to prevent garbage audio if controller is deallocated
                 let outputs = UnsafeMutableAudioBufferListPointer(outOutputData)
