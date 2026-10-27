@@ -200,6 +200,17 @@ struct ChromeExtensionInstaller {
         return installedExtensionURL
     }
 
+    /// Deci's own page in chrome://extensions, where it can be pinned to the toolbar.
+    static let extensionPageURL = URL(string: "chrome://extensions/?id=\(extensionID)")!
+
+    /// Opens Deci's page in chrome://extensions. False, with nothing opened, when Chrome is not installed.
+    @discardableResult
+    func openExtensionPage() -> Bool {
+        guard let chromeApp = chromeAppURL() else { return false }
+        openInChrome(Self.extensionPageURL, chromeApp)
+        return true
+    }
+
     /// Copies into a staging folder first, then swaps it in, so a failed copy never leaves
     /// a half-written extension. Only Deci's own `ChromeExtension` folder is replaced.
     private func copyExtension(from source: URL) throws {

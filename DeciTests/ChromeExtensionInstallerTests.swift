@@ -469,6 +469,31 @@ struct ChromeExtensionInstallerTests {
         #expect(ChromeExtensionInstaller.InstallError.chromeNotFound.errorDescription == "Google Chrome not found.")
     }
 
+    // MARK: - extension page
+
+    @Test("openExtensionPage opens Deci's page in chrome://extensions in Chrome")
+    func openExtensionPage() throws {
+        let fx = try Fixture()
+        defer { fx.cleanUp() }
+
+        #expect(fx.makeInstaller().openExtensionPage())
+
+        #expect(fx.opened.count == 1)
+        #expect(fx.opened[0].url.absoluteString == "chrome://extensions/?id=dhnhdhfcagmpfdoocppooomgljoldhjf")
+        #expect(fx.opened[0].app == fx.chromeApp)
+        #expect(fx.copied.isEmpty)
+    }
+
+    @Test("openExtensionPage opens nothing without Chrome")
+    func openExtensionPageWithoutChrome() throws {
+        let fx = try Fixture()
+        defer { fx.cleanUp() }
+        fx.chromeInstalled = false
+
+        #expect(!fx.makeInstaller().openExtensionPage())
+        #expect(fx.opened.isEmpty)
+    }
+
     // MARK: - live wiring
 
     @Test("the live installer points at the real home folder and bundle")

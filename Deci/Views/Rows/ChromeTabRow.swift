@@ -77,6 +77,8 @@ struct ChromeTabRow: View {
 
                     statusCaption
                 }
+                // The caption fills its width, so without this the column and the spacer split the free width.
+                .layoutPriority(1)
 
                 Spacer(minLength: DesignTokens.Spacing.xs)
 
@@ -182,39 +184,52 @@ struct ChromeTabRow: View {
     @ViewBuilder
     private var statusCaption: some View {
         if let note = Self.captureNote(for: tab) {
-            Text(note)
-                .font(.system(size: 9))
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .lineLimit(1)
+            Button {
+                ChromeExtensionInstaller.live().openExtensionPage()
+            } label: {
+                caption(note)
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .pointerStyle(.link)
+            .help("Open Deci's extension page in Chrome")
+            // The scrolling copy is not in the accessibility tree, so the label is given here.
+            .accessibilityLabel(note)
         } else if let note = Self.multiOutputNote(for: tab, supportsMultiDevice: chromeManager.supportsMultiDevice, engineFansOutChrome: chromeManager.engineFansOutChrome) {
-            Text(note.text)
-                .font(.system(size: 9))
-                .foregroundStyle(DesignTokens.Colors.textTertiary)
-                .lineLimit(1)
+            caption(note.text)
         } else if tab.deviceName != nil || !tab.deviceNames.isEmpty {
             // The device guard hides a stale problem right after the user went back to the default.
             switch tab.deviceStatus {
             case .notFound:
-                Text("Output not found, using default")
-                    .font(.system(size: 9))
-                    .foregroundStyle(DesignTokens.Colors.textTertiary)
-                    .lineLimit(1)
+                caption("Output not found, using default")
             case .noAccess:
                 Button {
                     chromeManager.openDevicePermission()
                 } label: {
-                    Text("Allow device access in Chrome")
-                        .font(.system(size: 9))
-                        .underline()
-                        .foregroundStyle(DesignTokens.Colors.textSecondary)
-                        .lineLimit(1)
+                    caption("Allow device access in Chrome", color: DesignTokens.Colors.textSecondary, underline: true)
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .pointerStyle(.link)
                 .help("Open Chrome to allow reading speaker names")
+                .accessibilityLabel("Allow device access in Chrome")
             case .defaultOutput, .pending, .routed:
                 EmptyView()
             }
         }
+    }
+
+    /// A caption that scrolls while the popup is open when it is wider than its room. The render server slides it, so
+    /// the app does no work per frame.
+    private func caption(_ text: String, color: Color = DesignTokens.Colors.textTertiary, underline: Bool = false) -> some View {
+        MusicMarquee(isPlaying: true) {
+            Text(text)
+                .font(.system(size: 9))
+                .underline(underline)
+                .foregroundStyle(color)
+                .lineLimit(1)
+        }
+        .environment(\.musicPopupIsVisible, isPopupVisible)
     }
 
     /// Hands the manager the output devices the picker shows, so it can turn UIDs into the names the extension
