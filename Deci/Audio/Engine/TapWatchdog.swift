@@ -15,6 +15,10 @@ struct TapHealthReadings: Equatable {
     /// Since the input timeline last jumped (a skipped IO cycle, as an overload causes).
     var secondsSinceDiscontinuity: Double
     var discontinuityCount: UInt32
+    /// Mid-stream dropouts in the current tap's input (a short run of exact zeros cutting audible audio, see
+    /// `DropoutDetector`), and the length in seconds of the latest. Counted since the tap started.
+    var dropoutCount: UInt32 = 0
+    var lastDropoutSeconds: Double = 0
     /// Since the last buffer that was not "live input in, silence out".
     var secondsSinceHealthyOutput: Double
     /// The tap is a device-stream tap (false: stereo mixdown), and whether its aggregate was built

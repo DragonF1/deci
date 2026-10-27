@@ -55,6 +55,9 @@ final class AudioEngine {
     /// is silent: Chrome keeps its output running while it is silent, so a quiet Chrome must not be probed.
     var chromeAudibleReport: (@MainActor () -> ChromeAudibleReport)?
 
+    /// Receives each `[GLITCH]` line the health tick writes to the log. For tests.
+    var onGlitchLine: (@MainActor (String) -> Void)?
+
     /// Output device UIDs the engine's own taps play on through a multi-device route. The popup
     /// unions this with the music row's and Chrome tabs' multi-output devices (see
     /// `MenuBarPopupView.outputDevicesInUse`) to light the device list.
@@ -114,7 +117,7 @@ final class AudioEngine {
     private var consecutiveMisses: [pid_t: Int] = [:]  // Unresponsive-tap misses, one per second
     private var tapRecoveryCooldownUntil: [pid_t: Date] = [:]  // Prevents tap recreation thrashing
     private var tapWatchdogs: [pid_t: TapWatchdog] = [:]  // Stuck-tap detection, kept across rebuilds
-    private var loggedDiscontinuities: [pid_t: UInt32] = [:]  // Last IO discontinuity count logged per tap
+    private var loggedGlitches: [pid_t: (tap: ObjectIdentifier, cursor: GlitchLogCursor)] = [:]  // Dropout and IO discontinuity counts already logged, per pid for the tap they were read from
     #if DEBUG
     private var zeroRunCursors: [pid_t: ZeroRunLogCursor] = [:]  // Zero runs already logged per tap
     #endif
@@ -2537,8 +2540,12 @@ final class AudioEngine {
     /// One health tick: the stuck-tap watchdog for every tap, and once per second the
     /// unresponsive-tap check and the pruning of per-pid state.
     func runHealthTick(now: Date = Date()) async {
-        // Skip entirely when no taps exist: avoids unnecessary work at idle (#176)
-        guard !taps.isEmpty else { return }
+        // Skip entirely when no taps exist: avoids unnecessary work at idle (#176). The pruning pass below never runs
+        // then, so drop the glitch baselines here: a pid that comes back must not be measured against its old tap.
+        guard !taps.isEmpty else {
+            if !loggedGlitches.isEmpty { loggedGlitches.removeAll() }
+            return
+        }
 
         healthTickCount &+= 1
         let isSecondTick = healthTickCount % Self.healthTicksPerSecond == 0
@@ -2589,7 +2596,7 @@ final class AudioEngine {
         consecutiveMisses = consecutiveMisses.filter { taps[$0.key] != nil }
         tapRecoveryCooldownUntil = tapRecoveryCooldownUntil.filter { taps[$0.key] != nil }
         tapWatchdogs = tapWatchdogs.filter { taps[$0.key] != nil }
-        loggedDiscontinuities = loggedDiscontinuities.filter { taps[$0.key] != nil }
+        loggedGlitches = loggedGlitches.filter { taps[$0.key] != nil }
         #if DEBUG
         zeroRunCursors = zeroRunCursors.filter { taps[$0.key] != nil }
         #endif
@@ -2603,11 +2610,26 @@ final class AudioEngine {
         if DebugSoakConfig.current.zeroLog { logZeroRuns(pid: pid, tap: tap, readings: readings) }
         #endif
 
-        // Persisted evidence: every IO discontinuity (skipped cycle) on a tap.
-        if readings.discontinuityCount != (loggedDiscontinuities[pid] ?? 0) {
-            loggedDiscontinuities[pid] = readings.discontinuityCount
-            if readings.discontinuityCount > 0 {
-                logger.notice("[WATCHDOG] \(tap.app.name, privacy: .public) (PID \(pid)) IO discontinuity #\(readings.discontinuityCount) on \(tap.currentDeviceUIDs, privacy: .public)")
+        // Persisted evidence: one [GLITCH] line per tap, at most once a second, when a dropout (input zeros cutting
+        // audible audio) or an IO discontinuity (skipped cycle) has been counted since the last line.
+        if isSecondTick {
+            // The baseline belongs to one tap object: a rebuilt tap for the same pid counts from zero again.
+            let tapID = ObjectIdentifier(tap)
+            var cursor = loggedGlitches[pid].flatMap { $0.tap == tapID ? $0.cursor : nil } ?? GlitchLogCursor()
+            let growth = cursor.growth(dropouts: readings.dropoutCount, discontinuities: readings.discontinuityCount)
+            loggedGlitches[pid] = (tapID, cursor)
+            if let growth {
+                let line = GlitchLogLine.make(
+                    appName: tap.app.name,
+                    pid: pid,
+                    dropouts: growth.dropouts,
+                    latestDropoutSeconds: readings.lastDropoutSeconds,
+                    discontinuities: growth.discontinuities,
+                    devices: tap.currentDeviceUIDs,
+                    load: GlitchLogLine.loadAverage()
+                )
+                if GlitchLogLine.isPersisted { logger.notice("\(line, privacy: .public)") }
+                onGlitchLine?(line)
             }
         }
 

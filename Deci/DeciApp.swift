@@ -41,9 +41,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 /// apps, answer the Chrome extension and grab the media keys while the tests run.
 @main
 enum DeciMain {
-    static func main() {
+    /// True when this process is only the unit tests' host.
+    static let isTestHost: Bool = {
         let env = ProcessInfo.processInfo.environment
-        if env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil {
+        return env["XCTestConfigurationFilePath"] != nil || env["XCTestSessionIdentifier"] != nil
+    }()
+
+    static func main() {
+        if isTestHost {
             TestHostApp.main()
         } else {
             DeciApp.main()

@@ -61,6 +61,10 @@ final class AVPlaybackEngine: PlaybackEngine {
     private(set) var unprocessedLoadCount = 0
     /// The output device last asked for. nil is the system default.
     private(set) var outputDeviceUID: String?
+    /// How many times the loaded items ran out of buffered audio and stalled (each is logged as a `[GLITCH]` line).
+    private(set) var stallCount = 0
+    /// Receives each `[GLITCH]` stall line this engine writes to the log. A test seam.
+    var onGlitchLine: (@MainActor (String) -> Void)?
 
     private static let logger = Logger(subsystem: "com.abraham.Deci", category: "AVPlaybackEngine")
 
@@ -82,6 +86,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var statusObservation: NSKeyValueObservation?
     private var controlObservation: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
+    private var stallObserver: NSObjectProtocol?
     private var generation = 0
     private var wantsPlay = false
     private var pendingStart: TimeInterval = 0
@@ -169,6 +174,17 @@ final class AVPlaybackEngine: PlaybackEngine {
                 self.onEvent?(.ended)
             }
         }
+        // The player ran out of buffered audio: audible as a gap, and a glitch the log should show.
+        stallObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.playbackStalledNotification,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.generation == token else { return }
+                self.noteStall()
+            }
+        }
 
         guard let chain else {
             install(item, tapped: false)
@@ -226,6 +242,14 @@ final class AVPlaybackEngine: PlaybackEngine {
         itemIsTapped = false
         noteUnprocessed(timedOut: false)
         applyPlayerLevel()
+    }
+
+    /// The item stalled. One persisted line per stall, in the format the glitch report reads.
+    private func noteStall() {
+        stallCount += 1
+        let line = GlitchLogLine.makeStall(appName: GlitchLogLine.musicAppName, load: GlitchLogLine.loadAverage())
+        if GlitchLogLine.isPersisted { Self.logger.notice("\(line, privacy: .public)") }
+        onGlitchLine?(line)
     }
 
     /// The tap could not be built or did not come in time: the track still plays, without EQ and the rest, at the
@@ -335,6 +359,10 @@ final class AVPlaybackEngine: PlaybackEngine {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
+        }
+        if let stallObserver {
+            NotificationCenter.default.removeObserver(stallObserver)
+            self.stallObserver = nil
         }
         player.pause()
         player.replaceCurrentItem(with: nil)

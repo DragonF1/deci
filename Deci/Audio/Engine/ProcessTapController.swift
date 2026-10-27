@@ -23,6 +23,11 @@ import os
 //    - So during a crossfade the two callbacks run at the same time. The secondary writes only _secondary* fields
 //      and crossfadeState.updateProgress; the primary role writes everything else. The only stores both make are
 //      _lastRenderHostTime and _hasRenderedAudio (last writer wins). Never add a read-modify-write both share.
+//    - _dropouts (a DropoutDetector) belongs to the primary callback alone. Main reads its two counters in
+//      healthReadings (they only grow) and resets or re-rates it (markTapStart, applyOutputGateWindows) only where no primary
+//      callback feeds it: before AudioDeviceStart, under _forceSilence in a destructive switch, or just before a
+//      promotion publishes the new role. The old primary may still feed it in that last window; a torn read or
+//      write there skews a count by one at worst (the same tolerance as _zeroRun).
 //
 // The nonisolated(unsafe) annotation marks variables that cross the thread boundary.
 // Aligned Float32/Bool/Int reads/writes are atomic on Apple ARM64/x86-64.
@@ -99,6 +104,11 @@ final class ProcessTapController: ProcessTapControlling {
     /// Host tick of the last jump in the primary input timeline (a skipped IO cycle); 0 = none.
     private nonisolated(unsafe) var _lastDiscontinuityHostTime: UInt64 = 0
     private nonisolated(unsafe) var _discontinuityCount: UInt32 = 0
+    /// Mid-stream dropouts in the primary input (a short run of exact zeros cutting audible audio). The primary callback
+    /// is its only writer; main reads the counters in healthReadings and resets it in markTapStart. Its thresholds are
+    /// set from the aggregate's rate in applyOutputGateWindows, so Release builds have the rate too (`_tapSampleRate`
+    /// is DEBUG only); the callback never computes one.
+    private nonisolated(unsafe) var _dropouts = DropoutDetector()
     #if DEBUG
     /// DebugFaults: the callback ID whose tap delivers exact zeros, as a stuck tap does, until it
     /// is rebuilt; 0 = none. Keyed by callback, not role, so a rescue's promoted tap is healthy.
@@ -260,6 +270,8 @@ final class ProcessTapController: ProcessTapControlling {
             secondsSinceInputSignal: Self.secondsSince(signal != 0 ? signal : start, now: now),
             secondsSinceDiscontinuity: Self.secondsSince(_lastDiscontinuityHostTime, now: now),
             discontinuityCount: _discontinuityCount,
+            dropoutCount: _dropouts.dropoutCount,
+            lastDropoutSeconds: _dropouts.lastDropoutSeconds,
             secondsSinceHealthyOutput: Self.secondsSince(max(_lastHealthyOutputHostTime, start), now: now),
             // A stream tap carries its device's UID; a mixdown tap has none.
             tapIsStream: primaryResources.tapDescription?.deviceUID != nil,
@@ -295,6 +307,7 @@ final class ProcessTapController: ProcessTapControlling {
         // its lazy initialisation runs on this thread, never for the first time inside the IO callback.
         _ = Self.hostTimeNanosScale
         _tapThroughSeconds = 0
+        _dropouts.reset()
         #if DEBUG
         _zeroRun.reset()
         _zeroRunForensics = ZeroRunForensics()
@@ -845,10 +858,13 @@ final class ProcessTapController: ProcessTapControlling {
     /// Sizes the output gate's ramp and silence-hold windows (counted in samples) for the
     /// aggregate's current rate. Call whenever that rate changes, not only on activate:
     /// windows sized at 48 kHz are three times too long at 16 kHz (Bluetooth SCO).
+    /// The dropout detector's gap thresholds are frame counts too, so they are re-rated here (this also starts its
+    /// count over, as every caller is starting a tap).
     private func applyOutputGateWindows(sampleRate: Double) {
         let windows = OutputGateWindows(sampleRate: sampleRate)
         _outputGateRampSamples = windows.rampSamples
         _outputGateSilenceHoldSamples = windows.silenceHoldSamples
+        _dropouts.configure(sampleRate: sampleRate)
         #if DEBUG
         _tapSampleRate = sampleRate
         #endif
@@ -1843,6 +1859,28 @@ final class ProcessTapController: ProcessTapControlling {
         }
     }
 
+    /// The input buffer that carries the tap's stream for output buffer `outputIndex`. The tap streams come last in
+    /// the aggregate's input: an output device that also records (a Bluetooth headset, a USB interface) puts its own
+    /// input streams first, which `inputStreamUsageFlags` turns off and the HAL then hands over as NULL buffers.
+    @inline(__always)
+    nonisolated static func tapInputIndex(inputBufferCount: Int, outputBufferCount: Int, outputIndex: Int) -> Int {
+        inputBufferCount > outputBufferCount ? inputBufferCount - outputBufferCount + outputIndex : outputIndex
+    }
+
+    /// The tap stream that feeds the first output buffer, as interleaved samples: the one the dropout detector
+    /// scans. Nil when there is none or the HAL left it NULL.
+    @inline(__always)
+    nonisolated static func dropoutSource(
+        inputBuffers: UnsafeMutableAudioBufferListPointer,
+        outputBufferCount: Int
+    ) -> (samples: UnsafePointer<Float>, frames: Int, channels: Int)? {
+        let index = tapInputIndex(inputBufferCount: inputBuffers.count, outputBufferCount: outputBufferCount, outputIndex: 0)
+        guard index < inputBuffers.count, let data = inputBuffers[index].mData else { return nil }
+        let channels = max(1, Int(inputBuffers[index].mNumberChannels))
+        let frames = Int(inputBuffers[index].mDataByteSize) / MemoryLayout<Float>.size / channels
+        return (UnsafePointer(data.assumingMemoryBound(to: Float.self)), frames, channels)
+    }
+
     @inline(__always)
     nonisolated static func processMappedBuffers(
         inputBuffers: UnsafeMutableAudioBufferListPointer,
@@ -1866,12 +1904,11 @@ final class ProcessTapController: ProcessTapControlling {
             let outputBuffer = outputBuffers[outputIndex]
             guard let outputData = outputBuffer.mData else { continue }
 
-            let inputIndex: Int
-            if inputBufferCount > outputBufferCount {
-                inputIndex = inputBufferCount - outputBufferCount + outputIndex
-            } else {
-                inputIndex = outputIndex
-            }
+            let inputIndex = tapInputIndex(
+                inputBufferCount: inputBufferCount,
+                outputBufferCount: outputBufferCount,
+                outputIndex: outputIndex
+            )
 
             guard inputIndex < inputBufferCount else {
                 memset(outputData, 0, Int(outputBuffer.mDataByteSize))
@@ -2036,6 +2073,22 @@ final class ProcessTapController: ProcessTapControlling {
     }
     #endif
 
+    /// Feeds the dropout detector with the tap stream of this buffer (`dropoutSource`, the same stream
+    /// `processMappedBuffers` plays). When every input is all zeros (`maxPeak` is the peak over every sample of every
+    /// buffer) it takes the detector's constant-time path; otherwise the stream is scanned. No allocation, no locks.
+    nonisolated private func trackDropouts(
+        inputBuffers: UnsafeMutableAudioBufferListPointer,
+        outputBufferCount: Int,
+        maxPeak: Float
+    ) {
+        guard let source = Self.dropoutSource(inputBuffers: inputBuffers, outputBufferCount: outputBufferCount) else { return }
+        if maxPeak == 0 {
+            _dropouts.addSilence(frames: source.frames)
+        } else {
+            _dropouts.process(source.samples, frames: source.frames, channels: source.channels)
+        }
+    }
+
     /// Unified audio processing callback for both primary and secondary taps.
     /// Role is determined at runtime via callbackID comparison (atomic UInt32 read).
     ///
@@ -2139,6 +2192,7 @@ final class ProcessTapController: ProcessTapControlling {
                 _expectedInputSampleTime = sampleTime + Float64(totalSamplesThisBuffer)
             }
             if maxPeak > 0 { _lastInputSignalHostTime = now }
+            trackDropouts(inputBuffers: inputBuffers, outputBufferCount: outputBuffers.count, maxPeak: maxPeak)
             // Capture to hand-off delay of this tap, for the Chrome extension's output alignment. A pair of time
             // stamps that is not valid, or gives a gap outside 0...0.5 s, is skipped.
             if let sample = TapThroughLatency.seconds(input: inputTime.pointee, output: outputTime.pointee, scale: Self.hostTimeNanosScale) {

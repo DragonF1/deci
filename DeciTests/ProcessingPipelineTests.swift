@@ -1187,3 +1187,53 @@ struct LoudnessIntegrationTests {
                 "Adding loudness equalizer should change output beyond compensator alone")
     }
 }
+
+// MARK: - Which input buffer is the tap stream
+
+@Suite("ProcessTapController: the tap stream's input buffer")
+struct TapStreamIndexTests {
+
+    @Test("the tap stream is the trailing input: a duplex device's own input streams come first")
+    func trailingIndex() {
+        // Tap only: input 0 feeds output 0.
+        #expect(ProcessTapController.tapInputIndex(inputBufferCount: 1, outputBufferCount: 1, outputIndex: 0) == 0)
+        // A headset mic stream ahead of the tap.
+        #expect(ProcessTapController.tapInputIndex(inputBufferCount: 2, outputBufferCount: 1, outputIndex: 0) == 1)
+        // Two device input streams ahead of two tap streams.
+        #expect(ProcessTapController.tapInputIndex(inputBufferCount: 4, outputBufferCount: 2, outputIndex: 0) == 2)
+        #expect(ProcessTapController.tapInputIndex(inputBufferCount: 4, outputBufferCount: 2, outputIndex: 1) == 3)
+        // More outputs than inputs: one to one.
+        #expect(ProcessTapController.tapInputIndex(inputBufferCount: 1, outputBufferCount: 2, outputIndex: 1) == 1)
+    }
+
+    @Test("the dropout detector reads the tap stream, not a NULL mic stream ahead of it")
+    func dropoutSourceSkipsTheMic() {
+        let abl = TestABL(buffers: [(channels: 1, frames: 512), (channels: 2, frames: 256)])
+        var list = abl.bufferList
+        list[0].mData = nil  // the HAL hands a turned-off input stream over as NULL
+        fill(abl, bufferIndex: 1, value: 0.5)
+
+        let source = ProcessTapController.dropoutSource(inputBuffers: list, outputBufferCount: 1)
+        #expect(source != nil)
+        #expect(source?.frames == 256)
+        #expect(source?.channels == 2)
+        #expect(source?.samples == UnsafePointer(abl.data(at: 1)))
+    }
+
+    @Test("a lone tap stream is the source, with its own channel count")
+    func dropoutSourceTapOnly() {
+        let abl = TestABL(buffers: [(channels: 2, frames: 128)])
+        let source = ProcessTapController.dropoutSource(inputBuffers: abl.bufferList, outputBufferCount: 1)
+        #expect(source?.frames == 128)
+        #expect(source?.channels == 2)
+        #expect(source?.samples == UnsafePointer(abl.data(at: 0)))
+    }
+
+    @Test("no source when the tap stream itself is NULL")
+    func dropoutSourceNull() {
+        let abl = TestABL(buffers: [(channels: 1, frames: 64), (channels: 2, frames: 64)])
+        var list = abl.bufferList
+        list[1].mData = nil
+        #expect(ProcessTapController.dropoutSource(inputBuffers: list, outputBufferCount: 1) == nil)
+    }
+}
