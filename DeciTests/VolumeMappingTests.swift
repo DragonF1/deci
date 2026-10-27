@@ -193,6 +193,14 @@ struct BoostLevelTests {
         #expect(BoostLevel.x4.next == .x1)
     }
 
+    @Test("lower steps down and stops at 1x")
+    func lowerStepsDown() {
+        #expect(BoostLevel.x4.lower == .x3)
+        #expect(BoostLevel.x3.lower == .x2)
+        #expect(BoostLevel.x2.lower == .x1)
+        #expect(BoostLevel.x1.lower == .x1)
+    }
+
     @Test("Labels match expected format",
           arguments: [
             (BoostLevel.x1, "1x"),

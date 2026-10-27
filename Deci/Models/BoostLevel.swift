@@ -26,4 +26,14 @@ enum BoostLevel: Float, CaseIterable, Codable {
         case .x4: .x1
         }
     }
+
+    /// Lower boost level (steps down: 4x → 3x → 2x → 1x, stays at 1x)
+    var lower: BoostLevel {
+        switch self {
+        case .x1: .x1
+        case .x2: .x1
+        case .x3: .x2
+        case .x4: .x3
+        }
+    }
 }

@@ -120,7 +120,11 @@ struct AppRowControls: View {
             .gatedControl(isVolumeEnabled)
 
             // Boost chevrons
-            BoostChevrons(level: boost, onTap: { onBoostChange(boost.next) })
+            BoostChevrons(
+                level: boost,
+                onTap: { onBoostChange(boost.next) },
+                onSecondaryTap: { if boost != .x1 { onBoostChange(boost.lower) } }
+            )
                 .gatedControl(isEnabled)
 
             DevicePicker(
