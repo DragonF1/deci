@@ -51,7 +51,8 @@ struct MusicRelatedView: View {
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
                         isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                        layout: .playlist
+                        layout: .playlist,
+                        selectionIndex: index
                     ) {
                         // In a panel that follows the player, a tapped song plays and so becomes the new seed.
                         service.play(track)
@@ -59,6 +60,7 @@ struct MusicRelatedView: View {
                     .musicRowHairline(index > 0)
                 }
             }
+            .musicSelectionScope(id: "related", tracks: tracks)
             .padding(.bottom, Self.fadeHeight)
         }
         .scrollIndicators(.never)

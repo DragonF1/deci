@@ -133,6 +133,16 @@ struct MusicNativeMenuCheck: View {
     }
 }
 
+/// A dash where the tick goes: the playlist holds some of the songs being saved, not all of them.
+struct MusicNativeMenuMixedMark: View {
+    var body: some View {
+        Image(systemName: "minus")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(0.95))
+            .accessibilityHidden(true)
+    }
+}
+
 /// The line between two groups of items: 11 pt of room with a hairline in it.
 struct MusicNativeMenuSeparator: View {
     var body: some View {

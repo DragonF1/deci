@@ -59,7 +59,8 @@ struct MusicArtistSearchView: View {
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
                         isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                        layout: .topSong
+                        layout: .topSong,
+                        selectionIndex: index
                     ) {
                         service.play(track, in: page)
                     }
@@ -70,6 +71,7 @@ struct MusicArtistSearchView: View {
                     )
                 }
             }
+            .musicSelectionScope(id: "artistSearch:songs", tracks: search.songs)
         }
     }
 

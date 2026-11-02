@@ -488,9 +488,17 @@ actor InnerTubeClient {
     /// the song twice (ytmusicapi sends it only for `duplicates=True`). Without it a song the playlist already holds
     /// is refused, which lands as `.rejected`.
     func addVideo(_ videoId: String, toPlaylist playlistId: String) async throws {
-        guard !videoId.isEmpty else { throw MusicError.parse("playlist edit has no video id") }
-        let action: [String: Any] = ["action": "ACTION_ADD_VIDEO", "addedVideoId": videoId]
-        try await editPlaylist(playlistId, action: action, what: "add")
+        try await addVideos([videoId], toPlaylist: playlistId)
+    }
+
+    /// Adds several songs to a playlist with one call: one ACTION_ADD_VIDEO each, in the order given, no `dedupeOption`
+    /// (see `addVideo`). With a song the playlist already holds YouTube refuses the call, and that lands as `.rejected`.
+    func addVideos(_ videoIds: [String], toPlaylist playlistId: String) async throws {
+        guard !videoIds.isEmpty, !videoIds.contains(where: \.isEmpty) else {
+            throw MusicError.parse("playlist edit has no video id")
+        }
+        let actions: [[String: Any]] = videoIds.map { ["action": "ACTION_ADD_VIDEO", "addedVideoId": $0] }
+        try await editPlaylist(playlistId, actions: actions, what: "add")
     }
 
     /// Adds every song of the playlist `sourceId` (an album's "OLAK..." id works too) to a playlist, with one
@@ -499,24 +507,33 @@ actor InnerTubeClient {
         let source = Self.plainPlaylistId(sourceId)
         guard !source.isEmpty else { throw MusicError.parse("playlist edit has no source playlist id") }
         let action: [String: Any] = ["action": "ACTION_ADD_PLAYLIST", "addedFullListId": source]
-        try await editPlaylist(playlistId, action: action, what: "add playlist")
+        try await editPlaylist(playlistId, actions: [action], what: "add playlist")
     }
 
     /// Removes one row of a playlist, named by its `setVideoId` (the same song twice is two rows).
     func removeVideo(_ videoId: String, setVideoId: String, fromPlaylist playlistId: String) async throws {
-        guard !videoId.isEmpty, !setVideoId.isEmpty else { throw MusicError.parse("playlist edit has no video id") }
-        let action: [String: Any] = ["action": "ACTION_REMOVE_VIDEO", "setVideoId": setVideoId, "removedVideoId": videoId]
-        try await editPlaylist(playlistId, action: action, what: "remove")
+        try await removeVideos([MusicPlaylistRemoval(videoId: videoId, setVideoId: setVideoId)], fromPlaylist: playlistId)
     }
 
-    /// One `browse/edit_playlist` call. The playlist id goes without the "VL" a browse id carries. Only whether it
-    /// worked is logged, never an id.
-    private func editPlaylist(_ playlistId: String, action: [String: Any], what: String) async throws {
+    /// Removes several rows of a playlist with one call: one ACTION_REMOVE_VIDEO each, in the order given.
+    func removeVideos(_ removals: [MusicPlaylistRemoval], fromPlaylist playlistId: String) async throws {
+        guard !removals.isEmpty, !removals.contains(where: { $0.videoId.isEmpty || $0.setVideoId.isEmpty }) else {
+            throw MusicError.parse("playlist edit has no video id")
+        }
+        let actions: [[String: Any]] = removals.map {
+            ["action": "ACTION_REMOVE_VIDEO", "setVideoId": $0.setVideoId, "removedVideoId": $0.videoId]
+        }
+        try await editPlaylist(playlistId, actions: actions, what: "remove")
+    }
+
+    /// One `browse/edit_playlist` call carrying `actions`. The playlist id goes without the "VL" a browse id carries.
+    /// Only whether it worked is logged, never an id.
+    private func editPlaylist(_ playlistId: String, actions: [[String: Any]], what: String) async throws {
         guard currentJar().hasSignInCookies else { throw MusicError.signedOut }
         let id = Self.plainPlaylistId(playlistId)
         guard !id.isEmpty else { throw MusicError.parse("playlist edit has no playlist id") }
         let session = try await sessionOrFallback()
-        let data = try await post("browse/edit_playlist", session: session, body: ["playlistId": id, "actions": [action]])
+        let data = try await post("browse/edit_playlist", session: session, body: ["playlistId": id, "actions": actions])
         let succeeded = try InnerTubeParser.playlistEditSucceeded(in: data)
         Self.log.info("playlist \(what, privacy: .public) succeeded \(succeeded, privacy: .public)")
         guard succeeded else { throw MusicError.rejected }

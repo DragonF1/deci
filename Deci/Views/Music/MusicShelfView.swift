@@ -36,13 +36,15 @@ struct MusicShelfView: View {
                             track: track,
                             isCurrent: nowPlayingId == track.videoId,
                             isPlaying: nowPlayingId == track.videoId && isPlaying,
-                            layout: .playlist
+                            layout: .playlist,
+                            selectionIndex: index
                         ) {
                             onPlay(track)
                         }
                         .musicRowHairline(index > 0)
                     }
                 }
+                .musicSelectionScope(id: "shelf:\(shelf.id)", tracks: Array(songs.prefix(Self.maxSongRows)))
             } else {
                 MusicHorizontalShelf {
                     ForEach(Array(shelf.items.enumerated()), id: \.offset) { _, item in

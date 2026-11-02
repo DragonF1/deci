@@ -127,6 +127,15 @@ struct MusicHistoryView: View {
     struct Day: Equatable {
         let title: String
         let tracks: [MusicTrack]
+        /// Names the day for a selection of its songs. YouTube Music can title two days alike, so a day is its shelf's
+        /// id (title and first song) where it comes from one.
+        let id: String
+
+        init(title: String, tracks: [MusicTrack], id: String? = nil) {
+            self.title = title
+            self.tracks = tracks
+            self.id = id ?? title
+        }
 
         /// Whether the day has rows past the cap, so its header offers "See all".
         var offersMore: Bool { tracks.count > MusicBrowseLayout.historyDayRowCap }
@@ -152,7 +161,7 @@ struct MusicHistoryView: View {
                 if case .track(let track) = item { return track }
                 return nil
             }
-            return tracks.isEmpty ? nil : Day(title: shelf.title, tracks: tracks)
+            return tracks.isEmpty ? nil : Day(title: shelf.title, tracks: tracks, id: shelf.id)
         }
     }
 
@@ -182,6 +191,7 @@ struct MusicHistoryDaySection: View {
 
     var body: some View {
         let linkTitle = day.linkTitle(expanded: isExpanded)
+        let shown = day.visibleTracks(expanded: isExpanded)
         VStack(alignment: .leading, spacing: MusicBrowseLayout.listTitleGap) {
             MusicSectionHeader(
                 title: day.title,
@@ -190,18 +200,21 @@ struct MusicHistoryDaySection: View {
             )
             // Lazy, so an opened day with hundreds of plays builds only the rows on screen.
             LazyVStack(spacing: 0) {
-                ForEach(Array(day.visibleTracks(expanded: isExpanded).enumerated()), id: \.offset) { position, track in
+                ForEach(Array(shown.enumerated()), id: \.offset) { position, track in
                     MusicSongRow(
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
                         isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                        layout: .playlist
+                        layout: .playlist,
+                        selectionIndex: position
                     ) {
                         service.play(track)
                     }
                     .musicRowHairline(position > 0)
                 }
             }
+            // A range runs inside one day: each day is its own list.
+            .musicSelectionScope(id: "history:\(day.id)", tracks: shown)
         }
     }
 }

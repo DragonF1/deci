@@ -120,7 +120,9 @@ struct MusicPopupView: View {
     private var rightColumn: some View {
         let column = musicHost.navigation?.rightColumn ?? .browse
         return VStack(spacing: 0) {
-            header(for: column)
+            MusicSelectionBarSlot(navigation: musicHost.navigation) {
+                header(for: column)
+            }
             // No network: one thin line says so, over whatever the column shows.
             if appSettings.showMusicInMenuBar, musicHost.service?.isOffline == true {
                 MusicOfflineBanner()
@@ -180,12 +182,16 @@ struct MusicPopupView: View {
 
     // MARK: - Actions
 
-    /// Closes the topmost thing: the account card, then the save to playlist menu, Lyrics or Up next, and search at its
-    /// root, otherwise the popup itself. It never pops a page: Back is the page's own button.
+    /// Closes the topmost thing: the songs selected, then the account card, the save to playlist menu, Lyrics or Up next,
+    /// and search at its root, otherwise the popup itself. It never pops a page: Back is the page's own button.
     private func handleEscape() {
-        if musicHost.closeAccountCard() { return }
-        if let navigation = musicHost.navigation, navigation.escape() { return }
-        NSApp.keyWindow?.resignKey()
+        let navigation = musicHost.navigation
+        let step = MusicPopupEscape.run(
+            clearSelection: { navigation?.escapeSelection() == true },
+            closeAccountCard: { musicHost.closeAccountCard() },
+            closeNavigation: { navigation?.escape() == true }
+        )
+        if step == .leavesPopup { NSApp.keyWindow?.resignKey() }
     }
 
     private func openSettingsWindow() {

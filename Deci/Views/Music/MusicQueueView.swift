@@ -26,7 +26,7 @@ struct MusicQueueView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     MusicQueueKicker(text: MusicQueueListing.nowPlayingKicker(sourceLine: listing.sourceLine))
                     MusicQueueCurrentRow(track: current, isPlaying: service.player.isPlaying) {
-                        service.jump(to: current)
+                        navigation.jump(to: current)
                     }
                 }
             }
@@ -77,6 +77,8 @@ struct MusicQueueView: View {
                 .environment(\.musicHighlightTerms, terms)
                 // These rows are Up next's own, so their menu also offers Remove from queue.
                 .environment(\.musicTrackContext, .upNext)
+                // And so does a selection of them.
+                .musicSelectionScope(id: "upNext", tracks: shown, isUpNext: true)
                 .padding(.bottom, Self.fadeHeight)
             }
             .scrollIndicators(.never)
@@ -102,7 +104,7 @@ struct MusicQueueView: View {
                     .padding(.top, shownIndex == 0 ? 0 : Self.autoplayLabelTopGap)
                     .padding(.bottom, Self.autoplayLabelBottomGap)
             }
-            MusicSongRow(track: track, isCurrent: false, isPlaying: false, layout: .playlist) {
+            MusicSongRow(track: track, isCurrent: false, isPlaying: false, layout: .playlist, selectionIndex: shownIndex) {
                 service.jump(to: track)
             }
             .musicRowHairline(shownIndex > 0 && !opensAutoplay)
@@ -226,7 +228,7 @@ private struct MusicQueueCurrentRow: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(track.title), \(track.artist), \(isPlaying ? "playing" : "paused")")
-        .accessibilityAddTraits(.isSelected)
+        .accessibilityValue(MusicSongRowAccessibility.value(isCurrent: true))
         .accessibilityAction(.default, action)
         .accessibilityActions {
             ForEach(actions, id: \.self) { item in

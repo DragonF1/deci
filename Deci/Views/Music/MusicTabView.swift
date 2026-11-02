@@ -89,6 +89,7 @@ private struct MusicSignedInView: View {
             navigation.queueForced = false
             navigation.closeRelated()
             navigation.resetFields()
+            navigation.selection.clear()
         }
         .onChange(of: service.query) {
             navigation.queryChanged()
@@ -96,6 +97,12 @@ private struct MusicSignedInView: View {
         // The column moved to another tab or page: a field left behind folds away with its words.
         .onChange(of: navigation.currentAnchor) {
             navigation.reconcile()
+        }
+        // The same move, or Up next, Lyrics or Related opening or closing, or the results coming, going or being asked
+        // again, the Library segment or the account changing: the songs picked belong to a list that is no longer the one
+        // in front. A list scrolling out of sight is not one of these, and keeps its picks.
+        .onChange(of: navigation.selectionContext) {
+            navigation.selection.clear()
         }
         // The queue ended: the next song played must not pop Up next open again.
         .onChange(of: service.queue.isEmpty) { _, isEmpty in
@@ -195,6 +202,17 @@ private struct MusicActionsModifier: ViewModifier {
         )
     }
 
+    /// The songs picked in a list, what they can do and what a pick does.
+    private var selectionHandler: MusicSelectionHandler? {
+        guard let navigation else { return nil }
+        return MusicSelectionHandler(
+            selection: navigation.selection,
+            actions: { navigation.selectionActions },
+            title: { navigation.selectionTitle($0) },
+            perform: { navigation.performSelection($0) }
+        )
+    }
+
     /// Every cover shows the picture saved with a download when there is one.
     private var localCover: MusicLocalCoverResolver? {
         guard let service else { return nil }
@@ -216,6 +234,7 @@ private struct MusicActionsModifier: ViewModifier {
             .environment(\.openMusicArtist, artistOpener)
             .environment(\.musicTrackMenu, trackMenu)
             .environment(\.musicCollectionPin, collectionPin)
+            .environment(\.musicSelection, selectionHandler)
             .environment(\.musicLocalCover, localCover)
     }
 }

@@ -28,6 +28,7 @@ final class MusicSessionStore: Sendable {
         /// Numbers the timers, so one that was cancelled but had already started finds its number gone.
         var timerID = 0
         var writes = 0
+        var saves = 0
     }
 
     private let fileURL: URL
@@ -63,12 +64,17 @@ final class MusicSessionStore: Sendable {
     /// How many writes have been handed to the queue (finished or not).
     var writeCount: Int { state.withLock { $0.writes } }
 
+    /// How many snapshots `save` was given, whether it wrote them, kept one for the trailing write or replaced one. A
+    /// burst of saves is one write, so only this tells how many times a caller asked.
+    var saveCount: Int { state.withLock { $0.saves } }
+
     // MARK: - Writing
 
     /// Writes the snapshot now when the last write was a second ago or more, otherwise keeps it for the one trailing
     /// write that is due a second after the last. A newer snapshot replaces one that is waiting.
     func save(_ snapshot: MusicSessionSnapshot) {
         state.withLock { state in
+            state.saves += 1
             if let last = state.lastWrite {
                 let elapsed = now().timeIntervalSince(last)
                 // A clock that moved backwards counts as a quiet second rather than parking the write.

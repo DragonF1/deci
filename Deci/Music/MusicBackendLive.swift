@@ -139,12 +139,20 @@ actor MusicBackendLive: MusicBackend {
         try await client.addVideo(videoId, toPlaylist: playlistId)
     }
 
+    func addToPlaylist(videoIds: [String], playlistId: String) async throws {
+        try await client.addVideos(videoIds, toPlaylist: playlistId)
+    }
+
     func addPlaylistToPlaylist(sourceId: String, playlistId: String) async throws {
         try await client.addPlaylist(sourceId, toPlaylist: playlistId)
     }
 
     func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws {
         try await client.removeVideo(videoId, setVideoId: setVideoId, fromPlaylist: playlistId)
+    }
+
+    func removeFromPlaylist(_ removals: [MusicPlaylistRemoval], playlistId: String) async throws {
+        try await client.removeVideos(removals, fromPlaylist: playlistId)
     }
 
     func reportHistory(_ ping: HistoryPing) async throws -> Int {

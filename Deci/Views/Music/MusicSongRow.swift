@@ -106,6 +106,18 @@ nonisolated enum MusicSongRowLayout: Equatable {
     }
 }
 
+/// What a song row tells VoiceOver about itself apart from its words. The selected trait belongs to a row that is picked
+/// (a selection of songs); the song in the player is not "selected", it is "Now playing", said as the row's value.
+enum MusicSongRowAccessibility {
+    static func traits(isPicked: Bool) -> AccessibilityTraits {
+        isPicked ? .isSelected : []
+    }
+
+    static func value(isCurrent: Bool) -> String {
+        isCurrent ? "Now playing" : ""
+    }
+}
+
 /// A song row of the Music popover's right column: the cover, the title over "artist · album", and at the trailing end
 /// the duration, which the "..." circle replaces under the pointer. The playing row carries the small spectrum in the
 /// accent. Home, Search, the pages and Up next use it; the layout says which measures.
@@ -115,6 +127,9 @@ struct MusicSongRow: View {
     /// True only on the current row while audio plays, so play and pause redraw one row.
     let isPlaying: Bool
     var layout: MusicSongRowLayout = .search
+    /// The row's place among the songs of its list (`musicSelectionScope`), which tells it from another copy of the same
+    /// song. Nil for a row that cannot be picked.
+    var selectionIndex: Int?
     let action: () -> Void
 
     /// Set while Full Keyboard Access has put keyboard focus on the row, so it shows the hover surface.
@@ -126,6 +141,9 @@ struct MusicSongRow: View {
     @Environment(\.musicTrackMenu) private var menu
     @Environment(\.musicTrackContext) private var context
     @Environment(\.musicAccent) private var accent
+    @Environment(\.musicSelection) private var selectionHandler
+    /// The list the row sits in; nil where the row has none, and then every click plays it.
+    @Environment(\.musicSelectionScope) private var selectionScope
     /// The words of the screen's filter, tinted where they match the title, the artist or the album.
     @Environment(\.musicHighlightTerms) private var highlightTerms
 
@@ -154,6 +172,62 @@ struct MusicSongRow: View {
         menu?.perform(action, track, context)
     }
 
+    // MARK: - Selection
+
+    /// The row is one of the songs picked in its list.
+    private var isSelected: Bool {
+        guard let selection = selectionHandler?.selection, let scope = selectionScope, let index = selectionIndex else {
+            return false
+        }
+        return selection.isSelected(at: index, in: scope)
+    }
+
+    /// The menu of the selection this row is part of, when that is two songs or more and offers something; a row of a
+    /// lone pick, or of a selection with nothing to offer, keeps its own menu.
+    private func selectionMenu(isSelected: Bool) -> MusicSelectionMenu? {
+        guard let handler = selectionHandler else { return nil }
+        let count = handler.selection.count
+        guard let actions = MusicSelectionAction.rowMenu(isSelected: isSelected, count: count, actions: handler.actions) else {
+            return nil
+        }
+        return MusicSelectionMenu(count: count, actions: actions, title: { handler.title($0) }) { handler.perform($0) }
+    }
+
+    /// A click. Shift and Command pick (a range, or one row) and play nothing; a plain click clears the selection and
+    /// plays. The keys are the ones held when the button went up.
+    private func tap() {
+        guard let handler = selectionHandler else {
+            play()
+            return
+        }
+        guard let scope = selectionScope, let index = selectionIndex else {
+            handler.selection.clear()
+            play()
+            return
+        }
+        let flags = NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags
+        let outcome = handler.selection.click(at: index, in: scope, modifiers: MusicSelectionModifiers(flags: flags))
+        if outcome == .play { play() }
+    }
+
+    /// Space, Return and VoiceOver's default action play the row as a plain click does, and end any selection.
+    private func activate() {
+        selectionHandler?.selection.clear()
+        play()
+    }
+
+    /// VoiceOver cannot hold Command: this is the same pick, as an action.
+    private func toggleSelection() {
+        guard let handler = selectionHandler, let scope = selectionScope, let index = selectionIndex else { return }
+        _ = handler.selection.click(at: index, in: scope, modifiers: .command)
+    }
+
+    /// A picked row wears the song's accent and keeps it under the pointer; any other row shows the hover surface.
+    private func rowFill(isSelected: Bool, showsMore: Bool) -> Color {
+        if isSelected { return accent.solid.opacity(MusicStyle.Opacity.accentFill) }
+        return showsMore ? MusicStyle.Palette.rowHover : .clear
+    }
+
     /// Reads the song's rating for its menu. Called when the pointer reaches the row, when the keyboard does, and when a
     /// menu opens from it; the read happens once per song.
     private func reveal() {
@@ -171,6 +245,8 @@ struct MusicSongRow: View {
 
     var body: some View {
         let actions = offeredActions
+        let isSelected = self.isSelected
+        let selectionMenu = self.selectionMenu(isSelected: isSelected)
         let showsMore = isHovered || isMenuOpen || isKeyboardFocused
         // The row plays on a tap. It is not one Button, because the artist names inside it are buttons of their
         // own, and a button nested in another button's label is unreliable for clicks and for VoiceOver.
@@ -190,13 +266,13 @@ struct MusicSongRow: View {
                 subtitle
             }
             Spacer(minLength: 0)
-            trailing(actions: actions, showsMore: showsMore)
+            trailing(actions: actions, showsMore: showsMore, selectionMenu: selectionMenu)
         }
         .frame(height: layout.height)
         .padding(.horizontal, MusicBrowseLayout.rowHoverInset)
         .background(
             RoundedRectangle(cornerRadius: MusicBrowseLayout.rowHoverRadius, style: .continuous)
-                .fill(showsMore ? MusicStyle.Palette.rowHover : .clear)
+                .fill(rowFill(isSelected: isSelected, showsMore: showsMore))
         )
         .animation(DesignTokens.Animation.hover, value: showsMore)
         .padding(.horizontal, layout.horizontalPadding - MusicBrowseLayout.rowHoverInset)
@@ -223,29 +299,46 @@ struct MusicSongRow: View {
         .contentShape(Rectangle())
         // The same actions as the "..." button, for a right click anywhere on the row.
         .contextMenu {
-            MusicTrackMenuItems(actions: actions, perform: perform)
+            if let selectionMenu {
+                MusicSelectionMenuItems(
+                    title: selectionMenu.title, actions: selectionMenu.actions, perform: selectionMenu.perform
+                )
+            } else {
+                MusicTrackMenuItems(actions: actions, perform: perform)
+            }
         }
-        // A name's own button takes its click first; a click anywhere else on the row plays.
-        .onTapGesture(perform: play)
+        // A name's own button takes its click first; a click anywhere else on the row plays, or picks with Shift or
+        // Command held.
+        .onTapGesture(perform: tap)
         // What the Button gave the row: reachable with Full Keyboard Access only (a plain Tab stays on the search
         // field and the popup's arrow keys), and Space or Return plays. A key goes to the row only while it has
         // focus, so typing in the search field never reaches it.
         .focusable(interactions: .activate)
         .focused($isKeyboardFocused)
         .onKeyPress(keys: [.space, .return], phases: .down) { _ in
-            play()
+            activate()
             return .handled
         }
         // A container, so each artist name inside stays its own button for VoiceOver; the row plays by its action.
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityText)
-        .accessibilityAddTraits(isCurrent ? .isSelected : [])
-        .accessibilityAction(named: "Play", play)
-        .accessibilityAction(.default, play)
+        .accessibilityAddTraits(MusicSongRowAccessibility.traits(isPicked: isSelected))
+        .accessibilityValue(MusicSongRowAccessibility.value(isCurrent: isCurrent))
+        .accessibilityAction(named: "Play", activate)
+        .accessibilityAction(.default, activate)
         // The "..." button hides until the pointer or the keyboard is on the row; VoiceOver gets the actions here.
         .accessibilityActions {
-            ForEach(actions, id: \.self) { action in
-                Button(action.title) { perform(action) }
+            if selectionHandler != nil, selectionScope != nil, selectionIndex != nil {
+                Button(isSelected ? "Deselect" : "Select") { toggleSelection() }
+            }
+            if let selectionMenu {
+                ForEach(selectionMenu.actions, id: \.self) { action in
+                    Button(selectionMenu.title(action)) { selectionMenu.perform(action) }
+                }
+            } else {
+                ForEach(actions, id: \.self) { action in
+                    Button(action.title) { perform(action) }
+                }
             }
         }
     }
@@ -326,7 +419,7 @@ struct MusicSongRow: View {
     /// The spectrum of the playing row, a Liked row's heart, the download mark, and the duration with the "..." circle
     /// over it. The duration keeps its room while the circle shows, so the text never re-cuts when the pointer arrives.
     @ViewBuilder
-    private func trailing(actions: [MusicTrackAction], showsMore: Bool) -> some View {
+    private func trailing(actions: [MusicTrackAction], showsMore: Bool, selectionMenu: MusicSelectionMenu?) -> some View {
         HStack(spacing: layout.trailingGap) {
             if isCurrent, layout.number == nil {
                 MusicMiniSpectrumView(isPlaying: isPlaying)
@@ -338,7 +431,7 @@ struct MusicSongRow: View {
                     .accessibilityHidden(true)
             }
             downloadMark
-            durationAndMore(actions: actions, showsMore: showsMore)
+            durationAndMore(actions: actions, showsMore: showsMore, selectionMenu: selectionMenu)
         }
     }
 
@@ -361,7 +454,9 @@ struct MusicSongRow: View {
     }
 
     @ViewBuilder
-    private func durationAndMore(actions: [MusicTrackAction], showsMore: Bool) -> some View {
+    private func durationAndMore(
+        actions: [MusicTrackAction], showsMore: Bool, selectionMenu: MusicSelectionMenu?
+    ) -> some View {
         let duration = MusicSongRowLayout.durationText(seconds: track.durationSeconds)
         if duration != nil || !actions.isEmpty {
             ZStack(alignment: .trailing) {
@@ -378,7 +473,9 @@ struct MusicSongRow: View {
                 // stays clickable while faded: an open menu can end the row's hover, and the button must not vanish
                 // under it.
                 if !actions.isEmpty {
-                    MusicTrackMoreButton(track: track, actions: actions, perform: perform, style: .round)
+                    MusicTrackMoreButton(
+                        track: track, actions: actions, perform: perform, style: .round, selectionMenu: selectionMenu
+                    )
                         .opacity(showsMore ? 1 : 0)
                         .accessibilityHidden(!showsMore)
                 }

@@ -50,6 +50,13 @@ struct MusicPlaylistOption: Sendable, Hashable, Identifiable {
     var id: String { playlistId }
 }
 
+/// One row of a playlist to take out: the song, and the row's own place in the playlist (its `setVideoId`, since the same
+/// song can sit in a playlist more than once).
+struct MusicPlaylistRemoval: Sendable, Hashable {
+    let videoId: String
+    let setVideoId: String
+}
+
 /// An artist's name under a song with the page it opens.
 struct MusicArtistLink: Sendable, Hashable, Codable {
     let name: String
@@ -437,11 +444,18 @@ protocol MusicBackend: Sendable {
     func addToPlaylistOptions(sourcePlaylistId: String) async throws -> [MusicPlaylistOption]
     /// Adds `videoId` to the playlist (a leading "VL" is ignored). Throws `.rejected` when YouTube does not say it worked.
     func addToPlaylist(videoId: String, playlistId: String) async throws
+    /// Adds several songs to the playlist with one call, one ACTION_ADD_VIDEO each, in the order given. The caller keeps a
+    /// call to a size YouTube takes (the store sends 50 at most). Throws `.rejected` when YouTube does not say it worked,
+    /// which for a batch can be one song the playlist already holds: nothing is promised to have been added then.
+    func addToPlaylist(videoIds: [String], playlistId: String) async throws
     /// Adds every song of the playlist `sourceId` (an album's "OLAK..." id works too) to the playlist `playlistId`. Throws
     /// `.rejected` when YouTube does not say it worked.
     func addPlaylistToPlaylist(sourceId: String, playlistId: String) async throws
     /// Removes one row of the playlist, named by its `setVideoId`. Throws `.rejected` when YouTube does not say it worked.
     func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws
+    /// Removes several rows of the playlist with one call, one ACTION_REMOVE_VIDEO each. Throws `.rejected` when YouTube
+    /// does not say it worked.
+    func removeFromPlaylist(_ removals: [MusicPlaylistRemoval], playlistId: String) async throws
     /// Sends one history ping and returns the HTTP status YouTube answered with (200 or 204 when
     /// it took the ping). Throws on any other status, when signed out, or when the URL is not YouTube's.
     func reportHistory(_ ping: HistoryPing) async throws -> Int

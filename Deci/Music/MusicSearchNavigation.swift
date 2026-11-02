@@ -59,6 +59,21 @@ struct MusicSearchAnchor: Equatable {
     let pageId: String?
 }
 
+/// Where the right column is, for what outlives a move of it: the selection of songs. The lists of songs do not tell when
+/// they are gone (one scrolled out of a lazy stack is not), so a selection ends when this changes: the panel in front
+/// (browse, Lyrics, Related or Up next), the tab and page, the Library segment, the search results coming, going or being
+/// asked again, and the account.
+struct MusicSelectionContext: Equatable {
+    let column: MusicRightColumn
+    let anchor: MusicSearchAnchor
+    let librarySection: MusicLibrarySection
+    /// What the results cover the column with, while they do; nil under any other screen.
+    let results: MusicSearchPanel?
+    let authState: MusicService.AuthState
+    /// A channel switch or another account is being taken up: the lists are about to be read again.
+    let isSwitchingAccount: Bool
+}
+
 /// What the Music popup's right column shows (Home, Library and History, search results, Up next, Lyrics, Related, the
 /// add-to-playlist picker), and the one way every artist, album name or tile opens its page, and every "..." menu
 /// action runs. It lives here, not in the view, so the rules can be tested. One instance belongs to each
@@ -107,6 +122,25 @@ final class MusicSearchNavigation {
     /// hotkeys. The host sets it. Not held: the reporter holds the host, which holds this. Without one the outcome shows
     /// on the notice line.
     @ObservationIgnored weak var outcomes: (any MusicOutcomeReporting)?
+
+    /// The songs picked in the lists of the right column. Owned here, with what the column shows, so it outlives the
+    /// views: the popup unmounts the player and builds it again, and the host clears it when the popup closes.
+    let selection = MusicSongSelection()
+
+    /// What `selectionActions` last worked out, and for which selection and song in the player.
+    private struct SelectionActionsMemo {
+        let revision: Int
+        let playingId: String?
+        /// The playlist page the picked rows are in, which the removal depends on (it can become editable, or go).
+        let page: MusicTrackContext?
+        let actions: [MusicSelectionAction]
+        /// How many picked rows Remove from this playlist would take out.
+        let removable: Int
+    }
+
+    @ObservationIgnored private var selectionActionsMemo: SelectionActionsMemo?
+    /// How many times `selectionActions` was worked out rather than remembered.
+    @ObservationIgnored private(set) var selectionActionsBuilds = 0
 
     init(service: MusicService, searchDelay: Duration = .milliseconds(300)) {
         self.service = service
@@ -615,9 +649,10 @@ final class MusicSearchNavigation {
         queueQuery = ""
     }
 
-    /// The save to playlist menu closes; nothing under it moved.
+    /// The save to playlist menu closes; nothing under it moved. A selection's menu that saw a write ends the
+    /// selection with it; one closed without a write leaves the selection to try again.
     func closePicker() {
-        service.trackActions.closePicker()
+        if service.trackActions.closePicker() { selection.clear() }
     }
 
     // MARK: - Opening pages
@@ -787,6 +822,110 @@ final class MusicSearchNavigation {
                 service.trackActions.post(outcome)
             }
         }
+    }
+
+    // MARK: - Selection
+
+    /// Where the column is as far as a selection cares. A selection does not outlive a change of it.
+    var selectionContext: MusicSelectionContext {
+        MusicSelectionContext(
+            column: rightColumn,
+            anchor: currentAnchor,
+            librarySection: service.browse.librarySection,
+            results: showsResults ? panel : nil,
+            authState: service.authState,
+            isSwitchingAccount: service.isSwitchingChannel || service.isAddingAccount
+        )
+    }
+
+    /// What the selection's bar and menu offer for the picked songs now: the queue entries, as a single song's menu has
+    /// them (see `actions(for:in:)`), Save to playlist while YouTube Music can be reached, and Remove from this playlist
+    /// when the picked rows are in a playlist page the user can edit and some of them know their place in it. Every
+    /// picked row and the bar ask, so it is worked out once and kept until the selection, the song in the player or the
+    /// page changes. Limited (this Mac only) it depends on the downloads, which move on their own, so it is worked out
+    /// each time.
+    var selectionActions: [MusicSelectionAction] {
+        selectionOffer().actions
+    }
+
+    /// The label of a bar button or menu item with the number of songs it is for: the picked songs, or for Remove from
+    /// this playlist the picked rows that can come out (a playlist can list a song twice, and a row may have no place).
+    func selectionTitle(_ action: MusicSelectionAction) -> String {
+        let offer = selectionOffer()
+        return action.menuTitle(count: action == .removeFromPlaylist ? offer.removable : selection.count)
+    }
+
+    /// The playlist page the picked rows are in, as a row's own menu would know it. nil when they are in another kind
+    /// of list, or the page is not loaded.
+    private var selectionPage: MusicTrackContext? {
+        guard let scopeId = selection.scopeId, scopeId.hasPrefix("page:") else { return nil }
+        let browseId = String(scopeId.dropFirst("page:".count))
+        guard case .loaded(let page) = service.browse.pageState(browseId) else { return nil }
+        return MusicTrackContext(pageBrowseId: page.browseId, pageTitle: page.title, pageIsEditable: page.isEditable)
+    }
+
+    private func selectionOffer() -> (actions: [MusicSelectionAction], removable: Int) {
+        let playing = service.queue.current ?? service.player.nowPlaying
+        let limited = isLimited
+        let page = selectionPage
+        if !limited, let memo = selectionActionsMemo, memo.revision == selection.revision,
+           memo.playingId == playing?.videoId, memo.page == page {
+            return (memo.actions, memo.removable)
+        }
+        selectionActionsBuilds += 1
+        let removable = page.map { page in selection.pickedRows.filter { MusicTrackActions.canRemove($0, in: page) }.count } ?? 0
+        let actions = MusicSelectionAction.available(
+            for: selection.tracks, isUpNext: selection.isUpNext, playing: playing, limited: limited,
+            savesToPlaylists: !limited, removableFromPlaylist: removable,
+            playsOffline: { [service] in service.downloads?.state(for: $0.videoId) == .downloaded }
+        )
+        selectionActionsMemo = limited
+            ? nil
+            : SelectionActionsMemo(
+                revision: selection.revision, playingId: playing?.videoId, page: page, actions: actions, removable: removable
+            )
+        return (actions, removable)
+    }
+
+    /// Runs a pick of the bar or the selection menu on the picked songs, in list order. A pick the selection does not
+    /// offer does nothing. Save to playlist opens the save menu for the songs and keeps the selection, which ends when
+    /// the menu closes after a write (`closePicker`); every other pick ends the selection first.
+    func performSelection(_ action: MusicSelectionAction) {
+        guard selectionActions.contains(action) else { return }
+        let tracks = selection.tracks
+        switch action {
+        case .saveToPlaylist:
+            service.trackActions.openPicker(forSelection: tracks)
+        case .removeFromPlaylist:
+            guard let page = selectionPage else { return }
+            let rows = selection.pickedRows
+            selection.clear()
+            service.trackActions.removeRows(rows, in: page)
+        case .playNext:
+            selection.clear()
+            service.playNext(tracks)
+        case .addToQueue:
+            selection.clear()
+            service.addToQueue(tracks)
+        case .removeFromQueue:
+            selection.clear()
+            service.removeFromQueue(tracks)
+        }
+    }
+
+    /// A tap on the song in the player at the top of Up next starts it over, as a plain click on a row plays it, so it
+    /// ends a selection the same way.
+    func jump(to track: MusicTrack) {
+        selection.clear()
+        service.jump(to: track)
+    }
+
+    /// Escape clears a selection before it does anything else, and says whether there was one. The popup asks this first.
+    /// Not while the save menu is up: that closes first (`escape`), and the selection stays for another try.
+    func escapeSelection() -> Bool {
+        guard selection.count > 0, !showsPicker else { return false }
+        selection.clear()
+        return true
     }
 
     // MARK: - Tile actions

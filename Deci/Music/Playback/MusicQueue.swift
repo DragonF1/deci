@@ -510,6 +510,40 @@ struct MusicQueue: Equatable, Codable {
         return true
     }
 
+    /// Play next for several songs: they play right after the current one in the order given. Each goes in as a single
+    /// Play next does (one already queued moves, one listed twice goes in once, the current song is left out), last one
+    /// first, since every one lands right behind the current song. Returns how many went in.
+    @discardableResult
+    mutating func playNext(_ tracks: [MusicTrack]) -> Int {
+        let songs = distinctUpcoming(tracks)
+        for track in songs.reversed() { playNext(track) }
+        return songs.count
+    }
+
+    /// Add to queue for several songs: each goes after the one before it, as a single Add to queue does. Returns how many
+    /// went in.
+    @discardableResult
+    mutating func addToQueue(_ tracks: [MusicTrack]) -> Int {
+        let songs = distinctUpcoming(tracks)
+        for track in songs { addToQueue(track) }
+        return songs.count
+    }
+
+    /// Remove from queue for several songs. Returns how many were there to remove.
+    @discardableResult
+    mutating func remove(videoIds: [String]) -> Int {
+        var removed = 0
+        for videoId in videoIds where remove(videoId: videoId) { removed += 1 }
+        return removed
+    }
+
+    /// `tracks` without repeats and without the current song; empty when nothing is queued.
+    private func distinctUpcoming(_ tracks: [MusicTrack]) -> [MusicTrack] {
+        guard let currentIndex else { return [] }
+        var seen: Set<String> = [self.tracks[currentIndex].videoId]
+        return tracks.filter { seen.insert($0.videoId).inserted }
+    }
+
     /// The index of the current song, when `track` may be put into the queue: not empty, and not the song that plays.
     private func placeable(_ track: MusicTrack) -> Int? {
         guard let currentIndex, tracks[currentIndex].videoId != track.videoId else { return nil }

@@ -256,7 +256,8 @@ struct MusicLibraryView: View {
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
                         isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                        layout: .liked
+                        layout: .liked,
+                        selectionIndex: index
                     ) {
                         if let page = liked.page { service.play(track, in: page) } else { service.play(track) }
                     }
@@ -271,6 +272,7 @@ struct MusicLibraryView: View {
                     )
                 }
             }
+            .musicSelectionScope(id: "library:likedSongs", tracks: liked.songs)
         }
     }
 

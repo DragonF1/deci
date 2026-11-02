@@ -107,6 +107,18 @@ actor FakeMusicBackend: MusicBackend {
         let playlistId: String
     }
 
+    /// One batch add: every song of the call, in order.
+    nonisolated struct AddBatchCall: Hashable, Sendable {
+        let videoIds: [String]
+        let playlistId: String
+    }
+
+    /// One batch removal: every row of the call, in order.
+    nonisolated struct RemoveBatchCall: Hashable, Sendable {
+        let removals: [MusicPlaylistRemoval]
+        let playlistId: String
+    }
+
     nonisolated struct RateCall: Hashable, Sendable {
         let videoId: String
         let status: MusicLikeStatus
@@ -190,6 +202,8 @@ actor FakeMusicBackend: MusicBackend {
     private var removeFromPlaylistError: (any Error)?
     private var removeFromPlaylistRowErrors: [String: any Error] = [:]
     private var removeFromPlaylistGate: MusicTestGate?
+    /// Songs YouTube refuses to add: a batch holding any of them throws `.rejected`, and so does the single add of one.
+    private var rejectedAdds: Set<String> = []
     private var likeStatuses: [String: MusicLikeStatus] = [:]
     private var likeStatusErrors: [String: any Error] = [:]
     private var likeStatusGates: [String: MusicTestGate] = [:]
@@ -217,6 +231,8 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var addToPlaylistCalls: [AddToPlaylistCall] = []
     private(set) var addPlaylistCalls: [AddPlaylistCall] = []
     private(set) var removeFromPlaylistCalls: [RemoveFromPlaylistCall] = []
+    private(set) var addBatchCalls: [AddBatchCall] = []
+    private(set) var removeBatchCalls: [RemoveBatchCall] = []
     private(set) var likeStatusCalls: [String] = []
     private(set) var rateCalls: [RateCall] = []
     private(set) var relatedCalls: [String] = []
@@ -417,6 +433,8 @@ actor FakeMusicBackend: MusicBackend {
     /// Makes the removal of one row (named by its setVideoId) throw `error`, while removals of other rows go through; nil clears.
     func setRemoveFromPlaylistError(setVideoId: String, _ error: (any Error)?) { removeFromPlaylistRowErrors[setVideoId] = error }
     func setRemoveFromPlaylistGate(_ gate: MusicTestGate?) { removeFromPlaylistGate = gate }
+    /// Songs the playlist refuses (see `rejectedAdds`); an empty set clears it.
+    func setRejectedAdds(_ ids: Set<String>) { rejectedAdds = ids }
 
     // Likes. The like state is scripted per video (an unscripted video has none: nil), and a successful rate call changes
     // it, as YouTube would. An error or a gate holds for that video only, after the call was recorded; nil removes it.
@@ -585,8 +603,20 @@ actor FakeMusicBackend: MusicBackend {
     func addToPlaylist(videoId: String, playlistId: String) async throws {
         addToPlaylistCalls.append(AddToPlaylistCall(videoId: videoId, playlistId: playlistId))
         let gate = addToPlaylistGate, error = addToPlaylistError
+        let refused = rejectedAdds.contains(videoId)
         if let gate { await gate.wait() }
         if let error { throw error }
+        if refused { throw MusicError.rejected }
+    }
+
+    /// Records the whole call before it waits or fails. Shares the add error and gate with the single add.
+    func addToPlaylist(videoIds: [String], playlistId: String) async throws {
+        addBatchCalls.append(AddBatchCall(videoIds: videoIds, playlistId: playlistId))
+        let gate = addToPlaylistGate, error = addToPlaylistError
+        let refused = videoIds.contains { rejectedAdds.contains($0) }
+        if let gate { await gate.wait() }
+        if let error { throw error }
+        if refused { throw MusicError.rejected }
     }
 
     func addPlaylistToPlaylist(sourceId: String, playlistId: String) async throws {
@@ -599,6 +629,16 @@ actor FakeMusicBackend: MusicBackend {
     func removeFromPlaylist(videoId: String, setVideoId: String, playlistId: String) async throws {
         removeFromPlaylistCalls.append(RemoveFromPlaylistCall(videoId: videoId, setVideoId: setVideoId, playlistId: playlistId))
         let gate = removeFromPlaylistGate, error = removeFromPlaylistRowErrors[setVideoId] ?? removeFromPlaylistError
+        if let gate { await gate.wait() }
+        if let error { throw error }
+    }
+
+    /// Records the whole call. Shares the removal error, row errors (any row of the call named by one makes it throw) and
+    /// gate with the single removal.
+    func removeFromPlaylist(_ removals: [MusicPlaylistRemoval], playlistId: String) async throws {
+        removeBatchCalls.append(RemoveBatchCall(removals: removals, playlistId: playlistId))
+        let gate = removeFromPlaylistGate
+        let error = removals.lazy.compactMap { self.removeFromPlaylistRowErrors[$0.setVideoId] }.first ?? removeFromPlaylistError
         if let gate { await gate.wait() }
         if let error { throw error }
     }

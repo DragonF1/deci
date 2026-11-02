@@ -90,10 +90,18 @@ struct MusicTrackMoreButton: View {
     let perform: (MusicTrackAction) -> Void
     var tint: Color = DesignTokens.Colors.textSecondary
     var style: Style = .plain
+    /// Set on a row that is part of a selection of two or more: the button then opens the selection's menu.
+    var selectionMenu: MusicSelectionMenu?
 
     var body: some View {
         Menu {
-            MusicTrackMenuItems(actions: actions, perform: perform)
+            if let selectionMenu {
+                MusicSelectionMenuItems(
+                    title: selectionMenu.title, actions: selectionMenu.actions, perform: selectionMenu.perform
+                )
+            } else {
+                MusicTrackMenuItems(actions: actions, perform: perform)
+            }
         } label: {
             switch style {
             case .plain:
@@ -115,7 +123,9 @@ struct MusicTrackMoreButton: View {
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .fixedSize()
-        .accessibilityLabel("More actions for \(track.title)")
+        .accessibilityLabel(
+            selectionMenu.map { "More actions for \($0.count) selected songs" } ?? "More actions for \(track.title)"
+        )
         .help("More actions")
     }
 

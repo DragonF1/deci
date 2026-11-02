@@ -76,7 +76,11 @@ struct MusicPageView: View {
     }
 
     private func loadedContent(page: MusicBrowsePage) -> some View {
-        ScrollView {
+        // Worked out once for the body: the rows of a filtered list and the selection's list both come from it.
+        let matches = MusicPageListing.matches(
+            in: page.tracks, terms: terms, isArtist: kind == .artist, orderPending: browse.isOrderPending(page.browseId)
+        )
+        return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 header(page: page)
                 actions(page: page)
@@ -85,7 +89,7 @@ struct MusicPageView: View {
                     artistBody(page: page)
                         .padding(.top, MusicBrowseLayout.pageGap)
                 } else if !terms.isEmpty {
-                    filteredTracks(of: page)
+                    filteredTracks(of: page, matches: matches ?? [])
                 } else {
                     listBar(page: page)
                     tracks(of: page)
@@ -94,6 +98,13 @@ struct MusicPageView: View {
 
                 MusicBottomInsetSpacer()
             }
+            .musicSelectionScope(
+                id: "page:\(page.browseId)",
+                tracks: MusicPageListing.listedTracks(
+                    page.tracks, matches: matches, isArtist: kind == .artist,
+                    orderPending: browse.isOrderPending(page.browseId)
+                )
+            )
             .padding(.top, MusicBrowseLayout.pageGap)
         }
         .scrollIndicators(.never)
@@ -267,7 +278,8 @@ struct MusicPageView: View {
                     track: track,
                     isCurrent: nowPlayingId == track.videoId,
                     isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                    layout: kind.rowLayout(at: index)
+                    layout: kind.rowLayout(at: index),
+                    selectionIndex: index
                 ) {
                     service.play(track, in: page)
                 }
@@ -299,19 +311,18 @@ struct MusicPageView: View {
     /// block that offers YouTube Music. A list whose order waits for the rest of its songs shows the same note as the
     /// bar does, in place of the matches.
     @ViewBuilder
-    private func filteredTracks(of page: MusicBrowsePage) -> some View {
+    private func filteredTracks(of page: MusicBrowsePage, matches: [Int]) -> some View {
         if browse.isOrderPending(page.browseId) {
             MusicSortNoteView(note: .loadingAll)
                 .frame(maxWidth: .infinity)
                 .padding(.top, MusicBrowseLayout.pageGap)
         } else {
-            matchedTracks(of: page)
+            matchedTracks(of: page, matches: matches)
         }
     }
 
     @ViewBuilder
-    private func matchedTracks(of page: MusicBrowsePage) -> some View {
-        let matches = MusicLocalSearch.indices(of: page.tracks, terms: terms)
+    private func matchedTracks(of page: MusicBrowsePage, matches: [Int]) -> some View {
         let isPartial = page.continuation != nil || isLoadingMore(page)
         VStack(spacing: 0) {
             MusicScopeLine(
@@ -346,7 +357,8 @@ struct MusicPageView: View {
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
                         isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                        layout: kind.rowLayout(at: index)
+                        layout: kind.rowLayout(at: index),
+                        selectionIndex: position
                     ) {
                         service.play(track, in: page)
                     }
@@ -399,7 +411,8 @@ struct MusicPageView: View {
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
                         isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                        layout: .topSong
+                        layout: .topSong,
+                        selectionIndex: index
                     ) {
                         service.play(track, in: page)
                     }

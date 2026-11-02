@@ -115,7 +115,7 @@ struct MusicSaveMenuLayer: View {
     /// What a ticked row says to VoiceOver: the playlist holds what is being saved.
     private var hasText: String {
         switch picker.collection?.kind {
-        case nil: "Has this song"
+        case nil: picker.songs.count > 1 ? "Has these songs" : "Has this song"
         case .album: "Has this album"
         case .playlist, .artist: "Has this playlist"
         }
@@ -145,21 +145,26 @@ struct MusicSaveMenuLayer: View {
     private func row(_ option: MusicPlaylistOption) -> some View {
         let isSaving = picker.saving.contains(option.playlistId)
         let isRemoving = picker.removing.contains(option.playlistId)
-        let help = MusicSaveMenuRowWords.help(title: option.title, isTicked: option.containsVideo, isSong: picker.track != nil)
+        // Some of the picked songs are in, not all: a dash in place of the tick, and a tap adds the rest.
+        let isMixed = picker.isMixed(option)
+        let help = MusicSaveMenuRowWords.help(title: option.title, isTicked: option.containsVideo, isSong: picker.collection == nil)
+        let state = MusicSaveMenuRowWords.state(
+            isTicked: option.containsVideo, isBusy: isSaving, isRemoving: isRemoving, tickedText: hasText
+        )
         return MusicNativeMenuItem(title: option.title, leading: {
             if isSaving {
                 MusicSpinner(size: 10, lineWidth: 1.5, color: .white.opacity(0.75))
             } else if option.containsVideo {
                 MusicNativeMenuCheck()
+            } else if isMixed {
+                MusicNativeMenuMixedMark()
             }
         }) {
             store.choose(option)
         }
         .help(help ?? "")
         .accessibilityHint(help ?? "")
-        .accessibilityValue(MusicSaveMenuRowWords.state(
-            isTicked: option.containsVideo, isBusy: isSaving, isRemoving: isRemoving, tickedText: hasText
-        ))
+        .accessibilityValue(isMixed && !isSaving ? "Has some of these songs" : state)
         .accessibilityAddTraits(option.containsVideo ? .isSelected : [])
     }
 

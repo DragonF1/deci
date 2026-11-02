@@ -29,6 +29,8 @@ final class MusicServiceHost {
         didSet {
             service?.lyrics.setPopupVisible(isPopupVisible)
             service?.related.setPopupVisible(isPopupVisible)
+            // A selection left in a closed popup would greet the next open with rows nobody remembers picking.
+            if !isPopupVisible { navigation?.selection.clear() }
         }
     }
 

@@ -262,7 +262,7 @@ enum MusicTrackActions {
 
     /// Only a playlist page the user can edit, never Liked Music (a like, not a playlist edit), and only a row that
     /// knows its own place in the playlist.
-    private static func canRemove(_ track: MusicTrack, in context: MusicTrackContext) -> Bool {
+    static func canRemove(_ track: MusicTrack, in context: MusicTrackContext) -> Bool {
         guard context.pageIsEditable, let setVideoId = track.playlistSetVideoId, !setVideoId.isEmpty,
               let page = context.pageBrowseId, page.hasPrefix("VL"), page != "VLLM" else { return false }
         return true

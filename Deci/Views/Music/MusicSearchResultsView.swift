@@ -78,13 +78,15 @@ struct MusicSearchResultsView: View {
                     MusicSongRow(
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
-                        isPlaying: nowPlayingId == track.videoId && service.player.isPlaying
+                        isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
+                        selectionIndex: index
                     ) {
                         service.play(track)
                     }
                     .musicRowHairline(index > 0)
                 }
             }
+            .musicSelectionScope(id: "results:songs", tracks: service.results)
         }
     }
 

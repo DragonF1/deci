@@ -160,13 +160,15 @@ struct MusicHomeView: View {
                         track: track,
                         isCurrent: nowPlayingId == track.videoId,
                         isPlaying: nowPlayingId == track.videoId && service.player.isPlaying,
-                        layout: .playlist
+                        layout: .playlist,
+                        selectionIndex: position
                     ) {
                         service.play(track)
                     }
                     .musicRowHairline(position > 0)
                 }
             }
+            .musicSelectionScope(id: "home:\(shelf.id)", tracks: Array(tracks.prefix(visible)))
         }
     }
 

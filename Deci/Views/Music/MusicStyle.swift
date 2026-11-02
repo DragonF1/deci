@@ -22,6 +22,8 @@ enum MusicStyle {
         static let strokeSoft = 0.12
         static let strokeButton = 0.14
         static let rowHover = 0.07
+        /// The song's accent under a picked row and under the selection bar, the strength of an active toggle's fill.
+        static let accentFill = 0.18
         static let chipSelected = 0.12
         static let segmentTrack = 0.06
         static let segmentSelected = 0.14

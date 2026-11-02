@@ -1188,6 +1188,59 @@ final class MusicService {
         trackActions.post("Removed from queue")
     }
 
+    /// Play next for several songs: they play right after the current one, in the order given. A song that is listed
+    /// twice, is the one in the player, or cannot play now is left out. With nothing queued the first starts and the rest
+    /// follow it. One top-up, one save and one line for the whole call; with one song left it is the single entry.
+    func playNext(_ tracks: [MusicTrack]) {
+        editQueue(with: tracks, .playNext)
+    }
+
+    /// Add to queue for several songs: they go after the queue's own songs in the order given, with the same skips and the
+    /// same single top-up, save and line as `playNext(_:)`.
+    func addToQueue(_ tracks: [MusicTrack]) {
+        editQueue(with: tracks, .addToQueue)
+    }
+
+    /// Remove from queue for several songs. The line counts the songs that were there to remove, and the queue is topped
+    /// up once.
+    func removeFromQueue(_ tracks: [MusicTrack]) {
+        var seen: Set<String> = []
+        let songs = tracks.filter { seen.insert($0.videoId).inserted }
+        guard songs.count > 1 else {
+            if let only = songs.first { removeFromQueue(only) }
+            return
+        }
+        let removed = queue.remove(videoIds: songs.map(\.videoId))
+        guard removed > 0 else { return }
+        noteActivity()
+        topUpQueue()
+        saveSession()
+        trackActions.post(MusicSelectionAction.removeFromQueue.notice(count: removed))
+    }
+
+    /// The shared part of the two bulk puts, for `.playNext` or `.addToQueue`.
+    private func editQueue(with tracks: [MusicTrack], _ action: MusicSelectionAction) {
+        var seen: Set<String> = []
+        if let current = queue.current { seen.insert(current.videoId) }
+        let songs = tracks.filter { canPlayNow($0) && seen.insert($0.videoId).inserted }
+        guard let first = songs.first else { return }
+        guard songs.count > 1 else {
+            if action == .playNext { playNext(first) } else { addToQueue(first) }
+            return
+        }
+        // With nothing queued the first song starts, as a tap on a lone song does, and the rest go behind it.
+        let startsFirst = queue.isEmpty
+        let rest = startsFirst ? Array(songs.dropFirst()) : songs
+        if startsFirst { play(first) }
+        let placed = action == .playNext ? queue.playNext(rest) : queue.addToQueue(rest)
+        guard placed > 0 else { return }
+        noteActivity()
+        queueEdited()
+        saveSession()
+        // The line counts every song of the put: the one that started is one of them.
+        trackActions.post(action.notice(count: startsFirst ? placed + 1 : placed, startedFirst: startsFirst))
+    }
+
     /// A song was put into the queue. A Next that waited for the radio takes it now, and a queue that had played out
     /// (or stopped after failures) starts it; otherwise the queue is topped up as usual.
     private func queueEdited() {
