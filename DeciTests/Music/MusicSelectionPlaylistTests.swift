@@ -5,8 +5,21 @@
 // cancel and goes after a write, and the InnerTube body with N actions. Fakes only; nothing here reaches the network.
 
 import Foundation
+import Observation
 import Testing
 @testable import Deci
+
+/// Set by an observation callback, which is `@Sendable`, so a plain variable cannot be captured.
+nonisolated private final class PlaylistChangeFlag: @unchecked Sendable {
+    private(set) var raised = false
+    func raise() { raised = true }
+}
+
+/// Counts what a `@MainActor` callback was told.
+@MainActor
+private final class PlaylistCallCounter {
+    var count = 0
+}
 
 // MARK: - Rules of the actions
 
@@ -526,6 +539,116 @@ struct MusicSelectionSaveToPlaylistTests {
         #expect(h.store.closePicker() == false)
     }
 
+    @Test("Closing the menu while an add is still out counts as a write, so the selection ends with it")
+    func closeWhileSavingCounts() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        await h.openSelection(["a", "b"])
+        await h.letLateWorkLand()
+        h.tapRow("PLone")
+        #expect(h.store.picker?.saving == ["PLone"])
+
+        #expect(h.store.closePicker() == true)
+        await gate.open()
+        #expect(await h.until { h.store.notice?.text == "Added 2 songs to Road Trip" })
+    }
+
+    @Test("A removal still out when the menu closes counts too")
+    func closeWhileRemovingCounts() async {
+        let h = ActionsHarness()
+        await h.setRows("PLone", [("a", "s1"), ("b", "s2")])
+        await h.openSelection(["a", "b"])
+        #expect(await h.until { h.ticked == ["PLone"] })
+        let gate = MusicTestGate()
+        await h.backend.setRemoveFromPlaylistGate(gate)
+        h.tapRow("PLone")
+        _ = await h.until { await h.backend.removeBatchCalls.count == 1 }
+
+        #expect(h.store.closePicker() == true)
+        await gate.open()
+    }
+
+    @Test("A single song's menu with a write out is still not a selection's")
+    func closeWhileSavingOneSongOutsideSelection() async {
+        let h = ActionsHarness()
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        await h.openPicker(options: [MusicSamples.playlistOption("PLone", title: "Road Trip")])
+        h.tapRow("PLone")
+        #expect(h.store.closePicker() == false)
+        await gate.open()
+    }
+
+    @Test("When a later chunk fails the line says how many went in, and what went in is kept")
+    func partialAddFailure() async {
+        let h = ActionsHarness()
+        let ids = (1...120).map { "v\($0)" }
+        await h.backend.setAddError(videoId: "v60", MusicError.forbidden)
+        await h.openSelection(ids)
+        await h.letLateWorkLand()
+
+        h.tapRow("PLone")
+
+        #expect(await h.until { h.store.notice?.text == "Added 50 of 120 songs to Road Trip" })
+        #expect(h.store.notice?.isError == true)
+        // The failing chunk is not retried song by song, and the chunk after it is never sent.
+        #expect(await h.addCalls().map(\.count) == [50, 50])
+        #expect(await h.backend.addToPlaylistCalls.isEmpty)
+        #expect(h.held("PLone") == Set(ids[0..<50]))
+        #expect(h.store.picker?.isMixed(h.options![0]) == true)
+        #expect(h.ticked.isEmpty)
+        #expect(h.store.picker?.saving.isEmpty == true)
+        #expect(h.store.closePicker() == true)
+    }
+
+    @Test("A failure on the first chunk keeps the failure's own line")
+    func firstChunkFailureKeepsItsLine() async {
+        let h = ActionsHarness()
+        await h.backend.setAddError(videoId: "v1", MusicError.forbidden)
+        await h.openSelection((1...60).map { "v\($0)" })
+        await h.letLateWorkLand()
+
+        h.tapRow("PLone")
+
+        #expect(await h.until { h.store.notice?.text == MusicTrackActionsStore.playlistForbiddenText })
+        #expect(h.store.picker?.held["PLone"] == nil)
+    }
+
+    @Test("When a later chunk of a removal fails the line says how many went out, and they leave the open page")
+    func partialRemovalFailure() async {
+        let h = ActionsHarness()
+        let ids = (1...60).map { "v\($0)" }
+        _ = await h.openPage(ids.map { MusicSamples.track($0, setVideoId: "s-\($0)") })
+        await h.openSelection(ids, options: [MusicSamples.playlistOption("PLfixtureMine", title: "Road Trip")])
+        #expect(await h.until { h.ticked == ["PLfixtureMine"] })
+        await h.backend.setRemoveFromPlaylistError(setVideoId: "s-v55", MusicError.rejected)
+
+        h.tapRow("PLfixtureMine")
+
+        #expect(await h.until { h.store.notice?.text == "Removed 50 of 60 songs from Road Trip" })
+        #expect(h.store.notice?.isError == true)
+        #expect(h.pageIds() == (51...60).map { "v\($0)" })
+        // The playlist still holds ten of them: the row stays ticked for another try.
+        #expect(h.ticked == ["PLfixtureMine"])
+        #expect(h.store.picker?.saving.isEmpty == true)
+        #expect(h.store.closePicker() == true)
+    }
+
+    @Test("A removal that fails at its first call keeps the plain line")
+    func firstCallRemovalFailure() async {
+        let h = ActionsHarness()
+        await h.setRows("PLone", [("a", "s1"), ("b", "s2")])
+        await h.openSelection(["a", "b"])
+        #expect(await h.until { h.ticked == ["PLone"] })
+        await h.backend.setRemoveFromPlaylistError(MusicError.rejected)
+
+        h.tapRow("PLone")
+
+        #expect(await h.until { h.store.notice?.text == "Not removed from Road Trip." })
+        #expect(h.store.closePicker() == false)
+    }
+
     @Test("A write that did not land does not count: a refused add leaves the menu as a cancel")
     func failedWriteDoesNotCount() async {
         let h = ActionsHarness()
@@ -640,7 +763,7 @@ struct MusicSelectionRemoveRowsTests {
         #expect(h.pageIds().isEmpty)
     }
 
-    @Test("A refused call leaves the rows on the page and says so; chunks before it stay removed")
+    @Test("A call that fails after another landed says how many went, and the rows before it stay removed")
     func refused() async {
         let h = ActionsHarness()
         let tracks = rows((1...60).map { "v\($0)" })
@@ -650,9 +773,48 @@ struct MusicSelectionRemoveRowsTests {
 
         h.store.removeRows(tracks, in: context)
 
-        #expect(await h.until { h.store.notice?.text == "Not removed from Mine." })
+        #expect(await h.until { h.store.notice?.text == "Removed 50 of 60 songs from Mine" })
         #expect(h.store.notice?.isError == true)
         #expect(h.pageIds() == (51...60).map { "v\($0)" })
+    }
+
+    @Test("A refused first call leaves every row on the page and says nothing went")
+    func firstCallRefused() async {
+        let h = ActionsHarness()
+        let tracks = rows(["a", "b", "c"])
+        let context = await h.openPage(tracks)
+        await h.backend.setRemoveFromPlaylistError(MusicError.rejected)
+
+        h.store.removeRows(tracks, in: context)
+
+        #expect(await h.until { h.store.notice?.text == "Not removed from Mine." })
+        #expect(h.store.notice?.isError == true)
+        #expect(h.pageIds() == ["a", "b", "c"])
+    }
+
+    @Test("The done callback runs once, when every call has landed, and never for a failure")
+    func onRemoved() async {
+        let h = ActionsHarness()
+        let tracks = rows((1...60).map { "v\($0)" })
+        let context = await h.openPage(tracks)
+        let gate = MusicTestGate()
+        await h.backend.setRemoveFromPlaylistGate(gate)
+        let done = PlaylistCallCounter()
+
+        h.store.removeRows(tracks, in: context, onRemoved: { done.count += 1 })
+        _ = await h.until { await h.backend.removeBatchCalls.count == 1 }
+        #expect(done.count == 0)
+        await gate.open()
+        #expect(await h.until { h.store.notice?.text == "Removed 60 songs from Mine" })
+        #expect(done.count == 1)
+
+        // A failure of the second call: the callback is not run.
+        let other = rows((61...120).map { "v\($0)" })
+        let again = await h.openPage(other, id: "VLPLfixtureOther")
+        await h.backend.setRemoveFromPlaylistError(setVideoId: "s-v115", MusicError.rejected)
+        h.store.removeRows(other, in: again, onRemoved: { done.count += 1 })
+        #expect(await h.until { h.store.notice?.text == "Removed 50 of 60 songs from Mine" })
+        #expect(done.count == 1)
     }
 
     @Test("A session that ends before the answer drops it, with no line and the page as it is")
@@ -719,12 +881,12 @@ private struct PlaylistNavHarness {
         nav = host.navigation ?? MusicSearchNavigation(service: service)
     }
 
-    func until(_ condition: () -> Bool) async -> Bool {
+    func until(_ condition: () async -> Bool) async -> Bool {
         for _ in 0..<400 {
-            if condition() { return true }
+            if await condition() { return true }
             try? await Task.sleep(for: .milliseconds(5))
         }
-        return condition()
+        return await condition()
     }
 
     /// Opens a playlist page of `tracks` and waits for it. Returns the scope its rows are picked in.
@@ -817,8 +979,9 @@ struct MusicSelectionPlaylistNavigationTests {
 
         h.nav.performSelection(.removeFromPlaylist)
 
-        #expect(h.nav.selection.count == 0)
         #expect(await h.until { h.service.trackActions.notice?.text == "Removed 2 songs from Mine" })
+        // Ended by the answer, not before it: a pick that is not in the playlist's rows goes with the rest.
+        #expect(h.nav.selection.count == 0)
         let calls = await h.backend.removeBatchCalls
         #expect(calls.map(\.removals) == [[
             MusicPlaylistRemoval(videoId: "a", setVideoId: "s-a"), MusicPlaylistRemoval(videoId: "c", setVideoId: "s-c"),
@@ -843,6 +1006,100 @@ struct MusicSelectionPlaylistNavigationTests {
 
         #expect(await h.until { h.service.trackActions.notice?.text == "Removed 2 songs from Mine" })
         #expect(await h.backend.removeBatchCalls.first?.removals.map(\.setVideoId) == ["s1", "s3"])
+    }
+
+    @Test("The selection stays while the removal is out, and ends when it has landed")
+    func removeClearsOnSuccess() async {
+        let h = PlaylistNavHarness()
+        let scope = await h.openPage(tracks: rows(["a", "b", "c"]))
+        let gate = MusicTestGate()
+        await h.backend.setRemoveFromPlaylistGate(gate)
+        h.pick(["a", "c"], in: scope)
+
+        h.nav.performSelection(.removeFromPlaylist)
+        _ = await h.until { await h.backend.removeBatchCalls.count == 1 }
+        #expect(h.nav.selection.count == 2)
+
+        await gate.open()
+        #expect(await h.until { h.service.trackActions.notice?.text == "Removed 2 songs from Mine" })
+        #expect(h.nav.selection.count == 0)
+    }
+
+    @Test("A refused removal leaves the selection as it was")
+    func removeKeepsSelectionOnFailure() async {
+        let h = PlaylistNavHarness()
+        let scope = await h.openPage(tracks: rows(["a", "b", "c"]))
+        await h.backend.setRemoveFromPlaylistError(MusicError.rejected)
+        h.pick(["a", "c"], in: scope)
+
+        h.nav.performSelection(.removeFromPlaylist)
+
+        #expect(await h.until { h.service.trackActions.notice?.text == "Not removed from Mine." })
+        #expect(h.nav.selection.count == 2)
+        #expect(h.pageIds() == ["a", "b", "c"])
+    }
+
+    @Test("A failure after a first call landed keeps the rows that did not go picked")
+    func removeKeepsLeftoverOnPartialFailure() async {
+        let h = PlaylistNavHarness()
+        let tracks = rows((1...60).map { "v\($0)" })
+        let scope = await h.openPage(tracks: tracks)
+        await h.backend.setRemoveFromPlaylistError(setVideoId: "s-v55", MusicError.rejected)
+        h.pick(tracks.map(\.videoId), in: scope)
+
+        h.nav.performSelection(.removeFromPlaylist)
+
+        #expect(await h.until { h.service.trackActions.notice?.text == "Removed 50 of 60 songs from Mine" })
+        // Not ended: the page's own sync takes the rows that went out of it, and the ten that stayed are still picked.
+        #expect(h.nav.selection.count == 60)
+        let left = Array(tracks[50...])
+        h.nav.selection.sync(MusicSelectionScope(id: scope.id, tracks: left, isUpNext: false))
+        #expect(h.nav.selection.count == 10)
+        #expect(h.nav.selectionTitle(.removeFromPlaylist) == "Remove from this playlist (10)")
+        #expect(h.pageIds() == (51...60).map { "v\($0)" })
+    }
+
+    @Test("A selection made elsewhere meanwhile is not ended by the answer")
+    func removeAnswerLeavesAnotherList() async {
+        let h = PlaylistNavHarness()
+        let scope = await h.openPage(tracks: rows(["a", "b", "c"]))
+        let gate = MusicTestGate()
+        await h.backend.setRemoveFromPlaylistGate(gate)
+        h.pick(["a"], in: scope)
+        h.pick(["b"], in: scope)
+        h.nav.performSelection(.removeFromPlaylist)
+        _ = await h.until { await h.backend.removeBatchCalls.count == 1 }
+
+        h.nav.selection.clear()
+        let results = MusicSelectionScope(id: "results:songs", tracks: rows(["x", "y"]), isUpNext: false)
+        h.pick(["x", "y"], in: results)
+        await gate.open()
+
+        #expect(await h.until { h.service.trackActions.notice?.text == "Removed 2 songs from Mine" })
+        #expect(h.nav.selection.count == 2)
+    }
+
+    @Test("A second copy of a picked song moves the Remove count at once, and the bar's reading with it")
+    func countFollowsSecondCopy() async {
+        let h = PlaylistNavHarness()
+        let tracks = [
+            MusicSamples.track("a", setVideoId: "s1"), MusicSamples.track("b", setVideoId: "s2"),
+            MusicSamples.track("a", setVideoId: "s3"),
+        ]
+        let scope = await h.openPage(tracks: tracks)
+        h.nav.selection.click(tracks[0], in: scope, modifiers: .command)
+        #expect(h.nav.selectionTitle(.removeFromPlaylist) == "Remove from this playlist (1)")
+
+        let flag = PlaylistChangeFlag()
+        withObservationTracking({
+            _ = h.nav.selectionActions
+            _ = h.nav.selectionTitle(.removeFromPlaylist)
+        }, onChange: { flag.raise() })
+        h.nav.selection.click(tracks[2], in: scope, modifiers: .command)
+
+        #expect(h.nav.selection.count == 1)
+        #expect(flag.raised)
+        #expect(h.nav.selectionTitle(.removeFromPlaylist) == "Remove from this playlist (2)")
     }
 
     @Test("A pick the selection does not offer does nothing")
@@ -905,6 +1162,73 @@ struct MusicSelectionPlaylistNavigationTests {
         h.nav.closePicker()
 
         #expect(h.nav.selection.count == 0)
+    }
+
+    @Test("Every move that closes the menu ends the selection after a write, as closing the menu does")
+    func movesEndSelectionAfterWrite() async {
+        let moves: [(String, @MainActor (MusicSearchNavigation) -> Void)] = [
+            ("queryChanged", { $0.queryChanged() }),
+            ("toggleQueue", { $0.toggleQueue() }),
+            ("toggleLyrics", { $0.toggleLyrics() }),
+            ("openLyrics", { $0.openLyrics() }),
+            ("openRelated", { $0.openRelated(for: MusicSamples.track("a")) }),
+            ("select", { $0.select(.library) }),
+        ]
+        for (name, move) in moves {
+            let h = PlaylistNavHarness()
+            let scope = await h.openPage(tracks: rows(["a", "b"]))
+            await h.backend.setPlaylistOptions(videoId: "a", [MusicSamples.playlistOption("PLone", title: "Road Trip")])
+            h.pick(["a", "b"], in: scope)
+            h.nav.performSelection(.saveToPlaylist)
+            _ = await h.until { if case .loaded? = h.service.trackActions.picker?.load { true } else { false } }
+            h.service.trackActions.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+            #expect(await h.until { h.service.trackActions.notice?.text == "Added 2 songs to Road Trip" }, "\(name)")
+
+            move(h.nav)
+
+            #expect(!h.nav.showsPicker, "\(name)")
+            #expect(h.nav.selection.count == 0, "\(name)")
+        }
+    }
+
+    @Test("The same moves with no write leave the selection to try again")
+    func movesKeepSelectionWithoutWrite() async {
+        let moves: [(String, @MainActor (MusicSearchNavigation) -> Void)] = [
+            ("queryChanged", { $0.queryChanged() }),
+            ("toggleQueue", { $0.toggleQueue() }),
+            ("openLyrics", { $0.openLyrics() }),
+        ]
+        for (name, move) in moves {
+            let h = PlaylistNavHarness()
+            let scope = await h.openPage(tracks: rows(["a", "b"]))
+            await h.backend.setPlaylistOptions(videoId: "a", [MusicSamples.playlistOption("PLone", title: "Road Trip")])
+            h.pick(["a", "b"], in: scope)
+            h.nav.performSelection(.saveToPlaylist)
+
+            move(h.nav)
+
+            #expect(!h.nav.showsPicker, "\(name)")
+            #expect(h.nav.selection.count == 2, "\(name)")
+        }
+    }
+
+    @Test("Closing the menu while the add is still out ends the selection, and the late answer needs nothing more")
+    func closeWhileSavingEndsSelection() async {
+        let h = PlaylistNavHarness()
+        let scope = await h.openPage(tracks: rows(["a", "b"]))
+        await h.backend.setPlaylistOptions(videoId: "a", [MusicSamples.playlistOption("PLone", title: "Road Trip")])
+        let gate = MusicTestGate()
+        await h.backend.setAddToPlaylistGate(gate)
+        h.pick(["a", "b"], in: scope)
+        h.nav.performSelection(.saveToPlaylist)
+        _ = await h.until { if case .loaded? = h.service.trackActions.picker?.load { true } else { false } }
+        h.service.trackActions.choose(MusicSamples.playlistOption("PLone", title: "Road Trip"))
+
+        #expect(h.nav.escape())
+
+        #expect(h.nav.selection.count == 0)
+        await gate.open()
+        #expect(await h.until { h.service.trackActions.notice?.text == "Added 2 songs to Road Trip" })
     }
 
     @Test("Escape closes the menu first and leaves the selection, then clears the selection")
@@ -1014,5 +1338,75 @@ struct InnerTubeClientBatchEditTests {
         let client = InnerTubeClient(transport: fake, secretStore: MemorySecretStore(), now: { MusicTestJar.now })
         await #expect(throws: MusicError.signedOut) { try await client.addVideos(["a"], toPlaylist: "PLfixtureMine") }
         #expect(fake.requests(path: Self.editPath).isEmpty)
+    }
+}
+
+// MARK: - The revision
+
+@MainActor
+@Suite("MusicSongSelection revision")
+struct MusicSongSelectionRevisionTests {
+    private let rows = [
+        MusicSamples.track("a", setVideoId: "s1"), MusicSamples.track("b", setVideoId: "s2"),
+        MusicSamples.track("a", setVideoId: "s3"),
+    ]
+    private var scope: MusicSelectionScope { MusicSelectionScope(id: "page:VLPLmine", tracks: rows, isUpNext: false) }
+
+    @Test("A second copy of a picked song moves the revision although the songs picked are the same")
+    func secondCopyMoves() {
+        let selection = MusicSongSelection()
+        selection.click(at: 0, in: scope, modifiers: .command)
+        let before = selection.revision
+
+        selection.click(at: 2, in: scope, modifiers: .command)
+
+        #expect(selection.tracks.map(\.videoId) == ["a"])
+        #expect(selection.pickedRows.count == 2)
+        #expect(selection.revision != before)
+    }
+
+    @Test("Taking one of two copies off again moves it too, and a click that changes nothing does not")
+    func offAndNoChange() {
+        let selection = MusicSongSelection()
+        selection.click(at: 0, in: scope, modifiers: .command)
+        selection.click(at: 2, in: scope, modifiers: .command)
+        let both = selection.revision
+
+        selection.click(at: 2, in: scope, modifiers: .command)
+        #expect(selection.revision != both)
+
+        // Shift from the anchor over rows already picked leaves the keys as they were.
+        selection.click(at: 0, in: scope, modifiers: .command)
+        selection.click(at: 0, in: scope, modifiers: .command)
+        let settled = selection.revision
+        selection.click(at: 0, in: scope, modifiers: .shift)
+        #expect(selection.revision == settled)
+    }
+
+    @Test("The revision is observed, so a reader that kept its answer by it is told")
+    func revisionIsObserved() {
+        let selection = MusicSongSelection()
+        selection.click(at: 0, in: scope, modifiers: .command)
+        let flag = PlaylistChangeFlag()
+        withObservationTracking({ _ = selection.revision }, onChange: { flag.raise() })
+
+        selection.click(at: 2, in: scope, modifiers: .command)
+
+        #expect(flag.raised)
+    }
+
+    @Test("A sync that takes a picked copy out of the list moves it, and a sync that changes nothing does not")
+    func syncMoves() {
+        let selection = MusicSongSelection()
+        selection.click(at: 0, in: scope, modifiers: .command)
+        selection.click(at: 2, in: scope, modifiers: .command)
+        let both = selection.revision
+        selection.sync(scope)
+        #expect(selection.revision == both)
+
+        selection.sync(MusicSelectionScope(id: "page:VLPLmine", tracks: Array(rows[0...1]), isUpNext: false))
+
+        #expect(selection.pickedRows.count == 1)
+        #expect(selection.revision != both)
     }
 }

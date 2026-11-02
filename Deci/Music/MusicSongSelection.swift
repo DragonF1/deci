@@ -75,10 +75,13 @@ final class MusicSongSelection {
     private(set) var tracks: [MusicTrack] = []
     private var keys: Set<String> = []
 
-    /// Moves whenever `tracks` or `isUpNext` does, so what is worked out from them can be kept until it does. Not
-    /// observed: a view that reads `tracks` already redraws with it.
-    @ObservationIgnored private(set) var revision = 0
+    /// Moves whenever the picked rows, `tracks` or `isUpNext` do, so what is worked out from them can be kept until they
+    /// do. Observed: a second copy of a picked song (a playlist can list one twice) changes the rows and not `tracks`, and
+    /// whatever kept its answer by this number must be redrawn for it.
+    private(set) var revision = 0
 
+    /// The keys `revision` last moved for.
+    @ObservationIgnored private var settledKeys: Set<String> = []
     @ObservationIgnored private var rows: [MusicTrack] = []
     @ObservationIgnored private var rowKeys: [String] = []
     @ObservationIgnored private var anchor: String?
@@ -183,10 +186,16 @@ final class MusicSongSelection {
         for (index, key) in rowKeys.enumerated() where keys.contains(key) && seen.insert(rows[index].videoId).inserted {
             picked.append(rows[index])
         }
+        var moved = false
         if picked != tracks {
             tracks = picked
-            revision += 1
+            moved = true
         }
+        if keys != settledKeys {
+            settledKeys = keys
+            moved = true
+        }
+        if moved { revision += 1 }
     }
 
     private func reset() {
@@ -196,6 +205,7 @@ final class MusicSongSelection {
             revision += 1
         }
         if !keys.isEmpty { keys = [] }
+        settledKeys = []
         if !tracks.isEmpty {
             tracks = []
             revision += 1

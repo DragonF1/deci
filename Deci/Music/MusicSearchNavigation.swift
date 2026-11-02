@@ -447,7 +447,7 @@ final class MusicSearchNavigation {
     /// is under them, and a key that reaches it must not take them away.
     func queryChanged() {
         hidesResults = false
-        service.trackActions.closePicker()
+        closePicker()
         guard !trimmedQuery.isEmpty else {
             cancelPendingSearch()
             lastSearchedQuery = ""
@@ -548,7 +548,7 @@ final class MusicSearchNavigation {
     func toggleQueue() {
         service.lyrics.setPanelOpen(false)
         closeRelated()
-        service.trackActions.closePicker()
+        closePicker()
         queueForced.toggle()
         // A queue opens with its field closed.
         closeQueueField()
@@ -559,7 +559,7 @@ final class MusicSearchNavigation {
     func toggleLyrics() {
         queueForced = false
         closeRelated()
-        service.trackActions.closePicker()
+        closePicker()
         service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
     }
 
@@ -568,7 +568,7 @@ final class MusicSearchNavigation {
     func openLyrics() {
         queueForced = false
         closeRelated()
-        service.trackActions.closePicker()
+        closePicker()
         service.lyrics.setPanelOpen(true)
     }
 
@@ -610,7 +610,7 @@ final class MusicSearchNavigation {
         queueForced = false
         closeQueueField()
         service.lyrics.setPanelOpen(false)
-        service.trackActions.closePicker()
+        closePicker()
     }
 
     /// Lyrics, Up next or Related goes back to browse, the screen under it.
@@ -641,7 +641,7 @@ final class MusicSearchNavigation {
         closeQueueField()
         closeRelated()
         service.lyrics.setPanelOpen(false)
-        service.trackActions.closePicker()
+        closePicker()
     }
 
     private func closeQueueField() {
@@ -649,8 +649,9 @@ final class MusicSearchNavigation {
         queueQuery = ""
     }
 
-    /// The save to playlist menu closes; nothing under it moved. A selection's menu that saw a write ends the
-    /// selection with it; one closed without a write leaves the selection to try again.
+    /// The save to playlist menu closes, by Escape or because something else took the screen (a search, a panel, a tab).
+    /// A selection's menu that saw a write, or has one still out, ends the selection with it; one closed without a write
+    /// leaves the selection to try again. Every way the menu closes comes through here, so none of them forgets that.
     func closePicker() {
         if service.trackActions.closePicker() { selection.clear() }
     }
@@ -897,10 +898,16 @@ final class MusicSearchNavigation {
         case .saveToPlaylist:
             service.trackActions.openPicker(forSelection: tracks)
         case .removeFromPlaylist:
-            guard let page = selectionPage else { return }
+            guard let page = selectionPage, let scopeId = selection.scopeId else { return }
             let rows = selection.pickedRows
-            selection.clear()
-            service.trackActions.removeRows(rows, in: page)
+            let sent = Set(rows.compactMap(\.playlistSetVideoId))
+            // The selection ends when every call has landed, not before: a refused call leaves the picks to try again.
+            // Not if the user has moved on meanwhile, to another list or to a row that was not sent.
+            service.trackActions.removeRows(rows, in: page) { [weak self] in
+                guard let self, selection.scopeId == scopeId,
+                      selection.pickedRows.allSatisfy({ $0.playlistSetVideoId.map(sent.contains) ?? false }) else { return }
+                selection.clear()
+            }
         case .playNext:
             selection.clear()
             service.playNext(tracks)

@@ -208,11 +208,12 @@ final class MusicTrackActionsStore {
         }
     }
 
-    /// Closes the menu. Says whether it was a selection's menu and a write landed in it, so the caller ends the
-    /// selection; a menu closed without one leaves the selection as it was.
+    /// Closes the menu. Says whether it was a selection's menu and a write landed in it or is still out, so the caller
+    /// ends the selection; a menu closed without one leaves the selection as it was.
     @discardableResult
     func closePicker() -> Bool {
-        let wrote = picker.map { $0.fromSelection && $0.wrote } ?? false
+        // A write still out is taken as landed: it lands after the menu is gone, and nothing would end the selection then.
+        let wrote = picker.map { $0.fromSelection && ($0.wrote || !$0.saving.isEmpty) } ?? false
         pickerRun += 1
         pickerTask?.cancel()
         membershipTask?.cancel()
@@ -386,6 +387,21 @@ final class MusicTrackActionsStore {
         }
     }
 
+    /// What a removal said when a later call failed after earlier ones landed: how many of the songs are gone. A song
+    /// counts only when every copy of it went (a song's copies can fall in two calls). nil when none is gone, or no call
+    /// landed, so the failure's own line stands.
+    private static func partialRemovalLine(
+        done: [MusicPlaylistRemoval], of found: [MusicPlaylistRemoval], title: String
+    ) -> String? {
+        guard !done.isEmpty else { return nil }
+        let gone = Set(done.map(\.setVideoId))
+        let all = Set(found.map(\.videoId))
+        let left = Set(found.filter { !gone.contains($0.setVideoId) }.map(\.videoId))
+        let removed = all.subtracting(left).count
+        guard removed > 0 else { return nil }
+        return "Removed \(removed) of \(songCount(all.count)) from \(title)"
+    }
+
     /// Unticks the row in whichever menu is open for the song, the one the tap came from or one opened again since, and
     /// takes the song off a playlist page that is open.
     private func landSongRemoval(
@@ -415,7 +431,7 @@ final class MusicTrackActionsStore {
     /// it sends only the places that are still there. The places that did go are off an open page already.
     private func failSongRemoval(
         _ error: any Error, option: MusicPlaylistOption, removed: [String], several: Bool = false,
-        targetKey: String, key: String, session: Int
+        partialLine: String? = nil, targetKey: String, key: String, session: Int
     ) {
         busy.remove(key)
         guard sessionRun == session else { return }
@@ -428,7 +444,9 @@ final class MusicTrackActionsStore {
         }
         dropFromPage(option, places: removed)
         guard !expireIfSignedOut(error) else { return }
-        if case RemovalMiss.notFound = error {
+        if let partialLine {
+            post(partialLine, isError: true)
+        } else if case RemovalMiss.notFound = error {
             post("Not removed. Couldn't find \(several ? "them" : "it") in \(option.title).", isError: true)
         } else if (error as? MusicError) == .rejected {
             post("Not removed from \(option.title).", isError: true)
@@ -554,7 +572,12 @@ final class MusicTrackActionsStore {
         if let failure {
             logger.error("save failed: \(MusicService.logDescription(of: failure), privacy: .public)")
             guard !expireIfSignedOut(failure) else { return }
-            post(Self.playlistWriteMessage(for: failure), isError: true)
+            if added.isEmpty {
+                post(Self.playlistWriteMessage(for: failure), isError: true)
+            } else {
+                // Some went in before the call that failed: the line says how many, which the failure's own cannot.
+                post("Added \(added.count) of \(Self.songCount(wanted.count)) to \(option.title)", isError: true)
+            }
         } else if added.isEmpty {
             post("Not added. \(option.title) may already have them.", isError: true)
         } else if added.count == wanted.count {
@@ -579,8 +602,9 @@ final class MusicTrackActionsStore {
         let wanted = Set(songs.map(\.videoId))
         Task { [weak self, backend] in
             var done: [MusicPlaylistRemoval] = []
+            var found: [MusicPlaylistRemoval] = []
             do {
-                let found = try await Self.removals(of: wanted, inPlaylist: option.playlistId, backend: backend)
+                found = try await Self.removals(of: wanted, inPlaylist: option.playlistId, backend: backend)
                 guard self?.pickerRun == run, self?.sessionRun == session else {
                     self?.dropRemoval(option, targetKey: targetKey, key: key, session: session)
                     return
@@ -602,6 +626,7 @@ final class MusicTrackActionsStore {
             } catch {
                 self?.failSongRemoval(
                     error, option: option, removed: done.map(\.setVideoId), several: true,
+                    partialLine: Self.partialRemovalLine(done: done, of: found, title: option.title),
                     targetKey: targetKey, key: key, session: session
                 )
             }
@@ -833,8 +858,9 @@ final class MusicTrackActionsStore {
     /// Takes the rows out of the open playlist, `editBatchSize` to a call, and each call's rows off the page as it is
     /// answered. Only rows the playlist's rules offer to remove count (an editable playlist page, never Liked Music, a
     /// row with a place); a row listed twice is one. A call that fails stops the rest and leaves its rows on the page;
-    /// the rows before it stay removed. The same pick sent again while it is out goes once.
-    func removeRows(_ rows: [MusicTrack], in context: MusicTrackContext) {
+    /// the rows before it stay removed, and the line says how many went. `onRemoved` runs once when every call has landed,
+    /// and never for one that failed. The same pick sent again while it is out goes once.
+    func removeRows(_ rows: [MusicTrack], in context: MusicTrackContext, onRemoved: (@MainActor () -> Void)? = nil) {
         var seen = Set<String>()
         let removals = rows.compactMap { row -> MusicPlaylistRemoval? in
             guard MusicTrackActions.canRemove(row, in: context), let place = row.playlistSetVideoId,
@@ -856,25 +882,29 @@ final class MusicTrackActionsStore {
                     for removal in chunk { self?.browse.removeTrack(setVideoId: removal.setVideoId, from: pageId) }
                     done += chunk.count
                 }
-                self?.landRowsRemoval(count: done, name: name, key: key, session: session)
+                self?.landRowsRemoval(count: done, name: name, key: key, session: session, onRemoved: onRemoved)
             } catch {
-                self?.failRowsRemoval(error, name: name, key: key, session: session)
+                self?.failRowsRemoval(error, removed: done, of: removals.count, name: name, key: key, session: session)
             }
         }
     }
 
-    private func landRowsRemoval(count: Int, name: String, key: String, session: Int) {
+    private func landRowsRemoval(count: Int, name: String, key: String, session: Int, onRemoved: (@MainActor () -> Void)?) {
         busy.remove(key)
         guard sessionRun == session else { return }
         post("Removed \(Self.songCount(count)) from \(name)")
+        onRemoved?()
     }
 
-    private func failRowsRemoval(_ error: any Error, name: String, key: String, session: Int) {
+    /// `removed` of the `total` rows had gone when a call failed; they are off the page already.
+    private func failRowsRemoval(_ error: any Error, removed: Int, of total: Int, name: String, key: String, session: Int) {
         busy.remove(key)
         guard sessionRun == session else { return }
         logger.error("removal of rows failed: \(MusicService.logDescription(of: error), privacy: .public)")
         guard !expireIfSignedOut(error) else { return }
-        if (error as? MusicError) == .rejected {
+        if removed > 0 {
+            post("Removed \(removed) of \(Self.songCount(total)) from \(name)", isError: true)
+        } else if (error as? MusicError) == .rejected {
             post("Not removed from \(name).", isError: true)
         } else {
             post(Self.playlistWriteMessage(for: error), isError: true)

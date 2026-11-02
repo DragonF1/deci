@@ -204,6 +204,7 @@ actor FakeMusicBackend: MusicBackend {
     private var removeFromPlaylistGate: MusicTestGate?
     /// Songs YouTube refuses to add: a batch holding any of them throws `.rejected`, and so does the single add of one.
     private var rejectedAdds: Set<String> = []
+    private var addErrors: [String: any Error] = [:]
     private var likeStatuses: [String: MusicLikeStatus] = [:]
     private var likeStatusErrors: [String: any Error] = [:]
     private var likeStatusGates: [String: MusicTestGate] = [:]
@@ -435,6 +436,8 @@ actor FakeMusicBackend: MusicBackend {
     func setRemoveFromPlaylistGate(_ gate: MusicTestGate?) { removeFromPlaylistGate = gate }
     /// Songs the playlist refuses (see `rejectedAdds`); an empty set clears it.
     func setRejectedAdds(_ ids: Set<String>) { rejectedAdds = ids }
+    /// A call that carries `videoId` (alone or in a batch) fails with `error`, whatever else it carries.
+    func setAddError(videoId: String, _ error: (any Error)?) { addErrors[videoId] = error }
 
     // Likes. The like state is scripted per video (an unscripted video has none: nil), and a successful rate call changes
     // it, as YouTube would. An error or a gate holds for that video only, after the call was recorded; nil removes it.
@@ -604,8 +607,10 @@ actor FakeMusicBackend: MusicBackend {
         addToPlaylistCalls.append(AddToPlaylistCall(videoId: videoId, playlistId: playlistId))
         let gate = addToPlaylistGate, error = addToPlaylistError
         let refused = rejectedAdds.contains(videoId)
+        let songError = addErrors[videoId]
         if let gate { await gate.wait() }
         if let error { throw error }
+        if let songError { throw songError }
         if refused { throw MusicError.rejected }
     }
 
@@ -614,8 +619,10 @@ actor FakeMusicBackend: MusicBackend {
         addBatchCalls.append(AddBatchCall(videoIds: videoIds, playlistId: playlistId))
         let gate = addToPlaylistGate, error = addToPlaylistError
         let refused = videoIds.contains { rejectedAdds.contains($0) }
+        let songError = videoIds.lazy.compactMap { self.addErrors[$0] }.first
         if let gate { await gate.wait() }
         if let error { throw error }
+        if let songError { throw songError }
         if refused { throw MusicError.rejected }
     }
 
