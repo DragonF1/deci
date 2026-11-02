@@ -29,6 +29,9 @@ final class EngineProbes {
     private(set) var aliveQueryCount = 0
     /// Every tap the factory handed out, in creation order.
     private(set) var createdTaps: [RecordingProcessTapController] = []
+    /// The pid each HAL process object belongs to (backs `processPID`). An object with no entry reads as a failed
+    /// lookup, like a process object that went away.
+    var processPIDs: [AudioObjectID: pid_t] = [:]
 
     func recordAliveQuery(_ pid: pid_t) -> Bool {
         aliveQueryCount += 1
@@ -78,6 +81,9 @@ struct EngineHarness {
     let clock: EngineClock
     /// Debounce used for process-list rebuilds, exposed so tests can wait a multiple of it.
     let debounce: Duration
+    /// Where the engine publishes the processes it replays. Inside this harness's own temp directory, never the real
+    /// Application Support folder.
+    let replayedProcessesURL: URL
 
     init(
         debounce: Duration = .milliseconds(40),
@@ -88,6 +94,7 @@ struct EngineHarness {
     ) {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
+        let replayedProcessesURL = tempDir.appendingPathComponent(ReplayedProcessesPublisher.fileName)
         let settings = SettingsManager(directory: tempDir)
         // The default-changed notification path would talk to UNUserNotificationCenter.
         var appSettings = settings.appSettings
@@ -134,6 +141,8 @@ struct EngineHarness {
             isProcessAlive: { probes.recordAliveQuery($0) },
             processObjectList: { probes.readProcessList() },
             isProcessRunningOutput: { probes.recordRunningOutputQuery($0.id) },
+            processPID: { probes.processPIDs[$0] },
+            replayedProcessesPublisher: ReplayedProcessesPublisher(fileURL: replayedProcessesURL),
             staleTapGrace: staleGrace,
             staleTapPollInterval: stalePoll,
             processRebuildDebounce: debounce,
@@ -150,6 +159,7 @@ struct EngineHarness {
         self.probes = probes
         self.clock = clock
         self.debounce = debounce
+        self.replayedProcessesURL = replayedProcessesURL
     }
 
     /// Makes `app` active and lets the engine create its tap the production way

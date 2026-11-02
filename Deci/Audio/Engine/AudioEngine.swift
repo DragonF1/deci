@@ -81,6 +81,13 @@ final class AudioEngine {
     /// process objects). Overridable for testing.
     private let isProcessRunningOutput: @MainActor (AudioApp) -> Bool
 
+    /// Closure to read which pid a HAL process object belongs to; nil when the lookup fails. Overridable for testing.
+    private let processPIDOfObject: @MainActor (AudioObjectID) -> pid_t?
+
+    /// Publishes the pids Deci taps (mutes and replays) so a recorder can leave them out of its own tap. Nil publishes
+    /// nothing: only the running app passes one (see `DeciApp`), so engines built by tests never touch the real file.
+    private let replayedProcessesPublisher: ReplayedProcessesPublisher?
+
     /// How long an app may be absent from the process list before its tap is considered for cleanup.
     private let staleTapGrace: Duration
 
@@ -324,6 +331,8 @@ final class AudioEngine {
         isProcessAlive: (@MainActor (pid_t) -> Bool)? = nil,
         processObjectList: (@MainActor () -> Set<AudioObjectID>)? = nil,
         isProcessRunningOutput: (@MainActor (AudioApp) -> Bool)? = nil,
+        processPID: (@MainActor (AudioObjectID) -> pid_t?)? = nil,
+        replayedProcessesPublisher: ReplayedProcessesPublisher? = nil,
         staleTapGrace: Duration = .seconds(30),
         staleTapPollInterval: Duration = .seconds(30),
         processRebuildDebounce: Duration = .milliseconds(100),
@@ -347,6 +356,8 @@ final class AudioEngine {
         self.isProcessRunningOutput = isProcessRunningOutput ?? { app in
             app.processObjectIDs.contains { $0.readProcessIsRunningOutput() }
         }
+        self.processPIDOfObject = processPID ?? { try? $0.readProcessPID() }
+        self.replayedProcessesPublisher = replayedProcessesPublisher
         self.staleTapGrace = staleTapGrace
         self.staleTapPollInterval = staleTapPollInterval
         self.processRebuildDebounce = processRebuildDebounce
@@ -655,6 +666,7 @@ final class AudioEngine {
             tap.invalidate()
         }
         refreshMultiRouteDeviceUIDs()
+        publishReplayedProcesses()
         appDeviceRouting.removeValue(forKey: app.id)
         followsDefault.remove(app.id)
         appliedPIDs.remove(app.id)
@@ -783,6 +795,8 @@ final class AudioEngine {
         refreshMultiRouteDeviceUIDs()
         // The Chrome tap is gone with the rest. The poll has stopped, so say so here.
         pollChromeTapLatency()
+        // Nothing is replayed any more, and no health tick is left to say so.
+        withdrawReplayedProcesses()
         logger.info("AudioEngine stopped")
     }
 
@@ -1363,6 +1377,7 @@ final class AudioEngine {
             try tap.activate(initial: initial)
             taps[app.id] = tap
             refreshMultiRouteDeviceUIDs()
+            publishReplayedProcesses()
 
             // Catalog AutoEQ may not have been cached yet — kick off async resolve.
             if initial.autoEQProfile == nil {
@@ -1528,6 +1543,7 @@ final class AudioEngine {
             try tap.activate(initial: initial)
             taps[app.id] = tap
             refreshMultiRouteDeviceUIDs()
+            publishReplayedProcesses()
 
             // Catalog AutoEQ may not have been cached yet — kick off async resolve.
             // Imported profiles always hit the synchronous path above.
@@ -2382,6 +2398,7 @@ final class AudioEngine {
             logger.debug("Cleaned up stale tap for PID \(pid)")
         }
         refreshMultiRouteDeviceUIDs()
+        publishReplayedProcesses()
         appDeviceRouting.removeValue(forKey: pid)
         followsDefault.remove(pid)
         appliedPIDs.remove(pid)  // Allow re-initialization if app resumes
@@ -2514,6 +2531,30 @@ final class AudioEngine {
         }
     }
 
+    // MARK: - Replayed Processes
+
+    /// Publishes the pids of every process Deci taps now. Every tap mutes its processes and replays their audio from
+    /// Deci, so a recorder with a global process tap would hear both unless it leaves these pids out. The publisher
+    /// writes only when the set changed, so this is cheap enough for every health tick (4 Hz). Every place that adds or
+    /// removes a tap also calls it, so a tap rebuild that suspends a tick is not left out of date. A process object
+    /// whose pid cannot be read is skipped.
+    private func publishReplayedProcesses() {
+        guard let replayedProcessesPublisher else { return }
+        var pids: Set<pid_t> = []
+        for tap in taps.values {
+            for objectID in tap.app.processObjectIDs {
+                if let pid = processPIDOfObject(objectID) { pids.insert(pid) }
+            }
+        }
+        replayedProcessesPublisher.publish(pids: pids)
+    }
+
+    /// Removes the published list: nothing is replayed any more. `stop()` calls it, which covers `shutdown()`; the app
+    /// also calls it on termination, where neither runs.
+    func withdrawReplayedProcesses() {
+        replayedProcessesPublisher?.clear()
+    }
+
     // MARK: - Tap Health Monitor
 
     /// How often the health monitor ticks. A stuck tap is probed from 0.25 s of exact-zero input,
@@ -2540,6 +2581,9 @@ final class AudioEngine {
     /// One health tick: the stuck-tap watchdog for every tap, and once per second the
     /// unresponsive-tap check and the pruning of per-pid state.
     func runHealthTick(now: Date = Date()) async {
+        // First, before any rebuild below can suspend this tick. Also runs with no taps, which removes the file.
+        publishReplayedProcesses()
+
         // Skip entirely when no taps exist: avoids unnecessary work at idle (#176). The pruning pass below never runs
         // then, so drop the glitch baselines here: a pid that comes back must not be measured against its old tap.
         guard !taps.isEmpty else {
@@ -2822,6 +2866,7 @@ final class AudioEngine {
     private func recreateTap(for pid: pid_t, cooldown: TimeInterval = 20, now: Date = Date()) async {
         guard let oldTap = taps.removeValue(forKey: pid) else { return }
         refreshMultiRouteDeviceUIDs()
+        publishReplayedProcesses()
         cancelProcessRebuild(for: pid)
         let deviceUIDs = oldTap.currentDeviceUIDs
         await oldTap.invalidateAsync()

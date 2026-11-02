@@ -196,7 +196,12 @@ struct DeciApp: App {
         ShortcutMigration.dropRemovedShortcuts(from: settings)
         let profileManager = AutoEQProfileManager()
         let permission = AudioRecordingPermission()
-        let engine = AudioEngine(permission: permission, settingsManager: settings, autoEQProfileManager: profileManager)
+        let engine = AudioEngine(
+            permission: permission,
+            settingsManager: settings,
+            autoEQProfileManager: profileManager,
+            replayedProcessesPublisher: .live()
+        )
         _audioEngine = State(initialValue: engine)
 
         // Initialize Chrome extension manager for tab audio control, with the saved tracking
@@ -429,8 +434,10 @@ struct DeciApp: App {
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
-        ) { [settings, monitor, accessibilityService, hud, coordinator, music, chip] _ in
+        ) { [settings, monitor, accessibilityService, hud, coordinator, music, chip, engine] _ in
             MainActor.assumeIsolated {
+                // The taps die with the process; the list of replayed processes must not outlive it.
+                engine.withdrawReplayedProcesses()
                 chip.stop()
                 coordinator.stop()
                 monitor.stop()
