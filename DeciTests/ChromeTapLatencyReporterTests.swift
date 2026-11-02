@@ -129,10 +129,29 @@ struct ChromeTapLatencyReporterTests {
         #expect(reporter.next(readings: [chromeTap(0.046, stream: false)]) == nil)
     }
 
-    @Test("a mixdown tap is never reported, whatever it measures")
+    @Test("a routed app's mixdown tap is never reported, whatever it measures")
     func mixdownNeverReported() {
         var reporter = ChromeTapLatencyReporter()
         #expect(reporter.next(readings: [chromeTap(0.080, stream: false)]) == nil)
+    }
+
+    @Test("a mixdown taken because Chrome plays only on its default device is reported like a stream tap")
+    func sourceMixdownReported() {
+        var reporter = ChromeTapLatencyReporter()
+        var readings = readings(through: 0.046, stream: false)
+        readings.tapIsSourceMixdown = true
+        let tap = Observation(bundleID: chrome, deviceUIDs: ["xm5"], readings: readings)
+        #expect(reporter.next(readings: [tap]) == ["xm5": 0.046])
+    }
+
+    @Test("a stream tap turning into a source-only mixdown at the same latency sends nothing")
+    func streamToSourceMixdownKeepsValue() {
+        var reporter = ChromeTapLatencyReporter()
+        _ = reporter.next(readings: [chromeTap(0.046)])
+        var readings = readings(through: 0.047, stream: false)
+        readings.tapIsSourceMixdown = true
+        let tap = Observation(bundleID: chrome, deviceUIDs: ["xm5"], readings: readings)
+        #expect(reporter.next(readings: [tap]) == nil)
     }
 
     @Test("a Chrome tap that goes away clears once")

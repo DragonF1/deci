@@ -21,6 +21,12 @@ nonisolated struct TapResources {
     var tapDescription: CATapDescription?
     /// The drift flag the tap's aggregate was built with (rescue and soak logs).
     var tapDriftCompensation = false
+    /// The device whose audio the tap carries: a stream tap's device, or the source of a mixdown taken because the
+    /// app plays only there (see `TapSourcePolicy`). Nil for a plain mixdown.
+    var tapSourceDeviceUID: String?
+    /// The kind `TapSourcePolicy` picked when the tap was built. A stream tap that fell back to a mixdown still
+    /// counts as `.stream`, so a rebuild is due only when the pick itself changes.
+    var tapKind: TapSourcePolicy.Kind?
 
     /// Whether these resources are currently active
     var isActive: Bool {
@@ -69,6 +75,8 @@ nonisolated struct TapResources {
         tapID = .unknown
 
         tapDescription = nil
+        tapSourceDeviceUID = nil
+        tapKind = nil
     }
 
     /// Destroys resources asynchronously on a background queue.
@@ -91,6 +99,8 @@ nonisolated struct TapResources {
         aggregateDeviceID = .unknown
         deviceProcID = nil
         tapDescription = nil
+        tapSourceDeviceUID = nil
+        tapKind = nil
 
         // Dispatch blocking teardown to background
         queue.async {

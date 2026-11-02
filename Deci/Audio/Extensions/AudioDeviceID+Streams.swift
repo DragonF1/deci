@@ -59,6 +59,17 @@ nonisolated extension AudioDeviceID {
         (try? readStreams(scope: kAudioObjectPropertyScopeOutput))?.first { $0.isValid }
     }
 
+    /// Total channels across the device's output streams (their virtual formats), nil when none can be read.
+    func outputChannelCount() -> UInt32? {
+        guard let streams = try? readStreams(scope: kAudioObjectPropertyScopeOutput) else { return nil }
+        let counts = streams.compactMap { stream -> UInt32? in
+            let format = try? stream.read(kAudioStreamPropertyVirtualFormat, defaultValue: AudioStreamBasicDescription())
+            return format.map { $0.mChannelsPerFrame }
+        }
+        guard !counts.isEmpty else { return nil }
+        return counts.reduce(0, +)
+    }
+
     /// Number of streams in the given scope (input/output). Counts streams, not channels.
     func streamCount(scope: AudioObjectPropertyScope) -> Int {
         var address = AudioObjectPropertyAddress(

@@ -25,6 +25,9 @@ struct TapHealthReadings: Equatable {
     /// with drift compensation. Filled in every build: the `[RESCUE]` line reports them.
     var tapIsStream = false
     var tapDriftCompensation = false
+    /// The tap is a mixdown taken because the app plays only on its source device (see `TapSourcePolicy`): it
+    /// captures the same audio a stream tap of that device would.
+    var tapIsSourceMixdown = false
     /// Smoothed time the tap adds between capturing a buffer and handing it to the output (see
     /// `TapThroughLatency`); 0 until the first valid measurement and right after a tap starts.
     var tapThroughSeconds: Double = 0
@@ -370,7 +373,8 @@ extension ZeroRunEvent {
             kind = "ended"
             length = " length=\(String(format: "%.3f", seconds))s frames=\(frames) run=\(run)"
         }
-        let source = readings.tapIsStream ? "stream:\(tapSourceDeviceUID ?? "?")" : "mixdown"
+        let source = readings.tapIsStream ? "stream:\(tapSourceDeviceUID ?? "?")"
+            : readings.tapIsSourceMixdown ? "mixdown:\(tapSourceDeviceUID ?? "?")" : "mixdown"
         let drift = readings.tapDriftCompensation ? "on" : "off"
         // The forensics describe the latest run; an older run's line must not borrow them.
         let forensics = readings.zeroRunForensics.startHostTime == startHostTime

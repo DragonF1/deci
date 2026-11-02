@@ -125,6 +125,14 @@ struct TapRescueLogEntryTests {
         #expect(e.line.contains("src=mixdown drift=on devices=[uid-a,uid-b]"))
     }
 
+    @Test("A mixdown of the source names the source")
+    func sourceMixdownLine() {
+        var r = readings(stream: false)
+        r.tapIsSourceMixdown = true
+        let e = entry(.promoted(candidateLatency: 0.2), readings: r)
+        #expect(e.line.contains("src=mixdown:uid-a drift=off"))
+    }
+
     @Test("A candidate that heard nothing is candidate-silent, with no latency")
     func candidateSilentLine() {
         let e = entry(.candidateSilent, rung: 1, readings: readings(silent: 2.04))

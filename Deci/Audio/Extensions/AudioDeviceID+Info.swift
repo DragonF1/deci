@@ -49,4 +49,9 @@ nonisolated extension AudioObjectID {
     func readProcessBundleID() -> String? {
         try? readString(kAudioProcessPropertyBundleID)
     }
+
+    /// The devices this process is doing output IO on (HAL `kAudioProcessPropertyDevices`, output scope).
+    func readProcessOutputDeviceIDs() throws -> [AudioObjectID] {
+        try readArray(kAudioProcessPropertyDevices, scope: .output, defaultValue: AudioObjectID.unknown)
+    }
 }

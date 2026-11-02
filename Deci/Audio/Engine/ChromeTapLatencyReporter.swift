@@ -31,15 +31,16 @@ struct ChromeTapLatencyReporter {
     /// What was last handed out; empty when nothing is in force at the extension.
     private(set) var lastEmitted: [String: Double] = [:]
 
-    /// The map to send for these taps, or nil when nothing needs sending. Only Chrome's stream taps with a positive,
-    /// finite measurement count; each of their output devices maps to the seconds (the larger one when two taps share a
+    /// The map to send for these taps, or nil when nothing needs sending. Only Chrome's taps of its default output (a
+    /// stream tap, or the mixdown `TapSourcePolicy` takes while Chrome plays only there) with a positive, finite
+    /// measurement count; each of their output devices maps to the seconds (the larger one when two taps share a
     /// device). A map goes out when the set of devices differs from the last one sent or any value moved by more than
     /// `changeThreshold` from it. An empty map goes out once when there was something in force and now is nothing: the
     /// Chrome tap is gone, turned into a mixdown, has no readings, or reads 0.
     mutating func next(readings observations: [Observation]) -> [String: Double]? {
         var current: [String: Double] = [:]
         for observation in observations where Self.isChrome(observation.bundleID) {
-            guard let readings = observation.readings, readings.tapIsStream else { continue }
+            guard let readings = observation.readings, readings.tapIsStream || readings.tapIsSourceMixdown else { continue }
             let seconds = readings.tapThroughSeconds
             guard seconds.isFinite, seconds > 0 else { continue }
             for uid in observation.deviceUIDs {

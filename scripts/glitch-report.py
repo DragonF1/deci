@@ -554,9 +554,11 @@ def pattern_lines(m, s):
     max_load = (" (load up to %.2f)" % max(s["loads"])) if s["loads"] else ""
     for app, (n, secs, app_loads) in sorted(s["by_app"].items(), key=lambda x: -x[1][0]):
         who = "Chrome" if "chrome" in app.lower() else app
-        out.append("Deci dropouts in %s: %d over %d s%s. Rule: exact-zero gaps cutting into the app's "
-                   "own audio mean %s starved upstream, not Deci's tap or the BT link."
-                   % (app, n, len(secs), (" (load up to %.2f)" % max(app_loads)) if app_loads else "", who))
+        out.append("Deci dropouts in %s: %d over %d s%s. Rule: exact-zero gaps cutting into %s's own "
+                   "audio are holes in Deci's capture (a device-stream tap; a mixdown tap of the same "
+                   "audio stays clean), not %s starving and not the BT link. Check which tap kind "
+                   "Deci logged for it."
+                   % (app, n, len(secs), (" (load up to %.2f)" % max(app_loads)) if app_loads else "", who, who))
     if s["tot_disc"]:
         out.append("Deci tap discontinuities: %d%s. Rule: skipped IO cycles on Deci's tap point to "
                    "Deci's IO thread or system load; check load= and HAL overloads at the same seconds."

@@ -104,7 +104,8 @@ struct TapRescueLogEntry: Equatable {
             name = "failed"
             suffix = " error=\(reason)"
         }
-        let source = readings.tapIsStream ? "stream:\(tapSourceDeviceUID ?? "?")" : "mixdown"
+        let source = readings.tapIsStream ? "stream:\(tapSourceDeviceUID ?? "?")"
+            : readings.tapIsSourceMixdown ? "mixdown:\(tapSourceDeviceUID ?? "?")" : "mixdown"
         let drift = readings.tapDriftCompensation ? "on" : "off"
         return "\(name) \(appName) (PID \(pid)) rung=\(rung) "
             + "silence=\(String(format: "%.2f", readings.secondsSinceInputSignal))s "

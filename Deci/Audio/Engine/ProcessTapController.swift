@@ -36,14 +36,36 @@ import os
 final class ProcessTapController: ProcessTapControlling {
     /// The process objects this tap captures. Replaced by `updateProcesses` when the app
     /// gains helper processes after the tap was built.
-    private(set) var app: AudioApp
+    private(set) var app: AudioApp {
+        didSet { if activated { syncProcessDeviceListeners() } }
+    }
     private let logger: Logger
 
     /// Weak reference to device monitor for O(1) device lookups during crossfade
     private weak var deviceMonitor: AudioDeviceMonitor?
-    /// Optional device UID to use for stream-specific tap capture.
-    /// When nil, tap creation always uses stereo mixdown capture.
-    private var preferredTapSourceDeviceUID: String?
+    /// The device the app follows (the output it plays on by itself), when it is among the outputs.
+    /// When nil, tap creation always uses stereo mixdown capture; otherwise `TapSourcePolicy` picks
+    /// between a stream tap of this device and a mixdown.
+    private var preferredTapSourceDeviceUID: String? {
+        didSet { if activated { syncProcessDeviceListeners() } }
+    }
+
+    /// `kAudioProcessPropertyDevices` listeners on the app's process objects, so the tap kind follows
+    /// the devices the app plays on (see `syncProcessDeviceListeners`).
+    private var processDeviceListeners: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
+    /// The scheduled tap-kind rebuild (see `scheduleTapKindRefresh`); replaced by each device change.
+    private var tapKindRefreshTask: Task<Void, Never>?
+    /// After a failed tap-kind rebuild, no other is tried before this.
+    private var tapKindRebuildBackoffUntil: ContinuousClock.Instant?
+    /// Whether a device-change notification arrived yet (the first one is logged).
+    private var sawProcessDeviceChange = false
+    /// Mixdown to stream: soon, so audio meant for another device leaks to the source only briefly. Long
+    /// enough to join a burst of changes (a stream opening on several process objects).
+    private static let tapKindRebuildSoonDelay: Duration = .milliseconds(20)
+    /// Stream to mixdown: once the app has played only on its source for this long.
+    private static let tapKindRebuildHoldDelay: Duration = .seconds(3)
+    /// Wait after a failed tap-kind rebuild.
+    private static let tapKindRebuildRetryDelay: Duration = .seconds(10)
 
     /// Exposes the current tap source device UID for diagnostics and tap source refresh logic.
     /// Non-nil means stream-specific tap; nil means stereo mixdown.
@@ -276,6 +298,8 @@ final class ProcessTapController: ProcessTapControlling {
             // A stream tap carries its device's UID; a mixdown tap has none.
             tapIsStream: primaryResources.tapDescription?.deviceUID != nil,
             tapDriftCompensation: primaryResources.tapDriftCompensation,
+            tapIsSourceMixdown: primaryResources.tapDescription.map { $0.deviceUID == nil } == true
+                && primaryResources.tapSourceDeviceUID != nil,
             tapThroughSeconds: _tapThroughSeconds
         )
         #if DEBUG
@@ -506,11 +530,13 @@ final class ProcessTapController: ProcessTapControlling {
     /// inserts/deletes a sample on the ~50ppm BT-vs-crystal offset every ~0.7s, the rhythmic call
     /// crackle) and a virtual source (burst delivery looks like drift). With it ON, a follows-
     /// default tap on the built-in speakers lost ~7 ms at some of Chrome's stream starts and stops.
-    /// ON only when the tap can carry another device's clock: a mixdown tap, or a stream tap of a
+    /// ON only when the tap can carry another device's clock: a plain mixdown tap, or a tap of a
     /// device other than the clock device.
     ///
-    /// `clockIsBluetooth` is nil when the clock device did not resolve; it then takes
-    /// `unresolvedClockIsBluetooth`.
+    /// `tapDeviceUID` is the device whose audio the tap carries: a stream tap's device, or the source
+    /// of a mixdown `TapSourcePolicy` took because the app plays only there (same clock as a stream
+    /// tap of it). Nil for a plain mixdown. `clockIsBluetooth` is nil when the clock device did not
+    /// resolve; it then takes `unresolvedClockIsBluetooth`.
     static func tapNeedsDriftCompensation(
         tapDeviceUID: String?,
         clockDeviceUID: String,
@@ -529,11 +555,12 @@ final class ProcessTapController: ProcessTapControlling {
     static func driftDecisionSummary(
         drift: Bool,
         tapDeviceUID: String?,
+        tapIsMixdown: Bool = false,
         clockDeviceUID: String,
         clockIsBluetooth: Bool?,
         tapSourceIsVirtual: Bool
     ) -> String {
-        let source = tapDeviceUID.map { "stream:\($0)" } ?? "mixdown"
+        let source = tapDeviceUID.map { "\(tapIsMixdown ? "mixdown" : "stream"):\($0)" } ?? "mixdown"
         let bluetooth = clockIsBluetooth.map { $0 ? "yes" : "no" } ?? "unresolved(assumed \(unresolvedClockIsBluetooth ? "yes" : "no"))"
         return "drift=\(drift ? "on" : "off") src=\(source) clock=\(clockDeviceUID) clockBT=\(bluetooth) virtualSource=\(tapSourceIsVirtual ? "yes" : "no")"
     }
@@ -616,7 +643,15 @@ final class ProcessTapController: ProcessTapControlling {
         )
     }
 
-    private func buildAggregateDescription(outputUIDs: [String], tapUUID: UUID, tapDeviceUID: String?, name: String) -> [String: Any] {
+    /// `tapSourceDeviceUID` is the device whose audio the tap carries (see `TapResources.tapSourceDeviceUID`);
+    /// `tapIsMixdown` only changes the `[DRIFT]` log line.
+    private func buildAggregateDescription(
+        outputUIDs: [String],
+        tapUUID: UUID,
+        tapSourceDeviceUID tapDeviceUID: String?,
+        tapIsMixdown: Bool,
+        name: String
+    ) -> [String: Any] {
         precondition(!outputUIDs.isEmpty, "Must have at least one output device")
 
         let plan = Self.planAggregate(
@@ -659,6 +694,7 @@ final class ProcessTapController: ProcessTapControlling {
         let decision = Self.driftDecisionSummary(
             drift: tapDriftCompensation,
             tapDeviceUID: tapDeviceUID,
+            tapIsMixdown: tapIsMixdown,
             clockDeviceUID: plan.clockDeviceUID,
             clockIsBluetooth: clockIsBluetooth,
             tapSourceIsVirtual: tapSourceIsVirtual
@@ -800,16 +836,73 @@ final class ProcessTapController: ProcessTapControlling {
         logger.info("EQ processing is stereo-only and will be bypassed for tap format with \(asbd.mChannelsPerFrame) channels.")
     }
 
-    /// Creates a process tap, preferring a device-stream tap to preserve multichannel routing.
-    /// Falls back to stereo mixdown if stream-specific tap creation fails.
-    private func createProcessTap(preferredDeviceUID: String?) throws -> (description: CATapDescription, tapID: AudioObjectID) {
+    /// The tap kind `TapSourcePolicy` picks for this app following `sourceDeviceUID`, given the devices
+    /// the app outputs to now (`appOutputDeviceUIDs()`).
+    private func tapSourceKind(for sourceDeviceUID: String?, appOutputs: Set<String>?) -> TapSourcePolicy.Kind {
+        guard let sourceDeviceUID else { return .mixdown }
         #if DEBUG
-        // Debug runs: DECI_DEBUG_TAP_SOURCE=mixdown skips the stream branch, on every rebuild too.
+        // Debug runs: DECI_DEBUG_TAP_SOURCE forces a mixdown, or a stream tap of a named device.
+        if DebugSoakConfig.current.forceMixdown { return .mixdown }
+        if DebugSoakConfig.current.forcedStreamTapSource != nil { return .stream }
+        #endif
+        return TapSourcePolicy.kind(
+            sourceDeviceUID: sourceDeviceUID,
+            sourceOutputChannels: audioDeviceID(for: sourceDeviceUID)?.outputChannelCount(),
+            appOutputDeviceUIDs: appOutputs
+        )
+    }
+
+    /// UIDs of the devices the app's processes do output IO on now. A process object that is gone (it
+    /// exited; `kAudioHardwareBadObjectError`) is skipped. Any other failed read gives nil, which keeps
+    /// the stream tap: that process may be the one playing elsewhere. A device whose UID cannot be read
+    /// is kept as an unnamed entry, so it still counts as a device other than the source.
+    private func appOutputDeviceUIDs() -> Set<String>? {
+        var uids = Set<String>()
+        for process in app.processObjectIDs {
+            let devices: [AudioObjectID]
+            do {
+                devices = try process.readProcessOutputDeviceIDs()
+            } catch {
+                if (error as NSError).code == Int(kAudioHardwareBadObjectError) { continue }
+                return nil
+            }
+            for device in devices {
+                uids.insert((try? device.readDeviceUID()) ?? "unreadable-device-\(device)")
+            }
+        }
+        return uids
+    }
+
+    /// The kind the running primary tap was built as, nil when there is none.
+    private var runningTapKind: TapSourcePolicy.Kind? {
+        primaryResources.tapDescription != nil ? primaryResources.tapKind : nil
+    }
+
+    /// What the app's output devices call for now (see `TapSourcePolicy.rebuild`).
+    private func pendingTapKindRebuild() -> TapSourcePolicy.Rebuild {
+        guard activated else { return .none }
+        let outputs = appOutputDeviceUIDs()
+        return TapSourcePolicy.rebuild(
+            running: runningTapKind,
+            wanted: tapSourceKind(for: preferredTapSourceDeviceUID, appOutputs: outputs),
+            appOutputDeviceUIDs: outputs
+        )
+    }
+
+    /// Creates the process tap `TapSourcePolicy` picks: a device-stream tap of the source (keeps
+    /// multichannel routing, and per-device routing when the app also plays elsewhere), or a stereo
+    /// mixdown. Falls back to a stereo mixdown if stream-specific tap creation fails.
+    /// `sourceDeviceUID` and `kind` in the result are what `TapResources.tapSourceDeviceUID` and
+    /// `TapResources.tapKind` hold (`kind` is the policy's pick, kept even when a stream tap fell back).
+    private func createProcessTap(preferredDeviceUID: String?) throws -> (description: CATapDescription, tapID: AudioObjectID, sourceDeviceUID: String?, kind: TapSourcePolicy.Kind) {
+        let kind = tapSourceKind(for: preferredDeviceUID, appOutputs: appOutputDeviceUIDs())
+        #if DEBUG
+        // Debug runs: DECI_DEBUG_TAP_SOURCE=mixdown takes a plain mixdown (no source), on every rebuild too.
         let preferredDeviceUID = DebugSoakConfig.current.forceMixdown ? nil : preferredDeviceUID
         #endif
         var lastError: OSStatus = noErr
 
-        if let deviceUID = preferredDeviceUID {
+        if kind == .stream, let deviceUID = preferredDeviceUID {
             if let outputStream = outputStreamIndex(for: deviceUID) {
                 let streamTap = CATapDescription(processes: app.processObjectIDs, deviceUID: deviceUID, stream: outputStream)
                 streamTap.uuid = UUID()
@@ -821,7 +914,7 @@ final class ProcessTapController: ProcessTapControlling {
                 if err == noErr {
                     logger.info("Created stream-specific tap for device \(deviceUID, privacy: .public) (stream \(outputStream))")
                     maybeLogEQBypass(for: tapID)
-                    return (streamTap, tapID)
+                    return (streamTap, tapID, deviceUID, kind)
                 }
 
                 lastError = err
@@ -848,11 +941,16 @@ final class ProcessTapController: ProcessTapControlling {
             )
         }
 
-        if preferredDeviceUID != nil {
+        // A mixdown the policy picked carries the source's audio; a fallback from a failed stream
+        // tap may not (the app can be playing elsewhere too), so it counts as a plain mixdown.
+        let mixdownSource = kind == .mixdown ? preferredDeviceUID : nil
+        if let mixdownSource {
+            logger.info("Created stereo mixdown tap for \(self.app.name, privacy: .public): plays only on source \(mixdownSource, privacy: .public)")
+        } else if preferredDeviceUID != nil {
             logger.info("Using stereo mixdown tap fallback")
         }
         maybeLogEQBypass(for: mixdownTapID)
-        return (mixdownTap, mixdownTapID)
+        return (mixdownTap, mixdownTapID, mixdownSource, kind)
     }
 
     /// Sizes the output gate's ramp and silence-hold windows (counted in samples) for the
@@ -883,8 +981,10 @@ final class ProcessTapController: ProcessTapControlling {
 
         // Create process tap. Prefer stream-specific tap for multichannel devices to avoid
         // stereo matrix attenuation on interfaces with many output channels.
-        let (tapDesc, tapID) = try createProcessTap(preferredDeviceUID: preferredTapSourceDeviceUID)
+        let (tapDesc, tapID, tapSource, tapKind) = try createProcessTap(preferredDeviceUID: preferredTapSourceDeviceUID)
         primaryResources.tapDescription = tapDesc
+        primaryResources.tapSourceDeviceUID = tapSource
+        primaryResources.tapKind = tapKind
         let preferred = preferredStereoChannels(for: targetDeviceUIDs.first)
         _primaryPreferredStereoLeftChannel = preferred.left
         _primaryPreferredStereoRightChannel = preferred.right
@@ -897,7 +997,8 @@ final class ProcessTapController: ProcessTapControlling {
         let description = buildAggregateDescription(
             outputUIDs: targetDeviceUIDs,
             tapUUID: tapDesc.uuid,
-            tapDeviceUID: tapDesc.deviceUID,
+            tapSourceDeviceUID: tapSource,
+            tapIsMixdown: tapDesc.deviceUID == nil,
             name: "Deci-\(app.id)"
         )
         primaryResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
@@ -996,6 +1097,7 @@ final class ProcessTapController: ProcessTapControlling {
         currentDeviceUIDs = targetDeviceUIDs
 
         activated = true
+        syncProcessDeviceListeners()
         logger.notice("Tap activated for \(self.app.name, privacy: .public) on \(self.targetDeviceUIDs, privacy: .public)")
     }
 
@@ -1204,6 +1306,135 @@ final class ProcessTapController: ProcessTapControlling {
         logger.info("[PROCESSES] Tap rebuilt for \(self.app.name)")
     }
 
+    // MARK: - Tap Kind Follows the App's Devices
+
+    private static var processOutputDevicesAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioProcessPropertyDevices,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    /// Listens on each of the app's process objects for the devices it plays on, while the tap follows
+    /// a source device: starting or stopping output on another device flips `TapSourcePolicy`'s pick.
+    /// A routed app (no source) always has a mixdown and needs no listener. Each newly watched process
+    /// gets a check right away, since it may have changed devices before its listener was in place
+    /// (during activation, or while the app had no source).
+    private func syncProcessDeviceListeners() {
+        let wanted: Set<AudioObjectID> = activated && preferredTapSourceDeviceUID != nil ? Set(app.processObjectIDs) : []
+        for objectID in Set(processDeviceListeners.keys).subtracting(wanted) {
+            removeProcessDeviceListener(objectID)
+        }
+        var added = false
+        for objectID in wanted.subtracting(processDeviceListeners.keys) {
+            var address = Self.processOutputDevicesAddress
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                Task { @MainActor [weak self] in
+                    self?.processOutputDevicesChanged()
+                }
+            }
+            let status = AudioObjectAddPropertyListenerBlock(objectID, &address, .main, block)
+            if status == noErr {
+                processDeviceListeners[objectID] = block
+                added = true
+            } else {
+                logger.warning("[TAPKIND] Could not listen for output devices of process \(objectID): \(status)")
+            }
+        }
+        if added { scheduleTapKindRefresh() }
+    }
+
+    private func removeProcessDeviceListener(_ objectID: AudioObjectID) {
+        guard let block = processDeviceListeners.removeValue(forKey: objectID) else { return }
+        var address = Self.processOutputDevicesAddress
+        let status = AudioObjectRemovePropertyListenerBlock(objectID, &address, .main, block)
+        // kAudioHardwareBadObjectError: the process object is already gone, and its listener with it.
+        if status != noErr && status != OSStatus(kAudioHardwareBadObjectError) {
+            logger.warning("[TAPKIND] Could not remove output devices listener of process \(objectID): \(status)")
+        }
+    }
+
+    private func removeAllProcessDeviceListeners() {
+        for objectID in Array(processDeviceListeners.keys) {
+            removeProcessDeviceListener(objectID)
+        }
+    }
+
+    private func processOutputDevicesChanged() {
+        if !sawProcessDeviceChange {
+            sawProcessDeviceChange = true
+            logger.info("[TAPKIND] \(self.app.name, privacy: .public): output devices changed (first notice)")
+        }
+        scheduleTapKindRefresh()
+    }
+
+    /// Schedules `refreshTapKindIfNeeded` for what the app's devices call for now, replacing any earlier
+    /// schedule: soon for a stream tap, after the hold for a mixdown (each change starts the hold over),
+    /// not at all when the running tap already fits. Never sooner than a failed rebuild's back-off.
+    private func scheduleTapKindRefresh() {
+        guard activated else { return }
+        tapKindRefreshTask?.cancel()
+        tapKindRefreshTask = nil
+        var delay: Duration
+        switch pendingTapKindRebuild() {
+        case .none: return
+        case .now: delay = Self.tapKindRebuildSoonDelay
+        case .afterHold: delay = Self.tapKindRebuildHoldDelay
+        }
+        if let until = tapKindRebuildBackoffUntil {
+            delay = max(delay, until - ContinuousClock.now)
+        }
+        tapKindRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            // From here the rebuild runs to the end; a later device change schedules its own check.
+            self.tapKindRefreshTask = nil
+            await self.refreshTapKindIfNeeded()
+        }
+    }
+
+    /// Rebuilds the tap when `TapSourcePolicy` now picks another kind than the running tap was built as:
+    /// the app started or stopped playing on a device other than its source. Crossfades to the same
+    /// devices (gapless). The running tap still works, so a failed rebuild keeps it and tries again later
+    /// rather than forcing a destructive switch.
+    func refreshTapKindIfNeeded() async {
+        guard pendingTapKindRebuild() != .none else { return }
+
+        // A running switch builds its tap with the policy too; check again once it is done.
+        do {
+            try await waitForSwitchesToSettle(includingDestructive: true)
+        } catch {
+            return
+        }
+        guard pendingTapKindRebuild() != .none, let running = runningTapKind,
+              let primaryUID = currentDeviceUIDs.first else { return }
+        let wanted: TapSourcePolicy.Kind = running == .stream ? .mixdown : .stream
+
+        let allUIDs = currentDeviceUIDs
+        logger.info("[TAPKIND] \(self.app.name, privacy: .public): output devices changed, rebuilding \(String(describing: running), privacy: .public) tap as \(String(describing: wanted), privacy: .public)")
+
+        let task = Task {
+            try await performCrossfadeSwitch(to: primaryUID, allDeviceUIDs: allUIDs)
+        }
+        crossfadeTask = task
+        defer { if crossfadeTask == task { crossfadeTask = nil } }
+        do {
+            try await task.value
+        } catch is CancellationError {
+            logger.info("[TAPKIND] Rebuild cancelled")
+            return
+        } catch {
+            logger.warning("[TAPKIND] Rebuild failed, keeping the \(String(describing: running), privacy: .public) tap and trying again later: \(error.localizedDescription)")
+            tapKindRebuildBackoffUntil = ContinuousClock.now + Self.tapKindRebuildRetryDelay
+            scheduleTapKindRefresh()
+            return
+        }
+
+        tapKindRebuildBackoffUntil = nil
+        logger.info("[TAPKIND] Tap rebuilt for \(self.app.name, privacy: .public)")
+    }
+
     /// Waits until no crossfade (and, if asked, no destructive switch) is running. Switches
     /// must not overlap: a crossfade promotes its secondary over whatever the primary is by
     /// then, so a rebuild that lands mid-crossfade is silently undone. Each awaited switch's
@@ -1268,6 +1499,9 @@ final class ProcessTapController: ProcessTapControlling {
         guard activated, !_invalidating else { return false }
         _invalidating = true
         activated = false
+        removeAllProcessDeviceListeners()
+        tapKindRefreshTask?.cancel()
+        tapKindRefreshTask = nil
 
         _lastRenderHostTime = 0
         _activationHostTime = 0
@@ -1466,8 +1700,10 @@ final class ProcessTapController: ProcessTapControlling {
         precondition(!outputUIDs.isEmpty, "Must have at least one output device")
 
         _secondaryFirstInputSignalHostTime = 0
-        let (tapDesc, tapID) = try createProcessTap(preferredDeviceUID: preferredTapSourceDeviceUID)
+        let (tapDesc, tapID, tapSource, tapKind) = try createProcessTap(preferredDeviceUID: preferredTapSourceDeviceUID)
         secondaryResources.tapDescription = tapDesc
+        secondaryResources.tapSourceDeviceUID = tapSource
+        secondaryResources.tapKind = tapKind
         let preferred = preferredStereoChannels(for: outputUIDs.first)
         _secondaryPreferredStereoLeftChannel = preferred.left
         _secondaryPreferredStereoRightChannel = preferred.right
@@ -1479,7 +1715,8 @@ final class ProcessTapController: ProcessTapControlling {
         let description = buildAggregateDescription(
             outputUIDs: outputUIDs,
             tapUUID: tapDesc.uuid,
-            tapDeviceUID: tapDesc.deviceUID,
+            tapSourceDeviceUID: tapSource,
+            tapIsMixdown: tapDesc.deviceUID == nil,
             name: "Deci-\(app.id)-secondary"
         )
         secondaryResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
@@ -1709,8 +1946,10 @@ final class ProcessTapController: ProcessTapControlling {
 
         var newResources = TapResources()
 
-        let (newTapDesc, tapID) = try createProcessTap(preferredDeviceUID: preferredTapSourceDeviceUID)
+        let (newTapDesc, tapID, tapSource, tapKind) = try createProcessTap(preferredDeviceUID: preferredTapSourceDeviceUID)
         newResources.tapDescription = newTapDesc
+        newResources.tapSourceDeviceUID = tapSource
+        newResources.tapKind = tapKind
         // SAFETY: _forceSilence must be true before reaching here (set by performDestructiveDeviceSwitch).
         // The old IO proc is still running until primaryResources.destroy() below, but both
         // _forceSilence (primary role zeros output) and the stale callbackID (after reassignment
@@ -1726,7 +1965,8 @@ final class ProcessTapController: ProcessTapControlling {
         let description = buildAggregateDescription(
             outputUIDs: outputUIDs,
             tapUUID: newTapDesc.uuid,
-            tapDeviceUID: newTapDesc.deviceUID,
+            tapSourceDeviceUID: tapSource,
+            tapIsMixdown: newTapDesc.deviceUID == nil,
             name: "Deci-\(app.id)"
         )
         newResources.tapDriftCompensation = Self.tapDriftCompensation(in: description)
