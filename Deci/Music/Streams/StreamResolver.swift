@@ -67,7 +67,10 @@ actor StreamResolver {
             playbackTrackingURL: response.playbackTrackingURL,
             watchtimeTrackingURL: response.watchtimeTrackingURL,
             viewCount: response.viewCount,
-            httpHeaders: ["User-Agent": MusicAuthHeaders.userAgent]
+            httpHeaders: ["User-Agent": MusicAuthHeaders.userAgent],
+            audioCodec: format.codecs,
+            loudnessDb: response.loudnessDb,
+            perceptualLoudnessDb: response.perceptualLoudnessDb
         )
     }
 

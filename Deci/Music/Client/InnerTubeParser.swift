@@ -23,6 +23,13 @@ struct PlayerFormat: Sendable, Equatable {
     let url: String?
     let signatureCipher: String?
     let approxDurationMs: Double?
+
+    /// The codec string inside the mimeType (`audio/mp4; codecs="mp4a.40.2"` gives `mp4a.40.2`); nil when it names none.
+    var codecs: String? {
+        guard let range = mimeType.range(of: #"codecs="([^"]+)""#, options: .regularExpression) else { return nil }
+        let value = mimeType[range].dropFirst(8).dropLast()
+        return value.isEmpty ? nil : String(value)
+    }
 }
 
 struct PlayerResponse: Sendable, Equatable {
@@ -36,6 +43,10 @@ struct PlayerResponse: Sendable, Equatable {
     let viewCount: Int?
     let playbackTrackingURL: URL?
     let watchtimeTrackingURL: URL?
+    /// playerConfig.audioConfig.loudnessDb: how far YouTube measured the song above or below its reference level.
+    var loudnessDb: Double? = nil
+    /// playerConfig.audioConfig.perceptualLoudnessDb.
+    var perceptualLoudnessDb: Double? = nil
 }
 
 /// Pure parsing of the InnerTube responses. Every lookup tolerates a missing or re-shaped
@@ -482,6 +493,7 @@ enum InnerTubeParser {
         let formats = (streaming?["adaptiveFormats"] as? [[String: Any]] ?? []).compactMap(format(from:))
         let tracking = root["playbackTracking"] as? [String: Any]
         let details = root["videoDetails"] as? [String: Any]
+        let audio = audioConfig(in: root)
         return PlayerResponse(
             status: string(playability?["status"]) ?? "UNKNOWN",
             reason: reason(in: playability),
@@ -490,8 +502,21 @@ enum InnerTubeParser {
             lengthSeconds: int(details?["lengthSeconds"]),
             viewCount: int(details?["viewCount"]),
             playbackTrackingURL: trackingURL(tracking?["videostatsPlaybackUrl"]),
-            watchtimeTrackingURL: trackingURL(tracking?["videostatsWatchtimeUrl"])
+            watchtimeTrackingURL: trackingURL(tracking?["videostatsWatchtimeUrl"]),
+            loudnessDb: audio.loudness,
+            perceptualLoudnessDb: audio.perceptual
         )
+    }
+
+    /// `playerConfig.audioConfig` at the root of the response (a sibling of streamingData). Numbers or
+    /// numeric strings are accepted; anything else, and non-finite values, give nil.
+    static func audioConfig(in root: [String: Any]) -> (loudness: Double?, perceptual: Double?) {
+        let config = path(root, "playerConfig", "audioConfig")
+        func finite(_ key: String) -> Double? {
+            guard let value = double(path(config, key)), value.isFinite else { return nil }
+            return value
+        }
+        return (finite("loudnessDb"), finite("perceptualLoudnessDb"))
     }
 
     /// `baseUrl` of one playbackTracking entry.

@@ -88,6 +88,16 @@ struct ResolvedStream: Sendable, Equatable {
     /// Headers AVURLAsset must send with the stream (User-Agent).
     let httpHeaders: [String: String]
 
+    /// Where the bytes come from. `.download` marks a song from the Downloads store; `.trackCache` a
+    /// temporary copy the app made itself (tier 2a P3). Only `.download` means "the user downloaded this".
+    enum Origin: Sendable, Equatable { case network, download, trackCache }
+    let origin: Origin
+    /// The codec string of the chosen format ("mp4a.40.2"); nil when unknown.
+    let audioCodec: String?
+    /// YouTube's own loudness numbers from the player response.
+    let loudnessDb: Double?
+    let perceptualLoudnessDb: Double?
+
     init(
         videoId: String,
         url: URL,
@@ -97,7 +107,11 @@ struct ResolvedStream: Sendable, Equatable {
         playbackTrackingURL: URL?,
         watchtimeTrackingURL: URL? = nil,
         viewCount: Int? = nil,
-        httpHeaders: [String: String]
+        httpHeaders: [String: String],
+        origin: Origin = .network,
+        audioCodec: String? = nil,
+        loudnessDb: Double? = nil,
+        perceptualLoudnessDb: Double? = nil
     ) {
         self.videoId = videoId
         self.url = url
@@ -108,6 +122,22 @@ struct ResolvedStream: Sendable, Equatable {
         self.watchtimeTrackingURL = watchtimeTrackingURL
         self.viewCount = viewCount
         self.httpHeaders = httpHeaders
+        self.origin = origin
+        self.audioCodec = audioCodec
+        self.loudnessDb = loudnessDb
+        self.perceptualLoudnessDb = perceptualLoudnessDb
+    }
+
+    /// The same song, same tracking URLs and the same exact duration, playing from `file`.
+    /// Never derive the duration from the file: fragmented mp4 reports it doubled.
+    func playingFrom(file: URL) -> ResolvedStream {
+        ResolvedStream(
+            videoId: videoId, url: file, itag: itag, durationSeconds: durationSeconds,
+            expiresAt: .distantFuture, playbackTrackingURL: playbackTrackingURL,
+            watchtimeTrackingURL: watchtimeTrackingURL, viewCount: viewCount, httpHeaders: [:],
+            origin: .trackCache, audioCodec: audioCodec, loudnessDb: loudnessDb,
+            perceptualLoudnessDb: perceptualLoudnessDb
+        )
     }
 }
 

@@ -325,4 +325,33 @@ struct StreamResolverTests {
         #expect(cache.sts(forHash: "hash0001") == nil)
         #expect(cache.sts(forHash: "hash0002") == nil)
     }
+
+    @Test("The stream carries YouTube's loudness numbers, the codec and the network origin")
+    func loudnessCodecAndOrigin() async throws {
+        let json = #"""
+        {"playabilityStatus":{"status":"OK"},"playerConfig":{"audioConfig":{"loudnessDb":-6.3,"perceptualLoudnessDb":-4.1}},
+         "streamingData":{"expiresInSeconds":"21540","adaptiveFormats":[
+          {"itag":140,"mimeType":"audio/mp4; codecs=\"mp4a.40.2\"","bitrate":128000,
+           "url":"https://rr1---sn-fixture.googlevideo.com/videoplayback?itag=140&expire=1792305256&sig=abc"}]},
+         "videoDetails":{"lengthSeconds":"215"}}
+        """#
+        let harness = makeHarness(youtube: FakeYouTube { $0.playerBody = Data(json.utf8) })
+        defer { finish(harness) }
+        let stream = try await harness.resolver.resolve(videoId: Self.videoId)
+        #expect(stream.loudnessDb == -6.3)
+        #expect(stream.perceptualLoudnessDb == -4.1)
+        #expect(stream.audioCodec == "mp4a.40.2")
+        #expect(stream.origin == .network)
+        #expect(stream.itag == 140)
+    }
+
+    @Test("The captured fixture has no playerConfig: loudness is nil, the codec is still known")
+    func fixtureWithoutLoudness() async throws {
+        let harness = makeHarness()
+        defer { finish(harness) }
+        let stream = try await harness.resolver.resolve(videoId: Self.videoId)
+        #expect(stream.loudnessDb == nil)
+        #expect(stream.audioCodec == "mp4a.40.2")
+        #expect(stream.origin == .network)
+    }
 }
