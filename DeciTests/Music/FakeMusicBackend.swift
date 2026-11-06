@@ -822,6 +822,25 @@ final class FakePlaybackEngine: PlaybackEngine {
     func cancelPreload() {
         cancelPreloadCount += 1
         preloadedVideoId = nil
+        preloadReady = true
+    }
+
+    /// The fade the player asked for, 0 for the gapless switch.
+    var crossfadeSeconds: TimeInterval = 0
+    /// Whether the preload counts as ready. Tests clear it to model a preload that is still loading.
+    var preloadReady = true
+    var preloadIsReady: Bool { preloadedVideoId != nil && preloadReady }
+    /// Every manual crossfade the player asked for, with its length.
+    private(set) var manualCrossfades: [TimeInterval] = []
+    /// Set to refuse a manual crossfade (the decks cannot fade).
+    var refusesManualCrossfade = false
+
+    func crossfadeToPreloaded(seconds: TimeInterval) -> Bool {
+        guard let id = preloadedVideoId, preloadReady, !refusesManualCrossfade else { return false }
+        manualCrossfades.append(seconds)
+        preloadedVideoId = nil
+        currentVideoId = id
+        return true
     }
 
     /// What the real engine does when the active item ends and the preloaded one plays on.

@@ -68,6 +68,8 @@ nonisolated struct AppSettings: Codable, Equatable {
     var musicShuffle: Bool = false                 // Shuffle the Music tab's queue
     var musicLoopMode: MusicLoopMode = .off        // Off, loop the playlist or loop the song
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
+    var musicCrossfadeEnabled: Bool = false        // Fade the next song in over the end of the playing one (off is gapless)
+    var musicCrossfadeSeconds: Double = 6          // How long that fade lasts, 1 to 12 seconds
 
     // Music Home
     var musicPinnedItems: [MusicPinnedItem] = []   // Artists, playlists, albums and songs pinned to the top of Home, oldest first
@@ -108,6 +110,10 @@ nonisolated struct AppSettings: Codable, Equatable {
         // A loop mode this build does not know must not cost the listener the rest of their settings.
         musicLoopMode = (try? c.decodeIfPresent(MusicLoopMode.self, forKey: .musicLoopMode)) ?? .off
         musicAutoplay = try c.decodeIfPresent(Bool.self, forKey: .musicAutoplay) ?? true
+        musicCrossfadeEnabled = try c.decodeIfPresent(Bool.self, forKey: .musicCrossfadeEnabled) ?? false
+        musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(
+            (try? c.decodeIfPresent(Double.self, forKey: .musicCrossfadeSeconds)) ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
+        )
         // Pins this build cannot read must not cost the listener the rest of their settings either, and one
         // unreadable pin costs only itself. A file from before Home held more than artists has only the old key,
         // and its artists carry over; the old key is not written again.
@@ -192,13 +198,20 @@ extension AppSettings {
 }
 
 extension AppSettings {
-    /// The three Music playback options as the player takes them.
+    /// The Music playback options as the player takes them.
     var musicPlayback: MusicPlaybackPreferences {
-        get { MusicPlaybackPreferences(shuffle: musicShuffle, loop: musicLoopMode, autoplay: musicAutoplay) }
+        get {
+            MusicPlaybackPreferences(
+                shuffle: musicShuffle, loop: musicLoopMode, autoplay: musicAutoplay,
+                crossfade: musicCrossfadeEnabled, crossfadeSeconds: musicCrossfadeSeconds
+            )
+        }
         set {
             musicShuffle = newValue.shuffle
             musicLoopMode = newValue.loop
             musicAutoplay = newValue.autoplay
+            musicCrossfadeEnabled = newValue.crossfade
+            musicCrossfadeSeconds = newValue.crossfadeSeconds
         }
     }
 }

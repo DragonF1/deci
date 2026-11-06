@@ -42,6 +42,17 @@ protocol PlaybackEngine: AnyObject {
     func preload(_ stream: ResolvedStream)
     /// Drops the preload, whether it is still loading, ready or already scheduled to start.
     func cancelPreload()
+
+    /// How long the next track fades in over the end of the active one, in seconds. 0 (the default) is the gapless
+    /// switch. Read when the standby's start is scheduled: a fade already running finishes, the next transition follows
+    /// the new value.
+    var crossfadeSeconds: TimeInterval { get set }
+    /// The preload is built and prerolled, so it can start the moment it is asked to.
+    var preloadIsReady: Bool { get }
+    /// Starts the preloaded track now and fades it in over `seconds` while the active one fades out, for a manual skip.
+    /// The preloaded track becomes the active one and no `advanced` event is sent. False (and nothing changes) when the
+    /// preload is not ready or the decks cannot crossfade.
+    func crossfadeToPreloaded(seconds: TimeInterval) -> Bool
 }
 
 /// AVPlayer-backed engine with two decks. Observers exist only while an item is loaded.
@@ -93,6 +104,15 @@ final class AVPlaybackEngine: PlaybackEngine {
     private static let scheduleTolerance: TimeInterval = 0.04
     /// The standby's tap is armed this long before its scheduled start.
     private static let armLead: TimeInterval = 0.25
+    /// The crossfade starts this long before the standby's start host time, so the incoming fade is already running when
+    /// its first frame is heard.
+    private static let fadeLead: TimeInterval = 0.05
+    /// A fade shorter than this is not worth it: the switch is gapless instead.
+    private static let minimumFade: TimeInterval = 1
+    /// Never schedule a fade start closer than this to now.
+    private static let fadeGuard: TimeInterval = 0.25
+    /// The outgoing deck of a seek, skip or quick fade is gone within this.
+    private static let quickDrain: TimeInterval = 0.03
 
     /// One AVPlayer and everything that belongs to the item it holds.
     @MainActor
@@ -158,6 +178,24 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var fallbackMuted = false
     private var active = Deck()
     private var standby = Deck()
+    /// The deck whose item is fading out under the new one in a crossfade, nil outside one.
+    private var draining: Deck?
+    /// Counts the played seconds of the drain, so a pause holds it. Cancelled with the drain.
+    private var drainTask: Task<Void, Never>?
+    /// Fires the crossfade at its start time.
+    private var fadeStartTask: Task<Void, Never>?
+    var crossfadeSeconds: TimeInterval = 0
+    /// The fade length the scheduled start was planned for, 0 when it is a gapless switch. Fixed while scheduled.
+    private var plannedFade: TimeInterval = 0
+    private var plannedFor: TimeInterval = 0
+    /// How many crossfades started (a scheduled one or a manual one). A test seam.
+    private(set) var crossfadeCount = 0
+    /// Whether a crossfade is running (the old item still fading out).
+    var isCrossfading: Bool { draining != nil }
+    #if DEBUG
+    var debugDrainingTap: MusicTapDeck? { draining?.tap }
+    var debugDrainingPlayer: AVPlayer? { draining?.player }
+    #endif
     /// The active player, for tests to read what the engine really set on it.
     var avPlayer: AVPlayer { active.player }
     /// The standby player, for tests.
@@ -211,6 +249,8 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     isolated deinit {
         cancelPreload()
+        drainTask?.cancel()
+        draining?.tearDown()
         active.tearDown()
     }
 
@@ -220,12 +260,14 @@ final class AVPlaybackEngine: PlaybackEngine {
     }
 
     var preloadedVideoId: String? { preloadStream?.videoId }
+    var preloadIsReady: Bool { preloadStream != nil && preloadReady }
 
     // MARK: - Loading
 
     func load(_ stream: ResolvedStream, startAt: TimeInterval, autoplay: Bool) {
         // Whatever was preloaded was for the track after the one that is being replaced.
         cancelPreload()
+        endDrain(fast: true)
         active.tearDown()
         wantsPlay = autoplay
         pendingStart = startAt
@@ -422,6 +464,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         if rescheduled { cancelSchedule() }
         active.player.audioOutputDeviceUniqueID = resolved
         standby.player.audioOutputDeviceUniqueID = resolved
+        // Both decks of a crossfade move together: one left on the old device would play its half of the fade there.
+        draining?.player.audioOutputDeviceUniqueID = resolved
         if rescheduled { evaluateSchedule() }
     }
 
@@ -438,12 +482,15 @@ final class AVPlaybackEngine: PlaybackEngine {
     func play() {
         wantsPlay = true
         if active.player.currentItem?.status == .readyToPlay { active.player.play() }
+        // A crossfade that was paused in the middle goes on, both decks together.
+        if let draining, draining.player.currentItem != nil { draining.player.play() }
     }
 
     func pause() {
         wantsPlay = false
         cancelSchedule()
         active.player.pause()
+        draining?.player.pause()
     }
 
     func seek(to seconds: TimeInterval) {
@@ -451,6 +498,12 @@ final class AVPlaybackEngine: PlaybackEngine {
             // The item is not on the player yet: the seek happens when it becomes ready.
             pendingStart = max(0, seconds)
             return
+        }
+        // A seek in the middle of a crossfade lands on the incoming track, which is the current one already: the old one
+        // is let go almost at once and the new one comes up to full level.
+        if draining != nil {
+            endDrain(fast: true)
+            active.tap?.fade(to: 1, over: Self.quickDrain)
         }
         // The end moved: the standby's start goes with it, and is set again once the seek has landed.
         cancelSchedule()
@@ -466,6 +519,7 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     func unload() {
         cancelPreload()
+        endDrain(fast: true)
         active.tearDown()
         wantsPlay = false
     }
@@ -518,6 +572,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         scheduledHost = nil
         armTask?.cancel()
         armTask = nil
+        fadeStartTask?.cancel()
+        fadeStartTask = nil
+        plannedFade = 0
         preloadStream = nil
         preloadReady = false
         standby.tearDown()
@@ -581,21 +638,41 @@ final class AVPlaybackEngine: PlaybackEngine {
         return end
     }
 
-    /// Starts the standby on the host time of the active item's end, once that is near, and keeps it there.
+    /// The fade length for a transition planned now: the setting, held to half of each track and to what is left of the
+    /// active one. 0 (a gapless switch) when crossfade is off, a deck is not tapped (the fade lives in the tap), the fade
+    /// would be shorter than a second, or the tracks are not known well enough to clamp it.
+    private func fadeLength(remaining: TimeInterval, end: CMTime) -> TimeInterval {
+        guard crossfadeSeconds > 0, chain != nil, active.itemIsTapped, standby.itemIsTapped,
+              let incoming = preloadStream.flatMap({ Self.knownDuration(of: $0) }) else { return 0 }
+        let length = min(crossfadeSeconds, end.seconds / 2, incoming / 2, remaining - Self.fadeGuard)
+        return length >= Self.minimumFade ? length : 0
+    }
+
+    /// Starts the standby on the host time of the active item's end, once that is near, and keeps it there. With a
+    /// crossfade the start is `fade` seconds earlier and the fade is started with it.
     private func evaluateSchedule() {
-        guard preloadStream != nil, preloadReady, let item = active.player.currentItem,
+        guard preloadStream != nil, preloadReady, draining == nil, let item = active.player.currentItem,
               active.player.timeControlStatus == .playing, active.player.rate == 1,
               let end = endTime(of: item) else { return }
         let remaining = end.seconds - active.player.currentTime().seconds
         guard remaining.isFinite else { return }
-        if remaining > Self.scheduleWindow {
+        // A fade is planned when the standby is first scheduled and kept; a changed setting plans it again.
+        if scheduledHost != nil, plannedFor != crossfadeSeconds {
+            cancelSchedule()
+            return
+        }
+        let fade = scheduledHost != nil ? plannedFade : fadeLength(remaining: remaining, end: end)
+        if remaining > Self.scheduleWindow + fade {
             cancelSchedule()
             return
         }
         // Too close to move it again: the end notification starts the standby if it has not started yet.
-        guard remaining > 0.05 else { return }
-        let host = hostTime(ofItemTime: end, in: item, remaining: remaining)
+        guard remaining - fade > 0.05 else { return }
+        let endHost = hostTime(ofItemTime: end, in: item, remaining: remaining)
+        let host = CMTimeSubtract(endHost, CMTime(seconds: fade, preferredTimescale: 1_000_000_000))
         if let scheduled = scheduledHost, abs(CMTimeSubtract(scheduled, host).seconds) < Self.scheduleTolerance { return }
+        plannedFade = fade
+        plannedFor = crossfadeSeconds
         schedule(at: host)
     }
 
@@ -618,9 +695,26 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     private func schedule(at host: CMTime) {
         standby.player.automaticallyWaitsToMinimizeStalling = false
+        // A crossfade's incoming deck is held silent until the fade starts, so its first frames never sound at full level.
+        if plannedFade > 0 { standby.tap?.fade(to: 0) }
         standby.player.setRate(1, time: .invalid, atHostTime: host)
         scheduledHost = host
         armStandbyTap(before: host)
+        scheduleCrossfadeStart(at: host)
+    }
+
+    /// Fires the crossfade `fadeLead` before the standby's start. Moves with the schedule.
+    private func scheduleCrossfadeStart(at host: CMTime) {
+        fadeStartTask?.cancel()
+        fadeStartTask = nil
+        guard plannedFade > 0 else { return }
+        let wait = CMTimeSubtract(host, CMClockGetTime(CMClockGetHostTimeClock())).seconds - Self.fadeLead
+        fadeStartTask = Task { @MainActor [weak self] in
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            guard !Task.isCancelled, let self, let scheduled = self.scheduledHost, scheduled == host else { return }
+            self.fadeStartTask = nil
+            self.beginScheduledCrossfade()
+        }
     }
 
     /// Arms the standby's tap `armLead` seconds before `host`, and not earlier: an armed standby shares the filters with
@@ -647,6 +741,10 @@ final class AVPlaybackEngine: PlaybackEngine {
         scheduledHost = nil
         armTask?.cancel()
         armTask = nil
+        fadeStartTask?.cancel()
+        fadeStartTask = nil
+        if plannedFade > 0 { standby.tap?.fade(to: 1) }
+        plannedFade = 0
         standby.tap?.disarm()
         let deck = standby
         let token = deck.token
@@ -679,6 +777,13 @@ final class AVPlaybackEngine: PlaybackEngine {
         let hostClock = CMClockGetHostTimeClock()
         let untilStart = scheduledHost.map { CMTimeSubtract($0, CMClockGetTime(hostClock)).seconds }
 
+        // A start that was planned as a crossfade but never fired (its timer lost the race to the end): the end is here,
+        // so it is a gapless switch. The incoming deck was held silent for the fade.
+        if plannedFade > 0 { incoming.tap?.fade(to: 1) }
+        plannedFade = 0
+        fadeStartTask?.cancel()
+        fadeStartTask = nil
+
         // The chain changes hands: the new deck's tap owns it, the old one renders nothing more.
         incoming.tap?.activate()
         outgoing.tap?.retire()
@@ -710,5 +815,110 @@ final class AVPlaybackEngine: PlaybackEngine {
         pendingStart = 0
         onEvent?(.advanced(videoId: stream.videoId))
         onTick?(position, incoming.player.timeControlStatus == .playing)
+    }
+
+    // MARK: - Crossfade
+
+    /// The fade is due: the standby is playing (or is started now), and the decks change roles.
+    private func beginScheduledCrossfade() {
+        guard let stream = preloadStream, preloadReady, plannedFade > 0 else { return }
+        let fade = plannedFade
+        let started = standby.player.rate != 0
+        if started { scheduledAdvanceCount += 1 } else { lateStartCount += 1 }
+        flip(to: stream, fade: fade, startStandby: !started)
+        onEvent?(.advanced(videoId: stream.videoId))
+        onTick?(position, active.player.timeControlStatus == .playing)
+    }
+
+    /// A manual skip onto the preloaded track: a short crossfade, started now.
+    func crossfadeToPreloaded(seconds: TimeInterval) -> Bool {
+        guard let stream = preloadStream, preloadReady, draining == nil, chain != nil,
+              active.itemIsTapped, standby.itemIsTapped, active.tap?.hasLease == true, standby.tap?.hasLease == true,
+              seconds > 0 else { return false }
+        standby.tap?.fade(to: 0)
+        flip(to: stream, fade: seconds, startStandby: true)
+        return true
+    }
+
+    /// The decks change roles for a crossfade: the standby is the active deck now and fades in, the old active deck keeps
+    /// playing and fades out, and a new empty standby is ready for the next preload.
+    private func flip(to stream: ResolvedStream, fade: TimeInterval, startStandby: Bool) {
+        crossfadeCount += 1
+        let incoming = standby
+        let outgoing = active
+        fadeStartTask?.cancel()
+        fadeStartTask = nil
+        armTask?.cancel()
+        armTask = nil
+        // The outgoing lease drains before the incoming one claims the chain, so it is never silenced in between.
+        outgoing.tap?.drain(over: fade)
+        incoming.tap?.activate()
+        incoming.tap?.fade(to: 1, over: fade, curve: .equalPower, fromSilence: true)
+        active = incoming
+        draining = outgoing
+        let fresh = Deck()
+        fresh.player.automaticallyWaitsToMinimizeStalling = false
+        fresh.player.audioOutputDeviceUniqueID = outputDeviceUID
+        standby = fresh
+        scheduledHost = nil
+        plannedFade = 0
+        preloadStream = nil
+        preloadReady = false
+        if startStandby { incoming.player.play() }
+        incoming.player.automaticallyWaitsToMinimizeStalling = true
+        applyLevel(to: incoming)
+        applyLevel(to: outgoing)
+        wantsPlay = true
+        pendingStart = 0
+        startDrainTimer(seconds: fade)
+    }
+
+    /// Lets the draining deck go once `seconds` of playback have passed: counted only while it plays, so a pause holds
+    /// the fade where it is and the resume goes on from there.
+    private func startDrainTimer(seconds: TimeInterval) {
+        drainTask?.cancel()
+        let tick = 0.05
+        drainTask = Task { @MainActor [weak self] in
+            var played = 0.0
+            let wanted = seconds + 0.1
+            while played < wanted {
+                try? await Task.sleep(for: .seconds(tick))
+                guard !Task.isCancelled, let self, let draining = self.draining else { return }
+                if draining.player.rate != 0 { played += tick }
+                // The outgoing item may run out a hair before the timer does: nothing is left to fade then.
+                if Self.hasRunOut(draining.player) { break }
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.finishDrain()
+        }
+    }
+
+    /// True when the player has no item or its item has played to its end.
+    private static func hasRunOut(_ player: AVPlayer) -> Bool {
+        guard let item = player.currentItem else { return true }
+        let duration = item.duration.seconds
+        guard duration.isFinite, duration > 0 else { return false }
+        return item.currentTime().seconds >= duration - 0.02
+    }
+
+    /// The fade is over: the old deck is torn down and its lease released.
+    private func finishDrain() {
+        drainTask?.cancel()
+        drainTask = nil
+        guard let old = draining else { return }
+        draining = nil
+        old.tearDown()
+        old.player.automaticallyWaitsToMinimizeStalling = false
+    }
+
+    /// Ends a crossfade early (a seek, a skip, a new load): with `fast`, the old deck fades out in about 30 ms first.
+    private func endDrain(fast: Bool) {
+        guard let old = draining else { return }
+        if fast {
+            old.tap?.drain(over: Self.quickDrain, curve: .linear)
+            startDrainTimer(seconds: Self.quickDrain)
+        } else {
+            finishDrain()
+        }
     }
 }

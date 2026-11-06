@@ -130,6 +130,22 @@ final class MusicPlayer {
         engine.cancelPreload()
     }
 
+    /// How long the next track fades in over the end of this one; 0 is the gapless switch. See `PlaybackEngine`.
+    var crossfadeSeconds: TimeInterval {
+        get { engine.crossfadeSeconds }
+        set { if engine.crossfadeSeconds != newValue { engine.crossfadeSeconds = newValue } }
+    }
+
+    /// The preloaded track is built and prerolled, so it can start at once.
+    var preloadIsReady: Bool { preloaded != nil && engine.preloadedVideoId == preloaded?.track.videoId && engine.preloadIsReady }
+
+    /// A manual skip onto the preloaded track: the engine starts it now and crossfades over `seconds`. The caller then
+    /// calls `adoptPreloaded()`. False, with nothing changed, when it cannot.
+    func crossfadeToPreloaded(seconds: TimeInterval) -> Bool {
+        guard isPlaying, !hasEnded, preloadIsReady else { return false }
+        return engine.crossfadeToPreloaded(seconds: seconds)
+    }
+
     /// Takes the preloaded track over as the current one: the engine is already playing it. Called from `onAdvanced`.
     func adoptPreloaded() {
         guard let preloaded else { return }

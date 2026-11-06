@@ -19,12 +19,36 @@ enum MusicLoopMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// The three playback options that are remembered across launches.
+/// The playback options that are remembered across launches.
 struct MusicPlaybackPreferences: Equatable, Sendable {
+    /// The fade lengths Settings offers, in seconds.
+    static let crossfadeRange: ClosedRange<Double> = 1...12
+    static let defaultCrossfadeSeconds = 6.0
+
+    /// `seconds` held to `crossfadeRange`; a value that is not a number is the default.
+    static func clampedCrossfade(_ seconds: Double) -> Double {
+        guard seconds.isFinite else { return defaultCrossfadeSeconds }
+        return min(max(seconds, crossfadeRange.lowerBound), crossfadeRange.upperBound)
+    }
+
     var shuffle = false
     var loop = MusicLoopMode.off
     /// Keep playing recommended songs after a playlist or an album has finished.
     var autoplay = true
+    /// Fade the next song in over the end of the playing one. Off is the gapless switch.
+    var crossfade = false
+    /// How long that fade lasts, 1 to 12 seconds.
+    var crossfadeSeconds = MusicPlaybackPreferences.defaultCrossfadeSeconds {
+        didSet { crossfadeSeconds = Self.clampedCrossfade(crossfadeSeconds) }
+    }
+
+    init(shuffle: Bool = false, loop: MusicLoopMode = .off, autoplay: Bool = true, crossfade: Bool = false, crossfadeSeconds: Double = defaultCrossfadeSeconds) {
+        self.shuffle = shuffle
+        self.loop = loop
+        self.autoplay = autoplay
+        self.crossfade = crossfade
+        self.crossfadeSeconds = Self.clampedCrossfade(crossfadeSeconds)
+    }
 }
 
 /// A seedable source of random numbers (SplitMix64), so a test can replay a shuffle.

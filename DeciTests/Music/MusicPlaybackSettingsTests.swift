@@ -145,4 +145,60 @@ struct MusicPlaybackSettingsTests {
         #expect(second.loopMode == .playlist)
         #expect(second.isAutoplayOn == false)
     }
+
+    // MARK: - Crossfade
+
+    @Test("a file from before Crossfade decodes to off and 6 seconds")
+    func crossfadeOldFile() throws {
+        let settings = try decode(#"{"musicShuffle": true}"#)
+        #expect(settings.musicCrossfadeEnabled == false)
+        #expect(settings.musicCrossfadeSeconds == 6)
+        #expect(AppSettings().musicCrossfadeEnabled == false)
+        #expect(AppSettings().musicCrossfadeSeconds == 6)
+    }
+
+    @Test("Crossfade and its length survive an encode and decode")
+    func crossfadeRoundTrip() throws {
+        var settings = AppSettings()
+        settings.musicCrossfadeEnabled = true
+        settings.musicCrossfadeSeconds = 9
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded == settings)
+        #expect(decoded.musicCrossfadeEnabled)
+        #expect(decoded.musicCrossfadeSeconds == 9)
+    }
+
+    @Test("a length outside 1 to 12 seconds, or not a number, is held to the range on decode")
+    func crossfadeClamp() throws {
+        #expect(try decode(#"{"musicCrossfadeSeconds": 99}"#).musicCrossfadeSeconds == 12)
+        #expect(try decode(#"{"musicCrossfadeSeconds": 0}"#).musicCrossfadeSeconds == 1)
+        #expect(try decode(#"{"musicCrossfadeSeconds": -4}"#).musicCrossfadeSeconds == 1)
+        #expect(MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 50).crossfadeSeconds == 12)
+        #expect(MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: .nan).crossfadeSeconds == 6)
+        var prefs = MusicPlaybackPreferences()
+        prefs.crossfadeSeconds = 0.2
+        #expect(prefs.crossfadeSeconds == 1)
+    }
+
+    @Test("the preferences bridge carries Crossfade both ways")
+    func crossfadeBridge() {
+        var settings = AppSettings()
+        settings.musicPlayback = MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 3)
+        #expect(settings.musicCrossfadeEnabled)
+        #expect(settings.musicCrossfadeSeconds == 3)
+        settings.musicCrossfadeSeconds = 11
+        #expect(settings.musicPlayback.crossfadeSeconds == 11)
+        #expect(settings.musicPlayback.crossfade)
+    }
+
+    @Test("a Crossfade set through the service is written to settings.json")
+    func crossfadePersists() throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var settings = AppSettings()
+        settings.musicPlayback = MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 7)
+        let data = try JSONEncoder().encode(settings)
+        let reread = try JSONDecoder().decode(AppSettings.self, from: data)
+        #expect(reread.musicPlayback == MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 7))
+    }
 }

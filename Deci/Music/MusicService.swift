@@ -103,6 +103,10 @@ final class MusicService {
     private(set) var isAutoplayOn: Bool {
         didSet { reconcilePreload() }
     }
+    /// Fade the next song in over the end of the playing one; off is the gapless switch. Remembered across launches.
+    private(set) var isCrossfadeOn: Bool {
+        didSet { reconcilePreload() }
+    }
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
     /// Told when a tap turns Like or Dislike on for the song playing now, as its state flips and before YouTube Music
@@ -156,6 +160,8 @@ final class MusicService {
     private static let maxFailures = 3
     /// The next track's stream is resolved this long before the current one ends.
     private static let prefetchLead: TimeInterval = 15
+    /// How long the crossfade of a manual skip onto the preloaded track lasts.
+    static let quickFadeSeconds: TimeInterval = 0.3
     /// Radio pages overlap, so a page can add nothing new. This many in a row ends a top-up.
     private static let maxEmptyPages = 3
     /// A queue page that failed for a reason that may pass (network, 5xx) is asked for again this many times, each
@@ -185,6 +191,9 @@ final class MusicService {
     @ObservationIgnored private let listenerLevel: @MainActor () -> (volume: Int, muted: Bool)
     /// Told the three playback options whenever one changes, so the app can keep them in settings.
     @ObservationIgnored private let savePreferences: @MainActor (MusicPlaybackPreferences) -> Void
+    /// The fade length as Settings has it right now, read when a transition is planned. Nil: the length the service started with.
+    @ObservationIgnored private let liveCrossfadeSeconds: (@MainActor () -> Double)?
+    @ObservationIgnored private var startingCrossfadeSeconds: Double
     /// True while a settings reset puts the options back: the file was cleared already, so nothing is written.
     @ObservationIgnored private var holdsPreferences = false
     @ObservationIgnored private var shuffleGenerator: MusicShuffleGenerator
@@ -287,6 +296,7 @@ final class MusicService {
         listenerLevel: @escaping @MainActor () -> (volume: Int, muted: Bool) = { (WatchtimeTracker.fullVolume, false) },
         preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(),
         savePreferences: @escaping @MainActor (MusicPlaybackPreferences) -> Void = { _ in },
+        crossfadeSeconds: (@MainActor () -> Double)? = nil,
         pinnedItems: [MusicPinnedItem] = [],
         savePinnedItems: @escaping @MainActor ([MusicPinnedItem]) -> Void = { _ in },
         // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
@@ -325,6 +335,9 @@ final class MusicService {
         self.isShuffleOn = preferences.shuffle
         self.loopMode = preferences.loop
         self.isAutoplayOn = preferences.autoplay
+        self.isCrossfadeOn = preferences.crossfade
+        self.startingCrossfadeSeconds = preferences.crossfadeSeconds
+        self.liveCrossfadeSeconds = crossfadeSeconds
         self.savePreferences = savePreferences
         self.shuffleGenerator = MusicShuffleGenerator(seed: shuffleSeed ?? UInt64.random(in: .min ... .max))
         self.lastActivity = now()
@@ -1323,9 +1336,43 @@ final class MusicService {
         saveSession()
     }
 
+    /// The Crossfade toggle in Up next. Off is the gapless switch; a fade already running finishes, and the next
+    /// transition follows the new setting.
+    func setCrossfade(_ on: Bool) {
+        guard on != isCrossfadeOn else { return }
+        isCrossfadeOn = on
+        savePlaybackPreferences()
+    }
+
+    /// How long a crossfade lasts, 1 to 12 seconds: Settings' value when the service reads it live.
+    var crossfadeSeconds: Double {
+        MusicPlaybackPreferences.clampedCrossfade(liveCrossfadeSeconds?() ?? startingCrossfadeSeconds)
+    }
+
+    /// An album page played in its own order: it stays gapless, whatever Crossfade says (an album is mixed to run on).
+    private var playsAlbumInOrder: Bool {
+        guard !queue.isShuffled, case .page(let browseId)? = queue.source else { return false }
+        return browseId.hasPrefix("MPRE") || browseId.contains("OLAK")
+    }
+
+    /// The fade the next transition gets: 0 (gapless) with Crossfade off, under Loop song (a track does not fade into
+    /// itself) and on an album in order.
+    var effectiveCrossfadeSeconds: Double {
+        guard isCrossfadeOn, loopMode != .song, !playsAlbumInOrder else { return 0 }
+        return crossfadeSeconds
+    }
+
+    /// Hands the player the fade the next transition gets, so the engine plans it.
+    private func syncCrossfade() {
+        player.crossfadeSeconds = effectiveCrossfadeSeconds
+    }
+
     private func savePlaybackPreferences() {
         guard !holdsPreferences else { return }
-        savePreferences(MusicPlaybackPreferences(shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn))
+        savePreferences(MusicPlaybackPreferences(
+            shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn,
+            crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds
+        ))
     }
 
     /// Everything went back to its default. The settings were cleared already, so nothing is written here: the
@@ -1338,6 +1385,7 @@ final class MusicService {
         setShuffle(defaults.shuffle)
         setLoopMode(defaults.loop)
         setAutoplay(defaults.autoplay)
+        setCrossfade(defaults.crossfade)
         pinnedItems.settingsDidReset()
     }
 
@@ -1368,12 +1416,14 @@ final class MusicService {
         noteActivity()
         direction = .forward
         failureStreak = 0
-        guard let track = advanceQueue() else {
+        guard let track = movingQueue(advanceQueue) else {
             // The radio may still be loading: keep playing and move on when its page lands. Offline there is no radio and
             // the queue ends at its last downloaded song: Next leaves it playing.
             if !awaitRadio(for: .skipped), !wrapAround(), !isOffline { stopPlayback() }
             return
         }
+        if crossfadeSkip(to: track) { return }
+        reconcilePreload()
         begin(track)
     }
 
@@ -1389,7 +1439,9 @@ final class MusicService {
         }
         direction = .backward
         failureStreak = 0
-        guard let track = retreatQueue() else { return }
+        guard let track = movingQueue(retreatQueue) else { return }
+        if crossfadeSkip(to: track) { return }
+        reconcilePreload()
         begin(track)
     }
 
@@ -1619,6 +1671,42 @@ final class MusicService {
                 return false
             }
         }
+        startAdvancedSession(stream: stream, adopting: { self.player.adoptPreloaded() })
+        return true
+    }
+
+    /// The listener skipped onto the preloaded track while Crossfade is on: the engine fades it in over a short crossfade
+    /// (`quickFadeSeconds`) instead of loading it. The queue has already moved to `track`. False when the track is not
+    /// the one held ready, or the engine cannot fade (then the caller starts the track the ordinary way).
+    /// Set while a manual skip moves the queue: the move changes the preload's target, and the preload is exactly what a
+    /// crossfading skip plays, so it must not be withdrawn until the skip has decided.
+    @ObservationIgnored private var holdsPreloadForSkip = false
+
+    /// Runs a queue move for a manual skip. With Crossfade on and a ready preload the preload survives the move (the skip
+    /// takes it or `begin` drops it); in every other case the move is the plain one.
+    private func movingQueue(_ move: () -> MusicTrack?) -> MusicTrack? {
+        holdsPreloadForSkip = isCrossfadeOn && preloadOffered != nil && player.preloadIsReady
+        let track = move()
+        holdsPreloadForSkip = false
+        if track == nil { reconcilePreload() }
+        return track
+    }
+
+    private func crossfadeSkip(to track: MusicTrack) -> Bool {
+        guard isCrossfadeOn, !isOffline, player.isPlaying, !player.hasEnded, pendingAdvance == nil,
+              player.preloadedTrack?.videoId == track.videoId, player.preloadIsReady,
+              let stream = player.preloadedStream, stream.videoId == track.videoId else { return false }
+        // The old track's final ping reads the player's position, so it goes before the engine moves on.
+        sendFinalPing()
+        guard player.crossfadeToPreloaded(seconds: Self.quickFadeSeconds) else { return false }
+        preloadOffered = nil
+        startAdvancedSession(stream: stream, adopting: { self.player.adoptPreloaded() })
+        return true
+    }
+
+    /// The new track's session, once the engine plays it already: what `begin` does minus the teardown and the load.
+    private func startAdvancedSession(stream: ResolvedStream, adopting adopt: () -> Void) {
+        let track = stream.videoId
         touchSession()
         playTask?.cancel()
         playGeneration += 1
@@ -1627,19 +1715,18 @@ final class MusicService {
         prefetchTask?.cancel()
         prefetchTask = nil
         prefetchAttempt = nil
-        if prefetched?.videoId == track.videoId { prefetched = nil }
+        if prefetched?.videoId == track { prefetched = nil }
         trackingTask?.cancel()
         trackingTask = nil
         pendingAdvance = nil
         refreshError = nil
         lastError = nil
         session = makeSession(for: stream)
-        player.adoptPreloaded()
+        adopt()
         fetchTrackingURLs(for: stream, generation: generation)
         scheduleMemoryProbe()
         topUpQueue()
         saveSession()
-        return true
     }
 
     /// Autoplay plays after a page that has run out, unless Loop playlist starts the page over instead.
@@ -2075,7 +2162,8 @@ final class MusicService {
         guard !isOffline else { return }
         let duration = player.duration
         let target = prefetchTarget
-        guard duration > Self.prefetchLead * 2, duration - position <= Self.prefetchLead,
+        let lead = leadTime
+        guard duration > lead * 2, duration - position <= lead,
               let next = target, prefetchAttempt != next.videoId else { return }
         prefetchAttempt = next.videoId
         prefetchTask = Task { [weak self] in
@@ -2120,11 +2208,17 @@ final class MusicService {
 
     private func isInPreloadWindow(position: TimeInterval) -> Bool {
         let duration = player.duration
-        return duration > Self.prefetchLead * 2 && duration - position <= Self.prefetchLead
+        let lead = leadTime
+        return duration > lead * 2 && duration - position <= lead
     }
+
+    /// How long before the end the next track is resolved and preloaded: a crossfade starts that much earlier, so its
+    /// length is added.
+    private var leadTime: TimeInterval { Self.prefetchLead + effectiveCrossfadeSeconds }
 
     /// Hands the player the prefetched stream of the next track when it is certain and the window has opened.
     private func offerPreload(position: TimeInterval) {
+        syncCrossfade()
         guard let stream = prefetched, let target = preloadTarget, stream.videoId == target.videoId,
               preloadOffered != target.videoId, player.isPlaying, !player.hasEnded,
               isInPreloadWindow(position: position) else { return }
@@ -2134,6 +2228,8 @@ final class MusicService {
 
     /// Withdraws a preload the queue or a mode no longer agrees with.
     private func reconcilePreload() {
+        syncCrossfade()
+        guard !holdsPreloadForSkip else { return }
         guard let offered = preloadOffered, preloadTarget?.videoId != offered else { return }
         cancelPreload()
     }

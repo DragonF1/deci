@@ -340,13 +340,15 @@ final class MusicDSPChain: @unchecked Sendable {
         // with frames while paused and they get the EQ like any others. Anything else (released, or superseded by the lease
         // that claimed the chain after it) is stale and renders silence.
         let isOwner = ownerToken.load(ordering: .acquiring) == lease.token
-        guard isOwner || lease.isUnclaimedStandby else {
+        // A draining lease (the outgoing side of a crossfade) keeps rendering after the chain moved on, until its fade
+        // has reached zero.
+        guard isOwner || lease.isUnclaimedStandby || lease.isDraining else {
             Self.silence(list)
             lease.noteSilenced(frames)
             return
         }
         // Only what is heard is metered: the owner, or a standby armed to start. A paused standby priming its buffers is not.
-        let metered = isOwner || lease.isArmed
+        let metered = isOwner || lease.isArmed || lease.isDraining
         let dsp = lease.dsp
 
         // Generation first (acquire), then the target: a snap stores the target before it bumps the generation, so seeing
@@ -359,6 +361,12 @@ final class MusicDSPChain: @unchecked Sendable {
         }
         let startGain = lease.currentGain
         let fade = lease.beginFade()
+        if !isOwner, lease.isDraining, fade.remaining == 0, fade.value <= 0 {
+            // The drain is over: nothing of this lease is heard any more.
+            Self.silence(list)
+            lease.noteSilenced(frames)
+            return
+        }
 
         if list.count == 1 {
             let buffer = list[0]
@@ -431,9 +439,7 @@ final class MusicDSPChain: @unchecked Sendable {
         dsp.processEqualizer(input: input, output: samples, frames: frames)
         dsp.compensator.process(input: input, output: samples, frameCount: frames)
 
-        SoftLimiter.processBuffer(samples, sampleCount: sampleCount)
-        Self.zeroNonFinite(samples, count: sampleCount)
-        fade.apply(to: samples, frames: frames, channels: 2)
+        Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade)
         if metered { dsp.notePeak(samples, count: sampleCount) }
     }
 
@@ -474,9 +480,7 @@ final class MusicDSPChain: @unchecked Sendable {
                 data, frames: count, channels: channels, startGain: startGain, target: target, coefficient: lease.rampCoefficient
             )
             Self.zeroNonFinite(data, count: sampleCount)
-            SoftLimiter.processBuffer(data, sampleCount: sampleCount)
-            Self.zeroNonFinite(data, count: sampleCount)
-            fade.apply(to: data, frames: count, channels: channels)
+            Self.limitAndFade(data, frames: count, channels: channels, fade: fade)
             if metered { dsp.notePeak(data, count: sampleCount) }
         }
         lease.currentGain = endGain
@@ -512,6 +516,21 @@ final class MusicDSPChain: @unchecked Sendable {
         return gain
     }
 
+    /// The limiter, then the fade. During an equal-power ramp the two are done together (see `limitAndApply`).
+    private static func limitAndFade(
+        _ samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int, fade: MusicFade
+    ) {
+        let count = frames * channels
+        if fade.isHeadroomRamp {
+            fade.limitAndApply(to: samples, frames: frames, channels: channels)
+            zeroNonFinite(samples, count: count)
+            return
+        }
+        SoftLimiter.processBuffer(samples, sampleCount: count)
+        zeroNonFinite(samples, count: count)
+        fade.apply(to: samples, frames: frames, channels: channels)
+    }
+
     /// Replaces NaN and infinity with silence, so nothing downstream (the limiter least of all) can turn it into noise.
     private static func zeroNonFinite(_ samples: UnsafeMutablePointer<Float>, count: Int) {
         for index in 0..<count where !samples[index].isFinite {
@@ -534,13 +553,41 @@ final class MusicDSPChain: @unchecked Sendable {
     }
 }
 
-/// A lease's fade gain: a linear ramp from the current value to a target over a number of frames, applied per frame so it
+/// How a lease's fade moves between its two gains.
+enum MusicFadeCurve: UInt32, Sendable {
+    /// A straight ramp.
+    case linear = 0
+    /// An equal-power ramp: a fade out follows cos, a fade in follows sin, so two uncorrelated signals keep a constant
+    /// power through a crossfade. While it runs the limiter ceiling follows 1/(cos + sin), so two correlated signals
+    /// never sum above 1.0.
+    case equalPower = 1
+}
+
+/// A lease's fade gain: a ramp from the current value to a target over a number of frames, applied per frame so it
 /// is exact across buffer boundaries. Idle (1, nothing remaining) until `setFade` is called.
 fileprivate struct MusicFade {
     var value: Float = 1
     var target: Float = 1
     var step: Float = 0
     var remaining = 0
+    var curve = MusicFadeCurve.linear
+    /// Where an equal-power ramp started, and how many frames it spans in all.
+    var from: Float = 1
+    var total = 0
+
+    /// The gain `used` frames into the ramp (`used` is 1 for the first frame): its value as that frame is heard.
+    private func gain(afterFrames used: Int) -> Float {
+        if used >= remaining { return target }
+        switch curve {
+        case .linear:
+            return value + step * Float(used)
+        case .equalPower:
+            let progress = Double(total - remaining + used) / Double(total)
+            let angle = progress * Double.pi / 2
+            let shape = target >= from ? sin(angle) : 1 - cos(angle)
+            return from + (target - from) * Float(shape)
+        }
+    }
 
     /// The fade's average over the next `frames` frames (its start and end values: a linear ramp's mean).
     func meanValue(over frames: Int) -> Float {
@@ -553,10 +600,14 @@ fileprivate struct MusicFade {
         guard remaining > 0, frames > 0 else { return self }
         var next = self
         let used = min(frames, remaining)
+        next.value = gain(afterFrames: used)
         next.remaining = remaining - used
-        next.value = next.remaining == 0 ? target : value + step * Float(used)
+        if next.remaining == 0 { next.value = target }
         return next
     }
+
+    /// Whether the headroom rule is in force: an equal-power ramp that has frames left.
+    var isHeadroomRamp: Bool { curve == .equalPower && remaining > 0 }
 
     /// Multiplies `frames` frames in place by the fade, starting from this state.
     func apply(to samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int) {
@@ -569,13 +620,40 @@ fileprivate struct MusicFade {
         }
         let ramped = min(frames, remaining)
         for frame in 0..<ramped {
-            let gain = frame == remaining - 1 ? target : value + step * Float(frame + 1)
+            let gain = gain(afterFrames: frame + 1)
             let base = frame * channels
             for channel in 0..<channels { samples[base + channel] *= gain }
         }
         if ramped < frames && target != 1 {
             var rest = target
             vDSP_vsmul(samples + ramped * channels, 1, &rest, samples + ramped * channels, 1, vDSP_Length((frames - ramped) * channels))
+        }
+    }
+
+    /// The limiter and the fade together, for an equal-power ramp. Each frame's gain `g` is the lease's side of the
+    /// pair, the other side is `sqrt(1 - g^2)`, so the two gains sum to `k = g + sqrt(1 - g^2)` at most. The signal is
+    /// limited at a ceiling of `1/k` (scaled up by `k` into the limiter and back by `g/k`), so what each side adds to
+    /// the sum is at most `g/k` and the pair never exceeds 1.0. Below the limiter's threshold it is the plain gain.
+    func limitAndApply(to samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int) {
+        let ramped = min(frames, remaining)
+        for frame in 0..<ramped {
+            let g = gain(afterFrames: frame + 1)
+            let k = g + max(0, 1 - g * g).squareRoot()
+            let scale = g / k
+            let base = frame * channels
+            for channel in 0..<channels {
+                let sample = samples[base + channel]
+                samples[base + channel] = sample.isFinite ? SoftLimiter.apply(sample * k) * scale : 0
+            }
+        }
+        if ramped < frames {
+            let rest = samples + ramped * channels
+            let count = (frames - ramped) * channels
+            SoftLimiter.processBuffer(rest, sampleCount: count)
+            if target != 1 {
+                var gain = target
+                vDSP_vsmul(rest, 1, &gain, rest, 1, vDSP_Length(count))
+            }
         }
     }
 }
@@ -594,6 +672,8 @@ final class MusicRenderLease: @unchecked Sendable {
     /// Set once the lease has claimed the chain (at creation, or later by `claim`); never cleared.
     private let claimedFlag: Atomic<Bool>
     private let releasedFlag = Atomic<Bool>(false)
+    /// Set by `drain`: the lease is the outgoing side of a crossfade and renders until its fade reaches zero.
+    private let drainingFlag = Atomic<Bool>(false)
 
     /// Renderer-owned (one render call at a time per lease).
     fileprivate nonisolated(unsafe) var currentGain: Float
@@ -653,6 +733,10 @@ final class MusicRenderLease: @unchecked Sendable {
     /// A standby that has not claimed the chain and has not been released: it renders next to the owner.
     fileprivate var isUnclaimedStandby: Bool {
         !claimedFlag.load(ordering: .acquiring) && !releasedFlag.load(ordering: .acquiring)
+    }
+
+    fileprivate var isDraining: Bool {
+        drainingFlag.load(ordering: .acquiring) && !releasedFlag.load(ordering: .acquiring)
     }
 
     /// Armed: about to be heard, so its output counts in the meters.
@@ -726,17 +810,31 @@ final class MusicRenderLease: @unchecked Sendable {
 
     // MARK: - Fade
 
-    /// Ramps this lease's fade gain (on top of the master gain, default 1) linearly to `gain` over `seconds`, sample
-    /// accurately across buffers, from wherever it is now. `seconds <= 0` jumps at the next render. A later call replaces
-    /// the ramp in progress. Any thread.
-    func setFade(to gain: Float, over seconds: Double = 0) {
+    /// Ramps this lease's fade gain (on top of the master gain, default 1) to `gain` over `seconds`, sample accurately
+    /// across buffers, from wherever it is now. `seconds <= 0` jumps at the next render. A later call replaces the ramp
+    /// in progress. Any thread.
+    ///
+    /// `fromSilence` starts the ramp at 0 whatever the fade was before, for the incoming side of a crossfade whose
+    /// hold at 0 may not have been rendered yet.
+    func setFade(to gain: Float, over seconds: Double = 0, curve: MusicFadeCurve = .linear, fromSilence: Bool = false) {
         guard gain.isFinite else { return }
         let rate = dsp.sampleRate
-        // An hour is far past any real fade and keeps the frame count inside 32 bits at every rate.
+        // An hour is far past any real fade; the frame count is capped at 28 bits, the curve takes two bits above it and "from silence" one more.
         let clamped = seconds.isFinite ? min(max(seconds, 0), 3_600) : 0
-        let frames = UInt32(min((clamped * rate).rounded(), Double(UInt32.max)))
-        fadeRequest.store(UInt64(max(0, gain).bitPattern) << 32 | UInt64(frames), ordering: .relaxed)
+        let frames = UInt32(min((clamped * rate).rounded(), Double(Self.maxFadeFrames)))
+        let flags = curve.rawValue << 28 | (fromSilence ? 1 << 30 : 0)
+        let packed = UInt64(max(0, gain).bitPattern) << 32 | UInt64(flags | frames)
+        fadeRequest.store(packed, ordering: .relaxed)
         fadeGeneration.wrappingAdd(1, ordering: .releasing)
+    }
+
+    private static let maxFadeFrames: UInt32 = (1 << 28) - 1
+
+    /// Makes this lease the outgoing side of a crossfade: it fades to silence over `seconds` and, unlike a lease that was
+    /// superseded, stays audible and metered until it gets there. Call before the incoming lease claims the chain.
+    func drain(over seconds: Double, curve: MusicFadeCurve = .equalPower) {
+        setFade(to: 0, over: seconds, curve: curve)
+        drainingFlag.store(true, ordering: .releasing)
     }
 
     /// The fade the renderer is heading for.
@@ -748,13 +846,19 @@ final class MusicRenderLease: @unchecked Sendable {
             seenFadeGeneration = generation
             let request = fadeRequest.load(ordering: .relaxed)
             let target = Float(bitPattern: UInt32(request >> 32))
-            let frames = Int(request & 0xFFFF_FFFF)
+            let low = UInt32(request & 0xFFFF_FFFF)
+            let frames = Int(low & Self.maxFadeFrames)
+            let curve = MusicFadeCurve(rawValue: (low >> 28) & 3) ?? .linear
+            if low & (1 << 30) != 0 { fade.value = 0 }
             if frames <= 0 {
                 fade = MusicFade(value: target, target: target, step: 0, remaining: 0)
             } else {
                 fade.target = target
                 fade.step = (target - fade.value) / Float(frames)
                 fade.remaining = frames
+                fade.curve = curve
+                fade.from = fade.value
+                fade.total = frames
             }
         }
         return fade

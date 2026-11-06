@@ -17,6 +17,7 @@ struct GeneralTab: View {
                 generalSection
                 menuBarSection
                 chromeSection
+                musicSection
                 downloadsSection
                 dataSection
             }
@@ -177,6 +178,32 @@ struct GeneralTab: View {
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .labelsHidden()
+            }
+        }
+    }
+
+    // MARK: - Music
+
+    private var musicSection: some View {
+        SettingsSection("Music") {
+            SettingsRow(
+                "Crossfade length",
+                description: "How long one song fades into the next when Crossfade is on in Up next. Albums played in order stay gapless."
+            ) {
+                HStack(spacing: 8) {
+                    Text("\(Int(settings.appSettings.musicCrossfadeSeconds.rounded())) s")
+                        .font(.system(size: 13).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 34, alignment: .trailing)
+                    Stepper(
+                        "",
+                        value: $settings.appSettings.musicCrossfadeSeconds,
+                        in: MusicPlaybackPreferences.crossfadeRange,
+                        step: 1
+                    )
+                    .labelsHidden()
+                    .controlSize(.small)
+                }
             }
         }
     }

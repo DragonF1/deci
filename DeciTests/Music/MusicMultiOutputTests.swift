@@ -75,6 +75,9 @@ final class LoggingPlaybackEngine: PlaybackEngine {
     var preloadedVideoId: String? { nil }
     func preload(_ stream: ResolvedStream) {}
     func cancelPreload() {}
+    var crossfadeSeconds: Double = 0
+    var preloadIsReady: Bool { false }
+    func crossfadeToPreloaded(seconds: TimeInterval) -> Bool { false }
 
     func setOutputDevice(uid: String?) {
         outputDevices.append(uid)

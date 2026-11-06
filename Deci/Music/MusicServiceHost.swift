@@ -87,6 +87,7 @@ final class MusicServiceHost {
                 // Shuffle, loop and Autoplay are remembered in settings.json.
                 preferences: settings?.appSettings.musicPlayback ?? MusicPlaybackPreferences(),
                 savePreferences: MusicServiceHost.savePreferences(to: settings),
+                crossfadeSeconds: { settings?.appSettings.musicCrossfadeSeconds ?? MusicPlaybackPreferences.defaultCrossfadeSeconds },
                 // The items pinned to Home are remembered in settings.json too.
                 pinnedItems: settings?.appSettings.musicPinnedItems ?? [],
                 savePinnedItems: MusicServiceHost.savePinnedItems(to: settings),
