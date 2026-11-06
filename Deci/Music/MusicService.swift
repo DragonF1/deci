@@ -1522,7 +1522,7 @@ final class MusicService {
             return local
         }
         // A prefetched file is not used once its download is gone: it would only fail and take the retry.
-        if let ready = prefetched, ready.videoId == track.videoId, !ready.url.isFileURL,
+        if let ready = prefetched, ready.videoId == track.videoId, ready.origin == .network,
            ready.expiresAt > Date().addingTimeInterval(60) {
             prefetched = nil
             return ready
@@ -1613,7 +1613,7 @@ final class MusicService {
         trackingTask?.cancel()
         trackingTask = nil
         // Offline the pings have nowhere to go, and signed out there is no History: a song from its file asks nothing.
-        guard stream.url.isFileURL, !isOffline, authState != .signedOut else { return }
+        guard stream.origin == .download, !isOffline, authState != .signedOut else { return }
         let videoId = stream.videoId
         trackingTask = Task { [weak self, backend] in
             let fresh: ResolvedStream

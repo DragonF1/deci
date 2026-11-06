@@ -94,11 +94,11 @@ final class MusicPlayer {
     /// False when the current track's stream never resolved, so there is nothing to resume.
     var hasStream: Bool { stream != nil }
     /// Whether the stream loaded is a file on disk (a downloaded song) and not an address on the network.
-    var isPlayingLocalFile: Bool { stream?.url.isFileURL == true }
+    var isPlayingLocalFile: Bool { stream?.origin == .download }
 
     /// The video id of `stream` when it is a file on disk, nil for a network stream or none.
     private static func localFileID(of stream: ResolvedStream?) -> String? {
-        guard let stream, stream.url.isFileURL else { return nil }
+        guard let stream, stream.origin == .download else { return nil }
         return stream.videoId
     }
 

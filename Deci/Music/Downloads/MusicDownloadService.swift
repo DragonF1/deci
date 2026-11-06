@@ -412,7 +412,8 @@ final class MusicDownloadService {
             durationSeconds: entry.durationSeconds,
             expiresAt: .distantFuture,
             playbackTrackingURL: nil,
-            httpHeaders: [:]
+            httpHeaders: [:],
+            origin: .download
         )
     }
 
