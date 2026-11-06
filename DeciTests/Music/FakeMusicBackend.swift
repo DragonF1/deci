@@ -814,13 +814,30 @@ final class FakePlaybackEngine: PlaybackEngine {
     /// The video id of the item the engine plays or holds as its current one, nil when it holds none.
     private(set) var currentVideoId: String?
 
-    func preload(_ stream: ResolvedStream) {
+    /// The plan handed with each preload, in order (nil for a preload without one), next to `preloads`.
+    private(set) var plans: [TransitionPlan?] = []
+    /// Every plan the player replaced the current preload's with, in order.
+    private(set) var updatedPlans: [TransitionPlan?] = []
+    /// The plan of the current preload.
+    private(set) var transitionPlan: TransitionPlan?
+
+    func preload(_ stream: ResolvedStream, plan: TransitionPlan?) {
         preloads.append(stream)
+        plans.append(plan)
+        transitionPlan = plan
         preloadedVideoId = stream.videoId
+    }
+
+    /// Like the engine: ignored with nothing preloaded or a different park offset.
+    func updateTransitionPlan(_ plan: TransitionPlan?) {
+        guard preloadedVideoId != nil, (plan?.incomingStartSec ?? 0) == (transitionPlan?.incomingStartSec ?? 0) else { return }
+        updatedPlans.append(plan)
+        transitionPlan = plan
     }
 
     func cancelPreload() {
         cancelPreloadCount += 1
+        transitionPlan = nil
         preloadedVideoId = nil
         preloadReady = true
     }

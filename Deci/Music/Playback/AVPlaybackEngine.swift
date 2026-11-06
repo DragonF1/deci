@@ -38,8 +38,16 @@ protocol PlaybackEngine: AnyObject {
     /// The video id of the item held ready for the active one's end, nil when nothing is preloaded.
     var preloadedVideoId: String? { get }
     /// Prepares `stream` on the standby deck (item, tap, preroll) so it can start the instant the active item ends.
-    /// Replaces an earlier preload. Never disturbs the item that is playing.
-    func preload(_ stream: ResolvedStream)
+    /// Replaces an earlier preload. Never disturbs the item that is playing. With a plan (Tier 2b) the standby is parked
+    /// at `plan.incomingStartSec` before it prerolls, the active item ends at the plan's trimmed end, and the plan drives
+    /// the fade start, its length and the loudness offsets. nil is exactly the Tier 1 behaviour.
+    func preload(_ stream: ResolvedStream, plan: TransitionPlan?)
+    /// Replaces the plan of the current preload. Ignored when nothing is preloaded, when a fade is already running, or
+    /// when `incomingStartSec` differs (the standby is already parked).
+    func updateTransitionPlan(_ plan: TransitionPlan?)
+    /// The plan of the current preload, nil without one. `incomingStartSec` is where the standby really is parked: 0 when
+    /// the seek to the planned offset could not be done.
+    var transitionPlan: TransitionPlan? { get }
     /// Drops the preload, whether it is still loading, ready or already scheduled to start.
     func cancelPreload()
 
@@ -57,6 +65,11 @@ protocol PlaybackEngine: AnyObject {
     var canCrossfadeToPreloaded: Bool { get }
     /// Where the outgoing track really was when the last crossfade started, nil after a gapless hand-over or a load.
     var outgoingPositionAtCrossfade: TimeInterval? { get }
+}
+
+extension PlaybackEngine {
+    /// A preload without a plan: the Tier 1 behaviour.
+    func preload(_ stream: ResolvedStream) { preload(stream, plan: nil) }
 }
 
 /// AVPlayer-backed engine with two decks. Observers exist only while an item is loaded.
@@ -125,6 +138,10 @@ final class AVPlaybackEngine: PlaybackEngine {
         /// Bumped on every load and teardown: an observer or a late task from before it finds a different value and quits.
         var token = 0
         var videoId: String?
+        /// The item time a standby is parked at before it prerolls (0 = untouched).
+        var startOffset: TimeInterval = 0
+        /// The item's end from the stream's own duration (never the item's doubled one), nil when unknown.
+        var naturalEnd: TimeInterval?
         var tap: MusicTapDeck?
         /// Whether the item on the player (or being installed) has a working tap, which applies volume and mute itself.
         var itemIsTapped = false
@@ -171,6 +188,8 @@ final class AVPlaybackEngine: PlaybackEngine {
             player.pause()
             player.replaceCurrentItem(with: nil)
             videoId = nil
+            startOffset = 0
+            naturalEnd = nil
         }
     }
 
@@ -192,6 +211,21 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// The fade length the scheduled start was planned for, 0 when it is a gapless switch. Fixed while scheduled.
     private var plannedFade: TimeInterval = 0
     private var plannedFor: TimeInterval = 0
+    /// How long before the active item's end the scheduled standby starts (the overlap's start). Equal to `plannedFade`
+    /// unless a smart plan starts the fade earlier. Fixed while scheduled.
+    private var plannedLead: TimeInterval = 0
+    /// The plan the scheduled start was planned for.
+    private var plannedPlan: TransitionPlan?
+    /// The plan of the current preload.
+    private(set) var transitionPlan: TransitionPlan?
+    /// The offset the plan asked the standby to be parked at, as asked (the deck's own may fall back to 0).
+    private var requestedStartOffset: TimeInterval = 0
+    /// The active item's forwardPlaybackEndTime was moved to the plan's trimmed end.
+    private var endTrimmed = false
+    /// Seconds of the incoming glide back to 0 dB, started when the outgoing deck has drained. 0 = none pending.
+    private var pendingGlide: TimeInterval = 0
+    /// The fall-back reason of this preload was logged already.
+    private var loggedFallback = false
     /// How many crossfades started (a scheduled one or a manual one). A test seam.
     private(set) var crossfadeCount = 0
     private(set) var outgoingPositionAtCrossfade: TimeInterval?
@@ -227,6 +261,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// The standby's start host time, for tests.
     var scheduledStartHost: CMTime? { scheduledHost }
     #if DEBUG
+    /// Makes the next seek to a planned incoming offset count as failed. A test seam.
+    var debugFailNextParkSeek = false
     var debugActiveTap: MusicTapDeck? { active.tap }
     var debugStandbyTap: MusicTapDeck? { standby.tap }
     /// Called when a preroll of the standby has completed, with its `finished` flag. A test seam.
@@ -273,6 +309,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         // Whatever was preloaded was for the track after the one that is being replaced.
         cancelPreload()
         endDrain(fast: true)
+        pendingGlide = 0
         outgoingPositionAtCrossfade = nil
         active.tearDown()
         wantsPlay = autoplay
@@ -296,6 +333,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         let asset = AVURLAsset(url: stream.url, options: options)
         let item = AVPlayerItem(asset: asset)
         let knownDuration = Self.knownDuration(of: stream)
+        deck.naturalEnd = knownDuration
         if let knownDuration {
             // Without this the item runs on through the bogus silent half (see `knownDuration(of:)`).
             item.forwardPlaybackEndTime = CMTime(seconds: knownDuration, preferredTimescale: 1000)
@@ -413,6 +451,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         applyLevel(to: deck)
         willInstall?(item)
         deck.player.replaceCurrentItem(with: item)
+        // A preload made while this item was still being built could not move its end yet.
+        if deck === active, preloadStream != nil { applyOutgoingEnd() }
     }
 
     /// The tap met a format it cannot process and lets the audio through untouched. Only the item the report came from
@@ -526,6 +566,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     func unload() {
         cancelPreload()
         endDrain(fast: true)
+        pendingGlide = 0
         active.tearDown()
         wantsPlay = false
     }
@@ -563,14 +604,69 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     // MARK: - Preload
 
-    func preload(_ stream: ResolvedStream) {
+    func preload(_ stream: ResolvedStream, plan: TransitionPlan?) {
         cancelPreload()
         preloadStream = stream
         preloadReady = false
         prerollRetried = false
+        loggedFallback = false
+        transitionPlan = plan
         standby.player.audioOutputDeviceUniqueID = outputDeviceUID
         standby.player.automaticallyWaitsToMinimizeStalling = false
         startItem(on: standby, stream: stream, role: .standby)
+        // The park offset must lie inside the stream (its exact duration, never the item's doubled one).
+        let wanted = plan?.incomingStartSec ?? 0
+        requestedStartOffset = wanted.isFinite ? max(0, wanted) : 0
+        var offset = requestedStartOffset
+        if let end = standby.naturalEnd, offset >= end - 1 { offset = 0 }
+        standby.startOffset = offset
+        if offset != requestedStartOffset { transitionPlan?.incomingStartSec = 0 }
+        applyOutgoingEnd()
+    }
+
+    func updateTransitionPlan(_ plan: TransitionPlan?) {
+        guard preloadStream != nil, draining == nil else { return }
+        let wanted = plan?.incomingStartSec ?? 0
+        guard wanted == requestedStartOffset else { return }
+        let old = transitionPlan
+        var adopted = plan
+        // The standby is parked where it really is, which may differ from what was asked.
+        adopted?.incomingStartSec = standby.startOffset
+        guard adopted != old else { return }
+        transitionPlan = adopted
+        applyOutgoingEnd()
+        let from = active.videoId ?? "-"
+        let to = preloadStream?.videoId ?? "-"
+        let line = MusicTransitionLog.replanLine(
+            from: from, to: to, old: old?.mode, new: adopted?.mode, reason: "crossfadeToggled"
+        )
+        Self.logger.notice("\(line, privacy: .public)")
+        // A scheduled start sees the changed plan on its next evaluation and is planned again.
+        evaluateSchedule()
+    }
+
+    /// Moves the active item's end to the plan's trimmed end (from the stream's own duration, so never past its natural
+    /// end), or back to the natural end when the plan has none. Not when the new end is within a second of now.
+    private func applyOutgoingEnd() {
+        guard let item = active.player.currentItem, let natural = active.naturalEnd else { return }
+        if let end = transitionPlan?.outgoingEndSec, end.isFinite {
+            let trimmed = min(end, natural)
+            let now = active.player.currentTime().seconds
+            let floor = (now.isFinite ? now : 0) + 1
+            if natural > trimmed && trimmed > floor {
+                item.forwardPlaybackEndTime = CMTime(seconds: trimmed, preferredTimescale: 1000)
+                endTrimmed = true
+                return
+            }
+        }
+        restoreOutgoingEnd()
+    }
+
+    private func restoreOutgoingEnd() {
+        guard endTrimmed else { return }
+        endTrimmed = false
+        guard let item = active.player.currentItem, let natural = active.naturalEnd else { return }
+        item.forwardPlaybackEndTime = CMTime(seconds: natural, preferredTimescale: 1000)
     }
 
     func cancelPreload() {
@@ -581,6 +677,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         fadeStartTask?.cancel()
         fadeStartTask = nil
         plannedFade = 0
+        plannedLead = 0
+        plannedPlan = nil
+        restoreOutgoingEnd()
+        transitionPlan = nil
+        requestedStartOffset = 0
         preloadStream = nil
         preloadReady = false
         standby.tearDown()
@@ -591,7 +692,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard deck === standby, preloadStream != nil else { return }
         switch status {
         case .readyToPlay:
-            prerollStandby(deck, token: token)
+            parkThenPreroll(deck, token: token)
         case .failed:
             // The next track cannot be prepared: the ordinary track change (resolve, load) will have to do.
             cancelPreload()
@@ -599,6 +700,51 @@ final class AVPlaybackEngine: PlaybackEngine {
             break
         @unknown default:
             break
+        }
+    }
+
+    /// A planned incoming offset is seeked to now, with zero tolerance, and only now: the item is ready, so the seek lands
+    /// on a buffer that can be read (a remote item that is not cached yet could lose the preload to an earlier seek).
+    /// The preroll follows the seek, so the buffers are warm at the offset and the start stays gapless. A seek that does
+    /// not land puts the standby back at 0 (the plan's offset is dropped, the reason logged) instead of losing the preload.
+    private func parkThenPreroll(_ deck: Deck, token: Int) {
+        guard deck.startOffset > 0 else {
+            prerollStandby(deck, token: token)
+            return
+        }
+        let target = CMTime(seconds: deck.startOffset, preferredTimescale: 600)
+        deck.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] finished in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
+                var landed = finished
+                #if DEBUG
+                if self.debugFailNextParkSeek {
+                    self.debugFailNextParkSeek = false
+                    landed = false
+                }
+                #endif
+                if landed {
+                    self.prerollStandby(deck, token: token)
+                } else {
+                    self.dropParkOffset(on: deck, token: token, reason: "seekFailed")
+                }
+            }
+        }
+    }
+
+    /// The standby could not be parked at its offset: it starts at 0 and the plan says so.
+    private func dropParkOffset(on deck: Deck, token: Int, reason: String) {
+        deck.startOffset = 0
+        transitionPlan?.incomingStartSec = 0
+        let line = MusicTransitionLog.fallbackLine(
+            from: active.videoId ?? "-", to: preloadStream?.videoId ?? "-", mode: transitionPlan?.mode, reason: reason
+        )
+        Self.logger.notice("\(line, privacy: .public)")
+        deck.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] _ in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
+                self.prerollStandby(deck, token: token)
+            }
         }
     }
 
@@ -619,10 +765,21 @@ final class AVPlaybackEngine: PlaybackEngine {
                     self.prerollRetried = true
                     self.prerollStandby(deck, token: token)
                 } else {
+                    self.logFallback(reason: "prerollFailed")
                     self.cancelPreload()
                 }
             }
         }
+    }
+
+    /// One `transition_fallback` line per preload for a plan that could not run as planned.
+    private func logFallback(reason: String) {
+        guard let plan = transitionPlan, !loggedFallback else { return }
+        loggedFallback = true
+        let line = MusicTransitionLog.fallbackLine(
+            from: active.videoId ?? "-", to: preloadStream?.videoId ?? "-", mode: plan.mode, reason: reason
+        )
+        Self.logger.notice("\(line, privacy: .public)")
     }
 
     // MARK: - Hand-over
@@ -655,8 +812,33 @@ final class AVPlaybackEngine: PlaybackEngine {
         return length >= Self.minimumFade ? length : 0
     }
 
+    /// The overlap length and its lead (how long before the active item's end the standby starts) for a transition
+    /// planned now. Without a plan this is Tier 1: the fade and the lead are the same. A smart plan starts the fade at its
+    /// own `fadeStartSec` (the lead is then longer than the fade); a fixed plan anchors it at the end. Gapless and clean
+    /// plans have neither. A plan that cannot fade (no tap or lease on a deck) degrades to the gapless switch.
+    private func transitionNumbers(remaining: TimeInterval, end: CMTime) -> (fade: TimeInterval, lead: TimeInterval) {
+        guard let plan = transitionPlan else {
+            let fade = fadeLength(remaining: remaining, end: end)
+            return (fade, fade)
+        }
+        guard plan.mode == .smart || plan.mode == .fixed, plan.fadeSeconds >= Self.minimumFade else { return (0, 0) }
+        guard chain != nil, active.itemIsTapped, standby.itemIsTapped,
+              active.tap?.hasLease == true, standby.tap?.hasLease == true else {
+            logFallback(reason: "noLease")
+            return (0, 0)
+        }
+        let fade = min(plan.fadeSeconds, remaining - Self.fadeGuard)
+        guard fade >= Self.minimumFade else { return (0, 0) }
+        var lead = fade
+        if plan.mode == .smart, let start = plan.fadeStartSec, start.isFinite {
+            lead = max(fade, end.seconds - start)
+        }
+        return (fade, lead)
+    }
+
     /// Starts the standby on the host time of the active item's end, once that is near, and keeps it there. With a
-    /// crossfade the start is `fade` seconds earlier and the fade is started with it.
+    /// crossfade the start is `lead` seconds earlier (the fade's length, or longer when a smart plan starts it earlier)
+    /// and the fade is started with it.
     private func evaluateSchedule() {
         guard preloadStream != nil, preloadReady, draining == nil, let item = active.player.currentItem,
               active.player.timeControlStatus == .playing, active.player.rate == 1,
@@ -664,22 +846,34 @@ final class AVPlaybackEngine: PlaybackEngine {
         let remaining = end.seconds - active.player.currentTime().seconds
         guard remaining.isFinite else { return }
         // A fade is planned when the standby is first scheduled and kept; a changed setting plans it again.
-        if scheduledHost != nil, plannedFor != crossfadeSeconds {
+        if scheduledHost != nil, plannedFor != crossfadeSeconds || plannedPlan != transitionPlan {
             cancelSchedule()
             return
         }
-        let fade = scheduledHost != nil ? plannedFade : fadeLength(remaining: remaining, end: end)
-        if remaining > Self.scheduleWindow + fade {
+        let numbers = scheduledHost != nil
+            ? (fade: plannedFade, lead: plannedLead)
+            : transitionNumbers(remaining: remaining, end: end)
+        let fade = numbers.fade
+        let lead = numbers.lead
+        // The window is counted from the start of the overlap, not from the end.
+        if remaining > Self.scheduleWindow + lead {
             cancelSchedule()
             return
         }
         // Too close to move it again: the end notification starts the standby if it has not started yet.
-        guard remaining - fade > 0.05 else { return }
+        guard remaining - lead > 0.05 else {
+            if scheduledHost == nil, let plan = transitionPlan, plan.mode == .smart || plan.mode == .fixed, lead > 0 || plan.fadeSeconds > 0 {
+                logFallback(reason: "late")
+            }
+            return
+        }
         let endHost = hostTime(ofItemTime: end, in: item, remaining: remaining)
-        let host = CMTimeSubtract(endHost, CMTime(seconds: fade, preferredTimescale: 1_000_000_000))
+        let host = CMTimeSubtract(endHost, CMTime(seconds: lead, preferredTimescale: 1_000_000_000))
         if let scheduled = scheduledHost, abs(CMTimeSubtract(scheduled, host).seconds) < Self.scheduleTolerance { return }
         plannedFade = fade
+        plannedLead = lead
         plannedFor = crossfadeSeconds
+        plannedPlan = transitionPlan
         schedule(at: host)
     }
 
@@ -752,12 +946,15 @@ final class AVPlaybackEngine: PlaybackEngine {
         fadeStartTask = nil
         if plannedFade > 0 { standby.tap?.fade(to: 1) }
         plannedFade = 0
+        plannedLead = 0
         standby.tap?.disarm()
         let deck = standby
         let token = deck.token
         deck.player.pause()
         guard preloadReady else { return }
-        deck.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] finished in
+        // Back to where the plan parked it (the first frame the listener should hear), not to the item's start.
+        let parked = CMTime(seconds: deck.startOffset, preferredTimescale: 600)
+        deck.player.seek(to: parked, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] finished in
             Task { @MainActor [weak self, weak deck] in
                 guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil, finished else { return }
                 deck.player.preroll(atRate: 1) { [weak self, weak deck] _ in
@@ -789,8 +986,20 @@ final class AVPlaybackEngine: PlaybackEngine {
         // so it is a gapless switch. The incoming deck was held silent for the fade.
         if plannedFade > 0 { incoming.tap?.fade(to: 1) }
         plannedFade = 0
+        plannedLead = 0
+        plannedPlan = nil
         fadeStartTask?.cancel()
         fadeStartTask = nil
+        if let plan = transitionPlan {
+            let line = MusicTransitionLog.appliedLine(
+                from: outgoing.videoId ?? "-", to: stream.videoId, mode: plan.mode == .smart || plan.mode == .fixed ? .gapless : plan.mode,
+                fade: 0, lead: 0, skipped: 0
+            )
+            Self.logger.notice("\(line, privacy: .public)")
+        }
+        transitionPlan = nil
+        requestedStartOffset = 0
+        endTrimmed = false
 
         // The chain changes hands: the new deck's tap owns it, the old one renders nothing more.
         incoming.tap?.activate()
@@ -842,7 +1051,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             return
         }
         let started = standby.player.rate != 0
-        flip(to: stream, fade: fade, startStandby: !started)
+        flip(to: stream, fade: fade, startStandby: !started, scheduled: true)
         onEvent?(.advanced(videoId: stream.videoId))
         onTick?(position, active.player.timeControlStatus == .playing)
     }
@@ -859,13 +1068,17 @@ final class AVPlaybackEngine: PlaybackEngine {
         // A scheduled host-time start must not fire again once the standby is started by hand.
         if scheduledHost != nil { standby.player.pause() }
         standby.tap?.fade(to: 0)
-        flip(to: stream, fade: seconds, startStandby: true)
+        flip(to: stream, fade: seconds, startStandby: true, scheduled: false)
         return true
     }
 
     /// The decks change roles for a crossfade: the standby is the active deck now and fades in, the old active deck keeps
     /// playing and fades out, and a new empty standby is ready for the next preload.
-    private func flip(to stream: ResolvedStream, fade: TimeInterval, startStandby: Bool) {
+    ///
+    /// With a plan (Tier 2b) the loudness offsets go on here: the incoming deck's attenuation is set before its fade so the
+    /// first audible frame is already lowered, and a glide back to 0 dB is left pending for when the outgoing deck has
+    /// drained. The outgoing attenuation only applies to a scheduled fade (a manual skip's 0.3 s needs none).
+    private func flip(to stream: ResolvedStream, fade: TimeInterval, startStandby: Bool, scheduled: Bool) {
         crossfadeCount += 1
         outgoingPositionAtCrossfade = active.player.currentTime().seconds
         let incoming = standby
@@ -874,8 +1087,27 @@ final class AVPlaybackEngine: PlaybackEngine {
         fadeStartTask = nil
         armTask?.cancel()
         armTask = nil
+        let plan = transitionPlan
+        let outgoingEnd = active.player.currentItem.flatMap { endTime(of: $0) }?.seconds
         // The outgoing lease drains before the incoming one claims the chain, so it is never silenced in between.
         outgoing.tap?.drain(over: fade)
+        pendingGlide = 0
+        if let plan {
+            if scheduled, plan.outgoingGainDb < 0 {
+                outgoing.tap?.setOffset(to: Self.linearGain(db: plan.outgoingGainDb), over: plan.outgoingRampSeconds)
+            }
+            if plan.incomingGainDb < 0 {
+                incoming.tap?.setOffset(to: Self.linearGain(db: plan.incomingGainDb), over: 0)
+                pendingGlide = max(0, plan.incomingGlideSeconds)
+            }
+            let position = outgoingPositionAtCrossfade ?? 0
+            let lead = outgoingEnd.map { max(0, $0 - position) } ?? fade
+            let line = MusicTransitionLog.appliedLine(
+                from: outgoing.videoId ?? "-", to: stream.videoId, mode: plan.mode, fade: fade, lead: lead,
+                skipped: max(0, lead - fade)
+            )
+            Self.logger.notice("\(line, privacy: .public)")
+        }
         incoming.tap?.beginFadeIn()
         incoming.tap?.activate()
         incoming.tap?.fade(to: 1, over: fade, curve: .equalPower, fromSilence: true)
@@ -887,6 +1119,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         standby = fresh
         scheduledHost = nil
         plannedFade = 0
+        plannedLead = 0
+        plannedPlan = nil
+        transitionPlan = nil
+        requestedStartOffset = 0
+        endTrimmed = false
         preloadStream = nil
         preloadReady = false
         if startStandby { incoming.player.play() }
@@ -945,6 +1182,18 @@ final class AVPlaybackEngine: PlaybackEngine {
         old.tearDown()
         old.player.automaticallyWaitsToMinimizeStalling = false
         active.tap?.endOverlap()
+        // The incoming deck was held down for a louder song: it glides back to its own level now, in frames, so a pause
+        // holds it.
+        if pendingGlide > 0 {
+            active.tap?.setOffset(to: 1, over: pendingGlide)
+            pendingGlide = 0
+        }
+    }
+
+    /// dB to a linear gain (attenuation only: never above 1).
+    nonisolated static func linearGain(db: Double) -> Float {
+        guard db.isFinite else { return 1 }
+        return Float(min(1, max(0, pow(10, min(0, db) / 20))))
     }
 
     /// Ends a crossfade early (a seek, a skip, a new load): with `fast`, the old deck fades out in about 30 ms first.

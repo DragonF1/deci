@@ -21,6 +21,27 @@ enum MusicTransitionLog {
             + " gain=\(gain) reason=\(plan.reason.rawValue)"
     }
 
+    /// transition_applied from=<id> to=<id> mode=smart fade=6.40 lead=13.30 skipped=4.00
+    /// Engine side, at the hand-over. `lead` is how long before the outgoing item's end the overlap started, `skipped` the
+    /// audible tail of the outgoing item that was never played (lead - fade).
+    static func appliedLine(
+        from: String, to: String, mode: TransitionPlan.Mode, fade: Double, lead: Double, skipped: Double
+    ) -> String {
+        "transition_applied from=\(from) to=\(to) mode=\(mode.rawValue) fade=\(fixed(fade, 2))"
+            + " lead=\(fixed(lead, 2)) skipped=\(fixed(skipped, 2))"
+    }
+
+    /// transition_fallback from=<id> to=<id> mode=smart reason=late|noLease|prerollFailed|seekFailed
+    /// A plan (or part of it) that could not run as planned. `mode` nil (no plan) prints "none".
+    static func fallbackLine(from: String, to: String, mode: TransitionPlan.Mode?, reason: String) -> String {
+        "transition_fallback from=\(from) to=\(to) mode=\(mode?.rawValue ?? "none") reason=\(reason)"
+    }
+
+    /// transition_replan mode=smart->fixed reason=crossfadeToggled
+    static func replanLine(from: String, to: String, old: TransitionPlan.Mode?, new: TransitionPlan.Mode?, reason: String) -> String {
+        "transition_replan from=\(from) to=\(to) mode=\(old?.rawValue ?? "none")->\(new?.rawValue ?? "none") reason=\(reason)"
+    }
+
     private static func fixed(_ value: Double, _ digits: Int) -> String {
         guard value.isFinite else { return "0" }
         let text = String(format: "%.\(digits)f", value)

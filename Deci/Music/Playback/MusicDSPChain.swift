@@ -361,6 +361,7 @@ final class MusicDSPChain: @unchecked Sendable {
         }
         let startGain = lease.currentGain
         let fade = lease.beginFade()
+        let offset = lease.beginOffset()
         if !isOwner, lease.isDraining, fade.remaining == 0, fade.value <= 0 {
             // The drain is over: nothing of this lease is heard any more.
             Self.silence(list)
@@ -378,10 +379,10 @@ final class MusicDSPChain: @unchecked Sendable {
 
             if channels == 2 {
                 lease.noteFull(count)
-                renderStereo(data, frames: count, startGain: startGain, target: target, fade: fade, metered: metered, lease: lease, dsp: dsp)
+                renderStereo(data, frames: count, startGain: startGain, target: target, fade: fade, offset: offset, metered: metered, lease: lease, dsp: dsp)
             } else {
                 lease.noteGainOnly(count)
-                renderGainOnly(list, interleavedChannels: channels, frames: count, startGain: startGain, target: target, fade: fade, metered: metered, lease: lease, dsp: dsp)
+                renderGainOnly(list, interleavedChannels: channels, frames: count, startGain: startGain, target: target, fade: fade, offset: offset, metered: metered, lease: lease, dsp: dsp)
             }
         } else if list.count == 2, let left = Self.planarChannel(list[0]), let right = Self.planarChannel(list[1]) {
             let count = min(frames, left.frames, right.frames)
@@ -393,18 +394,18 @@ final class MusicDSPChain: @unchecked Sendable {
                     scratch[frame * 2] = left.data[frame]
                     scratch[frame * 2 + 1] = right.data[frame]
                 }
-                renderStereo(scratch, frames: count, startGain: startGain, target: target, fade: fade, metered: metered, lease: lease, dsp: dsp)
+                renderStereo(scratch, frames: count, startGain: startGain, target: target, fade: fade, offset: offset, metered: metered, lease: lease, dsp: dsp)
                 for frame in 0..<count {
                     left.data[frame] = scratch[frame * 2]
                     right.data[frame] = scratch[frame * 2 + 1]
                 }
             } else {
                 lease.noteGainOnly(count)
-                renderGainOnly(list, interleavedChannels: 1, frames: count, startGain: startGain, target: target, fade: fade, metered: metered, lease: lease, dsp: dsp)
+                renderGainOnly(list, interleavedChannels: 1, frames: count, startGain: startGain, target: target, fade: fade, offset: offset, metered: metered, lease: lease, dsp: dsp)
             }
         } else {
             lease.noteGainOnly(frames)
-            renderGainOnly(list, interleavedChannels: 1, frames: frames, startGain: startGain, target: target, fade: fade, metered: metered, lease: lease, dsp: dsp)
+            renderGainOnly(list, interleavedChannels: 1, frames: frames, startGain: startGain, target: target, fade: fade, offset: offset, metered: metered, lease: lease, dsp: dsp)
         }
     }
 
@@ -415,19 +416,23 @@ final class MusicDSPChain: @unchecked Sendable {
         startGain: Float,
         target: Float,
         fade: MusicFade,
+        offset: MusicFade,
         metered: Bool,
         lease: MusicRenderLease,
         dsp: MusicLeaseDSP
     ) {
         let sampleCount = frames * 2
         frameCount.wrappingAdd(frames, ordering: .relaxed)
-        defer { lease.endFade(fade.advanced(by: frames)) }
+        defer {
+            lease.endFade(fade.advanced(by: frames))
+            lease.endOffset(offset.advanced(by: frames))
+        }
 
         if startGain == 0 && target == 0 {
             memset(samples, 0, sampleCount * MemoryLayout<Float>.size)
             return
         }
-        if metered { dsp.noteLevel(samples, count: sampleCount, scale: fade.meanValue(over: frames)) }
+        if metered { dsp.noteLevel(samples, count: sampleCount, scale: fade.meanValue(over: frames) * offset.meanValue(over: frames)) }
         lease.currentGain = Self.applyGain(
             samples, frames: frames, channels: 2, startGain: startGain, target: target, coefficient: lease.rampCoefficient
         )
@@ -439,7 +444,7 @@ final class MusicDSPChain: @unchecked Sendable {
         dsp.processEqualizer(input: input, output: samples, frames: frames)
         dsp.compensator.process(input: input, output: samples, frameCount: frames)
 
-        Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade, lease: lease)
+        Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade, offset: offset, lease: lease)
         if metered { dsp.notePeak(samples, count: sampleCount) }
     }
 
@@ -451,6 +456,7 @@ final class MusicDSPChain: @unchecked Sendable {
         startGain: Float,
         target: Float,
         fade: MusicFade,
+        offset: MusicFade,
         metered: Bool,
         lease: MusicRenderLease,
         dsp: MusicLeaseDSP
@@ -476,17 +482,18 @@ final class MusicDSPChain: @unchecked Sendable {
                 memset(data, 0, sampleCount * MemoryLayout<Float>.size)
                 continue
             }
-            if metered { dsp.noteLevel(data, count: sampleCount, scale: fade.meanValue(over: count)) }
+            if metered { dsp.noteLevel(data, count: sampleCount, scale: fade.meanValue(over: count) * offset.meanValue(over: count)) }
             endGain = Self.applyGain(
                 data, frames: count, channels: channels, startGain: startGain, target: target, coefficient: lease.rampCoefficient
             )
             Self.zeroNonFinite(data, count: sampleCount)
             lease.headroomEnv = envAtStart
-            Self.limitAndFade(data, frames: count, channels: channels, fade: fade, lease: lease)
+            Self.limitAndFade(data, frames: count, channels: channels, fade: fade, offset: offset, lease: lease)
             if metered { dsp.notePeak(data, count: sampleCount) }
         }
         lease.currentGain = endGain
         lease.endFade(fade.advanced(by: processedFrames))
+        lease.endOffset(offset.advanced(by: processedFrames))
     }
 
     // MARK: - Render helpers
@@ -520,6 +527,16 @@ final class MusicDSPChain: @unchecked Sendable {
 
     /// The limiter, then the fade. During an equal-power ramp the two are done together (see `rideAndApply`).
     private static func limitAndFade(
+        _ samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int, fade: MusicFade, offset: MusicFade,
+        lease: MusicRenderLease
+    ) {
+        limitAndFadeOnly(samples, frames: frames, channels: channels, fade: fade, lease: lease)
+        // Tier 2b: the loudness offset comes last, after the limiter, the rider and the fade. It is attenuation only (the
+        // lease clamps it to [0, 1]), so it can only lower a level the rider already holds under 1.0. Idle is free.
+        offset.apply(to: samples, frames: frames, channels: channels)
+    }
+
+    private static func limitAndFadeOnly(
         _ samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int, fade: MusicFade, lease: MusicRenderLease
     ) {
         let count = frames * channels
@@ -725,6 +742,11 @@ final class MusicRenderLease: @unchecked Sendable {
     fileprivate nonisolated(unsafe) var seenSnapGeneration: Int
     private nonisolated(unsafe) var fade = MusicFade()
     private nonisolated(unsafe) var seenFadeGeneration = 0
+    /// Tier 2b loudness offset: a second, always linear gain after the fade (attenuation only, 1 when idle).
+    private nonisolated(unsafe) var offset = MusicFade()
+    private nonisolated(unsafe) var seenOffsetGeneration = 0
+    private let offsetRequest = Atomic<UInt64>(UInt64(Float(1).bitPattern) << 32)
+    private let offsetGeneration = Atomic<Int>(0)
 
     /// The target (high 32 bits) and the frame count (low 32 bits) of the newest fade in one word, so a reader never
     /// pairs one caller's target with another's length.
@@ -912,5 +934,46 @@ final class MusicRenderLease: @unchecked Sendable {
 
     fileprivate func endFade(_ state: MusicFade) {
         fade = state
+    }
+
+    // MARK: - Offset
+
+    /// Ramps the loudness offset (a gain applied after the limiter, rider and fade) to `gain` over `seconds`, linearly
+    /// and sample accurately. Attenuation only: the gain is clamped to [0, 1]. `seconds <= 0` jumps at the next render.
+    /// A later call replaces the ramp in progress, from wherever it is. Any thread.
+    func setOffset(to gain: Float, over seconds: Double = 0) {
+        guard gain.isFinite else { return }
+        let rate = dsp.sampleRate
+        let clamped = seconds.isFinite ? min(max(seconds, 0), 3_600) : 0
+        let frames = UInt32(min((clamped * rate).rounded(), Double(Self.maxFadeFrames)))
+        let packed = UInt64(min(1, max(0, gain)).bitPattern) << 32 | UInt64(frames)
+        offsetRequest.store(packed, ordering: .relaxed)
+        offsetGeneration.wrappingAdd(1, ordering: .releasing)
+    }
+
+    /// The offset the renderer is heading for.
+    var offsetTarget: Float { Float(bitPattern: UInt32(offsetRequest.load(ordering: .relaxed) >> 32)) }
+
+    fileprivate func beginOffset() -> MusicFade {
+        let generation = offsetGeneration.load(ordering: .acquiring)
+        if generation != seenOffsetGeneration {
+            seenOffsetGeneration = generation
+            let request = offsetRequest.load(ordering: .relaxed)
+            let target = Float(bitPattern: UInt32(request >> 32))
+            let frames = Int(UInt32(request & 0xFFFF_FFFF) & Self.maxFadeFrames)
+            if frames <= 0 {
+                offset = MusicFade(value: target, target: target, step: 0, remaining: 0)
+            } else {
+                offset.target = target
+                offset.step = (target - offset.value) / Float(frames)
+                offset.remaining = frames
+                offset.curve = .linear
+            }
+        }
+        return offset
+    }
+
+    fileprivate func endOffset(_ state: MusicFade) {
+        offset = state
     }
 }

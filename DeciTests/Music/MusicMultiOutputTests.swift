@@ -73,7 +73,9 @@ final class LoggingPlaybackEngine: PlaybackEngine {
     func unload() {}
     func setFallbackLevel(volume: Float, muted: Bool) {}
     var preloadedVideoId: String? { nil }
-    func preload(_ stream: ResolvedStream) {}
+    func preload(_ stream: ResolvedStream, plan: TransitionPlan?) {}
+    func updateTransitionPlan(_ plan: TransitionPlan?) {}
+    var transitionPlan: TransitionPlan? { nil }
     func cancelPreload() {}
     var crossfadeSeconds: Double = 0
     var preloadIsReady: Bool { false }

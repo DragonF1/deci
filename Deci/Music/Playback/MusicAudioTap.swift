@@ -102,6 +102,8 @@ final class MusicTapDeck: @unchecked Sendable {
         var draining = false
         /// The incoming side of a crossfade: a tap that prepares again mid-fade comes back ramping up.
         var fadingIn = false
+        /// The loudness offset the deck is heading for (1 = none), so a re-prepared tap comes back with it.
+        var offsetGain: Float = 1
     }
     /// Every decision about the lease and the call that carries it out happen under this one lock, so a late arm can
     /// never outlive a disarm. The lease calls are atomic operations and a non-blocking main-queue post: safe to make here.
@@ -120,6 +122,8 @@ final class MusicTapDeck: @unchecked Sendable {
     func attach(_ lease: MusicRenderLease) {
         state.withLock { state in
             state.lease = lease
+            // A re-prepared tap gets a fresh lease at offset 1: bring the deck's offset back with a short ramp.
+            if state.offsetGain != 1 { lease.setOffset(to: state.offsetGain, over: MusicTapDeck.reattachRamp) }
             if state.retired {
                 lease.release()
             } else if state.draining {
@@ -182,6 +186,17 @@ final class MusicTapDeck: @unchecked Sendable {
     /// Ramps this deck's fade gain (see `MusicRenderLease.setFade`). Nothing when the tap has no lease yet.
     func fade(to gain: Float, over seconds: Double = 0, curve: MusicFadeCurve = .linear, fromSilence: Bool = false) {
         state.withLock { $0.lease?.setFade(to: gain, over: seconds, curve: curve, fromSilence: fromSilence) }
+    }
+
+    /// Ramps this deck's loudness offset (see `MusicRenderLease.setOffset`): attenuation only, clamped to [0, 1]. The
+    /// target is kept so a re-prepared tap picks it up again.
+    func setOffset(to gain: Float, over seconds: Double = 0) {
+        guard gain.isFinite else { return }
+        let clamped = min(1, max(0, gain))
+        state.withLock { state in
+            state.offsetGain = clamped
+            state.lease?.setOffset(to: clamped, over: seconds)
+        }
     }
 
     /// Makes this deck the outgoing side of a crossfade: it fades to silence and stays audible until it has (see
