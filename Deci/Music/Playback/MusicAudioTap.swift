@@ -142,7 +142,7 @@ final class MusicTapDeck: @unchecked Sendable {
         }
     }
 
-    /// Puts the deck back to gain-only (its start was cancelled).
+    /// Puts the deck back to unarmed, so it is no longer metered (its start was cancelled).
     func disarm() {
         state.withLock { state in
             state.armed = false
@@ -190,7 +190,21 @@ final class MusicTapContext: @unchecked Sendable {
         self.onPassThrough = onPassThrough
     }
 
+    #if DEBUG
+    /// Which threads the tap's prepare callback ran on, for the tests: the lease (and its filters) is built there.
+    struct PrepareThread: Sendable, Equatable {
+        let isMain: Bool
+        let qos: Int
+        let name: String
+    }
+    static let debugPrepareThreads = OSAllocatedUnfairLock<[PrepareThread]>(initialState: [])
+    #endif
+
     func prepare(maxFrames: Int, format: AudioStreamBasicDescription) {
+        #if DEBUG
+        let info = PrepareThread(isMain: Thread.isMainThread, qos: Int(qos_class_self().rawValue), name: Thread.current.name ?? "")
+        Self.debugPrepareThreads.withLock { $0.append(info) }
+        #endif
         let isFloat = format.mFormatID == kAudioFormatLinearPCM
             && (format.mFormatFlags & kAudioFormatFlagIsFloat) != 0
             && format.mBitsPerChannel == 32

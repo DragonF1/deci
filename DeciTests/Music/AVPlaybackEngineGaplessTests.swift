@@ -5,6 +5,7 @@
 // nothing is fetched; the one real playback test is muted (the fallback level) and uses short tone files.
 
 import Foundation
+import os
 import AVFoundation
 import Testing
 @testable import Deci
@@ -267,14 +268,20 @@ struct AVPlaybackEngineGaplessTests {
         report.append(line("standby at preroll completion", standbyLease.debugCounters))
         #expect(chain.owns(activeLease))
         #expect(!chain.owns(standbyLease), "preparing the standby never takes the chain")
-        #expect(chain.processorSampleRate == 44_100, "nor does it rebuild the owner's processors for its own (48 kHz) rate")
-        #expect(chain.processorsReady(for: activeLease), "the owner keeps EQ, AutoEQ and loudness while the standby is prepared")
+        #expect(activeLease.processorSampleRate == 44_100, "the owner keeps filters for its own rate")
+        #expect(standbyLease.processorSampleRate == 48_000, "the standby has its own, at its own rate")
+        #expect(standbyLease.debugCounters.gainOnlyFrames == 0)
+        let threads = MusicTapContext.debugPrepareThreads.withLock { $0 }
+        report.append("prepare threads: \(threads)")
+        #expect(threads.count >= 2)
+        #expect(threads.allSatisfy { !$0.isMain }, "the tap prepares off the main thread, so the filters are built there")
 
         try? await Task.sleep(for: .milliseconds(400))
         report.append(line("standby 400 ms later, still paused", standbyLease.debugCounters))
         let pausedFrames = standbyLease.debugCounters
         #expect(pausedFrames.silencedFrames == 0, "no frame of the incoming track is silenced while it is paused")
-        #expect(pausedFrames.fullFrames == 0, "an unarmed standby never renders through the shared filters")
+        #expect(pausedFrames.fullFrames > 0, "the primed frames went through the whole chain from the first buffer")
+        #expect(pausedFrames.gainOnlyFrames == 0)
 
         let scheduled = await waitUntil(timeout: .seconds(30)) { engine.scheduledStartHost != nil }
         #expect(scheduled)
@@ -293,8 +300,8 @@ struct AVPlaybackEngineGaplessTests {
         #expect(played)
         #expect(chain.framesProcessed > before, "the chain keeps processing after the hand-over")
         #expect(standbyLease.debugCounters.silencedFrames == 0, "no incoming frame was silenced")
-        #expect(chain.processorSampleRate == 48_000, "the processors follow the new track's rate once it owns the chain")
-        #expect(chain.processorsReady(for: standbyLease))
+        #expect(standbyLease.processorSampleRate == 48_000, "nothing was rebuilt at the hand-over")
+        #expect(standbyLease.debugCounters.gainOnlyFrames == 0, "the new track never played without the full chain")
         report.append(line("new owner after 0.6 s", standbyLease.debugCounters))
         report.append(line("old deck's lease", activeLease.debugCounters))
         try report.joined(separator: "\n").write(

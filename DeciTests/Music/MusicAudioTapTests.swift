@@ -149,23 +149,16 @@ struct MusicAudioTapTests {
 
     // MARK: - Sample rate
 
-    @Test("a file at another rate than the chain is passed through, then processed once the chain is rebuilt")
+    @Test("a file at another rate than the chain is processed from its first sample, on filters built for its own rate")
     func sampleRateMismatch() async throws {
         try await withTone(frequency: 1_000, amplitude: 0.1) { url, reference in
             var gains = [Float](repeating: 0, count: EQSettings.bandCount)
             gains[5] = 12
-            let chain = MusicDSPChain(sampleRate: 48_000)
+            let chain = MusicDSPChain(sampleRate: 44_100)
             chain.setEQ(EQSettings(bandGains: gains))
 
-            // The read blocks the main queue, so the chain cannot rebuild yet: the EQ must be bypassed, not wrong.
             let first = try await ToneFile.read(url: url, tappedBy: chain)
-            #expect(abs(bodyRMS(first) / bodyRMS(reference) - 1) < 0.02)
-
-            let rebuilt = await waitUntil(timeout: .seconds(10)) { chain.processorSampleRate == Self.rate }
-            #expect(rebuilt, "the chain hops to the main queue and rebuilds for the stream's rate")
-
-            let second = try await ToneFile.read(url: url, tappedBy: chain)
-            #expect(abs(bodyRMS(second) / bodyRMS(reference) - 3.98) < 0.3)
+            #expect(abs(bodyRMS(first) / bodyRMS(reference) - 3.98) < 0.3, "no bypass while anything rebuilds: the lease's own filters are ready at prepare")
         }
     }
 

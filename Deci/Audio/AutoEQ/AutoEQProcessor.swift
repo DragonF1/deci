@@ -34,10 +34,9 @@ final class AutoEQProcessor: BiquadProcessor, @unchecked Sendable {
 
     // MARK: - Profile Update
 
-    /// Update the correction profile (call from main thread).
+    /// Update the correction profile. Callers are serialized by the owner (MusicDSPChain settings lock).
     /// Pass `nil` to disable correction.
     func updateProfile(_ profile: AutoEQProfile?) {
-        dispatchPrecondition(condition: .onQueue(.main))
         _currentProfile = profile
 
         let validated = profile?.validated()
@@ -85,7 +84,6 @@ final class AutoEQProcessor: BiquadProcessor, @unchecked Sendable {
 
     /// Toggle profile preamp on/off. When off, relies on downstream limiter for peak control.
     func setPreampEnabled(_ enabled: Bool) {
-        dispatchPrecondition(condition: .onQueue(.main))
         guard enabled != _preampEnabled else { return }
         _preampEnabled = enabled
         logger.info("AutoEQ preamp \(enabled ? "enabled" : "bypassed (limiter-only)")")

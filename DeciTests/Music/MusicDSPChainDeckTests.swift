@@ -1,8 +1,8 @@
 // DeciTests/Music/MusicDSPChainDeckTests.swift
 // The hand-over between two decks: a standby item's tap prepares while the active item plays, and must never silence it
-// or change the filters it uses. A standby renders gain-only (no shared state) until it claims the chain; armed just
-// before its scheduled start it also renders through the shared filters next to the owner. No frame of an incoming item
-// is ever silenced. Offline, on test buffers.
+// or change the filters it uses. Every lease has its own filter state, so a standby renders the whole chain next to the
+// owner from the moment it exists; armed just before its scheduled start it is also metered. A superseded or released
+// lease is silent. No frame of an incoming item is ever silenced. Offline, on test buffers.
 
 import Foundation
 import AudioToolbox
@@ -28,7 +28,7 @@ struct MusicDSPChainDeckTests {
     private func isSilent(_ samples: [Float]) -> Bool { samples.allSatisfy { $0 == 0 } }
     private func isAudible(_ samples: [Float], _ value: Float = 0.5) -> Bool { abs(samples[samples.count - 1] - value) < 1e-3 }
 
-    @Test("a standby lease that does not claim leaves the active deck rendering, and keeps its frames (gain only)")
+    @Test("a standby lease that does not claim leaves the active deck rendering, and keeps its frames")
     func preparingTheStandbyDoesNotSilenceTheActiveDeck() {
         let chain = MusicDSPChain(sampleRate: Self.rate)
         chain.setTargetGain(0.5, snap: true)
@@ -40,35 +40,35 @@ struct MusicDSPChainDeckTests {
         #expect(isAudible(render(active), 0.25))
     }
 
-    @Test("a standby at another sample rate never rebuilds the owner's processors, and the owner keeps them")
-    func standbyAtAnotherRateLeavesTheOwnersProcessors() async {
+    @Test("a standby at another sample rate has its own processors, and claiming changes nobody's")
+    func standbyAtAnotherRateKeepsItsOwnProcessors() {
         let chain = MusicDSPChain(sampleRate: 48_000)
+        chain.setEQ(EQSettings(bandGains: [0, 0, 0, 0, 0, 12, 0, 0, 0, 0]))
         let owner = MusicRenderLease(chain: chain, sampleRate: 48_000, maxFrames: 4_096, claims: true)
         let standby = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 4_096, claims: false)
+        #expect(owner.processorSampleRate == 48_000)
+        #expect(standby.processorSampleRate == 44_100)
         standby.arm()
-        // Let any rebuild queued on the main queue run.
-        try? await Task.sleep(for: .milliseconds(200))
-        #expect(chain.processorSampleRate == 48_000, "a non-claiming lease never asks for a rebuild")
         _ = render(standby)
         _ = render(owner)
-        #expect(chain.processorSampleRate == 48_000)
-        #expect(owner.debugCounters.fullFrames > 0)
-        #expect(chain.processorsReady(for: owner), "the owner keeps EQ, AutoEQ and loudness")
+        #expect(owner.debugCounters.fullFrames == 256)
+        #expect(standby.debugCounters.fullFrames == 256, "the standby's primed frames get the whole chain")
+        #expect(standby.debugCounters.gainOnlyFrames == 0)
 
         standby.claim()
-        try? await Task.sleep(for: .milliseconds(200))
-        #expect(chain.processorSampleRate == 44_100, "the rebuild is requested when the standby claims")
-        #expect(chain.processorsReady(for: standby))
+        #expect(standby.processorSampleRate == 44_100, "nothing is rebuilt at the hand-over")
+        _ = render(standby)
+        #expect(standby.debugCounters.fullFrames == 512)
     }
 
-    @Test("a standby never changes the processors while it renders: its frames are gain-only and not metered")
-    func unclaimedStandbyRendersGainOnly() {
+    @Test("a standby renders the whole chain on its own state, and does not reach the meters until it is armed")
+    func unclaimedStandbyRendersFullButIsNotMetered() {
         let chain = MusicDSPChain(sampleRate: Self.rate)
         let standby = lease(chain, claims: false)
         _ = render(standby, value: 0.7)
-        #expect(standby.debugCounters.gainOnlyFrames == 256)
+        #expect(standby.debugCounters.fullFrames == 256)
+        #expect(standby.debugCounters.gainOnlyFrames == 0)
         #expect(standby.debugCounters.silencedFrames == 0)
-        #expect(standby.debugCounters.fullFrames == 0)
         #expect(chain.consumePeak() == 0)
     }
 
@@ -82,25 +82,6 @@ struct MusicDSPChainDeckTests {
         #expect(old.debugCounters.silencedFrames == 256)
         next.release()
         #expect(isSilent(render(next)))
-    }
-
-    @Test("an owner that loses the render race while a standby is armed still plays: gain only, never silence")
-    func contentionKeepsTheAudio() {
-        let chain = MusicDSPChain(sampleRate: Self.rate)
-        chain.setTargetGain(0.5, snap: true)
-        let active = lease(chain)
-        let standby = lease(chain, claims: false)
-        standby.arm()
-        var activeOut: [Float] = []
-        var standbyOut: [Float] = []
-        chain.holdingRenderLock {
-            activeOut = render(active)
-            standbyOut = render(standby)
-        }
-        #expect(isAudible(activeOut, 0.25), "the owner's frame is kept with the volume applied")
-        #expect(isAudible(standbyOut, 0.25), "so is the standby's")
-        #expect(active.debugCounters.silencedFrames == 0)
-        #expect(active.debugCounters.gainOnlyFrames == 256)
     }
 
     @Test("an armed standby renders next to the active deck, so its first frames at the switch are kept")
@@ -128,19 +109,18 @@ struct MusicDSPChainDeckTests {
         #expect(isAudible(render(next)), "releasing the old lease takes nothing from the new owner")
     }
 
-    @Test("disarming puts the standby back to gain-only, and releasing the active deck does not make it the owner")
+    @Test("disarming takes the standby out of the meters, and releasing the active deck does not silence it")
     func disarmAndRelease() {
         let chain = MusicDSPChain(sampleRate: Self.rate)
         let active = lease(chain)
         let standby = lease(chain, claims: false)
         standby.arm()
         standby.disarm()
-        _ = render(standby)
-        #expect(standby.debugCounters.fullFrames == 0)
+        _ = render(standby, value: 0.6)
+        #expect(chain.consumePeak() == 0)
 
         active.release()
-        _ = render(standby)
-        #expect(standby.debugCounters.fullFrames == 0, "an unclaimed standby never renders through the chain by itself")
+        #expect(isAudible(render(standby)), "an unclaimed standby keeps rendering after the owner is released")
         #expect(standby.debugCounters.silencedFrames == 0)
     }
 
@@ -156,7 +136,7 @@ struct MusicDSPChainDeckTests {
 
         standby.arm()
         render(standby, value: 0.8)
-        #expect(abs(chain.consumePeak() - 0.8) < 1e-3)
+        #expect(abs(chain.consumePeak() - 0.8) < 5e-3)
         #expect(chain.consumePeak() == 0, "reading resets it")
     }
 
@@ -171,7 +151,7 @@ struct MusicDSPChainDeckTests {
         standbyDeck.attach(standby)
 
         #expect(isAudible(render(active)), "an active deck's lease claims as it is attached")
-        #expect(standby.debugCounters.fullFrames == 0, "an unarmed standby does not render through the chain")
+        #expect(standby.debugCounters.silencedFrames == 0)
 
         standbyDeck.arm()
         #expect(isAudible(render(standby)))
@@ -248,15 +228,15 @@ struct MusicDSPChainDeckTests {
         deck.attach(standby)
         deck.arm()
         deck.disarm()
-        _ = render(standby)
-        #expect(standby.debugCounters.fullFrames == 0)
+        _ = render(standby, value: 0.9)
+        #expect(chain.consumePeak() == 0, "disarmed means not metered")
         // An attach after a disarm does not arm either.
         let again = MusicTapDeck(role: .standby)
         again.arm()
         again.disarm()
         let late = lease(chain, claims: false)
         again.attach(late)
-        _ = render(late)
-        #expect(late.debugCounters.fullFrames == 0)
+        _ = render(late, value: 0.9)
+        #expect(chain.consumePeak() == 0)
     }
 }

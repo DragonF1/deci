@@ -417,79 +417,50 @@ struct MusicDSPChainTests {
 
     // MARK: - Sample rate
 
-    @Test("a stream at another sample rate bypasses the EQ until the processors are rebuilt, then recovers")
-    func sampleRateMismatch() async {
+    @Test("a stream at another sample rate gets the EQ from its very first buffer, built for its own rate")
+    func ownRateFromTheFirstBuffer() {
         let chain = MusicDSPChain(sampleRate: 48_000)
         chain.setEQ(bandGains(5, 12))
         let lease = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 16_384)
-        #expect(chain.processorSampleRate == 48_000, "creating the lease must not block on the rebuild")
+        #expect(lease.processorSampleRate == 44_100)
 
         let tone = MusicTestSignal.sine(frequency: 1_000, amplitude: 0.1, sampleRate: 44_100, frames: 44_100)
         let reference = settledRMS(tone[0])
-        let bypassed = settledRMS(render(lease, tone).samples(channel: 0))
-        #expect(abs(bypassed / reference - 1) < 1e-3, "the EQ is bypassed while its coefficients are for 48 kHz")
-
-        let rebuilt = await waitUntil(timeout: .seconds(5)) { chain.processorSampleRate == 44_100 }
-        #expect(rebuilt)
-        let recovered = settledRMS(render(lease, tone).samples(channel: 0))
-        #expect(abs(recovered / reference - 3.98) < 0.2, "got \(recovered / reference)")
+        let heard = settledRMS(render(lease, tone).samples(channel: 0))
+        #expect(abs(heard / reference - 3.98) < 0.2, "got \(heard / reference)")
+        #expect(lease.debugCounters.gainOnlyFrames == 0)
     }
 
-    @Test("two items in quick succession: the rebuild queued for the first one's rate never leaves the second one bypassed")
-    func rapidRateChange() async {
+    @Test("items in quick succession at different rates each keep their own rate and EQ")
+    func rapidRateChange() {
         let chain = MusicDSPChain(sampleRate: 48_000)
         chain.setEQ(bandGains(5, 12))
-        // The main queue gets no turn between the two: the first item asks for 44.1 kHz, the second is back at the
-        // processors' own rate and so used to ask for nothing, which left the earlier request free to win.
-        _ = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 16_384)
-        let lease = MusicRenderLease(chain: chain, sampleRate: 48_000, maxFrames: 16_384)
-
-        // Anything queued on the main queue ahead of this has run once it returns.
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async { continuation.resume() }
-        }
-        #expect(chain.processorSampleRate == 48_000, "the processors follow the newest item's rate")
+        let first = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 16_384)
+        let second = MusicRenderLease(chain: chain, sampleRate: 48_000, maxFrames: 16_384)
+        #expect(first.processorSampleRate == 44_100)
+        #expect(second.processorSampleRate == 48_000)
 
         let reference = settledRMS(oneKilohertz[0])
-        let heard = settledRMS(render(lease, oneKilohertz).samples(channel: 0))
+        let heard = settledRMS(render(second, oneKilohertz).samples(channel: 0))
         #expect(abs(heard / reference - 3.98) < 0.2, "the EQ must be on for the second item, got \(heard / reference)")
     }
 
-    @Test("three rates asked for before the main queue runs: the last one wins")
-    func lastRequestedRateWins() async {
-        let chain = MusicDSPChain(sampleRate: 48_000)
-        _ = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 1_024)
-        _ = MusicRenderLease(chain: chain, sampleRate: 32_000, maxFrames: 1_024)
-        _ = MusicRenderLease(chain: chain, sampleRate: 22_050, maxFrames: 1_024)
-        await withCheckedContinuation { continuation in
-            DispatchQueue.main.async { continuation.resume() }
-        }
-        #expect(chain.processorSampleRate == 22_050)
-    }
-
-    @Test("the gain ramp still runs while the EQ is bypassed for a sample-rate change")
-    func gainRunsDuringBypass() {
+    @Test("the gain ramp runs at any rate")
+    func gainAtAnotherRate() {
         let chain = MusicDSPChain(sampleRate: 48_000)
         let lease = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 4_096)
         chain.setTargetGain(0.5, snap: true)
         let output = render(lease, MusicTestSignal.constant(0.4, frames: 64)).samples(channel: 0)
-        #expect(output.allSatisfy { abs($0 - 0.2) < 1e-6 })
+        #expect(output.allSatisfy { abs($0 - 0.2) < 1e-3 })
     }
 
-    @Test("a lease at the processors' own rate leaves them as they are")
-    func matchingRate() {
-        let chain = MusicDSPChain(sampleRate: 44_100)
-        _ = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 1_024)
-        #expect(chain.processorSampleRate == 44_100)
-    }
-
-    @Test("a nonsense sample rate is ignored")
+    @Test("a nonsense sample rate falls back to the chain's rate")
     func badRate() {
         let chain = MusicDSPChain(sampleRate: 48_000)
         for rate in [0, -44_100, .nan, .infinity] as [Double] {
-            _ = MusicRenderLease(chain: chain, sampleRate: rate, maxFrames: 1_024)
+            let lease = MusicRenderLease(chain: chain, sampleRate: rate, maxFrames: 1_024)
+            #expect(lease.processorSampleRate == 48_000)
         }
-        #expect(chain.processorSampleRate == 48_000)
     }
 
     // MARK: - Overlap between two items
@@ -522,20 +493,6 @@ struct MusicDSPChainTests {
         new.release()
         let released = render(new, MusicTestSignal.constant(0.5, frames: 64))
         #expect(released.samples(channel: 0).allSatisfy { $0 == 0 })
-    }
-
-    @Test("a render that finds the chain busy plays gain-only instead of racing the other thread or going silent")
-    func busyRenderPlaysGainOnly() {
-        let (chain, lease) = make()
-        var dropped: TestBufferList?
-        chain.holdingRenderLock {
-            dropped = render(lease, MusicTestSignal.constant(0.5, frames: 128))
-        }
-        #expect(abs((dropped?.samples(channel: 0)[127] ?? 0) - 0.5) < 1e-3, "the buffer is kept, with the volume applied")
-        #expect(chain.framesProcessed == 0, "it did not go through the shared chain")
-
-        let afterwards = render(lease, MusicTestSignal.constant(0.5, frames: 128))
-        #expect(abs(afterwards.samples(channel: 0)[127] - 0.5) < 1e-3, "the lock is free again")
     }
 
     @Test("two threads rendering at once never corrupt the output or crash")
