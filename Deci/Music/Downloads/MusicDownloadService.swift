@@ -913,6 +913,12 @@ final class MusicDownloadService {
         if !queue.isEmpty || !awaitingFinish.isEmpty { startPumpIfNeeded() }
     }
 
+    /// Songs are waiting in the queue or one is on its way. Read by the background analysis, which leaves the network to
+    /// the Downloads while this is true.
+    var isQueueBusy: Bool {
+        pump != nil || activeID != nil || !queue.isEmpty || !pendingCollections.isEmpty
+    }
+
     private func startPumpIfNeeded() {
         guard pump == nil, isOnline, !isRemovingAll else { return }
         pump = Task { [weak self] in

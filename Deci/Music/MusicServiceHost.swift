@@ -57,6 +57,9 @@ final class MusicServiceHost {
     /// test never reads the real folder.
     @ObservationIgnored private let hasStoredCollections: (@Sendable () -> Bool)?
 
+    /// Keeps the idle analysis queue alive for as long as the host lives; nothing in the real service holds it.
+    @ObservationIgnored private let background: MusicBackgroundHolder
+
     init(
         mixer: MusicMixerState? = nil,
         settings: SettingsManager? = nil,
@@ -65,6 +68,8 @@ final class MusicServiceHost {
         hasStoredCollections: (@Sendable () -> Bool)? = nil
     ) {
         self.mixer = mixer
+        let holder = MusicBackgroundHolder()
+        self.background = holder
         let store = sessionStore ?? (makeService == nil ? MusicSessionStore.live() : nil)
         self.sessionStore = store
         if let hasStoredCollections {
@@ -84,7 +89,8 @@ final class MusicServiceHost {
                 source: MusicCollectionSource(backend: backend),
                 connectivity: connectivity
             )
-            return MusicService(
+            let coordinator = MusicServiceHost.makeAnalysis(backend: backend, downloads: downloads)
+            let service = MusicService(
                 backend: backend,
                 player: MusicServiceHost.makePlayer(mixer: mixer),
                 lyrics: .live(connectivity: connectivity),
@@ -101,8 +107,14 @@ final class MusicServiceHost {
                 // Whole playlists and albums are read through the same backend.
                 downloads: downloads,
                 connectivity: connectivity,
-                analysis: MusicServiceHost.makeAnalysis(backend: backend, downloads: downloads)
+                analysis: coordinator
             )
+            // Liked songs and playlists are analysed while Music is idle, when Settings allows it.
+            holder.analyzer = MusicServiceHost.makeBackgroundAnalyzer(
+                service: service, coordinator: coordinator, backend: backend, downloads: downloads,
+                connectivity: connectivity, settings: settings
+            )
+            return service
         }
         MusicMemoryLog.log("launch")
     }
@@ -123,6 +135,60 @@ final class MusicServiceHost {
                 }
             },
             resolve: { try await backend.resolve(videoId: $0) }
+        )
+    }
+
+    /// The idle queue over the real backend, and started. It reads the toggle live from settings.json's model and asks the
+    /// player, the network, the account and the Downloads queue through the environment.
+    @MainActor
+    static func makeBackgroundAnalyzer(
+        service: MusicService, coordinator: MusicAnalysisCoordinator, backend: MusicBackendLive,
+        downloads: MusicDownloadService, connectivity: MusicConnectivity, settings: SettingsManager?
+    ) -> MusicBackgroundAnalyzer {
+        let env = MusicLiveBackgroundEnvironment(
+            enabled: { [weak settings] in settings?.appSettings.musicAnalyzeInBackground ?? true },
+            playing: { [weak service] in
+                guard let player = service?.player else { return false }
+                return player.isActive || player.isLoading
+            },
+            online: { connectivity.isOnline },
+            signedIn: { [weak service] in service?.authState == .signedIn },
+            downloadsBusy: { downloads.isQueueBusy }
+        )
+        let analyzer = MusicBackgroundAnalyzer(
+            provider: coordinator, lookup: coordinator,
+            source: backgroundSource(backend: backend),
+            resolve: { try await backend.resolve(videoId: $0) },
+            env: env
+        )
+        Task { await analyzer.start() }
+        return analyzer
+    }
+
+    /// Liked music ("VLLM") and every playlist of the library, read the way a collection download reads a page.
+    nonisolated static func backgroundSource(backend: MusicBackendLive) -> MusicBackgroundSource {
+        let source = MusicCollectionSource(backend: backend)
+        return MusicBackgroundSource(
+            liked: {
+                try await MusicCollectionEnumerator.enumerate("VLLM", source: source).tracks.map(\.videoId)
+            },
+            playlistIDs: {
+                var ids: [String] = []
+                var page = try await backend.library(.playlists)
+                var pages = 0
+                while true {
+                    ids += page.items
+                        .filter { $0.kind == .playlist && MusicCollectionEnumerator.isDownloadable(browseId: $0.browseId) }
+                        .map(\.browseId)
+                    pages += 1
+                    guard let token = page.continuation, !token.isEmpty, pages < 50 else { break }
+                    page = try await backend.moreLibrary(.playlists, continuation: token)
+                }
+                return ids.filter { $0 != "VLLM" }
+            },
+            playlistSongs: {
+                try await MusicCollectionEnumerator.enumerate($0, source: source).tracks.map(\.videoId)
+            }
         )
     }
 
@@ -231,4 +297,10 @@ final class MusicServiceHost {
         service?.stop()
         mixer?.shutdown()
     }
+}
+
+/// Holds the idle analysis queue, which is built with the service and has no other owner.
+@MainActor
+final class MusicBackgroundHolder {
+    var analyzer: MusicBackgroundAnalyzer?
 }

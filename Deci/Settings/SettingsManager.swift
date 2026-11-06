@@ -70,6 +70,7 @@ nonisolated struct AppSettings: Codable, Equatable {
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
     var musicCrossfadeEnabled: Bool = false        // Fade the next song in over the end of the playing one (off is gapless)
     var musicCrossfadeSeconds: Double = 6          // How long that fade lasts, 1 to 12 seconds
+    var musicAnalyzeInBackground: Bool = true      // Analyse liked songs and playlists one at a time while Music is idle
 
     // Music Home
     var musicPinnedItems: [MusicPinnedItem] = []   // Artists, playlists, albums and songs pinned to the top of Home, oldest first
@@ -114,6 +115,7 @@ nonisolated struct AppSettings: Codable, Equatable {
         musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(
             (try? c.decodeIfPresent(Double.self, forKey: .musicCrossfadeSeconds)) ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
         )
+        musicAnalyzeInBackground = (try? c.decodeIfPresent(Bool.self, forKey: .musicAnalyzeInBackground)) ?? true
         // Pins this build cannot read must not cost the listener the rest of their settings either, and one
         // unreadable pin costs only itself. A file from before Home held more than artists has only the old key,
         // and its artists carry over; the old key is not written again.

@@ -208,6 +208,16 @@ struct GeneralTab: View {
                     .controlSize(.small)
                 }
             }
+            SettingsRowDivider()
+            SettingsRow(
+                "Analyse songs in the background",
+                description: "Reads liked songs and playlists one at a time while Music is idle, finds quiet intros and outros, then deletes the audio. The song that is playing and the next one are analysed either way."
+            ) {
+                Toggle("", isOn: $settings.appSettings.musicAnalyzeInBackground)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
         }
     }
 

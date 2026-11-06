@@ -10,6 +10,7 @@ import Testing
 
 actor FakeAnalysisProvider: MusicAnalysisProviding {
     private(set) var ensures: [(id: String, wantsFile: Bool)] = []
+    private(set) var origins: [String: ResolvedStream.Origin] = [:]
     private(set) var releases: [String] = []
     private(set) var discards: [String] = []
     private(set) var cancels: [String] = []
@@ -21,6 +22,7 @@ actor FakeAnalysisProvider: MusicAnalysisProviding {
 
     func ensure(stream: ResolvedStream, wantsFile: Bool) async -> MusicAnalysisCoordinator.Outcome {
         ensures.append((stream.videoId, wantsFile))
+        origins[stream.videoId] = stream.origin
         if let gate = gates[stream.videoId] { await gate.wait() }
         return outcomes[stream.videoId] ?? .analysed(file: nil)
     }
@@ -44,7 +46,7 @@ private struct CacheHarness {
     let service: MusicService
     let folder: URL
 
-    init(crossfade: Bool = false) {
+    init(crossfade: Bool = false, downloads: MusicDownloadService? = nil) {
         let engine = self.engine
         let clock = self.clock
         let player = MusicPlayer(engine: engine)
@@ -62,6 +64,7 @@ private struct CacheHarness {
             now: { clock.now },
             preferences: MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: 6),
             queueRetryDelay: .seconds(60),
+            downloads: downloads,
             connectivity: connectivity,
             refreshOnCreate: false,
             analysis: analysis
@@ -84,6 +87,7 @@ private struct CacheHarness {
             let radio = service.radioTask
             await play?.value
             await radio?.value
+            await service.currentAnalysisTask?.value
             await service.analysisCleanupTask?.value
             if service.playTask == play, service.radioTask == radio { break }
         }
@@ -117,14 +121,14 @@ struct MusicServiceTrackCacheTests {
         await h.startQueue(["a", "b", "c"])
 
         await h.tick(100)
-        #expect(await h.analysis.ensures.isEmpty)
+        #expect(await h.analysis.ensuredIDs == ["a"], "only the song that plays")
         #expect(await h.backend.resolvedIDs == ["a"])
 
         await h.tick(126)
         await h.tick(130)
         #expect(await h.backend.resolvedIDs == ["a", "b"])
-        #expect(await h.analysis.ensuredIDs == ["b"])
-        #expect(await h.analysis.ensures.first?.wantsFile == true)
+        #expect(await h.analysis.ensuredIDs == ["a", "b"])
+        #expect(await h.analysis.ensures.last?.wantsFile == true)
         #expect(h.engine.preloads.isEmpty, "the preload still waits for its own window")
     }
 
@@ -217,13 +221,61 @@ struct MusicServiceTrackCacheTests {
         defer { h.cleanUp() }
         await h.startQueue(["a", "b", "c", "d"])
         await h.tick(126)
-        #expect(await h.analysis.ensuredIDs == ["b"])
+        #expect(await h.analysis.ensuredIDs == ["a", "b"])
 
         h.service.play(MusicSamples.track("d", title: "Song d"))
         await h.settle()
 
         #expect(await h.analysis.releases == ["a"])
         #expect(await h.analysis.discards == ["b"])
+    }
+
+    @Test("the playing song is handed over once, without a file, and ticks never ask again")
+    func currentTrackOnce() async {
+        let h = CacheHarness()
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b"])
+        #expect(await h.analysis.ensures.map(\.id) == ["a"])
+        #expect(await h.analysis.ensures.first?.wantsFile == false)
+
+        for position in stride(from: 1.0, through: 60, by: 0.5) { h.engine.tick(position, playing: true) }
+        await h.service.currentAnalysisTask?.value
+        #expect(await h.analysis.ensures.map(\.id) == ["a"], "one ask per track, never one per tick")
+        #expect(h.engine.loads.count == 1, "playback is not touched")
+    }
+
+    @Test("each track that starts is handed over once, offline and signed out ask nothing")
+    func currentTrackPerTrack() async {
+        let h = CacheHarness()
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b"])
+        h.service.next()
+        await h.settle()
+        #expect(await h.analysis.ensures.map(\.id) == ["a", "b"])
+
+        let offline = CacheHarness()
+        defer { offline.cleanUp() }
+        offline.connectivity.update(isOnline: false)
+        await offline.startQueue(["a", "b"])
+        #expect(await offline.analysis.ensures.isEmpty)
+    }
+
+    @Test("a downloaded song is handed over as a file stream, so the coordinator reads its file and fetches nothing")
+    func downloadedCurrentTrack() async {
+        let rig = DownloadServiceRig()
+        defer { rig.cleanUp() }
+        let id = DownloadSamples.idA
+        rig.download(id)
+        let done = await rig.settles(id, as: .downloaded)
+        #expect(done)
+        let h = CacheHarness(downloads: rig.service)
+        defer { h.cleanUp() }
+
+        await h.startQueue([id, "b"])
+
+        #expect(await h.analysis.ensures.first?.id == id)
+        #expect(await h.analysis.ensures.first?.wantsFile == false)
+        #expect(await h.analysis.origins[id] == .download)
     }
 
     @Test("short songs and Loop song skip the early download")
@@ -233,7 +285,7 @@ struct MusicServiceTrackCacheTests {
         await short.startQueue(["a", "b"], duration: 100)
         await short.tick(30)
         await short.tick(85)
-        #expect(await short.analysis.ensures.isEmpty)
+        #expect(await short.analysis.ensuredIDs == ["a"])
 
         let loop = CacheHarness()
         defer { loop.cleanUp() }
@@ -241,7 +293,7 @@ struct MusicServiceTrackCacheTests {
         loop.service.setLoopMode(.song)
         await loop.tick(126)
         await loop.tick(186)
-        #expect(await loop.analysis.ensures.isEmpty)
+        #expect(await loop.analysis.ensuredIDs == ["a"])
     }
 
     @Test("offline nothing is resolved or fetched")
@@ -253,7 +305,7 @@ struct MusicServiceTrackCacheTests {
 
         await h.tick(126)
 
-        #expect(await h.analysis.ensures.isEmpty)
+        #expect(await h.analysis.ensuredIDs == ["a"])
         #expect(await h.backend.resolvedIDs == ["a"])
     }
 
@@ -266,11 +318,12 @@ struct MusicServiceTrackCacheTests {
         await h.analysis.hold("b", gate)
         h.engine.tick(126, playing: true)
         await h.service.prefetchTask?.value
-        while await h.analysis.ensures.isEmpty { await Task.yield() }
+        while await h.analysis.ensuredIDs.count < 2 { await Task.yield() }
 
         h.service.signOut()
         await gate.open()
         await h.service.analysisTask?.value
+        await h.service.analysisCleanupTask?.value
 
         #expect(await h.analysis.cancels.contains("b"))
         #expect(await h.analysis.discards.contains("b"))

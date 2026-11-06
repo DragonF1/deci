@@ -33,6 +33,8 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
         /// Analysed and stored. `file` is the cache file when one was made and kept (`wantsFile`).
         case analysed(file: URL?)
         case failed
+        /// The fetch met a 429 or a 403 (an address that expired too often): the caller should back off.
+        case rateLimited
     }
 
     typealias Analyze = @Sendable (URL, Double?) async throws -> MusicFileAnalyzer.Result
@@ -65,6 +67,11 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
 
     func analysis(for videoId: String) async -> MusicAnalysis? {
         await store.entry(for: videoId)
+    }
+
+    /// Songs whose entry is of an older analysis version, oldest first (the idle queue's last stretch).
+    func storeStaleVideoIds(limit: Int) async -> [String] {
+        await store.staleVideoIds(limit: limit)
     }
 
     func ensure(stream: ResolvedStream, wantsFile: Bool) async -> Outcome {
@@ -128,7 +135,7 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
             file = try await cache.fetch(stream, resolve: resolve)
         } catch {
             await cache.unpin(id)
-            return .failed
+            return MusicBackgroundAnalyzer.isRateLimit(error) ? .rateLimited : .failed
         }
         let stored = await analyseAndStore(
             stream: stream, file: file, duration: stream.durationSeconds, format: expected,

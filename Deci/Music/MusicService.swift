@@ -264,6 +264,10 @@ final class MusicService {
     @ObservationIgnored private var cachedFile: (videoId: String, url: URL)?
     /// The song the player is on, as far as the cache is concerned.
     @ObservationIgnored private var analysisCurrentID: String?
+    /// The analysis job for the song that is playing (it had no fresh entry); nil when none runs. Read by the tests.
+    @ObservationIgnored private(set) var currentAnalysisTask: Task<Void, Never>?
+    /// The song `currentAnalysisTask` was started for, and the last one asked: a song is asked for once.
+    @ObservationIgnored private var currentAnalysisAsked: String?
 
     // The remembered session (see `MusicSessionSnapshot`). Nil store: the service remembers nothing.
     @ObservationIgnored private let sessionStore: MusicSessionStore?
@@ -413,6 +417,7 @@ final class MusicService {
         queueRetryTask?.cancel()
         prefetchTask?.cancel()
         analysisTask?.cancel()
+        currentAnalysisTask?.cancel()
         cancelPreload()
         trackingTask?.cancel()
         #if DEBUG
@@ -1521,6 +1526,7 @@ final class MusicService {
             session = makeSession(for: stream)
             player.load(stream: stream, track: track)
             fetchTrackingURLs(for: stream, generation: generation)
+            analyseCurrent(stream)
             scheduleMemoryProbe()
         } catch {
             guard generation == playGeneration else { return }
@@ -2238,6 +2244,18 @@ final class MusicService {
         }
     }
 
+    /// The song that starts playing gets its analysis asked for once, when it has no fresh entry (the coordinator checks
+    /// the store). A downloaded song is analysed from its file by the coordinator, so nothing is fetched for it; a song
+    /// that plays from the cache was analysed before it was offered. Not offline, not signed out. Playback is untouched.
+    private func analyseCurrent(_ stream: ResolvedStream) {
+        guard let analysis, !isOffline, authState != .signedOut, stream.origin != .trackCache,
+              currentAnalysisAsked != stream.videoId, analysisCurrentID == stream.videoId else { return }
+        currentAnalysisAsked = stream.videoId
+        currentAnalysisTask = Task {
+            _ = await analysis.ensure(stream: stream, wantsFile: false)
+        }
+    }
+
     /// The song was going to be next but is not: its job stops and its file goes now.
     private func dropSpeculativeAnalysis(_ id: String) {
         guard analysisTarget == id else { return }
@@ -2258,6 +2276,13 @@ final class MusicService {
         guard analysis != nil else { return }
         let leaving = analysisCurrentID
         analysisCurrentID = id
+        // The job for the song that was playing is not worth finishing once the player left it.
+        if let asked = currentAnalysisAsked, asked != id {
+            currentAnalysisTask?.cancel()
+            currentAnalysisTask = nil
+            currentAnalysisAsked = nil
+            queueAnalysisCall { await $0.cancel(videoId: asked) }
+        }
         if let target = analysisTarget, target != id { dropSpeculativeAnalysis(target) }
         if let id, analysisTarget == id { analysisTarget = nil }
         if cachedFile != nil, cachedFile?.videoId != id { cachedFile = nil }
