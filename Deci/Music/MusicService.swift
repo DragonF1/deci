@@ -1744,11 +1744,10 @@ final class MusicService {
         // Everything is checked above and nothing has changed yet: a refusal leaves the queue and the session to the
         // ordinary end of the track, which advances the queue once and sends the one final ping.
         // Consumed, not withdrawn: the queue moving on below must not take it back from the player.
-        let trimmedEnd = offeredPlan?.plan.outgoingEndSec
         preloadOffered = nil
         offeredPlan = nil
         // The old session closes with its final ping (it reads the player's position, still the old track's end).
-        sendFinalPing(endingAt: trimmedEnd)
+        sendFinalPing()
         direction = .forward
         let replay = loopMode == .song
         if !replay {
@@ -2841,11 +2840,12 @@ final class MusicService {
     /// Closes the session with its one final ping (`final=1`), when it got as far as the playback ping: a session that
     /// never sent one has told YouTube nothing to close, as in the web player. The position comes from the player,
     /// so this goes before anything that resets it. Never sent twice for one session.
-    private func sendFinalPing(endingAt trimmedEnd: Double? = nil) {
+    private func sendFinalPing() {
         guard let cpn = session?.cpn, let url = session?.watchtimeURL else { return }
-        // A song cut at its trimmed end stopped there, whatever length the player reports for it.
+        // A song cut at its trimmed end stopped there, whatever length the player reports for it (no cap once a seek
+        // brought its natural end back: the player's snapshot of the engine's plan has none then).
         var position = player.currentTime
-        if let end = trimmedEnd ?? offeredPlan?.plan.outgoingEndSec, end.isFinite { position = min(position, end) }
+        if let end = player.outgoingEndSnapshot, end.isFinite { position = min(position, end) }
         let clock = sessionClock
         guard let details = session?.watchtime.finish(position: position, now: clock) else { return }
         enqueue([HistoryPing(kind: .watchtime, url: url, cpn: cpn, mediaTime: position, details: stamped(details))])

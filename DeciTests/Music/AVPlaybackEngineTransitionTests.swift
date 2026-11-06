@@ -419,8 +419,10 @@ struct AVPlaybackEngineTransitionTests {
         // 7 is inside trimmed end (8) minus lead (3) minus 1 s.
         engine.seek(to: 7)
         #expect(abs((itemEnd(engine) ?? 0) - 10) < 0.01, "natural end is back: \(String(describing: itemEnd(engine)))")
+        #expect(engine.transitionPlan?.outgoingEndSec == nil, "the plan reflects the restored end")
         engine.updateTransitionPlan(plan(.smart, end: 8, fadeStart: 5, fade: 2))
         #expect(abs((itemEnd(engine) ?? 0) - 10) < 0.01, "a plan update does not trim it again")
+        #expect(engine.transitionPlan?.outgoingEndSec == nil, "a plan update does not put the trimmed end back in the plan")
         let advanced = await waitUntil(timeout: .seconds(30)) { events.contains(.advanced(videoId: "sk2")) }
         #expect(advanced, "events: \(events)")
         #expect(!events.contains(.ended))

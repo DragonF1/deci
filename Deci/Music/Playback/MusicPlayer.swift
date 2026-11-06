@@ -136,6 +136,7 @@ final class MusicPlayer {
         guard nowPlaying != nil, self.stream != nil, !hasEnded, refreshTask == nil else { return }
         preloaded = (stream, track)
         parkedOffset = plan?.incomingStartSec ?? 0
+        outgoingEndSnapshot = plan?.outgoingEndSec
         engine.preload(stream, plan: plan)
     }
 
@@ -149,14 +150,20 @@ final class MusicPlayer {
     /// The plan of the current preload as the engine holds it.
     var transitionPlan: TransitionPlan? { engine.transitionPlan }
 
+    /// Where the playing song is cut short, as the engine's plan last said (nil: it plays to its natural end, also after a
+    /// seek brought that end back). The engine clears its plan before `.advanced`, so the last value seen is kept.
+    @ObservationIgnored private(set) var outgoingEndSnapshot: TimeInterval?
+
     private func refreshParkedOffset() {
         guard preloaded != nil, let plan = engine.transitionPlan else { return }
         parkedOffset = plan.incomingStartSec
+        outgoingEndSnapshot = plan.outgoingEndSec
     }
 
     func cancelPreload() {
         preloaded = nil
         parkedOffset = 0
+        outgoingEndSnapshot = nil
         engine.cancelPreload()
     }
 
@@ -186,6 +193,7 @@ final class MusicPlayer {
     func adoptPreloaded() {
         guard let preloaded else { return }
         self.preloaded = nil
+        outgoingEndSnapshot = nil
         // The song starts where the engine parked it (its trimmed start), not at 0.
         let start = max(0, engine.transitionPlan?.incomingStartSec ?? parkedOffset)
         parkedOffset = 0
@@ -333,6 +341,7 @@ final class MusicPlayer {
         preloaded = nil
         engineDropped = false
         playbackStartOffset = 0
+        outgoingEndSnapshot = nil
         self.stream = stream
         nowPlaying = track
         error = nil

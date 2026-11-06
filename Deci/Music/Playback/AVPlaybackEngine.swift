@@ -638,6 +638,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         var adopted = plan
         // The standby is parked where it really is, which may differ from what was asked.
         adopted?.incomingStartSec = standby.startOffset
+        // A seek brought the natural end back for this item: a later plan cannot put the trimmed end back.
+        if endRestoredBySeek { adopted?.outgoingEndSec = nil }
         guard adopted != old else { return }
         transitionPlan = adopted
         applyOutgoingEnd()
@@ -679,6 +681,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard seconds >= trimmed - (lead + 1) else { return }
         restoreOutgoingEnd()
         endRestoredBySeek = true
+        // The plan says what is real: this item no longer ends at the trimmed end.
+        transitionPlan?.outgoingEndSec = nil
     }
 
     private func restoreOutgoingEnd() {

@@ -821,6 +821,9 @@ final class FakePlaybackEngine: PlaybackEngine {
     /// The plan of the current preload.
     private(set) var transitionPlan: TransitionPlan?
 
+    /// What the real engine does when a seek brings the natural end back: the plan no longer has a trimmed end.
+    func debugRestoreNaturalEnd() { transitionPlan?.outgoingEndSec = nil }
+
     func preload(_ stream: ResolvedStream, plan: TransitionPlan?) {
         preloads.append(stream)
         plans.append(plan)

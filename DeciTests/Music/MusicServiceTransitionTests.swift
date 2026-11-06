@@ -518,8 +518,7 @@ struct MusicServiceTransitionTests {
         #expect(h.player.nowPlaying?.videoId == "b")
     }
 
-    @Test("a final ping after a trimmed end carries the trimmed end, not the song's length")
-    func finalPingIsCappedAtTheTrimmedEnd() async throws {
+    private func finalPingMediaTime(restoringNaturalEnd: Bool) async throws -> Double {
         let h = TransitionHarness()
         await h.reader.set(TransitionHarness.row("a", silenceEnd: 197, outroStart: 185))
         await h.reader.set(TransitionHarness.row("b", silenceStart: 0.5, introEnd: 8))
@@ -542,11 +541,27 @@ struct MusicServiceTransitionTests {
             position += 0.5
         }
         await h.tick(160)
+        if restoringNaturalEnd {
+            // A scrub near the trimmed end: the engine brings the natural end back and its plan loses the trimmed end.
+            h.engine.debugRestoreNaturalEnd()
+            h.engine.tick(190, playing: true)
+        }
         h.engine.advance()
         await h.settle()
         let finals = await h.backend.reportAttempts.filter { $0.details?.isFinal == true }
-        let ping = try #require(finals.first, "a final ping went out")
-        #expect(ping.mediaTime <= 197, "capped at the trimmed end: \(ping.mediaTime)")
+        return try #require(finals.first, "a final ping went out").mediaTime
+    }
+
+    @Test("a final ping after a trimmed end carries the trimmed end, not the song's length")
+    func finalPingIsCappedAtTheTrimmedEnd() async throws {
+        let time = try await finalPingMediaTime(restoringNaturalEnd: false)
+        #expect(time <= 197, "capped at the trimmed end: \(time)")
+    }
+
+    @Test("after a seek brought the natural end back the final ping is not capped")
+    func finalPingIsNotCappedAfterASeekRestoredTheEnd() async throws {
+        let time = try await finalPingMediaTime(restoringNaturalEnd: true)
+        #expect(time > 197, "the song played to its natural end: \(time)")
     }
 
     @Test("Loop song turned on while a trimmed preload is parked withdraws it, and the next offer starts at 0")
