@@ -16,20 +16,34 @@ actor FakeAnalysisProvider: MusicAnalysisProviding {
     private(set) var cancels: [String] = []
     private var outcomes: [String: MusicAnalysisCoordinator.Outcome] = [:]
     private var gates: [String: MusicTestGate] = [:]
+    private var cancelGates: [String: MusicTestGate] = [:]
+    /// Every provider call in the order it took effect: "ensure:x", "cancel:x" (when it returned), "discard:x".
+    private(set) var events: [String] = []
+
+    func holdCancel(_ id: String, _ gate: MusicTestGate) { cancelGates[id] = gate }
 
     func setOutcome(_ id: String, _ outcome: MusicAnalysisCoordinator.Outcome) { outcomes[id] = outcome }
     func hold(_ id: String, _ gate: MusicTestGate) { gates[id] = gate }
 
     func ensure(stream: ResolvedStream, wantsFile: Bool) async -> MusicAnalysisCoordinator.Outcome {
         ensures.append((stream.videoId, wantsFile))
+        events.append("ensure:\(stream.videoId)")
         origins[stream.videoId] = stream.origin
         if let gate = gates[stream.videoId] { await gate.wait() }
         return outcomes[stream.videoId] ?? .analysed(file: nil)
     }
 
     func release(videoId: String) { releases.append(videoId) }
-    func discard(videoId: String) { discards.append(videoId) }
-    func cancel(videoId: String) { cancels.append(videoId) }
+    func discard(videoId: String) {
+        discards.append(videoId)
+        events.append("discard:\(videoId)")
+    }
+
+    func cancel(videoId: String) async {
+        cancels.append(videoId)
+        if let gate = cancelGates[videoId] { await gate.wait() }
+        events.append("cancel:\(videoId)")
+    }
 
     var ensuredIDs: [String] { ensures.map(\.id) }
 }
@@ -228,6 +242,67 @@ struct MusicServiceTrackCacheTests {
 
         #expect(await h.analysis.releases == ["a"])
         #expect(await h.analysis.discards == ["b"])
+    }
+
+    @Test("X, then Y, then X again: the new fetch of X starts only after the old cleanup, so a late cancel or discard cannot hit it")
+    func requeueWaitsForCleanup() async throws {
+        let h = CacheHarness()
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b", "c", "d"])
+        await h.tick(126)
+        #expect(await h.analysis.ensuredIDs == ["a", "b"])
+
+        let gate = MusicTestGate()
+        await h.analysis.holdCancel("b", gate)
+        h.service.playNext(MusicSamples.track("c", title: "Song c"))
+        h.engine.tick(127, playing: true)
+        await h.service.prefetchTask?.value
+        h.service.playNext(MusicSamples.track("b", title: "Song b"))
+        h.engine.tick(128, playing: true)
+        await h.service.prefetchTask?.value
+        for _ in 0..<50 { await Task.yield() }
+
+        #expect(await h.analysis.ensuredIDs.filter { $0 == "b" }.count == 1, "no new fetch while b's old cleanup is pending")
+
+        await gate.open()
+        await h.service.analysisCleanupTask?.value
+        await h.service.analysisTask?.value
+        let events = await h.analysis.events
+        let lastEnsure = try #require(events.lastIndex(of: "ensure:b"))
+        #expect(events.filter { $0 == "ensure:b" }.count == 2)
+        #expect(!events[lastEnsure...].contains("cancel:b"))
+        #expect(!events[lastEnsure...].contains("discard:b"))
+    }
+
+    @Test("a stale job that finishes with a file does not delete the file of the newer job for the same song")
+    func staleCompletionKeepsNewFile() async throws {
+        let h = CacheHarness()
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b", "c", "d"])
+        let file = try h.makeFile("b")
+        await h.analysis.setOutcome("b", .analysed(file: file))
+        let stale = MusicTestGate()
+        await h.analysis.hold("b", stale)
+        h.engine.tick(126, playing: true)
+        await h.service.prefetchTask?.value
+        while await h.analysis.ensuredIDs.count < 2 { await Task.yield() }
+
+        h.service.playNext(MusicSamples.track("c", title: "Song c"))
+        h.engine.tick(127, playing: true)
+        await h.service.prefetchTask?.value
+        await h.service.analysisCleanupTask?.value
+        h.service.playNext(MusicSamples.track("b", title: "Song b"))
+        h.engine.tick(128, playing: true)
+        await h.service.prefetchTask?.value
+        await h.service.analysisCleanupTask?.value
+        while await h.analysis.ensuredIDs.filter({ $0 == "b" }).count < 2 { await Task.yield() }
+        let discardsBefore = await h.analysis.discards.filter { $0 == "b" }.count
+
+        await stale.open()
+        await h.service.analysisTask?.value
+        await h.service.analysisCleanupTask?.value
+
+        #expect(await h.analysis.discards.filter { $0 == "b" }.count == discardsBefore, "the old job leaves b's new file alone")
     }
 
     @Test("the playing song is handed over once, without a file, and ticks never ask again")

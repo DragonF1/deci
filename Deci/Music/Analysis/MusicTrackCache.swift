@@ -115,7 +115,7 @@ actor MusicTrackCache {
             defer { if !isClosed { try? handle.close() } }
             let result = try await MusicRangedFetch.run(
                 videoId: id, stream: stream, transport: transport, chunkSize: chunkSize, handle: handle,
-                now: now, resolve: resolve, progress: { _ in }
+                now: now, resolve: resolve, maxBytes: limits.maxBytes, progress: { _ in }
             )
             try handle.synchronize()
             isClosed = true
@@ -129,6 +129,7 @@ actor MusicTrackCache {
         } catch {
             try? FileManager.default.removeItem(at: part)
             logger.notice("track_cache_failed id=\(id, privacy: .public)")
+            if let failure = error as? MusicRangedFetch.Failure, failure == .tooLarge { throw Failure.tooLarge }
             throw error
         }
         evict(toMakeRoomFor: 0)

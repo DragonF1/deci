@@ -259,7 +259,9 @@ final class MusicService {
     /// The song `analysisTask` works for.
     @ObservationIgnored private var analysisTarget: String?
     /// Songs whose cache file this service asked for and has not released or discarded yet.
-    @ObservationIgnored private var heldCacheIDs: Set<String> = []
+    @ObservationIgnored private var heldCacheJobs: [String: Int] = [:]
+    /// Counts the analysis jobs started; a job's number tells it apart from an older one for the same song.
+    @ObservationIgnored private var analysisJobCounter = 0
     /// The next song's cache file once its analysis is stored, so the preload can play from it.
     @ObservationIgnored private var cachedFile: (videoId: String, url: URL)?
     /// The song the player is on, as far as the cache is concerned.
@@ -2228,13 +2230,22 @@ final class MusicService {
         if let old = analysisTarget { dropSpeculativeAnalysis(old) }
         analysisTarget = id
         let wantsFile = stream.origin == .network
-        if wantsFile { heldCacheIDs.insert(id) }
+        analysisJobCounter += 1
+        let job = analysisJobCounter
+        if wantsFile { heldCacheJobs[id] = job }
+        // Behind the cleanup of earlier jobs, so a late cancel or discard for this song cannot hit this fetch.
+        let cleanup = analysisCleanupTask
         analysisTask = Task { [weak self] in
+            await cleanup?.value
+            guard !Task.isCancelled else { return }
             let outcome = await analysis.ensure(stream: stream, wantsFile: wantsFile)
             guard let self else { return }
-            guard self.heldCacheIDs.contains(id), !Task.isCancelled else {
-                // The song stopped being next while the file was coming: nobody will play it.
-                if wantsFile, case .analysed(file: .some) = outcome { self.queueAnalysisCall { await $0.discard(videoId: id) } }
+            guard self.heldCacheJobs[id] == job, !Task.isCancelled else {
+                // The song stopped being next while the file was coming: nobody will play it. A newer job for the same
+                // song owns the file now and keeps it.
+                if wantsFile, self.heldCacheJobs[id] == nil, case .analysed(file: .some) = outcome {
+                    self.queueAnalysisCall { await $0.discard(videoId: id) }
+                }
                 return
             }
             if case .analysed(file: let file?) = outcome {
@@ -2263,7 +2274,7 @@ final class MusicService {
         analysisTask = nil
         analysisTarget = nil
         if cachedFile?.videoId == id { cachedFile = nil }
-        let held = heldCacheIDs.remove(id) != nil
+        let held = heldCacheJobs.removeValue(forKey: id) != nil
         queueAnalysisCall { provider in
             await provider.cancel(videoId: id)
             if held { await provider.discard(videoId: id) }
@@ -2287,7 +2298,7 @@ final class MusicService {
         if let id, analysisTarget == id { analysisTarget = nil }
         if cachedFile != nil, cachedFile?.videoId != id { cachedFile = nil }
         if let leaving, leaving != id {
-            heldCacheIDs.remove(leaving)
+            heldCacheJobs.removeValue(forKey: leaving)
             queueAnalysisCall { await $0.release(videoId: leaving) }
         }
     }

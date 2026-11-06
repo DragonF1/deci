@@ -46,8 +46,16 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
     private let analyze: Analyze
     private let now: @Sendable () -> Date
 
-    private var running: [String: Task<Outcome, Never>] = [:]
-    private var keepsFile: Set<String> = []
+    /// One shared run per song. `joiners` maps each waiting caller to whether it wants the file; the run is cancelled only
+    /// when no joiner is left, and a joiner that wants the file keeps it for everyone.
+    private struct Run {
+        var task: Task<Outcome, Never>
+        var token: UUID
+        var joiners: [UUID: Bool]
+        var cancelled = false
+    }
+
+    private var running: [String: Run] = [:]
 
     init(
         store: MusicAnalysisStore,
@@ -76,14 +84,26 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
 
     func ensure(stream: ResolvedStream, wantsFile: Bool) async -> Outcome {
         let id = stream.videoId
-        if wantsFile { keepsFile.insert(id) }
-        if let task = running[id] { return await task.value }
-        let task = Task { await self.run(stream) }
-        running[id] = task
-        let outcome = await task.value
-        running[id] = nil
-        keepsFile.remove(id)
-        return outcome
+        // A run that was cancelled is let finish (it clears itself) before a new caller starts or joins one.
+        while let run = running[id], run.cancelled { _ = await run.task.value }
+        let me = UUID()
+        let token: UUID
+        let task: Task<Outcome, Never>
+        if var run = running[id] {
+            run.joiners[me] = wantsFile
+            running[id] = run
+            token = run.token
+            task = run.task
+        } else {
+            token = UUID()
+            task = Task { await self.run(stream, token: token) }
+            running[id] = Run(task: task, token: token, joiners: [me: wantsFile])
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { await self.leave(id, token: token, joiner: me) }
+        }
     }
 
     func release(videoId: String) async {
@@ -95,13 +115,46 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
         await cache.discard(videoId: videoId)
     }
 
+    /// Drops the interest of every caller that does not want the file; the run stops unless one that does is waiting.
     func cancel(videoId: String) async {
-        running[videoId]?.cancel()
+        guard var run = running[videoId], !run.joiners.values.contains(true) else { return }
+        run.cancelled = true
+        running[videoId] = run
+        run.task.cancel()
+    }
+
+    /// One caller stopped waiting: the run is cancelled when it was the last.
+    private func leave(_ id: String, token: UUID, joiner: UUID) {
+        guard var run = running[id], run.token == token, run.joiners.removeValue(forKey: joiner) != nil else { return }
+        if run.joiners.isEmpty {
+            run.cancelled = true
+            run.task.cancel()
+        }
+        running[id] = run
+    }
+
+    /// Ends the run's entry (once; a later call finds a different token or none) and says whether a joiner wants the file.
+    @discardableResult
+    private func retire(_ id: String, token: UUID) -> Bool {
+        guard let run = running[id], run.token == token else { return false }
+        running[id] = nil
+        return !run.cancelled && run.joiners.values.contains(true)
+    }
+
+    private func wantsFile(_ id: String, token: UUID) -> Bool {
+        guard let run = running[id], run.token == token else { return false }
+        return run.joiners.values.contains(true)
     }
 
     // MARK: - Run
 
-    private func run(_ stream: ResolvedStream) async -> Outcome {
+    private func run(_ stream: ResolvedStream, token: UUID) async -> Outcome {
+        let outcome = await work(stream, token: token)
+        retire(stream.videoId, token: token)
+        return outcome
+    }
+
+    private func work(_ stream: ResolvedStream, token: UUID) async -> Outcome {
         let id = stream.videoId
         let expected = MusicAnalysis.Format(
             codec: stream.audioCodec ?? "", itag: stream.itag,
@@ -139,13 +192,15 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
         }
         let stored = await analyseAndStore(
             stream: stream, file: file, duration: stream.durationSeconds, format: expected,
-            source: keepsFile.contains(id) ? .playbackCache : .backgroundCache
+            source: wantsFile(id, token: token) ? .playbackCache : .backgroundCache
         )
         guard stored, !Task.isCancelled else {
+            retire(id, token: token)
             await cache.discard(videoId: id)
             return .failed
         }
-        if keepsFile.contains(id) { return .analysed(file: file) }
+        // Decided and retired in one step: a caller that comes later starts its own run instead of reading this one.
+        if retire(id, token: token) { return .analysed(file: file) }
         await cache.discard(videoId: id)
         return .analysed(file: nil)
     }

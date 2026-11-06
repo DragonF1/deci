@@ -31,15 +31,27 @@ actor MusicAnalysisStore {
         deinit { sqlite3_close(handle) }
     }
 
-    private let connection: Connection
-    private var db: OpaquePointer? { connection.handle }
+    /// Opened on first use, inside the actor, so creating the store at launch does no file work.
+    private var connection: Connection?
+    private var didOpen = false
+    private let url: URL?
+    private var db: OpaquePointer? {
+        openIfNeeded()
+        return connection?.handle
+    }
     private let now: @Sendable () -> Date
     /// False after an open or migrate failure; reads return nil and writes are dropped.
     var isAvailable: Bool { db != nil }
 
-    /// `url` nil opens an in-memory database (tests).
+    /// `url` nil opens an in-memory database (tests). Nothing is opened until the first call that needs it.
     init(url: URL?, now: @escaping @Sendable () -> Date = Date.init) {
+        self.url = url
         self.now = now
+    }
+
+    private func openIfNeeded() {
+        guard !didOpen else { return }
+        didOpen = true
         let db = Self.open(url: url, now: now)
         connection = Connection(db)
         if let db {

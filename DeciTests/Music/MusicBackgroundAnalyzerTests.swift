@@ -368,4 +368,54 @@ struct MusicBackgroundAnalyzerTests {
         #expect(await analyzer.isRunning == false)
         #expect(await rig.until { await rig.provider.cancels.contains(id) })
     }
+
+    @Test("stop then start while the first loop is mid-scan leaves one loop that scans afresh")
+    func restartLeavesOneLoop() async {
+        let rig = BackgroundRig()
+        let ids = (1...3).map(BackgroundRig.id)
+        let staleID = BackgroundRig.id(99)
+        let gate = MusicTestGate()
+        let calls = LikedCalls()
+        let clock = rig.clock
+        let source = MusicBackgroundSource(
+            liked: {
+                if calls.next() == 1 {
+                    await gate.wait()
+                    return [staleID]
+                }
+                return ids
+            },
+            playlistIDs: { [] },
+            playlistSongs: { _ in [] }
+        )
+        let analyzer = MusicBackgroundAnalyzer(
+            provider: rig.provider, lookup: rig.provider, source: source,
+            resolve: { MusicSamples.stream(videoId: $0, duration: 200) },
+            env: rig.env, now: { clock.now },
+            sleep: { seconds in
+                try Task.checkCancellation()
+                clock.advance(by: seconds)
+                await Task.yield()
+            }
+        )
+        await analyzer.start()
+        #expect(await rig.until { calls.count == 1 })
+
+        await analyzer.stop()
+        await analyzer.start()
+        await gate.open()
+
+        #expect(await rig.until { await rig.provider.ids.count >= 3 })
+        await rig.settleAwhile()
+        #expect(await rig.provider.ids == ids, "each song once, in order, from the new loop; the stopped loop's list is dropped")
+        #expect(await rig.provider.peak == 1)
+        await analyzer.stop()
+    }
+}
+
+private nonisolated final class LikedCalls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var total = 0
+    var count: Int { lock.withLock { total } }
+    func next() -> Int { lock.withLock { total += 1; return total } }
 }

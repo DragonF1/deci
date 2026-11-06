@@ -237,6 +237,20 @@ struct MusicAnalysisStoreTests {
         #expect((attributes[.posixPermissions] as? Int ?? 0) & 0o077 == 0)
     }
 
+    @Test("Creating a store touches no file: it opens on first use")
+    func opensLazily() async throws {
+        let folder = makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let nested = folder.appendingPathComponent("Nested", isDirectory: true)
+        let url = nested.appendingPathComponent("Analysis.sqlite")
+
+        let store = MusicAnalysisStore(url: url)
+        #expect(!FileManager.default.fileExists(atPath: nested.path), "init must not open or create anything")
+
+        #expect(await store.isAvailable)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
     @Test("The file runs in WAL mode with user_version 1")
     func pragmas() async throws {
         let folder = makeFolder()

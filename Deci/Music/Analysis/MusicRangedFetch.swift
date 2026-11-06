@@ -14,9 +14,13 @@ nonisolated enum MusicRangedFetch {
     /// A stream with less than this left is replaced before it is used.
     static let expiryMargin: TimeInterval = 10
 
+    /// Thrown when a `maxBytes` limit was passed and the file (as reported, or as written) is bigger.
+    enum Failure: Error, Equatable { case tooLarge }
+
     /// Writes the whole file behind `stream` to `handle` (which starts empty) and returns the bytes written and the
     /// duration (the first stream's, else a later one's). Does not sync or close `handle`. `progress` gets the fraction
-    /// written, on the main actor, and never repeats a value.
+    /// written, on the main actor, and never repeats a value. With `maxBytes` the fetch stops with `Failure.tooLarge` as
+    /// soon as the reported total or the bytes written pass it; nil (the Downloads queue) is no limit.
     static func run(
         videoId: String,
         stream firstStream: ResolvedStream,
@@ -25,6 +29,7 @@ nonisolated enum MusicRangedFetch {
         handle: FileHandle,
         now: @Sendable () -> Date,
         resolve: @Sendable (String) async throws -> ResolvedStream,
+        maxBytes: Int64? = nil,
         progress: @escaping @MainActor @Sendable (Double) -> Void
     ) async throws -> (bytes: Int64, duration: Double?) {
         let relay = DownloadProgressRelay(progress)
@@ -73,6 +78,7 @@ nonisolated enum MusicRangedFetch {
             }
             guard let total = rangeTotal ?? addressTotal else { throw MusicDownloadError.unknownLength }
             let count = Int64(chunk.data.count)
+            if let maxBytes, total > maxBytes || written + count > maxBytes { throw Failure.tooLarge }
             // The bytes must be the ones that come next in the file, and the header must say how many there are.
             guard byteRange.lowerBound == written, byteRange.upperBound - byteRange.lowerBound + 1 == count else {
                 throw MusicDownloadError.lengthMismatch

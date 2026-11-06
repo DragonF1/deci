@@ -279,6 +279,37 @@ struct MusicTrackCacheTests {
         #expect(await transport.requestCount == 0)
     }
 
+    @Test("with no clen the reported total over maxBytes is refused after the first answer, and no part file stays")
+    func tooLargeWithoutClen() async throws {
+        let folder = TrackCacheFolder()
+        defer { folder.remove() }
+        var limits = MusicTrackCache.Limits()
+        limits.maxBytes = 10_000
+        let transport = FakeDownloadTransport(serving: payload)
+        let cache = cache(folder, transport: transport, limits: limits)
+        let noLength = FakeDownloadResolver.stream(videoId: idA, call: 0, query: nil)
+
+        await #expect(throws: MusicTrackCache.Failure.tooLarge) {
+            try await cache.fetch(noLength, resolve: resolver().closure)
+        }
+        #expect(await transport.requestCount == 1)
+        #expect(!folder.names.contains { $0.contains(idA) })
+    }
+
+    @Test("with no clen a song within maxBytes still downloads")
+    func withinLimitWithoutClen() async throws {
+        let folder = TrackCacheFolder()
+        defer { folder.remove() }
+        var limits = MusicTrackCache.Limits()
+        limits.maxBytes = 30_000
+        let cache = cache(folder, transport: FakeDownloadTransport(serving: payload), limits: limits)
+        let noLength = FakeDownloadResolver.stream(videoId: idA, call: 0, query: nil)
+
+        let url = try await cache.fetch(noLength, resolve: resolver().closure)
+
+        #expect(try Data(contentsOf: url) == payload)
+    }
+
     @Test("free space under minFreeBytes throws diskFull with nothing written")
     func diskFull() async throws {
         let folder = TrackCacheFolder()

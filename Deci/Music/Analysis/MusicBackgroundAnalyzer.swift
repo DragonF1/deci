@@ -132,13 +132,15 @@ actor MusicBackgroundAnalyzer {
         self.sleep = sleep
     }
 
-    /// Starts the queue. Idempotent. The queue idles (and polls) while the toggle is off.
+    /// Starts the queue. Idempotent. The queue idles (and polls) while the toggle is off. A queue started after a stop
+    /// scans afresh: the stopped loop may still be finishing a step, and it must not leave half a scan behind.
     func start() {
         guard loop == nil else { return }
-        loop = Task { [weak self] in await self?.run() }
+        resetScan()
+        loop = Task { await self.run() }
     }
 
-    /// Ends the queue; a song in flight is cancelled.
+    /// Ends the queue; a song in flight is cancelled. The loop exits at its next check and touches no state after it.
     func stop() {
         loop?.cancel()
         loop = nil
@@ -201,7 +203,10 @@ actor MusicBackgroundAnalyzer {
                 }
                 resetScan()
             }
-            guard let id = await nextID() else {
+            let next = await nextID()
+            // A loop that was stopped (and maybe replaced) while it read a list leaves the shared scan alone.
+            if Task.isCancelled { return }
+            guard let id = next else {
                 exhaustedAt = now()
                 continue
             }
@@ -216,6 +221,7 @@ actor MusicBackgroundAnalyzer {
     }
 
     private func process(_ id: String) async {
+        guard !Task.isCancelled else { return }
         attempted.insert(id)
         interrupted = false
         logger.notice("bg_analysis_start id=\(id, privacy: .public)")
@@ -225,11 +231,14 @@ actor MusicBackgroundAnalyzer {
             let stream = try await resolve(id)
             outcome = await runJob(stream)
         } catch {
-            if Task.isCancelled || interrupted { return giveBack(id) }
+            if Task.isCancelled { return }
+            if interrupted { return giveBack(id) }
             finish(rateLimited: Self.isRateLimit(error))
             return
         }
-        if Task.isCancelled || interrupted { return giveBack(id) }
+        // A stopped loop (the scan restarts on the next start) leaves the shared state alone.
+        if Task.isCancelled { return }
+        if interrupted { return giveBack(id) }
         switch outcome {
         case .alreadyFresh:
             break
@@ -311,24 +320,33 @@ actor MusicBackgroundAnalyzer {
     /// Liked songs, then each playlist in library order, then the songs whose entry is of an old version. Songs with an
     /// entry are skipped (the old ones come back in the last stretch); each song is asked for once per scan.
     private func nextID() async -> String? {
-        while true {
+        while !Task.isCancelled {
             while !pending.isEmpty {
                 let id = pending.removeFirst()
-                if !pendingIsStale, await lookup.hasEntry(id) { continue }
-                return id
+                if !pendingIsStale, await lookup.hasEntry(id) {
+                    if Task.isCancelled { return nil }
+                    continue
+                }
+                return Task.isCancelled ? nil : id
             }
             guard await fill() else { return nil }
         }
+        return nil
     }
 
+    /// Each list is applied only if the loop is still live after reading it: a stopped loop adds nothing.
     private func fill() async -> Bool {
         switch stage {
         case .liked:
             stage = .playlistList
-            add(await read { try await self.source.liked() })
+            let songs = await read { try await self.source.liked() }
+            guard !Task.isCancelled else { return false }
+            add(songs)
         case .playlistList:
             stage = .playlists
-            playlistQueue = await read { try await self.source.playlistIDs() }
+            let ids = await read { try await self.source.playlistIDs() }
+            guard !Task.isCancelled else { return false }
+            playlistQueue = ids
         case .playlists:
             guard !playlistQueue.isEmpty else {
                 stage = .stale
@@ -336,11 +354,13 @@ actor MusicBackgroundAnalyzer {
             }
             let browseId = playlistQueue.removeFirst()
             let songs = await read { try await self.source.playlistSongs(browseId) }
+            guard !Task.isCancelled else { return false }
             add(Array(songs.prefix(policy.maxSongsPerPlaylist)))
         case .stale:
             stage = .done
             pendingIsStale = true
             let stale = await lookup.staleVideoIds(limit: policy.staleBatch)
+            guard !Task.isCancelled else { return false }
             pending = stale.filter { !attempted.contains($0) }
         case .done:
             return false

@@ -230,6 +230,64 @@ struct MusicAnalysisCoordinatorTests {
         #expect(await empty.store.entry(for: id) == nil)
     }
 
+    @Test("one joiner cancelling (task and cancel call) leaves a file-wanting joiner its file")
+    func cancelKeepsOtherJoiner() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        let gate = MusicTestGate()
+        rig.spy.gate = gate
+        let s = rig.stream(id)
+
+        let service = Task { await rig.coordinator.ensure(stream: s, wantsFile: true) }
+        while rig.spy.count == 0 { await Task.yield() }
+        let background = Task { await rig.coordinator.ensure(stream: s, wantsFile: false) }
+        for _ in 0..<20 { await Task.yield() }
+        background.cancel()
+        await rig.coordinator.cancel(videoId: id)
+        await gate.open()
+
+        #expect(await service.value == .analysed(file: rig.folder.file(id)))
+        #expect(rig.folder.exists(rig.folder.file(id)))
+        _ = await background.value
+    }
+
+    @Test("when every joiner has cancelled the run is cancelled and its file deleted")
+    func lastJoinerCancels() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        let gate = MusicTestGate()
+        rig.spy.gate = gate
+        let s = rig.stream(id)
+
+        let only = Task { await rig.coordinator.ensure(stream: s, wantsFile: false) }
+        while rig.spy.count == 0 { await Task.yield() }
+        only.cancel()
+        for _ in 0..<20 { await Task.yield() }
+        await gate.open()
+
+        #expect(await only.value == .failed)
+        #expect(!rig.folder.exists(rig.folder.file(id)))
+    }
+
+    @Test("an ensure that arrives as the run finishes never gets a stale outcome for a deleted file")
+    func noStaleRunningEntry() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        for round in 0..<40 {
+            await rig.store.invalidate(videoId: id)
+            let first = Task { await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false) }
+            for _ in 0..<(round % 12) { await Task.yield() }
+            let second = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: true)
+            _ = await first.value
+
+            if case .analysed(file: let file) = second {
+                let kept = try #require(file, "round \(round): a file-wanting caller got no file")
+                #expect(rig.folder.exists(kept), "round \(round)")
+            }
+            await rig.cache.discard(videoId: id)
+        }
+    }
+
     @Test("release unpins and deletes a kept file after the grace")
     func releaseDeletes() async throws {
         let rig = Rig(payload: payload)
