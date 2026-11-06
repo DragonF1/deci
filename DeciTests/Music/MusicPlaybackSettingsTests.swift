@@ -201,4 +201,13 @@ struct MusicPlaybackSettingsTests {
         let reread = try JSONDecoder().decode(AppSettings.self, from: data)
         #expect(reread.musicPlayback == MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 7))
     }
+
+    @Test("a wrongly typed Crossfade value costs nothing else in the file")
+    func crossfadeWrongType() throws {
+        let settings = try decode(#"{"musicCrossfadeEnabled": "yes", "musicCrossfadeSeconds": "long", "launchAtLogin": true, "musicShuffle": true}"#)
+        #expect(settings.musicCrossfadeEnabled == false)
+        #expect(settings.musicCrossfadeSeconds == 6)
+        #expect(settings.launchAtLogin)
+        #expect(settings.musicShuffle)
+    }
 }

@@ -835,6 +835,10 @@ final class FakePlaybackEngine: PlaybackEngine {
     /// Set to refuse a manual crossfade (the decks cannot fade).
     var refusesManualCrossfade = false
 
+    var canCrossfadeToPreloaded: Bool { preloadedVideoId != nil && preloadReady && !refusesManualCrossfade }
+    /// What the engine reports as the outgoing position of a crossfade; nil is a gapless hand-over.
+    var outgoingPositionAtCrossfade: TimeInterval?
+
     func crossfadeToPreloaded(seconds: TimeInterval) -> Bool {
         guard let id = preloadedVideoId, preloadReady, !refusesManualCrossfade else { return false }
         manualCrossfades.append(seconds)

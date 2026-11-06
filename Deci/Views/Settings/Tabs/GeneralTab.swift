@@ -191,13 +191,16 @@ struct GeneralTab: View {
                 description: "How long one song fades into the next when Crossfade is on in Up next. Albums played in order stay gapless."
             ) {
                 HStack(spacing: 8) {
-                    Text("\(Int(settings.appSettings.musicCrossfadeSeconds.rounded())) s")
+                    Text("\(Int(MusicPlaybackPreferences.clampedCrossfade(settings.appSettings.musicCrossfadeSeconds).rounded())) s")
                         .font(.system(size: 13).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .frame(minWidth: 34, alignment: .trailing)
                     Stepper(
                         "",
-                        value: $settings.appSettings.musicCrossfadeSeconds,
+                        value: Binding(
+                            get: { MusicPlaybackPreferences.clampedCrossfade(settings.appSettings.musicCrossfadeSeconds) },
+                            set: { settings.appSettings.musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade($0) }
+                        ),
                         in: MusicPlaybackPreferences.crossfadeRange,
                         step: 1
                     )

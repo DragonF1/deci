@@ -439,7 +439,7 @@ final class MusicDSPChain: @unchecked Sendable {
         dsp.processEqualizer(input: input, output: samples, frames: frames)
         dsp.compensator.process(input: input, output: samples, frameCount: frames)
 
-        Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade)
+        Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade, lease: lease)
         if metered { dsp.notePeak(samples, count: sampleCount) }
     }
 
@@ -456,6 +456,7 @@ final class MusicDSPChain: @unchecked Sendable {
         dsp: MusicLeaseDSP
     ) {
         var endGain = startGain
+        let envAtStart = lease.headroomEnv
         var counted = false
         var processedFrames = 0
         for index in 0..<list.count {
@@ -480,7 +481,8 @@ final class MusicDSPChain: @unchecked Sendable {
                 data, frames: count, channels: channels, startGain: startGain, target: target, coefficient: lease.rampCoefficient
             )
             Self.zeroNonFinite(data, count: sampleCount)
-            Self.limitAndFade(data, frames: count, channels: channels, fade: fade)
+            lease.headroomEnv = envAtStart
+            Self.limitAndFade(data, frames: count, channels: channels, fade: fade, lease: lease)
             if metered { dsp.notePeak(data, count: sampleCount) }
         }
         lease.currentGain = endGain
@@ -516,16 +518,19 @@ final class MusicDSPChain: @unchecked Sendable {
         return gain
     }
 
-    /// The limiter, then the fade. During an equal-power ramp the two are done together (see `limitAndApply`).
+    /// The limiter, then the fade. During an equal-power ramp the two are done together (see `rideAndApply`).
     private static func limitAndFade(
-        _ samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int, fade: MusicFade
+        _ samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int, fade: MusicFade, lease: MusicRenderLease
     ) {
         let count = frames * channels
         if fade.isHeadroomRamp {
-            fade.limitAndApply(to: samples, frames: frames, channels: channels)
+            fade.rideAndApply(
+                to: samples, frames: frames, channels: channels, env: &lease.headroomEnv, release: lease.headroomRelease
+            )
             zeroNonFinite(samples, count: count)
             return
         }
+        lease.headroomEnv = 1
         SoftLimiter.processBuffer(samples, sampleCount: count)
         zeroNonFinite(samples, count: count)
         fade.apply(to: samples, frames: frames, channels: channels)
@@ -630,23 +635,34 @@ fileprivate struct MusicFade {
         }
     }
 
-    /// The limiter and the fade together, for an equal-power ramp. Each frame's gain `g` is the lease's side of the
-    /// pair, the other side is `sqrt(1 - g^2)`, so the two gains sum to `k = g + sqrt(1 - g^2)` at most. The signal is
-    /// limited at a ceiling of `1/k` (scaled up by `k` into the limiter and back by `g/k`), so what each side adds to
-    /// the sum is at most `g/k` and the pair never exceeds 1.0. Below the limiter's threshold it is the plain gain.
-    func limitAndApply(to samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int) {
+    /// The headroom rule for an equal-power ramp, by riding the gain rather than shaping the waveform. Each frame's gain
+    /// `g` is the lease's side of the pair, the other side is `sqrt(1 - g^2)`, so the two gains sum to `k = g + sqrt(1 -
+    /// g^2)` at most. Every sample is held to `1/k` before the gain: a rider takes the gain down at once when the frame
+    /// would pass that (instant attack) and lets it back up over about 60 ms, so a loud master keeps its shape and what
+    /// each side adds to the sum is at most `g/k`, which keeps the pair at or under 1.0 for any two signals. Quiet
+    /// material (peaks under `1/k`) gets the plain gain. `env` is the rider's gain, kept by the lease between calls.
+    func rideAndApply(to samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int, env: inout Float, release: Float) {
         let ramped = min(frames, remaining)
         for frame in 0..<ramped {
             let g = gain(afterFrames: frame + 1)
             let k = g + max(0, 1 - g * g).squareRoot()
-            let scale = g / k
             let base = frame * channels
+            var peak: Float = 0
+            for channel in 0..<channels {
+                let magnitude = abs(samples[base + channel])
+                if magnitude.isFinite { peak = max(peak, magnitude) }
+            }
+            let ceiling = 1 / k
+            let need: Float = peak > ceiling ? ceiling / peak : 1
+            env = need < env ? need : env + (need - env) * release
+            let scale = env * g
             for channel in 0..<channels {
                 let sample = samples[base + channel]
-                samples[base + channel] = sample.isFinite ? SoftLimiter.apply(sample * k) * scale : 0
+                samples[base + channel] = sample.isFinite ? sample * scale : 0
             }
         }
         if ramped < frames {
+            env = 1
             let rest = samples + ramped * channels
             let count = (frames - ramped) * channels
             SoftLimiter.processBuffer(rest, sampleCount: count)
@@ -666,6 +682,10 @@ final class MusicRenderLease: @unchecked Sendable {
     fileprivate let token: Int
     fileprivate let dsp: MusicLeaseDSP
     fileprivate let rampCoefficient: Float
+    /// The headroom rider lets go with a 60 ms time constant.
+    fileprivate let headroomRelease: Float
+    /// The headroom rider's gain (1 when idle). Renderer-owned.
+    fileprivate nonisolated(unsafe) var headroomEnv: Float = 1
     fileprivate let scratch: UnsafeMutablePointer<Float>
     fileprivate let scratchFrames: Int
     private let armedFlag = Atomic<Bool>(false)
@@ -758,6 +778,7 @@ final class MusicRenderLease: @unchecked Sendable {
         let rate = usable ? sampleRate : chain.fallbackRate
         // 30 ms time constant: the gain covers 63 % of a jump in that time.
         rampCoefficient = Float(1 - exp(-1 / (rate * 0.030)))
+        headroomRelease = Float(1 - exp(-1 / (rate * 0.060)))
         scratchFrames = max(0, maxFrames)
         scratch = .allocate(capacity: max(1, scratchFrames * 2))
         scratch.initialize(repeating: 0, count: max(1, scratchFrames * 2))

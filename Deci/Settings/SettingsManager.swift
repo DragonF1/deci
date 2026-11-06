@@ -110,7 +110,7 @@ nonisolated struct AppSettings: Codable, Equatable {
         // A loop mode this build does not know must not cost the listener the rest of their settings.
         musicLoopMode = (try? c.decodeIfPresent(MusicLoopMode.self, forKey: .musicLoopMode)) ?? .off
         musicAutoplay = try c.decodeIfPresent(Bool.self, forKey: .musicAutoplay) ?? true
-        musicCrossfadeEnabled = try c.decodeIfPresent(Bool.self, forKey: .musicCrossfadeEnabled) ?? false
+        musicCrossfadeEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .musicCrossfadeEnabled)) ?? false
         musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(
             (try? c.decodeIfPresent(Double.self, forKey: .musicCrossfadeSeconds)) ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
         )

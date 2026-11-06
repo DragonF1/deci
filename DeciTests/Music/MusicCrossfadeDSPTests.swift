@@ -198,4 +198,73 @@ struct MusicCrossfadeDSPTests {
         let level = chain.consumeLevel()
         #expect(level > 0.27 && level < 0.33, "combined level \(level)")
     }
+
+    // MARK: - Headroom by riding the gain
+
+    /// A falling equal-power fade over `seconds`, rendered in chunks, with the analytic gain of every frame.
+    private func fallingFade(amplitude: Float, seconds: Double) -> (input: [Float], output: [Float], gain: [Float]) {
+        let chain = MusicDSPChain(sampleRate: rate)
+        let owner = lease(chain)
+        owner.setFade(to: 0, over: seconds, curve: .equalPower)
+        let frames = Int(seconds * rate)
+        let signal = MusicTestSignal.sine(frequency: 220, amplitude: amplitude, sampleRate: rate, frames: frames)
+        var input: [Float] = []
+        var output: [Float] = []
+        let chunk = 480
+        for start in stride(from: 0, to: frames, by: chunk) {
+            let slice = signal.map { Array($0[start..<(start + chunk)]) }
+            input += slice[0]
+            output += render(owner, slice)
+        }
+        let gain = (0..<output.count).map { Float(cos(Double($0 + 1) / Double(frames) * Double.pi / 2)) }
+        return (input, output, gain)
+    }
+
+    @Test("material that peaks under the headroom ceiling passes the midpoint with the plain gain")
+    func quietSineIsGainOnly() {
+        let r = fallingFade(amplitude: 0.6, seconds: 2)
+        for i in 44_000..<52_000 {
+            #expect(abs(r.output[i] - r.input[i] * r.gain[i]) < 2e-3, "frame \(i)")
+        }
+    }
+
+    @Test("a loud sine mid-fade keeps its shape: the rider is near constant across a cycle, never per sample")
+    func loudSineStaysSinusoidal() {
+        let r = fallingFade(amplitude: 0.9, seconds: 2)
+        var ratios: [Float] = []
+        for i in 46_000..<50_000 where abs(r.input[i]) > 0.3 {
+            ratios.append(r.output[i] / (r.input[i] * r.gain[i]))
+        }
+        let low = ratios.min() ?? 0
+        let high = ratios.max() ?? 0
+        #expect(high <= 1.0001, "the rider only ever takes gain away")
+        #expect(low > 0.7, "it is a gentle reduction: \(low)")
+        #expect(high - low < 0.08, "near constant over several cycles: \(low) to \(high)")
+        // And the ceiling holds: at this point each side adds at most g/k.
+        let g = r.gain[48_000]
+        let k = g + (1 - g * g).squareRoot()
+        #expect(r.output[46_000..<50_000].allSatisfy { abs($0) <= g / k + 0.02 })
+    }
+
+    @Test("any two signals, not only correlated ones, stay at or under 1.0 through the overlap")
+    func anyPairStaysBounded() {
+        let chain = MusicDSPChain(sampleRate: rate)
+        let outgoing = lease(chain)
+        let incoming = lease(chain, claims: false)
+        incoming.setFade(to: 0)
+        render(incoming, MusicTestSignal.constant(0.1, frames: 16))
+        outgoing.drain(over: 2, curve: .equalPower)
+        incoming.claim()
+        incoming.setFade(to: 1, over: 2, curve: .equalPower)
+        let frames = 96_000
+        let a = MusicTestSignal.sine(frequency: 220, amplitude: 1.2, sampleRate: rate, frames: frames)
+        let b = MusicTestSignal.sine(frequency: 220, amplitude: 1.2, sampleRate: rate, frames: frames)
+        var peak: Float = 0
+        for start in stride(from: 0, to: frames, by: 480) {
+            let x = render(outgoing, a.map { Array($0[start..<(start + 480)]) })
+            let y = render(incoming, b.map { Array($0[start..<(start + 480)]) })
+            for (u, v) in zip(x, y) { peak = max(peak, abs(u + v)) }
+        }
+        #expect(peak <= 1.0 + 1e-4, "peak \(peak)")
+    }
 }

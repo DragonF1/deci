@@ -141,6 +141,10 @@ final class MusicPlayer {
 
     /// A manual skip onto the preloaded track: the engine starts it now and crossfades over `seconds`. The caller then
     /// calls `adoptPreloaded()`. False, with nothing changed, when it cannot.
+    var canCrossfadeToPreloaded: Bool {
+        isPlaying && !hasEnded && preloadIsReady && engine.canCrossfadeToPreloaded
+    }
+
     func crossfadeToPreloaded(seconds: TimeInterval) -> Bool {
         guard isPlaying, !hasEnded, preloadIsReady else { return false }
         return engine.crossfadeToPreloaded(seconds: seconds)
@@ -408,8 +412,13 @@ final class MusicPlayer {
                 rejectAdvance()
                 return
             }
-            // The old track ran out: its position is its length, as for an end.
-            if duration > 0 { currentTime = duration }
+            // The old track ran out: its position is its length, as for an end. A crossfade started earlier than that,
+            // and the old track really was at the position the engine noted.
+            if let outgoing = engine.outgoingPositionAtCrossfade {
+                currentTime = outgoing
+            } else if duration > 0 {
+                currentTime = duration
+            }
             if !onAdvanced(next) {
                 rejectAdvance()
                 return

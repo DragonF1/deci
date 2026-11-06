@@ -1696,6 +1696,8 @@ final class MusicService {
         guard isCrossfadeOn, !isOffline, player.isPlaying, !player.hasEnded, pendingAdvance == nil,
               player.preloadedTrack?.videoId == track.videoId, player.preloadIsReady,
               let stream = player.preloadedStream, stream.videoId == track.videoId else { return false }
+        // The engine may still refuse (decks without a lease, a fade already running): ask before anything is sent.
+        guard player.canCrossfadeToPreloaded else { return false }
         // The old track's final ping reads the player's position, so it goes before the engine moves on.
         sendFinalPing()
         guard player.crossfadeToPreloaded(seconds: Self.quickFadeSeconds) else { return false }

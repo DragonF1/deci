@@ -296,3 +296,36 @@ struct MusicServiceCrossfadeTests {
         #expect(h.service.isCrossfadeOn == false)
     }
 }
+
+@MainActor
+@Suite("MusicPlayer crossfade hand-over")
+struct MusicPlayerCrossfadeHandOverTests {
+    private func rig() -> (player: MusicPlayer, engine: FakePlaybackEngine) {
+        let engine = FakePlaybackEngine()
+        let player = MusicPlayer(engine: engine)
+        player.load(stream: MusicSamples.stream(videoId: "a"), track: MusicSamples.track("a"))
+        engine.emit(.ready(duration: 200))
+        player.preload(stream: MusicSamples.stream(videoId: "b"), track: MusicSamples.track("b"))
+        return (player, engine)
+    }
+
+    @Test("a crossfade reports the outgoing track's real position at the flip, not its length")
+    func finalPositionIsTheFlipPosition() {
+        let (player, engine) = rig()
+        var seen: TimeInterval?
+        player.onAdvanced = { _ in seen = player.currentTime; return true }
+        engine.outgoingPositionAtCrossfade = 194.0
+        engine.advance()
+        #expect(seen == 194.0)
+    }
+
+    @Test("a gapless hand-over still reports the track's length")
+    func gaplessReportsTheLength() {
+        let (player, engine) = rig()
+        var seen: TimeInterval?
+        player.onAdvanced = { _ in seen = player.currentTime; return true }
+        engine.outgoingPositionAtCrossfade = nil
+        engine.advance()
+        #expect(seen == 200)
+    }
+}

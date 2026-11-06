@@ -140,4 +140,73 @@ struct AVPlaybackEngineCrossfadeTests {
         let finished = await waitUntil(timeout: .seconds(20)) { !engine.isCrossfading }
         #expect(finished)
     }
+
+    @Test("an outgoing item that ends early (a doubled YouTube duration) still ends the drain, and the next fade works")
+    func earlyEndingOutgoingStillDrains() async throws {
+        // The files are 10 s long, the streams say 6 s: the item stops at its forwardPlaybackEndTime, as YouTube's do.
+        let first = try await writeTone("e1", seconds: 10)
+        let second = try await writeTone("e2", seconds: 10)
+        let third = try await writeTone("e3", seconds: 10)
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        chain.setTargetGain(0, snap: true)
+        let engine = AVPlaybackEngine(chain: chain)
+        engine.crossfadeSeconds = 2
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("e1", duration: 6, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("e2", duration: 6, url: second))
+        let flipped = await waitUntil(timeout: .seconds(30)) { events.contains(.advanced(videoId: "e2")) }
+        #expect(flipped, "events: \(events)")
+        let drained = await waitUntil(timeout: .seconds(15)) { !engine.isCrossfading }
+        #expect(drained, "the drain ends although the old item stopped at its own end")
+
+        engine.preload(stream("e3", duration: 6, url: third))
+        let again = await waitUntil(timeout: .seconds(40)) { events.contains(.advanced(videoId: "e3")) }
+        #expect(again, "the next transition is scheduled and fades: \(events)")
+        #expect(engine.crossfadeCount == 2)
+    }
+
+    @Test("pause mid-fade, then a load while paused: the old deck is let go at once and the next schedule works")
+    func loadWhilePausedMidFade() async throws {
+        let first = try await writeTone("q1", seconds: 8)
+        let second = try await writeTone("q2", seconds: 8)
+        let third = try await writeTone("q3", seconds: 8)
+        let fourth = try await writeTone("q4", seconds: 8)
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        chain.setTargetGain(0, snap: true)
+        let engine = AVPlaybackEngine(chain: chain)
+        engine.crossfadeSeconds = 4
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("q1", duration: 8, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("q2", duration: 8, url: second))
+        let fading = await waitUntil(timeout: .seconds(30)) { events.contains(.advanced(videoId: "q2")) && engine.isCrossfading }
+        #expect(fading)
+        engine.pause()
+        engine.load(stream("q3", duration: 8, url: third), startAt: 0, autoplay: true)
+        #expect(!engine.isCrossfading, "a paused fade cannot play out: the old deck goes at once")
+
+        engine.preload(stream("q4", duration: 8, url: fourth))
+        let next = await waitUntil(timeout: .seconds(40)) { events.contains(.advanced(videoId: "q4")) }
+        #expect(next, "the schedule is not blocked by a stuck drain: \(events)")
+    }
+
+    @Test("a seek mid-fade ends the drain, and so does a skip by crossfade onto a ready preload later")
+    func drainClearsAfterSeek() async throws {
+        let first = try await writeTone("k1", seconds: 8)
+        let second = try await writeTone("k2", seconds: 8)
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        chain.setTargetGain(0, snap: true)
+        let engine = AVPlaybackEngine(chain: chain)
+        engine.crossfadeSeconds = 3
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("k1", duration: 8, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("k2", duration: 8, url: second))
+        _ = await waitUntil(timeout: .seconds(30)) { events.contains(.advanced(videoId: "k2")) && engine.isCrossfading }
+        #expect(engine.outgoingPositionAtCrossfade != nil)
+        engine.pause()
+        engine.seek(to: 0.5)
+        #expect(!engine.isCrossfading, "paused: the seek lets the old deck go at once")
+    }
 }

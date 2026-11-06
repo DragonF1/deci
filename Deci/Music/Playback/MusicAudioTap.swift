@@ -98,10 +98,18 @@ final class MusicTapDeck: @unchecked Sendable {
         /// Once set, this deck never arms or claims again, whatever arrives late (a tap that prepares after its deck
         /// was torn down, a stale arm).
         var retired = false
+        /// The outgoing side of a crossfade: a tap that prepares again mid-fade comes back draining.
+        var draining = false
+        /// The incoming side of a crossfade: a tap that prepares again mid-fade comes back ramping up.
+        var fadingIn = false
     }
     /// Every decision about the lease and the call that carries it out happen under this one lock, so a late arm can
     /// never outlive a disarm. The lease calls are atomic operations and a non-blocking main-queue post: safe to make here.
     private let state = OSAllocatedUnfairLock(initialState: State())
+
+    /// How a re-prepared tap picks its fade up again, mid-crossfade (approximate by design).
+    static let reattachDrain = 0.03
+    static let reattachRamp = 0.1
 
     init(role: Role) {
         self.role = role
@@ -114,6 +122,14 @@ final class MusicTapDeck: @unchecked Sendable {
             state.lease = lease
             if state.retired {
                 lease.release()
+            } else if state.draining {
+                // Re-prepared in the middle of its own fade-out: it never claims again, and goes quickly rather than
+                // cutting off.
+                lease.drain(over: MusicTapDeck.reattachDrain, curve: .linear)
+            } else if state.fadingIn {
+                state.active = true
+                lease.claim()
+                lease.setFade(to: 1, over: MusicTapDeck.reattachRamp, curve: .linear, fromSilence: true)
             } else if role == .active || state.active {
                 state.active = true
                 lease.claim()
@@ -173,8 +189,19 @@ final class MusicTapDeck: @unchecked Sendable {
     func drain(over seconds: Double, curve: MusicFadeCurve = .equalPower) {
         state.withLock { state in
             guard !state.retired else { return }
+            state.draining = true
             state.lease?.drain(over: seconds, curve: curve)
         }
+    }
+
+    /// Marks this deck as the incoming side of a crossfade until `endOverlap()`.
+    func beginFadeIn() {
+        state.withLock { $0.fadingIn = true }
+    }
+
+    /// The overlap is over: a later re-prepare is an ordinary one.
+    func endOverlap() {
+        state.withLock { $0.fadingIn = false }
     }
 
     /// This deck is over: its tap stops rendering, and the deck never claims again.

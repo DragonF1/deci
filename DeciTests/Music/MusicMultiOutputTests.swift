@@ -77,6 +77,8 @@ final class LoggingPlaybackEngine: PlaybackEngine {
     func cancelPreload() {}
     var crossfadeSeconds: Double = 0
     var preloadIsReady: Bool { false }
+    var canCrossfadeToPreloaded: Bool { false }
+    var outgoingPositionAtCrossfade: TimeInterval? { nil }
     func crossfadeToPreloaded(seconds: TimeInterval) -> Bool { false }
 
     func setOutputDevice(uid: String?) {
