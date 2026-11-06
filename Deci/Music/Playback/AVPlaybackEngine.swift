@@ -128,6 +128,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private static let minimumFade: TimeInterval = 1
     /// Never schedule a fade start closer than this to now.
     private static let fadeGuard: TimeInterval = 0.25
+    /// A scheduled start stays this far (more than the 0.05 s the scheduler needs) from the item's end.
+    private static let latestLeadMargin: TimeInterval = 0.1
     /// The outgoing deck of a seek, skip or quick fade is gone within this.
     private static let quickDrain: TimeInterval = 0.03
 
@@ -222,6 +224,9 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var requestedStartOffset: TimeInterval = 0
     /// The active item's forwardPlaybackEndTime was moved to the plan's trimmed end.
     private var endTrimmed = false
+    /// A listener's seek landed at or near the trimmed end: the item's natural end is back and the transition is Tier 1
+    /// style from there (the setting's fade, ending at the natural end). Reset with the plan.
+    private var endRestoredBySeek = false
     /// Seconds of the incoming glide back to 0 dB, started when the outgoing deck has drained. 0 = none pending.
     private var pendingGlide: TimeInterval = 0
     /// The fall-back reason of this preload was logged already.
@@ -551,6 +556,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             endDrain(fast: true)
             active.tap?.fade(to: 1, over: Self.quickDrain)
         }
+        restoreEndForSeek(to: seconds)
         // The end moved: the standby's start goes with it, and is set again once the seek has landed.
         cancelSchedule()
         let token = active.token
@@ -648,7 +654,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// Moves the active item's end to the plan's trimmed end (from the stream's own duration, so never past its natural
     /// end), or back to the natural end when the plan has none. Not when the new end is within a second of now.
     private func applyOutgoingEnd() {
-        guard let item = active.player.currentItem, let natural = active.naturalEnd else { return }
+        guard !endRestoredBySeek, let item = active.player.currentItem, let natural = active.naturalEnd else { return }
         if let end = transitionPlan?.outgoingEndSec, end.isFinite {
             let trimmed = min(end, natural)
             let now = active.player.currentTime().seconds
@@ -660,6 +666,19 @@ final class AVPlaybackEngine: PlaybackEngine {
             }
         }
         restoreOutgoingEnd()
+    }
+
+    /// A listener's seek to or near the trimmed end (within the fade's lead plus a second of it) would end the item at
+    /// once, with no fade: the natural end comes back for this item and the transition runs from there.
+    private func restoreEndForSeek(to seconds: TimeInterval) {
+        guard endTrimmed, !endRestoredBySeek, let plan = transitionPlan, let end = plan.outgoingEndSec, end.isFinite,
+              let natural = active.naturalEnd else { return }
+        let trimmed = min(end, natural)
+        var lead = max(0, plan.fadeSeconds)
+        if plan.mode == .smart, let start = plan.fadeStartSec, start.isFinite { lead = max(lead, trimmed - start) }
+        guard seconds >= trimmed - (lead + 1) else { return }
+        restoreOutgoingEnd()
+        endRestoredBySeek = true
     }
 
     private func restoreOutgoingEnd() {
@@ -680,6 +699,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         plannedLead = 0
         plannedPlan = nil
         restoreOutgoingEnd()
+        endRestoredBySeek = false
         transitionPlan = nil
         requestedStartOffset = 0
         preloadStream = nil
@@ -817,7 +837,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// own `fadeStartSec` (the lead is then longer than the fade); a fixed plan anchors it at the end. Gapless and clean
     /// plans have neither. A plan that cannot fade (no tap or lease on a deck) degrades to the gapless switch.
     private func transitionNumbers(remaining: TimeInterval, end: CMTime) -> (fade: TimeInterval, lead: TimeInterval) {
-        guard let plan = transitionPlan else {
+        guard let plan = transitionPlan, !endRestoredBySeek else {
             let fade = fadeLength(remaining: remaining, end: end)
             return (fade, fade)
         }
@@ -828,11 +848,18 @@ final class AVPlaybackEngine: PlaybackEngine {
             return (0, 0)
         }
         let fade = min(plan.fadeSeconds, remaining - Self.fadeGuard)
-        guard fade >= Self.minimumFade else { return (0, 0) }
+        // Too little is left for the plan's fade: the setting's own fade, held to what remains (gapless only when even
+        // that is under a second).
+        guard fade >= Self.minimumFade else {
+            let fixed = fadeLength(remaining: remaining, end: end)
+            return (fixed, fixed)
+        }
         var lead = fade
         if plan.mode == .smart, let start = plan.fadeStartSec, start.isFinite {
             lead = max(fade, end.seconds - start)
         }
+        // A smart lead longer than what remains (a plan that came late) starts the overlap as early as it still can.
+        lead = max(fade, min(lead, remaining - Self.latestLeadMargin))
         return (fade, lead)
     }
 
@@ -1000,6 +1027,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         transitionPlan = nil
         requestedStartOffset = 0
         endTrimmed = false
+        endRestoredBySeek = false
 
         // The chain changes hands: the new deck's tap owns it, the old one renders nothing more.
         incoming.tap?.activate()
@@ -1124,6 +1152,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         transitionPlan = nil
         requestedStartOffset = 0
         endTrimmed = false
+        endRestoredBySeek = false
         preloadStream = nil
         preloadReady = false
         if startStandby { incoming.player.play() }

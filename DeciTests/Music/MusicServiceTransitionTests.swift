@@ -474,4 +474,114 @@ struct MusicServiceTransitionTests {
             #expect(!line.contains("Song "))
         }
     }
+
+    // MARK: - Review fixes
+
+    @Test("Previous measures the 3 s restart rule from the song's trim offset, not from item time 0")
+    func previousCountsFromTheStartOffset() async throws {
+        let h = TransitionHarness()
+        await h.reader.set(TransitionHarness.row("a", silenceEnd: 197, outroStart: 185))
+        await h.reader.set(TransitionHarness.row("b", silenceStart: 5, introEnd: 12))
+        await h.startQueue(["a", "b", "c"])
+        await h.tick(126)
+        await h.tick(160)
+        let offset = try #require(h.lastPlan?.incomingStartSec)
+        #expect(offset > 3)
+        h.engine.advance()
+        await h.settle()
+        #expect(h.player.nowPlaying?.videoId == "b")
+        #expect(h.player.currentTime == offset)
+        #expect(h.player.playbackStartOffset == offset)
+
+        // One second into the song (item time offset + 1): Previous goes back one song, it does not restart.
+        h.engine.tick(offset + 1, playing: true)
+        h.service.previous()
+        await h.settle()
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.player.playbackStartOffset == 0, "a fresh load starts at 0")
+    }
+
+    @Test("Previous restarts a song that has played more than 3 s past its offset")
+    func previousRestartsPastThreeSeconds() async throws {
+        let h = TransitionHarness()
+        await h.reader.set(TransitionHarness.row("a", silenceEnd: 197, outroStart: 185))
+        await h.reader.set(TransitionHarness.row("b", silenceStart: 5, introEnd: 12))
+        await h.startQueue(["a", "b", "c"])
+        await h.tick(126)
+        await h.tick(160)
+        let offset = try #require(h.lastPlan?.incomingStartSec)
+        h.engine.advance()
+        await h.settle()
+        h.engine.tick(offset + 4, playing: true)
+        h.service.previous()
+        await h.settle()
+        #expect(h.player.nowPlaying?.videoId == "b")
+    }
+
+    @Test("a final ping after a trimmed end carries the trimmed end, not the song's length")
+    func finalPingIsCappedAtTheTrimmedEnd() async throws {
+        let h = TransitionHarness()
+        await h.reader.set(TransitionHarness.row("a", silenceEnd: 197, outroStart: 185))
+        await h.reader.set(TransitionHarness.row("b", silenceStart: 0.5, introEnd: 8))
+        for id in ["a", "b"] {
+            await h.backend.setStream(MusicSamples.stream(
+                videoId: id,
+                trackingURL: URL(string: "https://music.example.test/stats/playback?ev=\(id)"),
+                watchtimeURL: URL(string: "https://music.example.test/stats/watchtime?ev=\(id)"),
+                duration: 200
+            ))
+        }
+        let tracks = ["a", "b"].map { MusicSamples.track($0, title: "Song \($0)") }
+        await h.backend.setRadio(seed: "a", tracks: tracks, continuation: nil)
+        h.service.play(tracks[0])
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        var position = 0.0
+        while position < 160 {
+            h.engine.tick(position, playing: true)
+            position += 0.5
+        }
+        await h.tick(160)
+        h.engine.advance()
+        await h.settle()
+        let finals = await h.backend.reportAttempts.filter { $0.details?.isFinal == true }
+        let ping = try #require(finals.first, "a final ping went out")
+        #expect(ping.mediaTime <= 197, "capped at the trimmed end: \(ping.mediaTime)")
+    }
+
+    @Test("Loop song turned on while a trimmed preload is parked withdraws it, and the next offer starts at 0")
+    func loopSongWithdrawsATrimmedPreload() async throws {
+        let h = TransitionHarness()
+        await h.standardRows()
+        await h.startQueue(["a", "b", "c"])
+        await h.tick(126)
+        await h.tick(160)
+        #expect(h.lastPlan?.incomingStartSec == 0.5)
+        let cancels = h.engine.cancelPreloadCount
+        let updates = h.engine.updatedPlans.count
+
+        h.service.setLoopMode(.song)
+
+        #expect(h.engine.cancelPreloadCount == cancels + 1, "the parked standby is dropped")
+        #expect(h.engine.updatedPlans.count == updates, "no plan is pushed at the old offset")
+        await h.tick(186)
+        let plan = try #require(h.lastPlan)
+        #expect(plan.reason == .loopSong)
+        #expect(plan.incomingStartSec == 0)
+    }
+
+    @Test("a setting change re-plans a parked preload once, and ticks after it add no update")
+    func replanOnlyOnChange() async {
+        let h = TransitionHarness()
+        await h.standardRows()
+        await h.startQueue(["a", "b"])
+        await h.tick(126)
+        await h.tick(160)
+        h.service.setCrossfade(false)
+        #expect(h.engine.updatedPlans.count == 1)
+        for position in stride(from: 165.0, to: 185, by: 5) { await h.tick(position) }
+        #expect(h.engine.updatedPlans.count == 1)
+        h.service.setCrossfade(true)
+        #expect(h.engine.updatedPlans.count == 2)
+    }
 }

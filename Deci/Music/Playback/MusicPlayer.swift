@@ -125,6 +125,11 @@ final class MusicPlayer {
     /// value counts. The engine clears its plan at the hand-over, so the last value seen is kept.
     @ObservationIgnored private var parkedOffset: TimeInterval = 0
 
+    /// Where the song that plays now began on its own timeline: 0 for every load, the plan's trim offset for a song the
+    /// engine handed over to already parked. `currentTime` and the engine position are item times that begin here, so the
+    /// listener's elapsed time in the song is `currentTime - playbackStartOffset`.
+    @ObservationIgnored private(set) var playbackStartOffset: TimeInterval = 0
+
     /// Prepares the track after the current one on the engine's standby deck. Nothing changes for the listener. With a
     /// `plan` (tier 2b) the standby is parked at `plan.incomingStartSec` and the plan drives the transition.
     func preload(stream: ResolvedStream, track: MusicTrack, plan: TransitionPlan? = nil) {
@@ -197,6 +202,7 @@ final class MusicPlayer {
         wantsPlay = true
         duration = preloaded.stream.durationSeconds ?? Double(preloaded.track.durationSeconds ?? 0)
         currentTime = duration > 0 ? min(start, duration) : start
+        playbackStartOffset = currentTime
         viewCount = preloaded.stream.viewCount
     }
 
@@ -326,6 +332,7 @@ final class MusicPlayer {
         refreshTask = nil
         preloaded = nil
         engineDropped = false
+        playbackStartOffset = 0
         self.stream = stream
         nowPlaying = track
         error = nil
@@ -356,6 +363,7 @@ final class MusicPlayer {
         hasEnded = false
         wantsPlay = false
         currentTime = 0
+        playbackStartOffset = 0
         duration = 0
         viewCount = nil
     }

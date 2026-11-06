@@ -14,7 +14,12 @@ private struct FlagRig {
     let clock = MutableClock()
     let scheduler: ManualWriteScheduler
     var fileURL: URL { directory.appendingPathComponent("MusicMixFlags.json", isDirectory: false) }
-    var badURL: URL { directory.appendingPathComponent("MusicMixFlags.json.bad", isDirectory: false) }
+    /// The files the store moved aside: `MusicMixFlags.json.<stamp>.bad`.
+    var badFiles: [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        return names.filter { $0.hasPrefix("MusicMixFlags.json.") && $0.hasSuffix(".bad") }
+            .map { directory.appendingPathComponent($0, isDirectory: false) }
+    }
 
     init() {
         scheduler = ManualWriteScheduler(clock: clock)
@@ -31,6 +36,17 @@ private struct FlagRig {
     }
 
     func cleanUp() { try? FileManager.default.removeItem(at: directory) }
+}
+
+/// A scheduler that asks the store something from inside `schedule`: with the timer armed under the store's lock this
+/// would re-enter it.
+private final class ReentrantScheduler: MusicWriteScheduler, @unchecked Sendable {
+    var store: MusicMixFlagStore?
+    var asked = 0
+    func schedule(after delay: TimeInterval, _ work: @escaping @Sendable () -> Void) -> @Sendable () -> Void {
+        if store?.startsClean("probe") != nil { asked += 1 }
+        return {}
+    }
 }
 
 @MainActor
@@ -171,20 +187,56 @@ struct MusicMixFlagStoreTests {
         let store = rig.makeStore()
         #expect(!store.startsClean("a"))
         #expect(!FileManager.default.fileExists(atPath: rig.fileURL.path))
-        #expect(try String(contentsOf: rig.badURL, encoding: .utf8) == "{ not json")
+        #expect(rig.badFiles.count == 1)
+        #expect(try String(contentsOf: try #require(rig.badFiles.first), encoding: .utf8) == "{ not json")
         store.setStartsClean(true, videoId: "a")
         store.flush()
         #expect(rig.makeStore().startsClean("a"))
     }
 
-    @Test("an unknown version is moved to .bad and ignored")
-    func unknownVersionMovedAside() throws {
+    @Test("a newer version is left untouched, nothing is loaded and nothing is written this session")
+    func newerVersionIsLeftAlone() throws {
         let rig = FlagRig()
         defer { rig.cleanUp() }
-        try rig.writeRaw(#"{"version":2,"cleanStart":["a"],"pairs":[]}"#)
+        let text = #"{"version":2,"cleanStart":["a"],"pairs":[]}"#
+        try rig.writeRaw(text)
         let store = rig.makeStore()
         #expect(!store.startsClean("a"))
-        #expect(FileManager.default.fileExists(atPath: rig.badURL.path))
+        #expect(rig.badFiles.isEmpty)
+        store.setStartsClean(true, videoId: "b")
+        store.flush()
+        #expect(store.startsClean("b"), "flags still work in memory")
+        #expect(store.writeCount == 0)
+        #expect(try String(contentsOf: rig.fileURL, encoding: .utf8) == text, "the file on disk is as it was")
+    }
+
+    @Test("a file that cannot be read is left untouched and writes stay off")
+    func unreadableFileIsLeftAlone() throws {
+        let rig = FlagRig()
+        defer { rig.cleanUp() }
+        let text = #"{"version":1,"cleanStart":["a"],"pairs":[]}"#
+        try rig.writeRaw(text)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: rig.fileURL.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rig.fileURL.path) }
+        let store = rig.makeStore()
+        #expect(!store.startsClean("a"))
+        #expect(rig.badFiles.isEmpty)
+        store.setStartsClean(true, videoId: "b")
+        store.flush()
+        #expect(store.writeCount == 0)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rig.fileURL.path)
+        #expect(try String(contentsOf: rig.fileURL, encoding: .utf8) == text)
+    }
+
+    @Test("two bad files in a row each keep their own .bad name")
+    func badNamesDoNotCollide() throws {
+        let rig = FlagRig()
+        defer { rig.cleanUp() }
+        try rig.writeRaw("{ one")
+        _ = rig.makeStore()
+        try rig.writeRaw("{ two")
+        _ = rig.makeStore()
+        #expect(rig.badFiles.count == 2)
     }
 
     @Test("a pair that is not two ids makes the file unusable")
@@ -194,7 +246,7 @@ struct MusicMixFlagStoreTests {
         try rig.writeRaw(#"{"version":1,"cleanStart":["a"],"pairs":[["x"]]}"#)
         let store = rig.makeStore()
         #expect(!store.startsClean("a"))
-        #expect(FileManager.default.fileExists(atPath: rig.badURL.path))
+        #expect(rig.badFiles.count == 1)
     }
 
     @Test("a file holding more than the cap loads only the newest entries")
@@ -261,5 +313,19 @@ struct MusicMixFlagStoreTests {
             MusicMixFlagStore.liveFileURL().deletingLastPathComponent()
                 == MusicSessionStore.liveFileURL().deletingLastPathComponent()
         )
+    }
+
+    @Test("the trailing-write timer is armed outside the store's lock")
+    func timerIsArmedOutsideTheLock() {
+        let rig = FlagRig()
+        defer { rig.cleanUp() }
+        let scheduler = ReentrantScheduler()
+        let clock = rig.clock
+        let store = MusicMixFlagStore(fileURL: rig.fileURL, now: { clock.now }, scheduler: scheduler)
+        scheduler.store = store
+        store.setStartsClean(true, videoId: "a")
+        store.setStartsClean(true, videoId: "b")
+        #expect(scheduler.asked == 1, "the second change inside the second armed the one trailing timer")
+        store.flush()
     }
 }

@@ -67,6 +67,10 @@ final class MusicService {
     /// Whether the network is reachable. Nil in a service built without it (a preview, most tests): always online.
     @ObservationIgnored private let connectivity: MusicConnectivity?
     @ObservationIgnored private let mixFlags: MusicMixFlagStore?
+    /// The settings the parked plan was last checked against (see `syncCrossfade`).
+    @ObservationIgnored private var syncedSettings: ReplanSettings?
+    /// Bumped by every mix flag change. Read by `mixItems`, so a menu built in a view body is built again after a pick.
+    private var mixRevision = 0
     /// The network is gone. Observable: the views that read it redraw when it goes and when it returns.
     var isOffline: Bool {
         guard let connectivity else { return false }
@@ -783,6 +787,7 @@ final class MusicService {
         restoreTask?.cancel()
         saveSession(force: true)
         sessionStore?.flush()
+        mixFlags?.flush()
         sessionClosed = true
         cancelWork()
         endQueue()
@@ -1425,7 +1430,22 @@ final class MusicService {
     /// Hands the player the fade the next transition gets, so the engine plans it.
     private func syncCrossfade() {
         player.crossfadeSeconds = effectiveCrossfadeSeconds
+        // The parked plan is built again only when a setting it depends on changed (a tick that changes nothing costs
+        // nothing); a flag change re-plans through `performMix`.
+        let settings = ReplanSettings(
+            crossfadeOn: isCrossfadeOn, seconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
+            loopSong: loopMode == .song
+        )
+        guard settings != syncedSettings else { return }
+        syncedSettings = settings
         replanOffered()
+    }
+
+    private struct ReplanSettings: Equatable {
+        var crossfadeOn: Bool
+        var seconds: Double
+        var albumInOrder: Bool
+        var loopSong: Bool
     }
 
     private func savePlaybackPreferences() {
@@ -1493,7 +1513,8 @@ final class MusicService {
         noteActivity()
         guard player.nowPlaying != nil else { return }
         let hasPrevious = isOffline ? queue.hasPrevious(where: canPlayNow) : queue.hasPrevious
-        if player.currentTime > Self.restartThreshold || !hasPrevious {
+        // Measured from where the song began: a song that starts at its trim offset has not played 3 s at 3 s of item time.
+        if player.currentTime - player.playbackStartOffset > Self.restartThreshold || !hasPrevious {
             // A track that ended replays through play(), which also rewinds it.
             if player.hasEnded { player.play() } else { seek(to: 0) }
             return
@@ -1723,10 +1744,11 @@ final class MusicService {
         // Everything is checked above and nothing has changed yet: a refusal leaves the queue and the session to the
         // ordinary end of the track, which advances the queue once and sends the one final ping.
         // Consumed, not withdrawn: the queue moving on below must not take it back from the player.
+        let trimmedEnd = offeredPlan?.plan.outgoingEndSec
         preloadOffered = nil
         offeredPlan = nil
         // The old session closes with its final ping (it reads the player's position, still the old track's end).
-        sendFinalPing()
+        sendFinalPing(endingAt: trimmedEnd)
         direction = .forward
         let replay = loopMode == .song
         if !replay {
@@ -2501,6 +2523,7 @@ final class MusicService {
     /// The no-mix entries for a song's menu: its own, and, with `includingPrevious` for the song playing now, the pair
     /// with the song before it. Empty when there is no flag store.
     func mixItems(for track: MusicTrack, includingPrevious: Bool) -> [MusicMixMenuItem] {
+        _ = mixRevision
         guard let mixFlags else { return [] }
         var pairIsClean: Bool?
         if includingPrevious, let previous = previousTrack(of: track) {
@@ -2519,6 +2542,7 @@ final class MusicService {
             guard let previous = previousTrack(of: track) else { return }
             mixFlags.setPairClean(!on, from: previous.videoId, to: track.videoId)
         }
+        mixRevision += 1
         replanOffered()
     }
 
@@ -2536,6 +2560,12 @@ final class MusicService {
         inputs.cleanStartFlag = flags.startsClean
         inputs.cleanPairFlag = flags.pairIsClean
         var plan = MusicTransitionPlanner.plan(inputs)
+        // An album in order or Loop song takes the trims away, but the standby is parked at the old offset: the preload is
+        // withdrawn and offered again on a later tick, with a plan that starts at 0.
+        if offered.plan.incomingStartSec != 0, plan.reason == .albumInOrder || plan.reason == .loopSong {
+            cancelPreload()
+            return
+        }
         plan.incomingStartSec = offered.plan.incomingStartSec
         guard plan != offered.plan else { return }
         offered.inputs = inputs
@@ -2811,9 +2841,11 @@ final class MusicService {
     /// Closes the session with its one final ping (`final=1`), when it got as far as the playback ping: a session that
     /// never sent one has told YouTube nothing to close, as in the web player. The position comes from the player,
     /// so this goes before anything that resets it. Never sent twice for one session.
-    private func sendFinalPing() {
+    private func sendFinalPing(endingAt trimmedEnd: Double? = nil) {
         guard let cpn = session?.cpn, let url = session?.watchtimeURL else { return }
-        let position = player.currentTime
+        // A song cut at its trimmed end stopped there, whatever length the player reports for it.
+        var position = player.currentTime
+        if let end = trimmedEnd ?? offeredPlan?.plan.outgoingEndSec, end.isFinite { position = min(position, end) }
         let clock = sessionClock
         guard let details = session?.watchtime.finish(position: position, now: clock) else { return }
         enqueue([HistoryPing(kind: .watchtime, url: url, cpn: cpn, mediaTime: position, details: stamped(details))])

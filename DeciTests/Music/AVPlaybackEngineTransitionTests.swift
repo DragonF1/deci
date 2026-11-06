@@ -401,4 +401,46 @@ struct AVPlaybackEngineTransitionTests {
         #expect(abs((itemEnd(engine) ?? 0) - 8) < 0.01)
         #expect(engine.standbyAvPlayer.currentTime().seconds < 0.05)
     }
+    // MARK: - Review fixes
+
+    @Test("a seek to or near the trimmed end brings the natural end back; a seek well before it keeps the trim")
+    func seekPastTheTrimRestoresTheNaturalEnd() async throws {
+        let first = try await writeTone("sk1", seconds: 10)
+        let second = try await writeTone("sk2", seconds: 8)
+        let (engine, _) = makeEngine()
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("sk1", duration: 10, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("sk2", duration: 8, url: second), plan: plan(.smart, end: 8, fadeStart: 5, fade: 2))
+        let trimmed = await waitUntil(timeout: .seconds(30)) { itemEnd(engine).map { abs($0 - 8) < 0.01 } ?? false }
+        #expect(trimmed)
+        engine.seek(to: 1)
+        #expect(abs((itemEnd(engine) ?? 0) - 8) < 0.01, "a seek well before the trim keeps it")
+        // 7 is inside trimmed end (8) minus lead (3) minus 1 s.
+        engine.seek(to: 7)
+        #expect(abs((itemEnd(engine) ?? 0) - 10) < 0.01, "natural end is back: \(String(describing: itemEnd(engine)))")
+        engine.updateTransitionPlan(plan(.smart, end: 8, fadeStart: 5, fade: 2))
+        #expect(abs((itemEnd(engine) ?? 0) - 10) < 0.01, "a plan update does not trim it again")
+        let advanced = await waitUntil(timeout: .seconds(30)) { events.contains(.advanced(videoId: "sk2")) }
+        #expect(advanced, "events: \(events)")
+        #expect(!events.contains(.ended))
+        #expect(engine.position >= 0)
+    }
+
+    @Test("a plan that comes late (smart lead longer than what is left) still fades, held to what remains")
+    func latePlanIsClamped() async throws {
+        let first = try await writeTone("lt1", seconds: 12)
+        let second = try await writeTone("lt2", seconds: 12)
+        let (engine, _) = makeEngine()
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("lt1", duration: 12, url: first), startAt: 8.5, autoplay: true)
+        engine.preload(stream("lt2", duration: 12, url: second), plan: plan(.smart, fadeStart: 1, fade: 2))
+        let flipped = await waitUntil(timeout: .seconds(30)) {
+            events.contains(.advanced(videoId: "lt2")) && engine.isCrossfading
+        }
+        #expect(flipped, "events: \(events)")
+        #expect(engine.crossfadeCount == 1, "a fade, not a gapless cut")
+        #expect(engine.fallbackAdvanceCount == 0)
+    }
 }

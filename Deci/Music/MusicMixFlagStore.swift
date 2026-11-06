@@ -8,8 +8,9 @@ import os
 ///
 /// Reads are answered from memory. Writes are atomic and happen on a queue of their own, at most one a second (the first
 /// change after a quiet second goes out at once, a burst leaves one trailing write), the way `MusicSessionStore` does
-/// it. Each list keeps at most `cap` entries and drops the oldest. A file that cannot be read, or has another version, is
-/// moved to `MusicMixFlags.json.bad` and the store starts empty: it never throws and never holds playback up.
+/// it. Each list keeps at most `cap` entries and drops the oldest. A file that is not valid JSON is
+/// moved to a timestamped `.bad` name and the store starts empty; one that cannot be read, or has another version, is left
+/// untouched and the store runs from memory with writes off. It never throws and never holds playback up.
 /// Logs carry counts only, never an id.
 final class MusicMixFlagStore: Sendable {
     static let writeInterval: TimeInterval = 1
@@ -35,9 +36,25 @@ final class MusicMixFlagStore: Sendable {
         var pairs: [Pair] = []
         var dirty = false
         var lastWrite: Date?
+        var armed = false
         var cancelTimer: (@Sendable () -> Void)?
         var timerID = 0
         var writes = 0
+        /// False when the file on disk could not be read or is from a newer version: it is left as it is and this session
+        /// runs from memory, so the listener's flags on disk are never overwritten.
+        var writable = true
+    }
+
+    private struct Loaded {
+        var cleanStart: [String] = []
+        var pairs: [Pair] = []
+        var writable = true
+    }
+
+    /// A timer to start once the state lock is released: the id it was reserved under, and its delay.
+    private struct TimerRequest {
+        var id: Int
+        var delay: TimeInterval
     }
 
     private let fileURL: URL
@@ -58,6 +75,7 @@ final class MusicMixFlagStore: Sendable {
         state.withLock {
             $0.cleanStart = loaded.cleanStart
             $0.pairs = loaded.pairs
+            $0.writable = loaded.writable
         }
     }
 
@@ -89,40 +107,44 @@ final class MusicMixFlagStore: Sendable {
     // MARK: - Changing
 
     func setStartsClean(_ on: Bool, videoId: String) {
-        state.withLock { state in
+        let request = state.withLock { state -> TimerRequest? in
             let had = state.cleanStart.contains(videoId)
-            guard had != on else { return }
+            guard had != on else { return nil }
             if on {
                 state.cleanStart.append(videoId)
                 if state.cleanStart.count > Self.cap { state.cleanStart.removeFirst(state.cleanStart.count - Self.cap) }
             } else {
                 state.cleanStart.removeAll { $0 == videoId }
             }
-            changed(&state)
+            return changed(&state)
         }
+        start(request)
     }
 
     func setPairClean(_ on: Bool, from: String, to: String) {
         let pair = Pair(from: from, to: to)
-        state.withLock { state in
+        let request = state.withLock { state -> TimerRequest? in
             let had = state.pairs.contains(pair)
-            guard had != on else { return }
+            guard had != on else { return nil }
             if on {
                 state.pairs.append(pair)
                 if state.pairs.count > Self.cap { state.pairs.removeFirst(state.pairs.count - Self.cap) }
             } else {
                 state.pairs.removeAll { $0 == pair }
             }
-            changed(&state)
+            return changed(&state)
         }
+        start(request)
     }
 
     /// Writes what is waiting now and returns once every earlier write has landed.
     func flush() {
-        state.withLock { state in
-            cancelTimer(&state)
+        let cancel = state.withLock { state -> (@Sendable () -> Void)? in
+            let cancel = cancelTimer(&state)
             if state.dirty { handOver(&state) }
+            return cancel
         }
+        cancel?()
         io.sync {}
     }
 
@@ -132,23 +154,54 @@ final class MusicMixFlagStore: Sendable {
     }
 
     /// A flag changed (called with the state held): writes now after a quiet second, otherwise leaves one trailing write.
-    private func changed(_ state: inout State) {
+    /// Returns the timer to start once the lock is released: the scheduler is never called under it.
+    private func changed(_ state: inout State) -> TimerRequest? {
         state.dirty = true
         if let last = state.lastWrite {
             let elapsed = now().timeIntervalSince(last)
             if elapsed >= 0, elapsed < Self.writeInterval {
-                if state.cancelTimer == nil { armTimer(after: Self.writeInterval - elapsed, &state) }
-                return
+                guard !state.armed else { return nil }
+                state.armed = true
+                state.timerID += 1
+                return TimerRequest(id: state.timerID, delay: Self.writeInterval - elapsed)
             }
         }
-        cancelTimer(&state)
+        // The timer, if one is waiting, is left to find nothing dirty: its id goes stale here.
+        state.armed = false
+        state.timerID += 1
+        let stale = state.cancelTimer
+        state.cancelTimer = nil
         handOver(&state)
+        if let stale { io.async { stale() } }
+        return nil
     }
 
-    // MARK: - Queue and timer (called with the state held)
+    // MARK: - Queue and timer
+
+    /// Starts a timer reserved under the lock, outside it, and keeps its cancel if it is still the current one.
+    private func start(_ request: TimerRequest?) {
+        guard let request else { return }
+        let cancel = scheduler.schedule(after: request.delay) { [weak self] in self?.timerFired(request.id) }
+        let current = state.withLock { state -> Bool in
+            guard state.armed, state.timerID == request.id else { return false }
+            state.cancelTimer = cancel
+            return true
+        }
+        if !current { cancel() }
+    }
+
+    /// Called with the state held. Returns the cancel of the timer that was waiting, to be called after the unlock.
+    private func cancelTimer(_ state: inout State) -> (@Sendable () -> Void)? {
+        let cancel = state.cancelTimer
+        state.cancelTimer = nil
+        state.armed = false
+        state.timerID += 1
+        return cancel
+    }
 
     private func handOver(_ state: inout State) {
         state.dirty = false
+        guard state.writable else { return }
         state.lastWrite = now()
         state.writes += 1
         let file = File(
@@ -158,21 +211,10 @@ final class MusicMixFlagStore: Sendable {
         io.async { Self.write(file, to: url) }
     }
 
-    private func armTimer(after delay: TimeInterval, _ state: inout State) {
-        state.timerID += 1
-        let id = state.timerID
-        state.cancelTimer = scheduler.schedule(after: delay) { [weak self] in self?.timerFired(id) }
-    }
-
-    private func cancelTimer(_ state: inout State) {
-        state.cancelTimer?()
-        state.cancelTimer = nil
-        state.timerID += 1
-    }
-
     private func timerFired(_ id: Int) {
         state.withLock { state in
-            guard state.timerID == id, state.cancelTimer != nil else { return }
+            guard state.armed, state.timerID == id else { return }
+            state.armed = false
             state.cancelTimer = nil
             if state.dirty { handOver(&state) }
         }
@@ -180,29 +222,49 @@ final class MusicMixFlagStore: Sendable {
 
     // MARK: - Files (run on `io`)
 
-    private static func read(_ url: URL) -> (cleanStart: [String], pairs: [Pair]) {
-        guard FileManager.default.fileExists(atPath: url.path) else { return ([], []) }
-        guard let data = try? Data(contentsOf: url),
-              let file = try? JSONDecoder().decode(File.self, from: data), file.version == version,
-              file.pairs.allSatisfy({ $0.count == 2 }) else {
-            logger.notice("mix flags file unusable, moved aside")
-            moveAside(url)
-            return ([], [])
+    /// Reads the file. Only a file that is read but is not valid JSON of this shape is moved aside (to a `.bad` name with
+    /// a timestamp, never deleted). A file that cannot be read (an I/O error) or has another version is left untouched and
+    /// the store runs from memory with writes off for the session.
+    private static func read(_ url: URL) -> Loaded {
+        guard FileManager.default.fileExists(atPath: url.path) else { return Loaded() }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            let kind = error as NSError
+            logger.error("mix flags file unreadable, left as it is: \(kind.domain, privacy: .public) \(kind.code, privacy: .public)")
+            return Loaded(writable: false)
+        }
+        guard let file = try? JSONDecoder().decode(File.self, from: data), file.pairs.allSatisfy({ $0.count == 2 }) else {
+            logger.notice("mix flags file is not valid, moved aside")
+            return Loaded(writable: moveAside(url))
+        }
+        guard file.version == version else {
+            logger.notice("mix flags file has another version, left as it is")
+            return Loaded(writable: false)
         }
         var seenIds = Set<String>()
         let ids = file.cleanStart.filter { seenIds.insert($0).inserted }
         var seenPairs = Set<Pair>()
         let pairs = file.pairs.map { Pair(from: $0[0], to: $0[1]) }.filter { seenPairs.insert($0).inserted }
-        return (Array(ids.suffix(cap)), Array(pairs.suffix(cap)))
+        return Loaded(cleanStart: Array(ids.suffix(cap)), pairs: Array(pairs.suffix(cap)))
     }
 
-    private static func moveAside(_ url: URL) {
-        let bad = url.appendingPathExtension("bad")
+    /// Moves a file that is not valid to `<name>.<seconds>.bad`. Returns false (and leaves it where it is) when the move
+    /// fails: the original is never deleted.
+    private static func moveAside(_ url: URL) -> Bool {
+        let stamp = Int(Date().timeIntervalSince1970)
+        var bad = url.appendingPathExtension("\(stamp)").appendingPathExtension("bad")
+        var n = 1
+        while FileManager.default.fileExists(atPath: bad.path) {
+            bad = url.appendingPathExtension("\(stamp)-\(n)").appendingPathExtension("bad")
+            n += 1
+        }
         do {
-            try? FileManager.default.removeItem(at: bad)
             try FileManager.default.moveItem(at: url, to: bad)
+            return true
         } catch {
-            try? FileManager.default.removeItem(at: url)
+            return false
         }
     }
 

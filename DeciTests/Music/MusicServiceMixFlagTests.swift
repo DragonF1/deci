@@ -4,8 +4,17 @@
 // is parked; the menu helpers list and flip the flags.
 
 import Foundation
+import os
 import Testing
 @testable import Deci
+
+private final class ChangeBox: Sendable {
+    private let flag = OSAllocatedUnfairLock(initialState: false)
+    nonisolated var value: Bool {
+        get { flag.withLock { $0 } }
+        set { flag.withLock { $0 = newValue } }
+    }
+}
 
 @MainActor
 private struct MixHarness {
@@ -279,5 +288,44 @@ struct MusicServiceMixFlagTests {
         let track = MusicSamples.track("a", title: "Song a")
         #expect(service.mixItems(for: track, includingPrevious: true).isEmpty)
         service.performMix(.startClean(on: false), for: track)
+    }
+
+    // MARK: - Review fixes
+
+    @Test("stop() writes the flag change that was still waiting for its timer")
+    func stopFlushesFlags() async {
+        let h = MixHarness()
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b", "c"])
+        h.service.performMix(.startClean(on: false), for: MusicSamples.track("b", title: "Song b"))
+        // Inside the same second: this one is a trailing write, not on disk yet.
+        h.service.performMix(.startClean(on: false), for: MusicSamples.track("c", title: "Song c"))
+        h.flags.waitForWrites()
+        let before = MusicMixFlagStore(fileURL: h.directory.appendingPathComponent("MusicMixFlags.json"))
+        #expect(!before.startsClean("c"))
+
+        h.service.stop()
+
+        let after = MusicMixFlagStore(fileURL: h.directory.appendingPathComponent("MusicMixFlags.json"))
+        #expect(after.startsClean("b"))
+        #expect(after.startsClean("c"), "the waiting change reached the file")
+    }
+
+    @Test("a view that read the menu entries is told when a pick changes them")
+    func pickInvalidatesTheMenuLabels() async {
+        let h = MixHarness()
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b", "c"])
+        let c = MusicSamples.track("c", title: "Song c")
+        let changed = ChangeBox()
+        let items = withObservationTracking {
+            h.service.mixItems(for: c, includingPrevious: false)
+        } onChange: {
+            changed.value = true
+        }
+        #expect(items == [.startClean(on: false)])
+        h.service.performMix(.startClean(on: false), for: c)
+        #expect(changed.value, "the body that built the menu is evaluated again")
+        #expect(h.service.mixItems(for: c, includingPrevious: false) == [.startClean(on: true)])
     }
 }
