@@ -79,6 +79,11 @@ final class MusicServiceHost {
             let backend = MusicBackendLive.live()
             // One network watch for everything that waits for the network: the pages, the queue, the downloads, the lyrics.
             let connectivity = MusicConnectivity.live()
+            let downloads = MusicDownloadService.live(
+                resolve: { try await backend.resolve(videoId: $0) },
+                source: MusicCollectionSource(backend: backend),
+                connectivity: connectivity
+            )
             return MusicService(
                 backend: backend,
                 player: MusicServiceHost.makePlayer(mixer: mixer),
@@ -94,15 +99,31 @@ final class MusicServiceHost {
                 sessionStore: store,
                 // Downloaded songs live under Application Support/Deci/Downloads and play from there.
                 // Whole playlists and albums are read through the same backend.
-                downloads: .live(
-                    resolve: { try await backend.resolve(videoId: $0) },
-                    source: MusicCollectionSource(backend: backend),
-                    connectivity: connectivity
-                ),
-                connectivity: connectivity
+                downloads: downloads,
+                connectivity: connectivity,
+                analysis: MusicServiceHost.makeAnalysis(backend: backend, downloads: downloads)
             )
         }
         MusicMemoryLog.log("launch")
+    }
+
+    /// The song analysis side: the results store, the track cache (swept of leftovers from an earlier launch) and the
+    /// coordinator that fills them. A song already in Downloads is analysed from its own file.
+    @MainActor
+    static func makeAnalysis(backend: MusicBackendLive, downloads: MusicDownloadService) -> MusicAnalysisCoordinator {
+        let cache = MusicTrackCache(root: MusicTrackCache.liveRoot(), transport: URLSessionDownloadTransport())
+        Task { await cache.sweepAtLaunch() }
+        return MusicAnalysisCoordinator(
+            store: MusicAnalysisStore(url: MusicAnalysisStore.liveURL()),
+            cache: cache,
+            downloads: { id in
+                await MainActor.run {
+                    guard let local = downloads.localStream(for: id) else { return nil }
+                    return MusicDownloadedFile(url: local.url, durationSeconds: local.durationSeconds)
+                }
+            },
+            resolve: { try await backend.resolve(videoId: $0) }
+        )
     }
 
     /// Writes the playback options into settings.json, leaving every other setting as it is.

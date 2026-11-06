@@ -160,6 +160,10 @@ final class MusicService {
     private static let maxFailures = 3
     /// The next track's stream is resolved this long before the current one ends.
     private static let prefetchLead: TimeInterval = 15
+    /// How long before the end the next song is resolved and its whole file fetched for analysis (tier 2a).
+    static let analysisLead: TimeInterval = 75
+    /// Songs shorter than this are not fetched early: the stream preload at its own window serves them.
+    static let analysisMinDuration: TimeInterval = 150
     /// How long the crossfade of a manual skip onto the preloaded track lasts.
     static let quickFadeSeconds: TimeInterval = 0.3
     /// Radio pages overlap, so a page can add nothing new. This many in a row ends a top-up.
@@ -246,6 +250,21 @@ final class MusicService {
     }
     @ObservationIgnored private(set) var prefetchTask: Task<Void, Never>?
 
+    // Song analysis and the track cache (tier 2a P3). Nil provider: none of this runs and playback is as in tier 1.
+    private let analysis: (any MusicAnalysisProviding)?
+    /// The analysis job for the next song (fetch, analyse, keep the file); nil when none runs. Read by the tests.
+    @ObservationIgnored private(set) var analysisTask: Task<Void, Never>?
+    /// The releases and discards sent to the provider, in order, one after another. Read by the tests.
+    @ObservationIgnored private(set) var analysisCleanupTask: Task<Void, Never>?
+    /// The song `analysisTask` works for.
+    @ObservationIgnored private var analysisTarget: String?
+    /// Songs whose cache file this service asked for and has not released or discarded yet.
+    @ObservationIgnored private var heldCacheIDs: Set<String> = []
+    /// The next song's cache file once its analysis is stored, so the preload can play from it.
+    @ObservationIgnored private var cachedFile: (videoId: String, url: URL)?
+    /// The song the player is on, as far as the cache is concerned.
+    @ObservationIgnored private var analysisCurrentID: String?
+
     // The remembered session (see `MusicSessionSnapshot`). Nil store: the service remembers nothing.
     @ObservationIgnored private let sessionStore: MusicSessionStore?
     /// The signed-in channel's key, the owner of every snapshot written; nil until `backend.sessionIdentity()` answers
@@ -308,8 +327,10 @@ final class MusicService {
         sessionStore: MusicSessionStore? = nil,
         downloads: MusicDownloadService? = nil,
         connectivity: MusicConnectivity? = nil,
-        refreshOnCreate: Bool = true
+        refreshOnCreate: Bool = true,
+        analysis: (any MusicAnalysisProviding)? = nil
     ) {
+        self.analysis = analysis
         self.backend = backend
         self.connectivity = connectivity
         let browse = MusicBrowseStore(backend: backend, connectivity: connectivity, downloads: downloads)
@@ -391,6 +412,7 @@ final class MusicService {
         radioTask?.cancel()
         queueRetryTask?.cancel()
         prefetchTask?.cancel()
+        analysisTask?.cancel()
         cancelPreload()
         trackingTask?.cancel()
         #if DEBUG
@@ -1475,6 +1497,7 @@ final class MusicService {
         playGeneration += 1
         let generation = playGeneration
         cancelPrefetch()
+        trackChangedForAnalysis(to: track.videoId)
         trackingTask?.cancel()
         trackingTask = nil
         pendingAdvance = nil
@@ -1718,6 +1741,7 @@ final class MusicService {
         prefetchTask = nil
         prefetchAttempt = nil
         if prefetched?.videoId == track { prefetched = nil }
+        trackChangedForAnalysis(to: track)
         trackingTask?.cancel()
         trackingTask = nil
         pendingAdvance = nil
@@ -1873,6 +1897,7 @@ final class MusicService {
     }
 
     private func endQueue() {
+        trackChangedForAnalysis(to: nil)
         cancelRadio()
         cancelPrefetch()
         pendingAdvance = nil
@@ -2165,14 +2190,90 @@ final class MusicService {
         let duration = player.duration
         let target = prefetchTarget
         let lead = leadTime
-        guard duration > lead * 2, duration - position <= lead,
+        guard duration > lead * 2, duration - position <= resolveLead(forDuration: duration),
               let next = target, prefetchAttempt != next.videoId else { return }
         prefetchAttempt = next.videoId
         prefetchTask = Task { [weak self] in
             guard let self, let stream = try? await self.streamForSource(of: next.videoId) else { return }
             guard !Task.isCancelled, self.prefetchAttempt == next.videoId else { return }
             self.prefetched = stream
+            self.startAnalysis(for: stream, duration: duration)
             self.offerPreload(position: self.player.currentTime)
+        }
+    }
+
+    /// How long before the end the next song is resolved: the preload lead, or `analysisLead` when its whole file is to be
+    /// fetched and analysed first (a song long enough, not on Loop song). The preload itself still waits for its window.
+    private func resolveLead(forDuration duration: TimeInterval) -> TimeInterval {
+        guard analysis != nil, loopMode != .song, duration >= Self.analysisMinDuration else { return leadTime }
+        return max(leadTime, Self.analysisLead)
+    }
+
+    // MARK: - Analysis and the track cache
+
+    /// Hands the next song to the analysis side: a network song is fetched whole into the track cache (its file is kept
+    /// for the preload), a downloaded one is analysed from its own file. Not offline, not signed out, not for a short song
+    /// or Loop song, and one job at a time: a job for a song that is no longer next is dropped first.
+    private func startAnalysis(for stream: ResolvedStream, duration: TimeInterval) {
+        guard let analysis, !isOffline, authState != .signedOut, loopMode != .song,
+              duration >= Self.analysisMinDuration, stream.videoId != analysisCurrentID,
+              analysisTarget != stream.videoId else { return }
+        let id = stream.videoId
+        if let old = analysisTarget { dropSpeculativeAnalysis(old) }
+        analysisTarget = id
+        let wantsFile = stream.origin == .network
+        if wantsFile { heldCacheIDs.insert(id) }
+        analysisTask = Task { [weak self] in
+            let outcome = await analysis.ensure(stream: stream, wantsFile: wantsFile)
+            guard let self else { return }
+            guard self.heldCacheIDs.contains(id), !Task.isCancelled else {
+                // The song stopped being next while the file was coming: nobody will play it.
+                if wantsFile, case .analysed(file: .some) = outcome { self.queueAnalysisCall { await $0.discard(videoId: id) } }
+                return
+            }
+            if case .analysed(file: let file?) = outcome {
+                self.cachedFile = (id, file)
+                self.offerPreload(position: self.player.currentTime)
+            }
+        }
+    }
+
+    /// The song was going to be next but is not: its job stops and its file goes now.
+    private func dropSpeculativeAnalysis(_ id: String) {
+        guard analysisTarget == id else { return }
+        analysisTask?.cancel()
+        analysisTask = nil
+        analysisTarget = nil
+        if cachedFile?.videoId == id { cachedFile = nil }
+        let held = heldCacheIDs.remove(id) != nil
+        queueAnalysisCall { provider in
+            await provider.cancel(videoId: id)
+            if held { await provider.discard(videoId: id) }
+        }
+    }
+
+    /// The player is on `id` now (nil: on nothing). The song that was playing releases its file; a song fetched for next
+    /// that was passed over is dropped; a job for any other song stops.
+    private func trackChangedForAnalysis(to id: String?) {
+        guard analysis != nil else { return }
+        let leaving = analysisCurrentID
+        analysisCurrentID = id
+        if let target = analysisTarget, target != id { dropSpeculativeAnalysis(target) }
+        if let id, analysisTarget == id { analysisTarget = nil }
+        if cachedFile != nil, cachedFile?.videoId != id { cachedFile = nil }
+        if let leaving, leaving != id {
+            heldCacheIDs.remove(leaving)
+            queueAnalysisCall { await $0.release(videoId: leaving) }
+        }
+    }
+
+    /// Provider calls go out one after another in the order they were made, so a release never overtakes a cancel.
+    private func queueAnalysisCall(_ call: @escaping @Sendable (any MusicAnalysisProviding) async -> Void) {
+        guard let analysis else { return }
+        let previous = analysisCleanupTask
+        analysisCleanupTask = Task {
+            await previous?.value
+            await call(analysis)
         }
     }
 
@@ -2225,7 +2326,15 @@ final class MusicService {
               preloadOffered != target.videoId, player.isPlaying, !player.hasEnded,
               isInPreloadWindow(position: position) else { return }
         preloadOffered = target.videoId
-        player.preload(stream: stream, track: target)
+        player.preload(stream: preloadStream(for: stream), track: target)
+    }
+
+    /// The cache file's stream when the file is ready, else the network stream as it is. Decided once: the offer is made
+    /// once per track, so a file that lands later never swaps the standby deck.
+    private func preloadStream(for stream: ResolvedStream) -> ResolvedStream {
+        guard stream.origin == .network, let cached = cachedFile, cached.videoId == stream.videoId,
+              FileManager.default.fileExists(atPath: cached.url.path) else { return stream }
+        return stream.playingFrom(file: cached.url)
     }
 
     /// Withdraws a preload the queue or a mode no longer agrees with.
@@ -2547,6 +2656,7 @@ final class MusicService {
             // may start from it.
             cancelPrefetch()
             prefetched = nil
+            trackChangedForAnalysis(to: nil)
             // The remembered session belonged to the account that is gone.
             dropSessionKey()
             forgetSession()
