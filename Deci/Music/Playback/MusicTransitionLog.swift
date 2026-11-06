@@ -42,6 +42,12 @@ enum MusicTransitionLog {
         "transition_replan from=\(from) to=\(to) mode=\(old?.rawValue ?? "none")->\(new?.rawValue ?? "none") reason=\(reason)"
     }
 
+    /// transition_late from=<id> to=<id> reason=late
+    /// A song's analysis landed after the transition was planned: nothing changes for that transition.
+    static func lateLine(from: String, to: String, late: String) -> String {
+        "transition_late from=\(from) to=\(to) song=\(late) reason=late"
+    }
+
     private static func fixed(_ value: Double, _ digits: Int) -> String {
         guard value.isFinite else { return "0" }
         let text = String(format: "%.\(digits)f", value)

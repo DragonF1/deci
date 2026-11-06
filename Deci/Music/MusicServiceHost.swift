@@ -107,7 +107,8 @@ final class MusicServiceHost {
                 // Whole playlists and albums are read through the same backend.
                 downloads: downloads,
                 connectivity: connectivity,
-                analysis: coordinator
+                analysis: coordinator,
+                analysisReader: coordinator
             )
             // Liked songs and playlists are analysed while Music is idle, when Settings allows it.
             holder.analyzer = MusicServiceHost.makeBackgroundAnalyzer(

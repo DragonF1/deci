@@ -118,15 +118,40 @@ final class MusicPlayer {
     /// the moment of an advance the engine has already let go of it.
     var preloadedStream: ResolvedStream? { preloaded?.stream }
 
-    /// Prepares the track after the current one on the engine's standby deck. Nothing changes for the listener.
-    func preload(stream: ResolvedStream, track: MusicTrack) {
+    /// The stream of the track that plays now (tier 2b: the planner needs its exact duration and format).
+    var currentStream: ResolvedStream? { stream }
+
+    /// Where the preloaded song starts: the engine's park offset (0 when its park seek failed), read late so the real
+    /// value counts. The engine clears its plan at the hand-over, so the last value seen is kept.
+    @ObservationIgnored private var parkedOffset: TimeInterval = 0
+
+    /// Prepares the track after the current one on the engine's standby deck. Nothing changes for the listener. With a
+    /// `plan` (tier 2b) the standby is parked at `plan.incomingStartSec` and the plan drives the transition.
+    func preload(stream: ResolvedStream, track: MusicTrack, plan: TransitionPlan? = nil) {
         guard nowPlaying != nil, self.stream != nil, !hasEnded, refreshTask == nil else { return }
         preloaded = (stream, track)
-        engine.preload(stream)
+        parkedOffset = plan?.incomingStartSec ?? 0
+        engine.preload(stream, plan: plan)
+    }
+
+    /// Replaces the plan of the current preload (same park offset, new mode). The engine ignores it otherwise.
+    func updateTransitionPlan(_ plan: TransitionPlan?) {
+        guard preloaded != nil else { return }
+        engine.updateTransitionPlan(plan)
+        refreshParkedOffset()
+    }
+
+    /// The plan of the current preload as the engine holds it.
+    var transitionPlan: TransitionPlan? { engine.transitionPlan }
+
+    private func refreshParkedOffset() {
+        guard preloaded != nil, let plan = engine.transitionPlan else { return }
+        parkedOffset = plan.incomingStartSec
     }
 
     func cancelPreload() {
         preloaded = nil
+        parkedOffset = 0
         engine.cancelPreload()
     }
 
@@ -147,6 +172,8 @@ final class MusicPlayer {
 
     func crossfadeToPreloaded(seconds: TimeInterval) -> Bool {
         guard isPlaying, !hasEnded, preloadIsReady else { return false }
+        // Before the engine hands over and clears its plan.
+        refreshParkedOffset()
         return engine.crossfadeToPreloaded(seconds: seconds)
     }
 
@@ -154,6 +181,9 @@ final class MusicPlayer {
     func adoptPreloaded() {
         guard let preloaded else { return }
         self.preloaded = nil
+        // The song starts where the engine parked it (its trimmed start), not at 0.
+        let start = max(0, engine.transitionPlan?.incomingStartSec ?? parkedOffset)
+        parkedOffset = 0
         loadGeneration += 1
         recoveryUsed = false
         refreshTask?.cancel()
@@ -165,8 +195,8 @@ final class MusicPlayer {
         isPlaying = true
         hasEnded = false
         wantsPlay = true
-        currentTime = 0
         duration = preloaded.stream.durationSeconds ?? Double(preloaded.track.durationSeconds ?? 0)
+        currentTime = duration > 0 ? min(start, duration) : start
         viewCount = preloaded.stream.viewCount
     }
 
@@ -374,6 +404,7 @@ final class MusicPlayer {
 
     private func handleTick(position: TimeInterval, isPlaying playing: Bool) {
         if !hasEnded { currentTime = position }
+        refreshParkedOffset()
         onTick?(position, playing)
     }
 

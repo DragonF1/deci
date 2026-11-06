@@ -164,6 +164,9 @@ final class MusicService {
     static let analysisLead: TimeInterval = 75
     /// Songs shorter than this are not fetched early: the stream preload at its own window serves them.
     static let analysisMinDuration: TimeInterval = 150
+    /// With less than this left to the trimmed end the next song is offered with whatever analysis it has (scheduleWindow
+    /// 6 s plus a 4 s preroll margin): waiting for its analysis stops here (tier 2b).
+    static let analysisDeadline: TimeInterval = 10
     /// How long the crossfade of a manual skip onto the preloaded track lasts.
     static let quickFadeSeconds: TimeInterval = 0.3
     /// Radio pages overlap, so a page can add nothing new. This many in a row ends a top-up.
@@ -271,6 +274,28 @@ final class MusicService {
     /// The song `currentAnalysisTask` was started for, and the last one asked: a song is asked for once.
     @ObservationIgnored private var currentAnalysisAsked: String?
 
+    // Transition plans (tier 2b P3). Nil reader: every transition is planned from no analysis, as in tier 1.
+    private let analysisReader: (any MusicAnalysisReading)?
+    /// The stored rows of the song that plays and the next one (raw: freshness is judged against each song's stream when
+    /// a plan is built). Filled by async reads, evicted when the song changes. Read by the tests.
+    @ObservationIgnored private(set) var transitionAnalyses: [String: MusicAnalysis] = [:]
+    /// The read of the playing song's row. Read by the tests.
+    @ObservationIgnored private(set) var transitionReadTask: Task<Void, Never>?
+    /// The song whose analysis job has finished and whose row was read (so nothing is left to wait for).
+    @ObservationIgnored private var nextRowSettled: String?
+    /// The plan handed to the engine for the current preload, with the inputs it was built from (frozen: a late row never
+    /// changes them) and the songs whose fresh row was part of it.
+    @ObservationIgnored private var offeredPlan: OfferedPlan?
+    /// The transition log lines the service wrote, newest last (ids only). Read by the tests.
+    @ObservationIgnored private(set) var transitionLines: [String] = []
+
+    private struct OfferedPlan {
+        var inputs: MusicTransitionInputs
+        var plan: TransitionPlan
+        var plannedWithRows: Set<String>
+        var late = false
+    }
+
     // The remembered session (see `MusicSessionSnapshot`). Nil store: the service remembers nothing.
     @ObservationIgnored private let sessionStore: MusicSessionStore?
     /// The signed-in channel's key, the owner of every snapshot written; nil until `backend.sessionIdentity()` answers
@@ -334,9 +359,11 @@ final class MusicService {
         downloads: MusicDownloadService? = nil,
         connectivity: MusicConnectivity? = nil,
         refreshOnCreate: Bool = true,
-        analysis: (any MusicAnalysisProviding)? = nil
+        analysis: (any MusicAnalysisProviding)? = nil,
+        analysisReader: (any MusicAnalysisReading)? = nil
     ) {
         self.analysis = analysis
+        self.analysisReader = analysisReader
         self.backend = backend
         self.connectivity = connectivity
         let browse = MusicBrowseStore(backend: backend, connectivity: connectivity, downloads: downloads)
@@ -1394,6 +1421,7 @@ final class MusicService {
     /// Hands the player the fade the next transition gets, so the engine plans it.
     private func syncCrossfade() {
         player.crossfadeSeconds = effectiveCrossfadeSeconds
+        replanOffered()
     }
 
     private func savePlaybackPreferences() {
@@ -1692,6 +1720,7 @@ final class MusicService {
         // ordinary end of the track, which advances the queue once and sends the one final ping.
         // Consumed, not withdrawn: the queue moving on below must not take it back from the player.
         preloadOffered = nil
+        offeredPlan = nil
         // The old session closes with its final ping (it reads the player's position, still the old track's end).
         sendFinalPing()
         direction = .forward
@@ -1731,8 +1760,17 @@ final class MusicService {
         guard player.canCrossfadeToPreloaded else { return false }
         // The old track's final ping reads the player's position, so it goes before the engine moves on.
         sendFinalPing()
+        // The skip is a quick fade with the incoming loudness match only; the park offset is the plan's own.
+        if let offered = offeredPlan, offered.inputs.incoming.videoId == track.videoId {
+            var skipInputs = offered.inputs
+            skipInputs.manualSkip = true
+            var skipPlan = MusicTransitionPlanner.plan(skipInputs)
+            skipPlan.incomingStartSec = offered.plan.incomingStartSec
+            player.updateTransitionPlan(skipPlan)
+        }
         guard player.crossfadeToPreloaded(seconds: Self.quickFadeSeconds) else { return false }
         preloadOffered = nil
+        offeredPlan = nil
         startAdvancedSession(stream: stream, adopting: { self.player.adoptPreloaded() })
         return true
     }
@@ -2229,6 +2267,7 @@ final class MusicService {
         let id = stream.videoId
         if let old = analysisTarget { dropSpeculativeAnalysis(old) }
         analysisTarget = id
+        nextRowSettled = nil
         let wantsFile = stream.origin == .network
         analysisJobCounter += 1
         let job = analysisJobCounter
@@ -2240,6 +2279,11 @@ final class MusicService {
             guard !Task.isCancelled else { return }
             let outcome = await analysis.ensure(stream: stream, wantsFile: wantsFile)
             guard let self else { return }
+            // The row the job stored is read before the preload is offered again, so a plan can use it.
+            if !Task.isCancelled, self.analysisTarget == id {
+                await self.readTransitionRow(id)
+                if self.analysisTarget == id { self.nextRowSettled = id }
+            }
             guard self.heldCacheJobs[id] == job, !Task.isCancelled else {
                 // The song stopped being next while the file was coming: nobody will play it. A newer job for the same
                 // song owns the file now and keeps it.
@@ -2250,8 +2294,9 @@ final class MusicService {
             }
             if case .analysed(file: let file?) = outcome {
                 self.cachedFile = (id, file)
-                self.offerPreload(position: self.player.currentTime)
             }
+            // A row that landed lets a waiting offer go ahead (a file alone did before; the offer is the same call).
+            self.offerPreload(position: self.player.currentTime)
         }
     }
 
@@ -2262,8 +2307,9 @@ final class MusicService {
         guard let analysis, !isOffline, authState != .signedOut, stream.origin != .trackCache,
               currentAnalysisAsked != stream.videoId, analysisCurrentID == stream.videoId else { return }
         currentAnalysisAsked = stream.videoId
-        currentAnalysisTask = Task {
+        currentAnalysisTask = Task { [weak self] in
             _ = await analysis.ensure(stream: stream, wantsFile: false)
+            await self?.readTransitionRow(stream.videoId)
         }
     }
 
@@ -2287,6 +2333,11 @@ final class MusicService {
         guard analysis != nil else { return }
         let leaving = analysisCurrentID
         analysisCurrentID = id
+        // The mirror keeps the playing song and the one being fetched for next, nothing older.
+        transitionAnalyses = transitionAnalyses.filter { $0.key == id || $0.key == analysisTarget }
+        if let id, analysisReader != nil {
+            transitionReadTask = Task { [weak self] in await self?.readTransitionRow(id) }
+        }
         // The job for the song that was playing is not worth finishing once the player left it.
         if let asked = currentAnalysisAsked, asked != id {
             currentAnalysisTask?.cancel()
@@ -2347,22 +2398,135 @@ final class MusicService {
 
     private func isInPreloadWindow(position: TimeInterval) -> Bool {
         let duration = player.duration
-        let lead = leadTime
-        return duration > lead * 2 && duration - position <= lead
+        let (lead, end) = preloadLead(for: prefetched)
+        return duration > lead * 2 && end - position <= lead
     }
 
     /// How long before the end the next track is resolved and preloaded: a crossfade starts that much earlier, so its
     /// length is added.
     private var leadTime: TimeInterval { Self.prefetchLead + effectiveCrossfadeSeconds }
 
-    /// Hands the player the prefetched stream of the next track when it is certain and the window has opened.
+    /// Trims and smart fades only apply to a normal transition: not Loop song, not an album in order.
+    private var plansTransitions: Bool { loopMode != .song && !playsAlbumInOrder }
+
+    /// The stored row of the song when it is fresh for exactly this stream (version, format, duration, usable span).
+    private func freshRow(for stream: ResolvedStream?) -> MusicAnalysis? {
+        guard let stream, let row = transitionAnalyses[stream.videoId],
+              MusicTransitionPlanner.isFresh(row, for: stream) else { return nil }
+        return row
+    }
+
+    /// The preload lead and the item time it is measured to. The audible end of a song with a fresh row is its trimmed
+    /// end. A pair that can fade smartly (the playing song analysed, the next one analysed or about to be) starts its
+    /// fade up to `maxLead` seconds earlier, so its window opens that much earlier: 15 + 22 = 37 s.
+    private func preloadLead(for next: ResolvedStream?) -> (lead: TimeInterval, end: TimeInterval) {
+        let duration = player.duration
+        guard plansTransitions, let row = freshRow(for: player.currentStream) else { return (leadTime, duration) }
+        let end = MusicTransitionPlanner.trimmedEnd(of: row, duration: duration) ?? duration
+        let smart = Self.prefetchLead + MusicTransitionPlanner.maxLead
+        guard isCrossfadeOn, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
+            return (leadTime, end)
+        }
+        return (smart, end)
+    }
+
+    /// A job for the song is running and has not stored its row yet.
+    private func isAwaitingRow(for stream: ResolvedStream) -> Bool {
+        analysisReader != nil && analysis != nil && analysisTarget == stream.videoId && analysisTask != nil
+            && nextRowSettled != stream.videoId && freshRow(for: stream) == nil
+    }
+
+    /// Hands the player the prefetched stream of the next track when it is certain and the window has opened. Waits for
+    /// the next song's analysis while its job runs, until `analysisDeadline` seconds are left to the trimmed end.
     private func offerPreload(position: TimeInterval) {
         syncCrossfade()
         guard let stream = prefetched, let target = preloadTarget, stream.videoId == target.videoId,
               preloadOffered != target.videoId, player.isPlaying, !player.hasEnded,
               isInPreloadWindow(position: position) else { return }
+        let (_, end) = preloadLead(for: stream)
+        if isAwaitingRow(for: stream), end - position > Self.analysisDeadline { return }
         preloadOffered = target.videoId
-        player.preload(stream: preloadStream(for: stream), track: target)
+        let plan = transitionPlan(for: stream)
+        player.preload(stream: preloadStream(for: stream), track: target, plan: plan?.plan)
+        guard let plan, player.preloadedTrack?.videoId == target.videoId else { return }
+        offeredPlan = plan.offered
+        log(MusicTransitionLog.planLine(
+            from: plan.offered.inputs.outgoing.videoId, to: stream.videoId, plan: plan.plan,
+            outgoingDuration: plan.offered.inputs.outgoing.durationSeconds
+        ))
+    }
+
+    /// The plan for the transition from the playing song into `next`, with the inputs it came from. Nil when the player
+    /// holds no current stream.
+    private func transitionPlan(for next: ResolvedStream) -> (plan: TransitionPlan, offered: OfferedPlan)? {
+        guard let current = player.currentStream else { return nil }
+        let outgoing = freshRow(for: current)
+        let incoming = freshRow(for: next)
+        let flags = transitionFlags(from: current.videoId, to: next.videoId)
+        let inputs = MusicTransitionInputs(
+            outgoing: MusicTransitionSide(
+                videoId: current.videoId, durationSeconds: current.durationSeconds, analysis: outgoing,
+                youtubeLoudnessDb: current.loudnessDb
+            ),
+            incoming: MusicTransitionSide(
+                videoId: next.videoId, durationSeconds: next.durationSeconds, analysis: incoming,
+                youtubeLoudnessDb: next.loudnessDb
+            ),
+            crossfadeOn: isCrossfadeOn, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
+            loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
+            manualSkip: false
+        )
+        let plan = MusicTransitionPlanner.plan(inputs)
+        let rows = Set([outgoing, incoming].compactMap { $0?.videoId })
+        return (plan, OfferedPlan(inputs: inputs, plan: plan, plannedWithRows: rows))
+    }
+
+    /// P4 plugs the no-mix flags in here: whether the incoming song is flagged "always start clean", and whether this
+    /// pair (outgoing into incoming) is. Both false until the flag store exists.
+    private func transitionFlags(from outgoingId: String, to incomingId: String) -> (startsClean: Bool, pairIsClean: Bool) {
+        (false, false)
+    }
+
+    /// Crossfade (or the album/loop rules, or its length) changed while a preload is parked: the plan is built again from
+    /// the same frozen inputs and handed to the engine, which takes it only with the same park offset. No re-preload.
+    private func replanOffered() {
+        guard var offered = offeredPlan, preloadOffered == offered.inputs.incoming.videoId,
+              player.preloadedTrack?.videoId == offered.inputs.incoming.videoId else { return }
+        var inputs = offered.inputs
+        inputs.crossfadeOn = isCrossfadeOn
+        inputs.settingSeconds = crossfadeSeconds
+        inputs.albumInOrder = playsAlbumInOrder
+        inputs.loopSong = loopMode == .song
+        var plan = MusicTransitionPlanner.plan(inputs)
+        plan.incomingStartSec = offered.plan.incomingStartSec
+        guard plan != offered.plan else { return }
+        offered.inputs = inputs
+        offered.plan = plan
+        offeredPlan = offered
+        player.updateTransitionPlan(plan)
+    }
+
+    /// Reads a song's stored row into the mirror (only for the playing song and the next one). A row that lands for a
+    /// song the offered plan did not have changes nothing: it is logged as late.
+    private func readTransitionRow(_ id: String) async {
+        guard let reader = analysisReader, let row = await reader.analysis(for: id),
+              id == analysisCurrentID || id == analysisTarget else { return }
+        transitionAnalyses[id] = row
+        let stream = id == player.currentStream?.videoId ? player.currentStream : prefetched
+        guard var offered = offeredPlan, !offered.late, !offered.plannedWithRows.contains(id),
+              id == offered.inputs.outgoing.videoId || id == offered.inputs.incoming.videoId,
+              freshRow(for: stream?.videoId == id ? stream : nil) != nil else { return }
+        offered.late = true
+        offeredPlan = offered
+        log(MusicTransitionLog.lateLine(
+            from: offered.inputs.outgoing.videoId, to: offered.inputs.incoming.videoId, late: id
+        ))
+    }
+
+    private func log(_ line: String) {
+        transitionLines.append(line)
+        if transitionLines.count > 50 { transitionLines.removeFirst(transitionLines.count - 50) }
+        MusicTransitionLog.logger.notice("\(line, privacy: .public)")
     }
 
     /// The cache file's stream when the file is ready, else the network stream as it is. Decided once: the offer is made
@@ -2383,6 +2547,7 @@ final class MusicService {
 
     private func cancelPreload() {
         preloadOffered = nil
+        offeredPlan = nil
         player.cancelPreload()
     }
 

@@ -192,6 +192,13 @@ enum MusicTransitionPlanner {
         return !allSilent
     }
 
+    /// The item time the outgoing song ends at when its dead air is trimmed (the plan's `outgoingEndSec`); nil when it
+    /// plays to its natural end. The service uses it to measure the preload window to the audible end.
+    static func trimmedEnd(of analysis: MusicAnalysis, duration: Double) -> Double? {
+        guard let duration = validDuration(duration), usable(analysis) else { return nil }
+        return trimOut(analysis, duration: duration)
+    }
+
     // MARK: Loudness
 
     /// dB the incoming sits above (+) or below (-) the outgoing, clamped to +-6. nil when the sources

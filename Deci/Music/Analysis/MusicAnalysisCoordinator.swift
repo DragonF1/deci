@@ -18,6 +18,14 @@ protocol MusicAnalysisProviding: Sendable {
     func cancel(videoId: String) async
 }
 
+/// Reads the stored analysis of a song (tier 2b): what the transition planner is built from. Separate from
+/// `MusicAnalysisProviding` so the service's existing fakes stay as they are.
+protocol MusicAnalysisReading: Sendable {
+    func analysis(for videoId: String) async -> MusicAnalysis?
+}
+
+extension MusicAnalysisCoordinator: MusicAnalysisReading {}
+
 /// A song in the Downloads store: its file and the exact duration it was downloaded with.
 struct MusicDownloadedFile: Sendable, Equatable {
     var url: URL
