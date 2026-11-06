@@ -530,6 +530,15 @@ final class MusicDSPChain: @unchecked Sendable {
             zeroNonFinite(samples, count: count)
             return
         }
+        if lease.headroomEnv < 1 && fade.remaining == 0 {
+            // The ramp ended with the rider still down: let it back up instead of snapping to 1.
+            SoftLimiter.processBuffer(samples, sampleCount: count)
+            zeroNonFinite(samples, count: count)
+            fade.releaseTail(
+                samples, frames: frames, channels: channels, hold: fade.value, env: &lease.headroomEnv, release: lease.headroomRelease
+            )
+            return
+        }
         lease.headroomEnv = 1
         SoftLimiter.processBuffer(samples, sampleCount: count)
         zeroNonFinite(samples, count: count)
@@ -662,14 +671,30 @@ fileprivate struct MusicFade {
             }
         }
         if ramped < frames {
-            env = 1
             let rest = samples + ramped * channels
             let count = (frames - ramped) * channels
             SoftLimiter.processBuffer(rest, sampleCount: count)
-            if target != 1 {
-                var gain = target
-                vDSP_vsmul(rest, 1, &gain, rest, 1, vDSP_Length(count))
-            }
+            releaseTail(rest, frames: frames - ramped, channels: channels, hold: target, env: &env, release: release)
+        }
+    }
+
+    /// After a ramp: the held gain times the rider, which keeps letting go toward 1 (same coefficient) rather than
+    /// snapping, so there is no step in the effective gain. Snaps only within 1e-4, then takes the vDSP path.
+    func releaseTail(
+        _ samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int, hold: Float, env: inout Float, release: Float
+    ) {
+        var frame = 0
+        while frame < frames && env < 1 {
+            env += (1 - env) * release
+            if 1 - env < 1e-4 { env = 1 }
+            let scale = env * hold
+            let base = frame * channels
+            for channel in 0..<channels { samples[base + channel] *= scale }
+            frame += 1
+        }
+        if frame < frames && hold != 1 {
+            var gain = hold
+            vDSP_vsmul(samples + frame * channels, 1, &gain, samples + frame * channels, 1, vDSP_Length((frames - frame) * channels))
         }
     }
 }

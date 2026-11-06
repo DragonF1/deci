@@ -267,4 +267,38 @@ struct MusicCrossfadeDSPTests {
         }
         #expect(peak <= 1.0 + 1e-4, "peak \(peak)")
     }
+
+    @Test("a loud fade in does not step its gain at the ramp end: the rider lets go smoothly")
+    func riderReleasesAcrossRampEnd() {
+        let chain = MusicDSPChain(sampleRate: rate)
+        let incoming = lease(chain)
+        incoming.setFade(to: 0)
+        render(incoming, MusicTestSignal.constant(0.9, frames: 64))
+        let rampFrames = Int(0.3 * rate)
+        incoming.setFade(to: 1, over: 0.3, curve: .equalPower)
+        let frames = rampFrames + 24_000
+        let signal = MusicTestSignal.sine(frequency: 220, amplitude: 0.9, sampleRate: rate, frames: frames)
+        var input: [Float] = []
+        var output: [Float] = []
+        for start in stride(from: 0, to: frames, by: 480) {
+            let slice = signal.map { Array($0[start..<(start + 480)]) }
+            input += slice[0]
+            output += render(incoming, slice)
+        }
+        // The rider's effective gain: output over input on strong samples, with the fade's own gain divided out.
+        var previous: Float?
+        var largest: Float = 0
+        var atEnd: Float = 0
+        for i in 1..<frames where abs(input[i]) > 0.5 {
+            let g = i < rampFrames ? Float(sin(Double(i + 1) / Double(rampFrames) * Double.pi / 2)) : 1
+            let ratio = output[i] / (input[i] * g)
+            if i > rampFrames - 6_000, let last = previous { largest = max(largest, abs(ratio - last)) }
+            if i >= rampFrames - 1 && atEnd == 0 { atEnd = ratio }
+            previous = ratio
+        }
+        #expect(atEnd < 0.98, "the rider is still down at the ramp end, so the test means something: \(atEnd)")
+        #expect(largest < 0.01, "no step in the effective gain across the ramp end: \(largest)")
+        let tail = output[(frames - 480)..<frames]
+        #expect(abs((tail.map { abs($0) }.max() ?? 0) - 0.9) < 0.02, "back to full level")
+    }
 }
