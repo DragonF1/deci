@@ -154,7 +154,7 @@ struct MusicAudioTapTests {
         try await withTone(frequency: 1_000, amplitude: 0.1) { url, reference in
             var gains = [Float](repeating: 0, count: EQSettings.bandCount)
             gains[5] = 12
-            let chain = MusicDSPChain(sampleRate: 44_100)
+            let chain = MusicDSPChain(sampleRate: 48_000)   // the file is at Self.rate: a real mismatch
             chain.setEQ(EQSettings(bandGains: gains))
 
             let first = try await ToneFile.read(url: url, tappedBy: chain)

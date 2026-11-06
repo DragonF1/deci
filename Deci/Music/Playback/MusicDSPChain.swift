@@ -25,8 +25,10 @@ fileprivate final class MusicLeaseDSP: @unchecked Sendable {
     let eq: EQProcessor
     let autoEQ: AutoEQProcessor
     let compensator: LoudnessCompensator
-    /// Immutable, so it is replaced whole (the main thread writes the word, the renderer reads it), never edited.
-    nonisolated(unsafe) var equalizer: LoudnessEqualizer
+    /// Immutable, so it is replaced whole, never edited. `equalizerOwner` keeps the current one alive (written under the
+    /// chain's settings lock); the renderer reads it through `equalizerBits` without a retain.
+    private nonisolated(unsafe) var equalizerOwner: LoudnessEqualizer
+    private let equalizerBits: Atomic<UInt>
 
     let peakBits = Atomic<UInt32>(0)
     let levelBits = Atomic<UInt32>(0)
@@ -34,9 +36,25 @@ fileprivate final class MusicLeaseDSP: @unchecked Sendable {
     init(sampleRate: Double, equalizerEnabled: Bool) {
         self.sampleRate = sampleRate
         eq = EQProcessor(sampleRate: sampleRate)
-        autoEQ = AutoEQProcessor(sampleRate: sampleRate)
+        autoEQ = AutoEQProcessor(sampleRate: sampleRate, requiresMainThread: false)
         compensator = LoudnessCompensator(sampleRate: sampleRate)
-        equalizer = Self.makeEqualizer(enabled: equalizerEnabled, sampleRate: sampleRate)
+        let equalizer = Self.makeEqualizer(enabled: equalizerEnabled, sampleRate: sampleRate)
+        equalizerOwner = equalizer
+        equalizerBits = Atomic<UInt>(Self.bits(of: equalizer))
+    }
+
+    private static func bits(of equalizer: LoudnessEqualizer) -> UInt {
+        UInt(bitPattern: Unmanaged.passUnretained(equalizer).toOpaque())
+    }
+
+    /// Runs the loudness equalizer in place when it is on. Render thread: no retain, no lock.
+    func processEqualizer(input: UnsafePointer<Float>, output: UnsafeMutablePointer<Float>, frames: Int) {
+        guard let raw = UnsafeRawPointer(bitPattern: equalizerBits.load(ordering: .acquiring)) else { return }
+        Unmanaged<LoudnessEqualizer>.fromOpaque(raw)._withUnsafeGuaranteedRef { equalizer in
+            if equalizer.isEnabled {
+                equalizer.process(input: input, output: output, frameCount: frames, channelCount: 2)
+            }
+        }
     }
 
     private static func makeEqualizer(enabled: Bool, sampleRate: Double) -> LoudnessEqualizer {
@@ -47,14 +65,22 @@ fileprivate final class MusicLeaseDSP: @unchecked Sendable {
 
     /// The old equalizer is released after the renderer has surely moved on (the same 0.5 s grace the biquad setups use).
     func replaceEqualizer(enabled: Bool) {
-        let old = equalizer
-        equalizer = Self.makeEqualizer(enabled: enabled, sampleRate: sampleRate)
+        let old = equalizerOwner
+        let new = Self.makeEqualizer(enabled: enabled, sampleRate: sampleRate)
+        equalizerOwner = new
+        equalizerBits.store(Self.bits(of: new), ordering: .releasing)
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) { _ = old }
     }
 
-    func noteLevel(_ samples: UnsafePointer<Float>, count: Int) {
+    /// `scale` is the lease's fade across the buffer, so a deck fading out leaves the meters as it leaves the speakers.
+    func replaceEqualizerIfNeeded(enabled: Bool) {
+        if equalizerOwner.isEnabled != enabled { replaceEqualizer(enabled: enabled) }
+    }
+
+    func noteLevel(_ samples: UnsafePointer<Float>, count: Int, scale: Float = 1) {
         var rms: Float = 0
         vDSP_rmsqv(samples, 1, &rms, vDSP_Length(count))
+        rms *= scale
         guard rms.isFinite, rms > 0 else { return }
         Self.raise(levelBits, to: rms)
     }
@@ -95,6 +121,8 @@ final class MusicDSPChain: @unchecked Sendable {
     private nonisolated(unsafe) var registry: [Int: MusicLeaseDSP] = [:]
     private nonisolated(unsafe) var autoEQProfileValue: AutoEQProfile?
     private let defaultRate: Double
+    /// Bumped by every setter, under the lock: lets `makeDSP` notice a change that landed while it was building.
+    private nonisolated(unsafe) var settingsVersion = 0
 
     private(set) var eqSettings: EQSettings = .flat
     private(set) var autoEQPreampEnabled = true
@@ -140,6 +168,7 @@ final class MusicDSPChain: @unchecked Sendable {
 
     func setEQ(_ settings: EQSettings) {
         settingsLock.withLockUnchecked {
+            settingsVersion += 1
             eqSettings = settings
             for dsp in registry.values { dsp.eq.updateSettings(settings) }
         }
@@ -147,6 +176,7 @@ final class MusicDSPChain: @unchecked Sendable {
 
     func setAutoEQProfile(_ profile: AutoEQProfile?) {
         settingsLock.withLockUnchecked {
+            settingsVersion += 1
             autoEQProfileValue = profile
             for dsp in registry.values { dsp.autoEQ.updateProfile(profile) }
         }
@@ -154,6 +184,7 @@ final class MusicDSPChain: @unchecked Sendable {
 
     func setAutoEQPreampEnabled(_ enabled: Bool) {
         settingsLock.withLockUnchecked {
+            settingsVersion += 1
             autoEQPreampEnabled = enabled
             for dsp in registry.values { dsp.autoEQ.setPreampEnabled(enabled) }
         }
@@ -162,6 +193,7 @@ final class MusicDSPChain: @unchecked Sendable {
     /// `volume` is the level the listener hears the loudness contours at: device volume times the row's volume.
     func setLoudnessCompensation(enabled: Bool, volume: Float) {
         settingsLock.withLockUnchecked {
+            settingsVersion += 1
             loudnessCompensationEnabled = enabled
             loudnessCompensationVolume = volume
             for dsp in registry.values { Self.applyCompensation(to: dsp, enabled: enabled, volume: volume) }
@@ -171,6 +203,7 @@ final class MusicDSPChain: @unchecked Sendable {
     func setLoudnessEqualization(enabled: Bool) {
         settingsLock.withLockUnchecked {
             guard enabled != loudnessEqualizationEnabled else { return }
+            settingsVersion += 1
             loudnessEqualizationEnabled = enabled
             for dsp in registry.values { dsp.replaceEqualizer(enabled: enabled) }
         }
@@ -224,20 +257,44 @@ final class MusicDSPChain: @unchecked Sendable {
 
     // MARK: - Lease state
 
-    /// Builds a lease's filters at `rate` from the current settings and registers them for later changes. Runs on the
-    /// thread that creates the lease; the lock makes the build and the registration one step, so no change is missed.
+    /// Builds a lease's filters at `rate` from the current settings and registers them for later changes. The build runs
+    /// on the thread that creates the lease and outside the lock (so the meters' main-thread reads never wait for it);
+    /// registration is one short step that re-applies the settings if any changed in between.
     fileprivate func makeDSP(rate: Double, token: Int) -> MusicLeaseDSP {
-        settingsLock.withLockUnchecked {
-            let dsp = MusicLeaseDSP(sampleRate: rate, equalizerEnabled: loudnessEqualizationEnabled)
-            dsp.eq.updateSettings(eqSettings)
-            if !autoEQPreampEnabled { dsp.autoEQ.setPreampEnabled(false) }
-            if let profile = autoEQProfileValue { dsp.autoEQ.updateProfile(profile) }
-            if loudnessCompensationEnabled {
-                Self.applyCompensation(to: dsp, enabled: true, volume: loudnessCompensationVolume)
-            }
+        let (version, equalizerOn) = settingsLock.withLockUnchecked { (settingsVersion, loudnessEqualizationEnabled) }
+        let dsp = MusicLeaseDSP(sampleRate: rate, equalizerEnabled: equalizerOn)
+        let snapshot = settingsLock.withLockUnchecked { self.snapshot() }
+        snapshot.apply(to: dsp)
+        return settingsLock.withLockUnchecked {
+            if settingsVersion != version { self.snapshot().apply(to: dsp) }
             registry[token] = dsp
             return dsp
         }
+    }
+
+    private struct Snapshot {
+        let eq: EQSettings
+        let profile: AutoEQProfile?
+        let preamp: Bool
+        let compensation: Bool
+        let volume: Float
+        let equalizer: Bool
+
+        func apply(to dsp: MusicLeaseDSP) {
+            dsp.eq.updateSettings(eq)
+            dsp.autoEQ.setPreampEnabled(preamp)
+            dsp.autoEQ.updateProfile(profile)
+            MusicDSPChain.applyCompensation(to: dsp, enabled: compensation, volume: volume)
+            dsp.replaceEqualizerIfNeeded(enabled: equalizer)
+        }
+    }
+
+    /// The current settings as a value. Call under the lock.
+    private func snapshot() -> Snapshot {
+        Snapshot(
+            eq: eqSettings, profile: autoEQProfileValue, preamp: autoEQPreampEnabled,
+            compensation: loudnessCompensationEnabled, volume: loudnessCompensationVolume, equalizer: loudnessEqualizationEnabled
+        )
     }
 
     fileprivate func forget(token: Int) {
@@ -292,8 +349,10 @@ final class MusicDSPChain: @unchecked Sendable {
         let metered = isOwner || lease.isArmed
         let dsp = lease.dsp
 
-        let target = Float(bitPattern: targetGainBits.load(ordering: .relaxed))
+        // Generation first (acquire), then the target: a snap stores the target before it bumps the generation, so seeing
+        // the new generation guarantees the new target.
         let snaps = snapGeneration.load(ordering: .acquiring)
+        let target = Float(bitPattern: targetGainBits.load(ordering: .relaxed))
         if snaps != lease.seenSnapGeneration {
             lease.seenSnapGeneration = snaps
             lease.currentGain = target
@@ -360,7 +419,7 @@ final class MusicDSPChain: @unchecked Sendable {
             memset(samples, 0, sampleCount * MemoryLayout<Float>.size)
             return
         }
-        if metered { dsp.noteLevel(samples, count: sampleCount) }
+        if metered { dsp.noteLevel(samples, count: sampleCount, scale: fade.meanValue(over: frames)) }
         lease.currentGain = Self.applyGain(
             samples, frames: frames, channels: 2, startGain: startGain, target: target, coefficient: lease.rampCoefficient
         )
@@ -369,10 +428,7 @@ final class MusicDSPChain: @unchecked Sendable {
         let input = UnsafePointer(samples)
         dsp.eq.process(input: input, output: samples, frameCount: frames)
         dsp.autoEQ.process(input: input, output: samples, frameCount: frames)
-        let equalizer = dsp.equalizer
-        if equalizer.isEnabled {
-            equalizer.process(input: input, output: samples, frameCount: frames, channelCount: 2)
-        }
+        dsp.processEqualizer(input: input, output: samples, frames: frames)
         dsp.compensator.process(input: input, output: samples, frameCount: frames)
 
         SoftLimiter.processBuffer(samples, sampleCount: sampleCount)
@@ -413,7 +469,7 @@ final class MusicDSPChain: @unchecked Sendable {
                 memset(data, 0, sampleCount * MemoryLayout<Float>.size)
                 continue
             }
-            if metered { dsp.noteLevel(data, count: sampleCount) }
+            if metered { dsp.noteLevel(data, count: sampleCount, scale: fade.meanValue(over: count)) }
             endGain = Self.applyGain(
                 data, frames: count, channels: channels, startGain: startGain, target: target, coefficient: lease.rampCoefficient
             )
@@ -486,6 +542,12 @@ fileprivate struct MusicFade {
     var step: Float = 0
     var remaining = 0
 
+    /// The fade's average over the next `frames` frames (its start and end values: a linear ramp's mean).
+    func meanValue(over frames: Int) -> Float {
+        guard remaining > 0 else { return value }
+        return (value + advanced(by: frames).value) / 2
+    }
+
     /// The state after `frames` more frames.
     func advanced(by frames: Int) -> MusicFade {
         guard remaining > 0, frames > 0 else { return self }
@@ -539,8 +601,9 @@ final class MusicRenderLease: @unchecked Sendable {
     private nonisolated(unsafe) var fade = MusicFade()
     private nonisolated(unsafe) var seenFadeGeneration = 0
 
-    private let fadeTargetBits = Atomic<UInt32>(Float(1).bitPattern)
-    private let fadeFrames = Atomic<Int>(0)
+    /// The target (high 32 bits) and the frame count (low 32 bits) of the newest fade in one word, so a reader never
+    /// pairs one caller's target with another's length.
+    private let fadeRequest = Atomic<UInt64>(UInt64(Float(1).bitPattern) << 32)
     private let fadeGeneration = Atomic<Int>(0)
 
     #if DEBUG
@@ -669,21 +732,23 @@ final class MusicRenderLease: @unchecked Sendable {
     func setFade(to gain: Float, over seconds: Double = 0) {
         guard gain.isFinite else { return }
         let rate = dsp.sampleRate
-        let frames = seconds.isFinite && seconds > 0 ? Int((seconds * rate).rounded()) : 0
-        fadeTargetBits.store(max(0, gain).bitPattern, ordering: .relaxed)
-        fadeFrames.store(frames, ordering: .relaxed)
+        // An hour is far past any real fade and keeps the frame count inside 32 bits at every rate.
+        let clamped = seconds.isFinite ? min(max(seconds, 0), 3_600) : 0
+        let frames = UInt32(min((clamped * rate).rounded(), Double(UInt32.max)))
+        fadeRequest.store(UInt64(max(0, gain).bitPattern) << 32 | UInt64(frames), ordering: .relaxed)
         fadeGeneration.wrappingAdd(1, ordering: .releasing)
     }
 
     /// The fade the renderer is heading for.
-    var fadeTarget: Float { Float(bitPattern: fadeTargetBits.load(ordering: .relaxed)) }
+    var fadeTarget: Float { Float(bitPattern: UInt32(fadeRequest.load(ordering: .relaxed) >> 32)) }
 
     fileprivate func beginFade() -> MusicFade {
         let generation = fadeGeneration.load(ordering: .acquiring)
         if generation != seenFadeGeneration {
             seenFadeGeneration = generation
-            let target = Float(bitPattern: fadeTargetBits.load(ordering: .relaxed))
-            let frames = fadeFrames.load(ordering: .relaxed)
+            let request = fadeRequest.load(ordering: .relaxed)
+            let target = Float(bitPattern: UInt32(request >> 32))
+            let frames = Int(request & 0xFFFF_FFFF)
             if frames <= 0 {
                 fade = MusicFade(value: target, target: target, step: 0, remaining: 0)
             } else {

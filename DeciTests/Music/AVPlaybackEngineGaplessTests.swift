@@ -252,6 +252,7 @@ struct AVPlaybackEngineGaplessTests {
         let second = try await writeTone("i", seconds: 4, rate: 48_000)
         let chain = MusicDSPChain(sampleRate: 48_000)
         chain.setTargetGain(0, snap: true)   // the tap applies the gain: nothing is heard
+        MusicTapContext.debugPrepareThreads.withLock { $0.removeAll() }   // serial tests: only this test's taps from here
         let engine = AVPlaybackEngine(chain: chain)
         var events: [PlaybackEngineEvent] = []
         engine.onEvent = { events.append($0) }
@@ -273,11 +274,12 @@ struct AVPlaybackEngineGaplessTests {
         #expect(standbyLease.debugCounters.gainOnlyFrames == 0)
         let threads = MusicTapContext.debugPrepareThreads.withLock { $0 }
         report.append("prepare threads: \(threads)")
-        #expect(threads.count >= 2)
+        #expect(threads.count == 2, "one prepare per deck")
         #expect(threads.allSatisfy { !$0.isMain }, "the tap prepares off the main thread, so the filters are built there")
 
-        try? await Task.sleep(for: .milliseconds(400))
-        report.append(line("standby 400 ms later, still paused", standbyLease.debugCounters))
+        let primed = await waitUntil(timeout: .seconds(10)) { standbyLease.debugCounters.fullFrames > 0 }
+        #expect(primed, "the paused standby primes its buffers")
+        report.append(line("standby once primed, still paused", standbyLease.debugCounters))
         let pausedFrames = standbyLease.debugCounters
         #expect(pausedFrames.silencedFrames == 0, "no frame of the incoming track is silenced while it is paused")
         #expect(pausedFrames.fullFrames > 0, "the primed frames went through the whole chain from the first buffer")

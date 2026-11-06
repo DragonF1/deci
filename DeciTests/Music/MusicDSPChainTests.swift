@@ -451,6 +451,7 @@ struct MusicDSPChainTests {
         let lease = MusicRenderLease(chain: chain, sampleRate: 44_100, maxFrames: 4_096)
         chain.setTargetGain(0.5, snap: true)
         let output = render(lease, MusicTestSignal.constant(0.4, frames: 64)).samples(channel: 0)
+        // 1e-3, not 1e-6: every lease now runs its own flat EQ, whose biquad cascade is not bit-exact at unity.
         #expect(output.allSatisfy { abs($0 - 0.2) < 1e-3 })
     }
 

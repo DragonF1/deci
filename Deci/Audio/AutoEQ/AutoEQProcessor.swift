@@ -24,7 +24,12 @@ final class AutoEQProcessor: BiquadProcessor, @unchecked Sendable {
     /// Number of active filter sections (diagnostic)
     private nonisolated(unsafe) var _filterCount: UInt = 0
 
-    init(sampleRate: Double) {
+    /// Whether the update methods insist on the main thread. The process taps always do; the music chain's per-lease
+    /// processors opt out because the chain's settings lock serializes their callers on whatever thread builds the lease.
+    private let requiresMainThread: Bool
+
+    init(sampleRate: Double, requiresMainThread: Bool = true) {
+        self.requiresMainThread = requiresMainThread
         super.init(
             sampleRate: sampleRate,
             maxSections: AutoEQProfile.maxFilters,
@@ -34,9 +39,10 @@ final class AutoEQProcessor: BiquadProcessor, @unchecked Sendable {
 
     // MARK: - Profile Update
 
-    /// Update the correction profile. Callers are serialized by the owner (MusicDSPChain settings lock).
+    /// Update the correction profile (call from main thread unless built with `requiresMainThread: false`).
     /// Pass `nil` to disable correction.
     func updateProfile(_ profile: AutoEQProfile?) {
+        if requiresMainThread { dispatchPrecondition(condition: .onQueue(.main)) }
         _currentProfile = profile
 
         let validated = profile?.validated()
@@ -84,6 +90,7 @@ final class AutoEQProcessor: BiquadProcessor, @unchecked Sendable {
 
     /// Toggle profile preamp on/off. When off, relies on downstream limiter for peak control.
     func setPreampEnabled(_ enabled: Bool) {
+        if requiresMainThread { dispatchPrecondition(condition: .onQueue(.main)) }
         guard enabled != _preampEnabled else { return }
         _preampEnabled = enabled
         logger.info("AutoEQ preamp \(enabled ? "enabled" : "bypassed (limiter-only)")")

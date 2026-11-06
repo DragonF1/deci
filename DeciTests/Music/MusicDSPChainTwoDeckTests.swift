@@ -252,17 +252,53 @@ struct MusicDSPChainTwoDeckTests {
         #expect(abs(chain.consumePeak() - 0.4) < 1e-3, "the quieter deck's later buffers do not wipe the louder one's reading")
     }
 
-    @Test("a lease that is released or gone stops contributing to the meters")
+    @Test("a released lease stops contributing to the meters, and so does one that is gone")
     func releasedLeaseLeavesTheMeters() {
         let chain = MusicDSPChain(sampleRate: 48_000)
         let owner = lease(chain)
-        var standby: MusicRenderLease? = lease(chain, claims: false)
-        standby?.arm()
+        let standby = lease(chain, claims: false)
+        standby.arm()
         render(owner, MusicTestSignal.constant(0.3, frames: 256))
-        _ = chain.consumePeak()
-        standby = nil
+        render(standby, MusicTestSignal.constant(0.4, frames: 256))
+        standby.release()
+        #expect(abs(chain.consumePeak() - 0.3) < 5e-3, "the released lease's unread 0.4 is gone with it")
+
+        var gone: MusicRenderLease? = lease(chain, claims: false)
+        gone?.arm()
+        render(gone!, MusicTestSignal.constant(0.5, frames: 256))
+        gone = nil
         render(owner, MusicTestSignal.constant(0.3, frames: 256))
-        #expect(abs(chain.consumePeak() - 0.3) < 1e-3)
+        #expect(abs(chain.consumePeak() - 0.3) < 5e-3)
+    }
+
+    @Test("the level follows the fade: a deck fading to zero stops counting, so the meters track a crossfade")
+    func levelFollowsTheFade() {
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        let owner = lease(chain)
+        render(owner, MusicTestSignal.constant(0.4, frames: 256))
+        let full = chain.consumeLevel()
+        owner.setFade(to: 0)
+        render(owner, MusicTestSignal.constant(0.4, frames: 256))
+        #expect(full > 0.39)
+        #expect(chain.consumeLevel() == 0)
+
+        owner.setFade(to: 1, over: 512.0 / 48_000)
+        render(owner, MusicTestSignal.constant(0.4, frames: 256))
+        let halfway = chain.consumeLevel()
+        #expect(halfway > 0.05 && halfway < 0.3, "mid-ramp reads between silence and full, got \(halfway)")
+    }
+
+    @Test("a nonsense fade length cannot trap: huge, negative and non-finite seconds clamp")
+    func fadeLengthClamps() {
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        let owner = lease(chain)
+        for seconds in [1e300, -5, .infinity, .nan, 1e12] as [Double] {
+            owner.setFade(to: 0.5, over: seconds)
+            let out = render(owner, MusicTestSignal.constant(0.4, frames: 64))
+            #expect(out.allSatisfy { $0.isFinite })
+        }
+        owner.setFade(to: 0.5, over: 0)
+        #expect(owner.fadeTarget == 0.5)
     }
 
     // MARK: - Concurrency

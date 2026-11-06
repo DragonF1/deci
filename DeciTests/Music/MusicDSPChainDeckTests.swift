@@ -136,6 +136,7 @@ struct MusicDSPChainDeckTests {
 
         standby.arm()
         render(standby, value: 0.8)
+        // 5e-3: the lease's flat EQ cascade is not bit-exact at unity (it read 0.8014).
         #expect(abs(chain.consumePeak() - 0.8) < 5e-3)
         #expect(chain.consumePeak() == 0, "reading resets it")
     }
