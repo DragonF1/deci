@@ -72,6 +72,8 @@ final class MusicPlayer {
     @ObservationIgnored private var loadGeneration = 0
     /// The track handed to the engine to start when the current one ends.
     @ObservationIgnored private var preloaded: (stream: ResolvedStream, track: MusicTrack)?
+    /// The engine was emptied while `stream` is still the current track's (a refused advance): playing it loads it again.
+    @ObservationIgnored private var engineDropped = false
 
     init(engine: any PlaybackEngine = AVPlaybackEngine(), now: @escaping () -> Date = Date.init) {
         self.engine = engine
@@ -191,7 +193,7 @@ final class MusicPlayer {
         }
         wantsPlay = true
         // A dead or expired stream is replaced before resuming; a new stream carries a new expiry, so this cannot loop.
-        if error != nil || stream.expiresAt <= now() {
+        if error != nil || engineDropped || stream.expiresAt <= now() {
             if refreshStream(resumeAt: hasEnded ? 0 : currentTime) { return }
         }
         if refreshTask != nil { return }
@@ -232,7 +234,7 @@ final class MusicPlayer {
 
     /// Jumps to `seconds`, clamped to the track. Does not change whether it is playing.
     func seek(to seconds: TimeInterval) {
-        guard nowPlaying != nil, stream != nil, refreshTask == nil, seconds.isFinite else { return }
+        guard nowPlaying != nil, stream != nil, refreshTask == nil, !engineDropped, seconds.isFinite else { return }
         let target = min(max(0, seconds), duration > 0 ? duration : .infinity)
         hasEnded = false
         currentTime = target
@@ -273,6 +275,7 @@ final class MusicPlayer {
         refreshTask?.cancel()
         refreshTask = nil
         preloaded = nil
+        engineDropped = false
         self.stream = stream
         nowPlaying = track
         error = nil
@@ -293,6 +296,7 @@ final class MusicPlayer {
 
     private func teardownCurrent() {
         preloaded = nil
+        engineDropped = false
         loadGeneration += 1
         refreshTask?.cancel()
         refreshTask = nil
@@ -357,7 +361,10 @@ final class MusicPlayer {
     /// ordinary one, which starts the queue's own next track (or leaves the player finished).
     private func rejectAdvance() {
         preloaded = nil
-        engine.pause()
+        // The engine already plays the next item: drop it, or a Play after this end would sound the next track under the
+        // old track's name. `play()` loads the old stream again when the engine holds nothing.
+        engine.unload()
+        engineDropped = true
         handle(.ended)
     }
 

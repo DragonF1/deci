@@ -427,6 +427,8 @@ final class MusicService {
     /// the connection's own timeout), and a Next that was parked behind it settles at once: the song plays on, since
     /// nothing is coming. The fetch is asked for again when the network returns (see `connectivityChanged`).
     private func networkLost() {
+        // Offline the next track is not a certain one (songs are stepped over): a preload made for it is withdrawn.
+        reconcilePreload()
         guard radioTask != nil || queueRetryTask != nil else { return }
         cancelRadio()
         guard !resumePendingAdvance() else { return }
@@ -1603,6 +1605,8 @@ final class MusicService {
     private func handleAdvanced(to track: MusicTrack) -> Bool {
         guard let expected = preloadTarget, expected.videoId == track.videoId,
               let stream = player.preloadedStream, stream.videoId == track.videoId else { return false }
+        // Everything is checked above and nothing has changed yet: a refusal leaves the queue and the session to the
+        // ordinary end of the track, which advances the queue once and sends the one final ping.
         // Consumed, not withdrawn: the queue moving on below must not take it back from the player.
         preloadOffered = nil
         // The old session closes with its final ping (it reads the player's position, still the old track's end).
@@ -2441,6 +2445,10 @@ final class MusicService {
             // and the session ends without a final one, as in `signOut`, so a later sign-in never sends them.
             cancelReport()
             session = nil
+            // The next track's stream was resolved under the account that is gone: neither the prefetch nor the preload
+            // may start from it.
+            cancelPrefetch()
+            prefetched = nil
             // The remembered session belonged to the account that is gone.
             dropSessionKey()
             forgetSession()

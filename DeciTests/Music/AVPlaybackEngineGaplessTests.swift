@@ -92,6 +92,8 @@ struct AVPlaybackEngineGaplessTests {
     func stallWaitingFlags() async {
         let engine = AVPlaybackEngine()
         engine.load(stream("active"), startAt: 0, autoplay: false)
+        // Scrambled first: the flag must be what the preload sets, not what the init left.
+        engine.standbyAvPlayer.automaticallyWaitsToMinimizeStalling = true
         engine.preload(stream("standby"))
         #expect(engine.avPlayer.automaticallyWaitsToMinimizeStalling)
         #expect(engine.standbyAvPlayer.automaticallyWaitsToMinimizeStalling == false)
@@ -127,6 +129,9 @@ struct AVPlaybackEngineGaplessTests {
         engine.setOutputDevice(uid: "device")
         engine.setFallbackLevel(volume: 0.25, muted: false)
         engine.load(stream("one"), startAt: 0, autoplay: false)
+        // Scrambled first: the level must be what the preload applies, not what was set on the idle player.
+        engine.standbyAvPlayer.volume = 1
+        engine.standbyAvPlayer.audioOutputDeviceUniqueID = nil
         engine.preload(stream("two"))
         #expect(engine.standbyAvPlayer.audioOutputDeviceUniqueID == "device")
         #expect(engine.standbyAvPlayer.volume == 0.25)
@@ -134,11 +139,10 @@ struct AVPlaybackEngineGaplessTests {
 
     // MARK: - Real playback
 
-    private func writeTone(_ name: String, seconds: Double) async throws -> URL {
+    private func writeTone(_ name: String, seconds: Double, rate: Double = 44_100) async throws -> URL {
         let directory = URL(fileURLWithPath: "/Volumes/Storage/_test/deci/gapless", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("\(name)-\(UUID().uuidString).m4a")
-        let rate = 44_100.0
         let frames = Int(seconds * rate)
         var samples = [Float](repeating: 0, count: frames * 2)
         for frame in 0..<frames {
@@ -171,6 +175,9 @@ struct AVPlaybackEngineGaplessTests {
         #expect(engine.preloadedVideoId == nil)
         #expect((engine.currentItem?.asset as? AVURLAsset)?.url == second)
         #expect(engine.avPlayer.automaticallyWaitsToMinimizeStalling, "the new active deck waits for stalls again")
+        #expect(engine.scheduledAdvanceCount == 1, "the standby started on its scheduled host time, not at the notification")
+        #expect(engine.fallbackAdvanceCount == 0)
+        #expect(engine.lateStartCount == 0)
 
         let ended = await waitUntil(timeout: .seconds(20)) { events.contains(.ended) }
         #expect(ended, "the second item ends the playback")
@@ -185,12 +192,16 @@ struct AVPlaybackEngineGaplessTests {
         var events: [PlaybackEngineEvent] = []
         engine.onEvent = { events.append($0) }
 
+        var prerolled = false
+        engine.onStandbyPrerolled = { finished in if finished { prerolled = true } }
         engine.load(stream("c", duration: 3, url: first), startAt: 0, autoplay: true)
         engine.preload(stream("d", duration: 2, url: second))
-        let ready = await waitUntil(timeout: .seconds(20)) { engine.position > 0.3 }
+        let ready = await waitUntil(timeout: .seconds(20)) { engine.position > 0.3 && prerolled }
         #expect(ready)
         engine.pause()
-        try? await Task.sleep(for: .seconds(4))
+        #expect(engine.scheduledStartHost == nil, "the pause takes the scheduled start back")
+        #expect(engine.standbyAvPlayer.rate == 0)
+        #expect(engine.preloadedVideoId == "d", "the preload itself stays")
         #expect(!events.contains(.advanced(videoId: "d")), "a paused track does not hand over")
         #expect(!events.contains(.ended))
 
@@ -225,5 +236,114 @@ struct AVPlaybackEngineGaplessTests {
         let ended = await waitUntil(timeout: .seconds(20)) { events.contains(.ended) }
         #expect(ended)
         #expect(!events.contains(.advanced(videoId: "g")))
+    }
+
+    // MARK: - Real playback through the real DSP chain
+
+    private func line(_ label: String, _ c: MusicRenderLease.DebugCounters?) -> String {
+        guard let c else { return "\(label): no lease" }
+        return "\(label): calls=\(c.calls) full=\(c.fullFrames) gainOnly=\(c.gainOnlyFrames) silenced=\(c.silencedFrames)"
+    }
+
+    @Test("real chain: the standby's tap is measured while paused, then the new deck owns the chain with nothing silenced")
+    func realChainHandOver() async throws {
+        let first = try await writeTone("h", seconds: 4)
+        let second = try await writeTone("i", seconds: 4, rate: 48_000)
+        let chain = MusicDSPChain(sampleRate: 48_000)
+        chain.setTargetGain(0, snap: true)   // the tap applies the gain: nothing is heard
+        let engine = AVPlaybackEngine(chain: chain)
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        var prerolled = false
+        engine.onStandbyPrerolled = { finished in if finished { prerolled = true } }
+
+        engine.load(stream("h", duration: 4, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("i", duration: 4, url: second))
+        let ready = await waitUntil(timeout: .seconds(30)) { prerolled && engine.debugStandbyTap?.debugLease != nil }
+        #expect(ready, "the standby prepared its tap and prerolled")
+        let standbyLease = try #require(engine.debugStandbyTap?.debugLease)
+        let activeLease = try #require(engine.debugActiveTap?.debugLease)
+        var report: [String] = []
+        report.append(line("standby at preroll completion", standbyLease.debugCounters))
+        #expect(chain.owns(activeLease))
+        #expect(!chain.owns(standbyLease), "preparing the standby never takes the chain")
+        #expect(chain.processorSampleRate == 44_100, "nor does it rebuild the owner's processors for its own (48 kHz) rate")
+        #expect(chain.processorsReady(for: activeLease), "the owner keeps EQ, AutoEQ and loudness while the standby is prepared")
+
+        try? await Task.sleep(for: .milliseconds(400))
+        report.append(line("standby 400 ms later, still paused", standbyLease.debugCounters))
+        let pausedFrames = standbyLease.debugCounters
+        #expect(pausedFrames.silencedFrames == 0, "no frame of the incoming track is silenced while it is paused")
+        #expect(pausedFrames.fullFrames == 0, "an unarmed standby never renders through the shared filters")
+
+        let scheduled = await waitUntil(timeout: .seconds(30)) { engine.scheduledStartHost != nil }
+        #expect(scheduled)
+        report.append(line("standby when scheduled", standbyLease.debugCounters))
+        report.append(line("active when standby scheduled", activeLease.debugCounters))
+
+        let advanced = await waitUntil(timeout: .seconds(30)) { events.contains(.advanced(videoId: "i")) }
+        #expect(advanced, "events: \(events)")
+        report.append(line("standby at advance", standbyLease.debugCounters))
+        #expect(engine.scheduledAdvanceCount == 1)
+        #expect(chain.owns(standbyLease), "the new deck's lease owns the chain")
+        #expect(!chain.owns(activeLease))
+
+        let before = chain.framesProcessed
+        let played = await waitUntil(timeout: .seconds(30)) { engine.position > 0.6 }
+        #expect(played)
+        #expect(chain.framesProcessed > before, "the chain keeps processing after the hand-over")
+        #expect(standbyLease.debugCounters.silencedFrames == 0, "no incoming frame was silenced")
+        #expect(chain.processorSampleRate == 48_000, "the processors follow the new track's rate once it owns the chain")
+        #expect(chain.processorsReady(for: standbyLease))
+        report.append(line("new owner after 0.6 s", standbyLease.debugCounters))
+        report.append(line("old deck's lease", activeLease.debugCounters))
+        try report.joined(separator: "\n").write(
+            toFile: "/Volumes/Storage/_test/deci/gapless/measure.txt", atomically: true, encoding: .utf8
+        )
+    }
+
+    @Test("a hand-over whose standby never started still plays the next track: the end notification starts it")
+    func standbyThatDidNotStartIsStartedAtTheEnd() async throws {
+        let first = try await writeTone("j", seconds: 2)
+        let second = try await writeTone("k", seconds: 2)
+        let engine = AVPlaybackEngine()
+        engine.setFallbackLevel(volume: 0, muted: true)
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        var prerolled = false
+        engine.onStandbyPrerolled = { finished in if finished { prerolled = true } }
+        engine.load(stream("j", duration: 2, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("k", duration: 2, url: second))
+        _ = await waitUntil(timeout: .seconds(20)) { prerolled && engine.scheduledStartHost != nil && engine.position > 1.6 }
+        // Something stopped the standby after it was scheduled (a stall, an output change), too late to be scheduled again.
+        engine.standbyAvPlayer.pause()
+        let rateAfterPause = engine.standbyAvPlayer.rate
+
+        let advanced = await waitUntil(timeout: .seconds(20)) { events.contains(.advanced(videoId: "k")) }
+        #expect(advanced)
+        #expect(
+            engine.lateStartCount + engine.fallbackAdvanceCount == 1,
+            "the engine started it itself (rate after pause \(rateAfterPause), scheduled \(engine.scheduledAdvanceCount))"
+        )
+        let moving = await waitUntil(timeout: .seconds(20)) { engine.avPlayer.rate != 0 && engine.position > 0.3 }
+        #expect(moving, "no dead air: the new active deck is playing")
+    }
+
+    @Test("a standby that was scheduled is moved when the output device changes, and the hand-over still happens")
+    func outputChangeKeepsTheHandOver() async throws {
+        let first = try await writeTone("l", seconds: 3)
+        let second = try await writeTone("m", seconds: 2)
+        let engine = AVPlaybackEngine()
+        engine.setFallbackLevel(volume: 0, muted: true)
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("l", duration: 3, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("m", duration: 2, url: second))
+        _ = await waitUntil(timeout: .seconds(20)) { engine.scheduledStartHost != nil }
+        engine.setOutputDevice(uid: nil)
+        let advanced = await waitUntil(timeout: .seconds(20)) { events.contains(.advanced(videoId: "m")) }
+        #expect(advanced)
+        let moving = await waitUntil(timeout: .seconds(20)) { engine.position > 0.3 }
+        #expect(moving)
     }
 }

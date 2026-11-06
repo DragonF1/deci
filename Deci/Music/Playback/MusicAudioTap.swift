@@ -95,7 +95,12 @@ final class MusicTapDeck: @unchecked Sendable {
         var lease: MusicRenderLease?
         var armed = false
         var active = false
+        /// Once set, this deck never arms or claims again, whatever arrives late (a tap that prepares after its deck
+        /// was torn down, a stale arm).
+        var retired = false
     }
+    /// Every decision about the lease and the call that carries it out happen under this one lock, so a late arm can
+    /// never outlive a disarm. The lease calls are atomic operations and a non-blocking main-queue post: safe to make here.
     private let state = OSAllocatedUnfairLock(initialState: State())
 
     init(role: Role) {
@@ -105,16 +110,23 @@ final class MusicTapDeck: @unchecked Sendable {
     /// Called from the tap's prepare with the lease it made (which does not claim). An active deck claims the chain now;
     /// a standby deck waits to be armed and activated, whichever of those came before its tap was ready.
     func attach(_ lease: MusicRenderLease) {
-        let (shouldClaim, shouldArm) = state.withLock { state -> (Bool, Bool) in
+        state.withLock { state in
             state.lease = lease
-            return (role == .active || state.active, state.armed && !state.active)
-        }
-        if shouldClaim {
-            lease.claim()
-        } else if shouldArm {
-            lease.arm()
+            if state.retired {
+                lease.release()
+            } else if role == .active || state.active {
+                state.active = true
+                lease.claim()
+            } else if state.armed {
+                lease.arm()
+            }
         }
     }
+
+    #if DEBUG
+    /// The tap's lease, for the tests.
+    var debugLease: MusicRenderLease? { state.withLock { $0.lease } }
+    #endif
 
     /// Called from the tap's unprepare: the lease is going away.
     func detach() {
@@ -123,40 +135,39 @@ final class MusicTapDeck: @unchecked Sendable {
 
     /// Lets this deck's tap render next to the playing deck's.
     func arm() {
-        let lease = state.withLock { state -> MusicRenderLease? in
+        state.withLock { state in
+            guard !state.retired, !state.active else { return }
             state.armed = true
-            return state.lease
+            state.lease?.arm()
         }
-        lease?.arm()
     }
 
-    /// Puts the deck back to silence (its start was cancelled).
+    /// Puts the deck back to gain-only (its start was cancelled).
     func disarm() {
-        let lease = state.withLock { state -> MusicRenderLease? in
+        state.withLock { state in
             state.armed = false
-            return state.lease
+            state.lease?.disarm()
         }
-        lease?.disarm()
     }
 
     /// This deck is the one that plays now: its tap owns the chain.
     func activate() {
-        let lease = state.withLock { state -> MusicRenderLease? in
+        state.withLock { state in
+            guard !state.retired else { return }
             state.active = true
             state.armed = false
-            return state.lease
+            state.lease?.claim()
         }
-        lease?.claim()
     }
 
-    /// This deck is over: its tap stops rendering.
+    /// This deck is over: its tap stops rendering, and the deck never claims again.
     func retire() {
-        let lease = state.withLock { state -> MusicRenderLease? in
+        state.withLock { state in
+            state.retired = true
             state.active = false
             state.armed = false
-            return state.lease
+            state.lease?.release()
         }
-        lease?.release()
     }
 }
 

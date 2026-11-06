@@ -13,6 +13,7 @@ private struct PreloadHarness {
     let engine = FakePlaybackEngine()
     let surface = FakeNowPlayingSurface()
     let clock = MutableClock()
+    let connectivity = MusicConnectivity(isOnline: true)
     let player: MusicPlayer
     let service: MusicService
 
@@ -31,6 +32,7 @@ private struct PreloadHarness {
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
             queueRetryDelay: .seconds(60),
+            connectivity: connectivity,
             refreshOnCreate: false
         )
     }
@@ -289,5 +291,72 @@ struct MusicServicePreloadTests {
         await out.enterWindow()
         out.service.signOut()
         #expect(out.engine.preloadedVideoId == nil)
+    }
+
+    @Test("going offline inside the window withdraws the preload, and coming back offers it again")
+    func offlineWithdrawsThePreload() async {
+        let h = PreloadHarness()
+        await h.startQueue(["a", "b", "c"])
+        await h.enterWindow()
+        #expect(h.engine.preloadedVideoId == "b")
+
+        h.connectivity.update(isOnline: false)
+        #expect(h.engine.preloadedVideoId == nil, "offline the next song is not a certain one")
+
+        h.connectivity.update(isOnline: true)
+        h.engine.tick(188, playing: true)
+        #expect(h.engine.preloadedVideoId == "b")
+    }
+
+    @Test("a refused advance leaves the engine holding nothing, and the queue moves exactly once")
+    func refusedAdvanceReloadsTheRightTrack() async {
+        let h = PreloadHarness()
+        await h.startQueue(["a", "b", "c"])
+        await h.enterWindow()
+
+        h.engine.advance(to: "zzz")
+        await h.settle()
+
+        #expect(h.service.queue.current?.videoId == "b", "one step, not two")
+        #expect(h.player.nowPlaying?.videoId == "b")
+        #expect(h.engine.currentVideoId == "b", "the engine item and the track shown agree")
+    }
+
+    @Test("Play after a refused end never plays the next track under the old track's name")
+    func playAfterRefusedEnd() async {
+        let h = PreloadHarness()
+        h.service.setAutoplay(false)
+        await h.startQueue(["a"])
+        h.player.preload(stream: MusicSamples.stream(videoId: "b"), track: MusicSamples.track("b"))
+        h.player.onAdvanced = { _ in false }
+
+        h.engine.advance(to: "b")
+        #expect(h.engine.currentVideoId != "b", "the item that was never accepted is not left on the engine")
+        #expect(h.player.nowPlaying?.videoId == "a")
+        #expect(h.player.hasEnded)
+
+        h.player.play()
+        await h.settle()
+        for _ in 0..<5 { await Task.yield() }
+        #expect(h.engine.currentVideoId == nil || h.engine.currentVideoId == "a")
+        #expect(h.engine.loads.last?.stream.videoId != "b")
+    }
+
+    @Test("a dead session withdraws the preload and the prefetched stream")
+    func deadSessionWithdraws() async {
+        let h = PreloadHarness()
+        await h.startQueue(["a", "b", "c"])
+        await h.enterWindow()
+        #expect(h.engine.preloadedVideoId == "b")
+
+        await h.backend.setSearchError("q", MusicError.signedOut)
+        h.service.query = "q"
+        h.service.search()
+        await h.service.searchTask?.value
+        await h.service.signOutTask?.value
+
+        #expect(h.service.authState == .signedOut)
+        #expect(h.engine.preloadedVideoId == nil)
+        #expect(h.service.prefetchTask == nil)
     }
 }

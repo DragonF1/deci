@@ -524,15 +524,15 @@ struct MusicDSPChainTests {
         #expect(released.samples(channel: 0).allSatisfy { $0 == 0 })
     }
 
-    @Test("a render that finds the chain busy is dropped to silence instead of racing the other thread")
-    func busyRenderIsDropped() {
+    @Test("a render that finds the chain busy plays gain-only instead of racing the other thread or going silent")
+    func busyRenderPlaysGainOnly() {
         let (chain, lease) = make()
         var dropped: TestBufferList?
         chain.holdingRenderLock {
             dropped = render(lease, MusicTestSignal.constant(0.5, frames: 128))
         }
-        #expect(dropped?.samples(channel: 0).allSatisfy { $0 == 0 } == true)
-        #expect(chain.framesProcessed == 0)
+        #expect(abs((dropped?.samples(channel: 0)[127] ?? 0) - 0.5) < 1e-3, "the buffer is kept, with the volume applied")
+        #expect(chain.framesProcessed == 0, "it did not go through the shared chain")
 
         let afterwards = render(lease, MusicTestSignal.constant(0.5, frames: 128))
         #expect(abs(afterwards.samples(channel: 0)[127] - 0.5) < 1e-3, "the lock is free again")

@@ -91,6 +91,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private static let scheduleWindow: TimeInterval = 6
     /// How far the end estimate may drift before the standby's start is moved.
     private static let scheduleTolerance: TimeInterval = 0.04
+    /// The standby's tap is armed this long before its scheduled start.
+    private static let armLead: TimeInterval = 0.25
 
     /// One AVPlayer and everything that belongs to the item it holds.
     @MainActor
@@ -169,6 +171,24 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var preloadReady = false
     /// The host time the standby is scheduled to start at, nil while it is not scheduled.
     private var scheduledHost: CMTime?
+    /// The preroll was retried once already for this preload.
+    private var prerollRetried = false
+    /// Arms the standby's tap shortly before its scheduled start (not when the start is scheduled, up to 6 s earlier).
+    private var armTask: Task<Void, Never>?
+
+    /// How many hand-overs found the standby already running on its scheduled start, how many had to start it at the
+    /// end notification, and how many of those found it not running although it was scheduled. Test seams.
+    private(set) var scheduledAdvanceCount = 0
+    private(set) var fallbackAdvanceCount = 0
+    private(set) var lateStartCount = 0
+    /// The standby's start host time, for tests.
+    var scheduledStartHost: CMTime? { scheduledHost }
+    #if DEBUG
+    var debugActiveTap: MusicTapDeck? { active.tap }
+    var debugStandbyTap: MusicTapDeck? { standby.tap }
+    /// Called when a preroll of the standby has completed, with its `finished` flag. A test seam.
+    var onStandbyPrerolled: ((Bool) -> Void)?
+    #endif
 
     /// - Parameters:
     ///   - chain: The DSP to put on every item. nil plays items as they are (tests, and no mixer).
@@ -397,8 +417,12 @@ final class AVPlaybackEngine: PlaybackEngine {
     func setOutputDevice(uid: String?) {
         let resolved = (uid?.isEmpty ?? true) ? nil : uid
         outputDeviceUID = resolved
+        // Moving a player to another device can drop a start that is scheduled on it: take it back and set it again.
+        let rescheduled = scheduledHost != nil
+        if rescheduled { cancelSchedule() }
         active.player.audioOutputDeviceUniqueID = resolved
         standby.player.audioOutputDeviceUniqueID = resolved
+        if rescheduled { evaluateSchedule() }
     }
 
     /// The stream's own length (YouTube's approxDurationMs, exact to the millisecond), when it has one.
@@ -483,6 +507,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         cancelPreload()
         preloadStream = stream
         preloadReady = false
+        prerollRetried = false
+        standby.player.audioOutputDeviceUniqueID = outputDeviceUID
         standby.player.automaticallyWaitsToMinimizeStalling = false
         startItem(on: standby, stream: stream, role: .standby)
     }
@@ -490,6 +516,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     func cancelPreload() {
         guard preloadStream != nil || standby.videoId != nil else { return }
         scheduledHost = nil
+        armTask?.cancel()
+        armTask = nil
         preloadStream = nil
         preloadReady = false
         standby.tearDown()
@@ -500,14 +528,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard deck === standby, preloadStream != nil else { return }
         switch status {
         case .readyToPlay:
-            // Prerolled paused: the buffers and the decoder are warm, so the scheduled start has nothing left to wait for.
-            deck.player.preroll(atRate: 1) { [weak self, weak deck] _ in
-                Task { @MainActor [weak self, weak deck] in
-                    guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
-                    self.preloadReady = true
-                    self.evaluateSchedule()
-                }
-            }
+            prerollStandby(deck, token: token)
         case .failed:
             // The next track cannot be prepared: the ordinary track change (resolve, load) will have to do.
             cancelPreload()
@@ -515,6 +536,29 @@ final class AVPlaybackEngine: PlaybackEngine {
             break
         @unknown default:
             break
+        }
+    }
+
+    /// Prerolls the standby paused: the buffers and the decoder are warm, so the scheduled start has nothing left to wait
+    /// for. It counts as ready only when the preroll finished; one that did not is tried once more, then the preload is
+    /// given up (the ordinary track change then plays the next track).
+    private func prerollStandby(_ deck: Deck, token: Int) {
+        deck.player.preroll(atRate: 1) { [weak self, weak deck] finished in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
+                #if DEBUG
+                self.onStandbyPrerolled?(finished)
+                #endif
+                if finished {
+                    self.preloadReady = true
+                    self.evaluateSchedule()
+                } else if !self.prerollRetried {
+                    self.prerollRetried = true
+                    self.prerollStandby(deck, token: token)
+                } else {
+                    self.cancelPreload()
+                }
+            }
         }
     }
 
@@ -573,19 +617,52 @@ final class AVPlaybackEngine: PlaybackEngine {
     }
 
     private func schedule(at host: CMTime) {
-        standby.tap?.arm()
         standby.player.automaticallyWaitsToMinimizeStalling = false
         standby.player.setRate(1, time: .invalid, atHostTime: host)
         scheduledHost = host
+        armStandbyTap(before: host)
     }
 
-    /// Takes the standby's scheduled start back: it is paused where it was (at its first frame) and warmed up again.
+    /// Arms the standby's tap `armLead` seconds before `host`, and not earlier: an armed standby shares the filters with
+    /// the owner. A start that is re-scheduled re-arms for its new time; a cancelled one is never armed.
+    private func armStandbyTap(before host: CMTime) {
+        armTask?.cancel()
+        armTask = nil
+        let wait = CMTimeSubtract(host, CMClockGetTime(CMClockGetHostTimeClock())).seconds - Self.armLead
+        guard wait > 0 else {
+            standby.tap?.arm()
+            return
+        }
+        armTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled, let self, let scheduled = self.scheduledHost, scheduled == host else { return }
+            self.standby.tap?.arm()
+        }
+    }
+
+    /// Takes the standby's scheduled start back: it is paused, put back at its first frame (it may have started a few
+    /// milliseconds already) and warmed up again, and the schedule is set again once that has landed.
     private func cancelSchedule() {
         guard scheduledHost != nil else { return }
         scheduledHost = nil
+        armTask?.cancel()
+        armTask = nil
         standby.tap?.disarm()
-        standby.player.pause()
-        if preloadReady { standby.player.preroll(atRate: 1, completionHandler: nil) }
+        let deck = standby
+        let token = deck.token
+        deck.player.pause()
+        guard preloadReady else { return }
+        deck.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] finished in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil, finished else { return }
+                deck.player.preroll(atRate: 1) { [weak self, weak deck] _ in
+                    Task { @MainActor [weak self, weak deck] in
+                        guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
+                        self.evaluateSchedule()
+                    }
+                }
+            }
+        }
     }
 
     /// The active item played to its end. With a ready preload the standby plays on from here, and `advanced` is reported
@@ -599,7 +676,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         let incoming = standby
         let outgoing = active
-        let startedOnSchedule = scheduledHost != nil
+        let hostClock = CMClockGetHostTimeClock()
+        let untilStart = scheduledHost.map { CMTimeSubtract($0, CMClockGetTime(hostClock)).seconds }
 
         // The chain changes hands: the new deck's tap owns it, the old one renders nothing more.
         incoming.tap?.activate()
@@ -610,8 +688,18 @@ final class AVPlaybackEngine: PlaybackEngine {
         preloadStream = nil
         preloadReady = false
 
-        // The fallback: the end notification came before (or without) the scheduled start, so start it now.
-        if !startedOnSchedule { incoming.player.play() }
+        // The scheduled start is trusted only when it is seen to run: a standby that stalled, lost its start or was touched
+        // by an output change is not playing, and a start that is still well ahead (the real audio was shorter than the
+        // duration said) is brought forward. Either way start it now.
+        let startedOnSchedule = untilStart != nil && incoming.player.rate != 0 && (untilStart ?? 0) < 0.1
+        if startedOnSchedule {
+            scheduledAdvanceCount += 1
+        } else {
+            if untilStart != nil { lateStartCount += 1 } else { fallbackAdvanceCount += 1 }
+            incoming.player.play()
+        }
+        armTask?.cancel()
+        armTask = nil
         incoming.player.automaticallyWaitsToMinimizeStalling = true
         outgoing.tearDown()
         outgoing.player.automaticallyWaitsToMinimizeStalling = false

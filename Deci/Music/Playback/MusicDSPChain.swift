@@ -59,8 +59,6 @@ final class MusicDSPChain: @unchecked Sendable {
     private let tokenSource = Atomic<Int>(0)
     private let ownerToken = Atomic<Int>(0)
     private let renderBusy = Atomic<Bool>(false)
-    /// How many standby leases are armed: eligible to render next to the owner for the few milliseconds of a hand-over.
-    private let armedCount = Atomic<Int>(0)
 
     /// Owned by the renderer under `renderBusy`.
     private nonisolated(unsafe) var currentGain: Float = 1
@@ -211,23 +209,23 @@ final class MusicDSPChain: @unchecked Sendable {
         ownerToken.store(token, ordering: .releasing)
     }
 
-    fileprivate func noteArmed(_ delta: Int) {
-        _ = armedCount.wrappingAdd(delta, ordering: .relaxed)
-    }
-
-    /// Takes the render flag. While an armed standby exists the owner and the standby can meet on it for an instant: the
-    /// loser spins a bounded number of times (a render is microseconds) instead of dropping its first frames. With no
-    /// standby armed there is no contention to wait out and a busy chain renders silence, as it always did.
+    /// Takes the render flag, once: nobody spins for it. The lease that loses (the owner or an armed standby, which only
+    /// meet on it for the instant of a hand-over) renders its buffer gain-only instead of waiting.
     private func acquireRender() -> Bool {
-        if renderBusy.compareExchange(expected: false, desired: true, ordering: .acquiring).exchanged { return true }
-        guard armedCount.load(ordering: .relaxed) > 0 else { return false }
-        for _ in 0..<2_000 {
-            if renderBusy.compareExchange(expected: false, desired: true, ordering: .acquiring).exchanged { return true }
-        }
-        return false
+        renderBusy.compareExchange(expected: false, desired: true, ordering: .acquiring).exchanged
     }
 
     #if DEBUG
+    /// Test hook: whether `lease` is the chain's owner.
+    func owns(_ lease: MusicRenderLease) -> Bool {
+        ownerToken.load(ordering: .acquiring) == lease.token
+    }
+
+    /// Test hook: whether a render by `lease` would run the rate-dependent stages.
+    func processorsReady(for lease: MusicRenderLease) -> Bool {
+        rateBits.load(ordering: .acquiring) == lease.rateBits
+    }
+
     /// Test hook: makes every render started inside `body` find the chain busy.
     func holdingRenderLock(_ body: () -> Void) {
         renderBusy.store(true, ordering: .releasing)
@@ -241,11 +239,26 @@ final class MusicDSPChain: @unchecked Sendable {
     fileprivate func render(_ list: UnsafeMutableAudioBufferListPointer, frames: Int, lease: MusicRenderLease) {
         guard frames > 0, list.count > 0 else { return }
 
-        guard ownerToken.load(ordering: .acquiring) == lease.token || lease.isArmed, acquireRender() else {
-            Self.silence(list)
+        let isOwner = ownerToken.load(ordering: .acquiring) == lease.token
+        guard isOwner || lease.isArmed else {
+            // A standby that has not claimed the chain keeps its frames (its item may be primed with them while paused):
+            // the volume only, nothing shared. Any other lease is stale, and renders silence.
+            if lease.isUnclaimedStandby {
+                renderUnshared(list, frames: frames, lease: lease)
+            } else {
+                Self.silence(list)
+                lease.noteSilenced(frames)
+            }
+            return
+        }
+        guard acquireRender() else {
+            // Lost the race for the filters: the buffer still plays, with the volume and the limiter. Silence here would
+            // drop the old item's last frames or the new one's first.
+            renderUnshared(list, frames: frames, lease: lease)
             return
         }
         defer { renderBusy.store(false, ordering: .releasing) }
+        lease.noteFull(frames)
 
         let target = Float(bitPattern: targetGainBits.load(ordering: .relaxed))
         if snapGain.exchange(false, ordering: .relaxed) { currentGain = target }
@@ -364,6 +377,29 @@ final class MusicDSPChain: @unchecked Sendable {
         currentGain = endGain
     }
 
+    /// The volume and the limiter on the buffer, touching no shared render state (no filters, no gain ramp, no meter):
+    /// safe next to the lease that holds the render flag. The gain steps to the target instead of gliding.
+    private func renderUnshared(_ list: UnsafeMutableAudioBufferListPointer, frames: Int, lease: MusicRenderLease) {
+        var target = Float(bitPattern: targetGainBits.load(ordering: .relaxed))
+        for index in 0..<list.count {
+            let buffer = list[index]
+            guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let channels = max(1, Int(buffer.mNumberChannels))
+            let available = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
+            let count = min(available, frames * channels)
+            guard count > 0 else { continue }
+            if target == 0 {
+                memset(data, 0, count * MemoryLayout<Float>.size)
+                continue
+            }
+            if target != 1 { vDSP_vsmul(data, 1, &target, data, 1, vDSP_Length(count)) }
+            Self.zeroNonFinite(data, count: count)
+            SoftLimiter.processBuffer(data, sampleCount: count)
+            Self.zeroNonFinite(data, count: count)
+        }
+        lease.noteGainOnly(frames)
+    }
+
     // MARK: - Render helpers
 
     /// Keeps the loudest buffer RMS seen since the level was last read. Takes the buffer as it came in, before the gain.
@@ -451,6 +487,60 @@ final class MusicRenderLease: @unchecked Sendable {
     fileprivate let scratch: UnsafeMutablePointer<Float>
     fileprivate let scratchFrames: Int
     private let armedFlag = Atomic<Bool>(false)
+    /// The rate to rebuild the processors for when this lease claims the chain; nil when the stream's rate is unusable.
+    private let claimRate: Double?
+    /// Set once the lease has claimed the chain (at creation, or later by `claim`); never cleared.
+    private let claimedFlag: Atomic<Bool>
+    private let releasedFlag = Atomic<Bool>(false)
+
+    #if DEBUG
+    /// What the renderer did with this lease's frames, for the tests: through the whole chain, volume and limiter only,
+    /// or silenced.
+    struct DebugCounters: Sendable, Equatable {
+        var calls = 0
+        var fullFrames = 0
+        var gainOnlyFrames = 0
+        var silencedFrames = 0
+    }
+    private let callCount = Atomic<Int>(0)
+    private let fullCount = Atomic<Int>(0)
+    private let gainOnlyCount = Atomic<Int>(0)
+    private let silencedCount = Atomic<Int>(0)
+    var debugCounters: DebugCounters {
+        DebugCounters(
+            calls: callCount.load(ordering: .relaxed),
+            fullFrames: fullCount.load(ordering: .relaxed),
+            gainOnlyFrames: gainOnlyCount.load(ordering: .relaxed),
+            silencedFrames: silencedCount.load(ordering: .relaxed)
+        )
+    }
+    #endif
+
+    fileprivate func noteFull(_ frames: Int) {
+        #if DEBUG
+        callCount.wrappingAdd(1, ordering: .relaxed)
+        fullCount.wrappingAdd(frames, ordering: .relaxed)
+        #endif
+    }
+
+    fileprivate func noteGainOnly(_ frames: Int) {
+        #if DEBUG
+        callCount.wrappingAdd(1, ordering: .relaxed)
+        gainOnlyCount.wrappingAdd(frames, ordering: .relaxed)
+        #endif
+    }
+
+    fileprivate func noteSilenced(_ frames: Int) {
+        #if DEBUG
+        callCount.wrappingAdd(1, ordering: .relaxed)
+        silencedCount.wrappingAdd(frames, ordering: .relaxed)
+        #endif
+    }
+
+    /// A standby that has not claimed the chain and has not been released: its frames are kept, gain only.
+    fileprivate var isUnclaimedStandby: Bool {
+        !claimedFlag.load(ordering: .acquiring) && !releasedFlag.load(ordering: .acquiring)
+    }
 
     /// Armed: eligible to render next to the owner (see `arm`).
     fileprivate var isArmed: Bool { armedFlag.load(ordering: .acquiring) }
@@ -471,13 +561,18 @@ final class MusicRenderLease: @unchecked Sendable {
         scratchFrames = max(0, maxFrames)
         scratch = .allocate(capacity: max(1, scratchFrames * 2))
         scratch.initialize(repeating: 0, count: max(1, scratchFrames * 2))
+        claimRate = usable ? rate : nil
+        claimedFlag = Atomic<Bool>(claims)
         token = claims ? chain.claimOwnership() : chain.newToken()
-        if usable {
-            chain.requestRebuild(forRate: rate)
+        // Only the lease that plays asks for the processors to be rebuilt for its rate. A standby that did would rebuild
+        // them under the owner (and the owner would lose its EQ for the rest of the song).
+        if claims, let claimRate {
+            chain.requestRebuild(forRate: claimRate)
         }
     }
 
     deinit {
+        releasedFlag.store(true, ordering: .releasing)
         disarm()
         chain.releaseOwnership(token: token)
         scratch.deallocate()
@@ -490,25 +585,30 @@ final class MusicRenderLease: @unchecked Sendable {
 
     /// Gives up the chain: until another lease is created or claims it, every render is silence.
     func release() {
+        releasedFlag.store(true, ordering: .releasing)
         disarm()
         chain.releaseOwnership(token: token)
     }
 
-    /// Lets a standby lease render next to the owner, from just before its scheduled start: its first frames are heard
+    /// Lets a standby lease render through the shared filters next to the owner, from just before its scheduled start: its first frames are heard
     /// while the old item's last ones are still playing out. Both share the chain's filters for those milliseconds (each
     /// deck having its own filter state is Phase 1b).
     func arm() {
-        if !armedFlag.exchange(true, ordering: .acquiringAndReleasing) { chain.noteArmed(1) }
+        armedFlag.store(true, ordering: .releasing)
     }
 
     /// Puts an armed standby back to silence.
     func disarm() {
-        if armedFlag.exchange(false, ordering: .acquiringAndReleasing) { chain.noteArmed(-1) }
+        armedFlag.store(false, ordering: .releasing)
     }
 
     /// The hand-over: this lease becomes the chain's owner and the previous owner renders silence from now on.
     func claim() {
+        claimedFlag.store(true, ordering: .releasing)
         chain.transferOwnership(to: token)
         disarm()
+        // The processors follow this lease's rate (on the main queue, never waited for): until that lands the lease
+        // plays without the rate-dependent stages, a few milliseconds at the start of the item.
+        if let claimRate { chain.requestRebuild(forRate: claimRate) }
     }
 }

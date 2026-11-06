@@ -802,6 +802,7 @@ final class FakePlaybackEngine: PlaybackEngine {
 
     func load(_ stream: ResolvedStream, startAt: TimeInterval, autoplay: Bool) {
         preloadedVideoId = nil
+        currentVideoId = stream.videoId
         loads.append(Load(stream: stream, startAt: startAt, autoplay: autoplay))
     }
 
@@ -810,6 +811,8 @@ final class FakePlaybackEngine: PlaybackEngine {
     private(set) var cancelPreloadCount = 0
     /// The video id the standby deck holds, nil when nothing is preloaded.
     private(set) var preloadedVideoId: String?
+    /// The video id of the item the engine plays or holds as its current one, nil when it holds none.
+    private(set) var currentVideoId: String?
 
     func preload(_ stream: ResolvedStream) {
         preloads.append(stream)
@@ -825,7 +828,15 @@ final class FakePlaybackEngine: PlaybackEngine {
     func advance() {
         guard let id = preloadedVideoId else { return }
         preloadedVideoId = nil
+        currentVideoId = id
         onEvent?(.advanced(videoId: id))
+    }
+
+    /// The engine moved on to `videoId` (which the player knows nothing about): a refused advance.
+    func advance(to videoId: String) {
+        preloadedVideoId = nil
+        currentVideoId = videoId
+        onEvent?(.advanced(videoId: videoId))
     }
 
     func setOutputDevice(uid: String?) { outputDevices.append(uid) }
@@ -837,6 +848,7 @@ final class FakePlaybackEngine: PlaybackEngine {
     func unload() {
         unloadCount += 1
         preloadedVideoId = nil
+        currentVideoId = nil
     }
 
     func emit(_ event: PlaybackEngineEvent) { onEvent?(event) }
