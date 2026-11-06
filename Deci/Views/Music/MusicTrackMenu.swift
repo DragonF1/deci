@@ -17,6 +17,10 @@ struct MusicTrackMenuHandler: Sendable {
     /// The song cannot play now: the network is gone (or the account) and it is not downloaded. Its row dims and a tap on it
     /// plays nothing. Reads the store, so a row that calls it from its body redraws when the network goes or returns.
     var isDimmed: @MainActor (MusicTrack) -> Bool = { _ in false }
+    /// The "do not mix" entries the song's menu adds under its actions: none outside the Music tab.
+    var mixItems: @MainActor (MusicTrack, MusicTrackContext) -> [MusicMixMenuItem] = { _, _ in [] }
+    /// What a pick of one of those entries does.
+    var performMix: @MainActor (MusicMixMenuItem, MusicTrack) -> Void = { _, _ in }
 }
 
 private struct MusicTrackMenuKey: EnvironmentKey {
@@ -64,6 +68,9 @@ extension EnvironmentValues {
 struct MusicTrackMenuItems: View {
     let actions: [MusicTrackAction]
     let perform: (MusicTrackAction) -> Void
+    /// The "do not mix" entries, under a line of their own. Empty draws nothing, so the menu is as it was.
+    var mix: [MusicMixMenuItem] = []
+    var performMix: (MusicMixMenuItem) -> Void = { _ in }
 
     var body: some View {
         let groups = MusicTrackActions.groups(of: actions)
@@ -72,6 +79,12 @@ struct MusicTrackMenuItems: View {
             ForEach(group, id: \.self) { action in
                 Button(action.title) { perform(action) }
                     .disabled(!action.isEnabled)
+            }
+        }
+        if !mix.isEmpty {
+            if !groups.isEmpty { Divider() }
+            ForEach(mix, id: \.self) { item in
+                Button(item.title) { performMix(item) }
             }
         }
     }
@@ -92,6 +105,9 @@ struct MusicTrackMoreButton: View {
     var style: Style = .plain
     /// Set on a row that is part of a selection of two or more: the button then opens the selection's menu.
     var selectionMenu: MusicSelectionMenu?
+    /// The "do not mix" entries, read when the menu opens so they show the flag as it is then.
+    var mix: () -> [MusicMixMenuItem] = { [] }
+    var performMix: (MusicMixMenuItem) -> Void = { _ in }
 
     var body: some View {
         Menu {
@@ -100,7 +116,7 @@ struct MusicTrackMoreButton: View {
                     title: selectionMenu.title, actions: selectionMenu.actions, perform: selectionMenu.perform
                 )
             } else {
-                MusicTrackMenuItems(actions: actions, perform: perform)
+                MusicTrackMenuItems(actions: actions, perform: perform, mix: mix(), performMix: performMix)
             }
         } label: {
             switch style {

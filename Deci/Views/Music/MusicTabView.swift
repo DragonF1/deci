@@ -198,7 +198,10 @@ private struct MusicActionsModifier: ViewModifier {
             isPinned: { service.pinnedItems.isPinned($0) },
             reveal: { navigation.revealLikeStatus(of: $0, in: $1) },
             downloadState: { service.downloads?.state(for: $0.videoId) ?? MusicDownloadState.none },
-            isDimmed: { service.browse.isDimmed($0.videoId) }
+            isDimmed: { service.browse.isDimmed($0.videoId) },
+            // The pair with the previous song is offered on the playing song's own menu (no page around it).
+            mixItems: { service.mixItems(for: $0, includingPrevious: $1 == MusicTrackContext.none) },
+            performMix: { service.performMix($0, for: $1) }
         )
     }
 

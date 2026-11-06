@@ -66,6 +66,7 @@ final class MusicService {
     let downloads: MusicDownloadService?
     /// Whether the network is reachable. Nil in a service built without it (a preview, most tests): always online.
     @ObservationIgnored private let connectivity: MusicConnectivity?
+    @ObservationIgnored private let mixFlags: MusicMixFlagStore?
     /// The network is gone. Observable: the views that read it redraw when it goes and when it returns.
     var isOffline: Bool {
         guard let connectivity else { return false }
@@ -360,8 +361,11 @@ final class MusicService {
         connectivity: MusicConnectivity? = nil,
         refreshOnCreate: Bool = true,
         analysis: (any MusicAnalysisProviding)? = nil,
-        analysisReader: (any MusicAnalysisReading)? = nil
+        analysisReader: (any MusicAnalysisReading)? = nil,
+        // The listener's "do not mix" flags; nil (a test's default) means nothing is flagged.
+        mixFlags: MusicMixFlagStore? = nil
     ) {
+        self.mixFlags = mixFlags
         self.analysis = analysis
         self.analysisReader = analysisReader
         self.backend = backend
@@ -2481,10 +2485,41 @@ final class MusicService {
         return (plan, OfferedPlan(inputs: inputs, plan: plan, plannedWithRows: rows))
     }
 
-    /// P4 plugs the no-mix flags in here: whether the incoming song is flagged "always start clean", and whether this
-    /// pair (outgoing into incoming) is. Both false until the flag store exists.
+    /// The no-mix flags for a transition: whether the incoming song is flagged "always start clean", and whether this
+    /// pair (outgoing into incoming) is. Both false with no flag store.
     private func transitionFlags(from outgoingId: String, to incomingId: String) -> (startsClean: Bool, pairIsClean: Bool) {
-        (false, false)
+        guard let mixFlags else { return (false, false) }
+        return (mixFlags.startsClean(incomingId), mixFlags.pairIsClean(from: outgoingId, to: incomingId))
+    }
+
+    /// The song before the playing one in the queue, when `track` is the playing song.
+    private func previousTrack(of track: MusicTrack) -> MusicTrack? {
+        guard queue.current?.videoId == track.videoId, let index = queue.currentIndex, index > 0 else { return nil }
+        return queue.tracks[index - 1]
+    }
+
+    /// The no-mix entries for a song's menu: its own, and, with `includingPrevious` for the song playing now, the pair
+    /// with the song before it. Empty when there is no flag store.
+    func mixItems(for track: MusicTrack, includingPrevious: Bool) -> [MusicMixMenuItem] {
+        guard let mixFlags else { return [] }
+        var pairIsClean: Bool?
+        if includingPrevious, let previous = previousTrack(of: track) {
+            pairIsClean = mixFlags.pairIsClean(from: previous.videoId, to: track.videoId)
+        }
+        return MusicMixMenuItem.items(startsClean: mixFlags.startsClean(track.videoId), pairIsClean: pairIsClean)
+    }
+
+    /// A pick of a no-mix entry: flips the flag it names. A transition already parked is planned again at once.
+    func performMix(_ item: MusicMixMenuItem, for track: MusicTrack) {
+        guard let mixFlags else { return }
+        switch item {
+        case .startClean(let on):
+            mixFlags.setStartsClean(!on, videoId: track.videoId)
+        case .cleanAfterPrevious(let on):
+            guard let previous = previousTrack(of: track) else { return }
+            mixFlags.setPairClean(!on, from: previous.videoId, to: track.videoId)
+        }
+        replanOffered()
     }
 
     /// Crossfade (or the album/loop rules, or its length) changed while a preload is parked: the plan is built again from
@@ -2497,6 +2532,9 @@ final class MusicService {
         inputs.settingSeconds = crossfadeSeconds
         inputs.albumInOrder = playsAlbumInOrder
         inputs.loopSong = loopMode == .song
+        let flags = transitionFlags(from: inputs.outgoing.videoId, to: inputs.incoming.videoId)
+        inputs.cleanStartFlag = flags.startsClean
+        inputs.cleanPairFlag = flags.pairIsClean
         var plan = MusicTransitionPlanner.plan(inputs)
         plan.incomingStartSec = offered.plan.incomingStartSec
         guard plan != offered.plan else { return }

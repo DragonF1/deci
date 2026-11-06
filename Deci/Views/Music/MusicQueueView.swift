@@ -215,7 +215,10 @@ private struct MusicQueueCurrentRow: View {
         .contentShape(Rectangle())
         .onHover { if $0 { menu?.reveal(track, context) } }
         .contextMenu {
-            MusicTrackMenuItems(actions: actions) { menu?.perform($0, track, context) }
+            MusicTrackMenuItems(
+                actions: actions, perform: { menu?.perform($0, track, context) },
+                mix: menu?.mixItems(track, context) ?? [], performMix: { menu?.performMix($0, track) }
+            )
         }
         .onTapGesture(perform: action)
         // Reachable with Full Keyboard Access only, and Space or Return plays, like a song row. A key goes to the row

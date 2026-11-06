@@ -167,7 +167,9 @@ struct MusicPlayerColumn: View {
         if let trackMenu {
             MusicTrackMenuItems(
                 actions: trackMenu.actions(track, .none),
-                perform: { trackMenu.perform($0, track, .none) }
+                perform: { trackMenu.perform($0, track, .none) },
+                mix: trackMenu.mixItems(track, .none),
+                performMix: { trackMenu.performMix($0, track) }
             )
         }
     }

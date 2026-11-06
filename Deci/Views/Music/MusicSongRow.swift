@@ -304,7 +304,10 @@ struct MusicSongRow: View {
                     title: selectionMenu.title, actions: selectionMenu.actions, perform: selectionMenu.perform
                 )
             } else {
-                MusicTrackMenuItems(actions: actions, perform: perform)
+                MusicTrackMenuItems(
+                    actions: actions, perform: perform, mix: menu?.mixItems(track, context) ?? [],
+                    performMix: { menu?.performMix($0, track) }
+                )
             }
         }
         // A name's own button takes its click first; a click anywhere else on the row plays, or picks with Shift or
@@ -474,7 +477,8 @@ struct MusicSongRow: View {
                 // under it.
                 if !actions.isEmpty {
                     MusicTrackMoreButton(
-                        track: track, actions: actions, perform: perform, style: .round, selectionMenu: selectionMenu
+                        track: track, actions: actions, perform: perform, style: .round, selectionMenu: selectionMenu,
+                        mix: { menu?.mixItems(track, context) ?? [] }, performMix: { menu?.performMix($0, track) }
                     )
                         .opacity(showsMore ? 1 : 0)
                         .accessibilityHidden(!showsMore)
