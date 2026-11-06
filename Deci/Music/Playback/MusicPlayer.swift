@@ -42,6 +42,11 @@ final class MusicPlayer {
     @ObservationIgnored var onEnded: (@MainActor () -> Void)?
     /// The player gave up on the track: recovery failed or was already used.
     @ObservationIgnored var onFailed: (@MainActor () -> Void)?
+    /// The track played to its end and the preloaded one plays on, gaplessly. Fires before the player takes the new track
+    /// over (`nowPlaying` and the position are still the old track's, at its end), so the service can close the old
+    /// session first. The handler calls `adoptPreloaded()` when it accepts, and returns whether it did; false leaves the
+    /// player treating it as an ordinary end (`onEnded`), which starts the right track the old way.
+    @ObservationIgnored var onAdvanced: (@MainActor (_ next: MusicTrack) -> Bool)?
     /// Anything the Now Playing widget or the Chrome auto-Switch cares about changed.
     @ObservationIgnored var onStateChange: (@MainActor () -> Void)?
     /// Fires when the downloaded file under the player changes: with the song's video id when a file is loaded, with nil
@@ -65,6 +70,8 @@ final class MusicPlayer {
     /// Exposed read-only so tests can await a recovery in flight.
     @ObservationIgnored private(set) var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var loadGeneration = 0
+    /// The track handed to the engine to start when the current one ends.
+    @ObservationIgnored private var preloaded: (stream: ResolvedStream, track: MusicTrack)?
 
     init(engine: any PlaybackEngine = AVPlaybackEngine(), now: @escaping () -> Date = Date.init) {
         self.engine = engine
@@ -97,6 +104,48 @@ final class MusicPlayer {
     /// song loading under a pause is not active. False when paused, ended or failed.
     var isActive: Bool {
         nowPlaying != nil && (isPlaying || wantsPlay)
+    }
+
+    /// The track the engine holds ready to play on from the current one, nil when none (or the engine dropped it).
+    var preloadedTrack: MusicTrack? {
+        guard let preloaded, engine.preloadedVideoId == preloaded.track.videoId else { return nil }
+        return preloaded.track
+    }
+
+    /// The stream of the preloaded track, for the service's bookkeeping when it starts. Not checked against the engine: at
+    /// the moment of an advance the engine has already let go of it.
+    var preloadedStream: ResolvedStream? { preloaded?.stream }
+
+    /// Prepares the track after the current one on the engine's standby deck. Nothing changes for the listener.
+    func preload(stream: ResolvedStream, track: MusicTrack) {
+        guard nowPlaying != nil, self.stream != nil, !hasEnded, refreshTask == nil else { return }
+        preloaded = (stream, track)
+        engine.preload(stream)
+    }
+
+    func cancelPreload() {
+        preloaded = nil
+        engine.cancelPreload()
+    }
+
+    /// Takes the preloaded track over as the current one: the engine is already playing it. Called from `onAdvanced`.
+    func adoptPreloaded() {
+        guard let preloaded else { return }
+        self.preloaded = nil
+        loadGeneration += 1
+        recoveryUsed = false
+        refreshTask?.cancel()
+        refreshTask = nil
+        stream = preloaded.stream
+        nowPlaying = preloaded.track
+        error = nil
+        isLoading = false
+        isPlaying = true
+        hasEnded = false
+        wantsPlay = true
+        currentTime = 0
+        duration = preloaded.stream.durationSeconds ?? Double(preloaded.track.durationSeconds ?? 0)
+        viewCount = preloaded.stream.viewCount
     }
 
     // MARK: - Public API
@@ -223,6 +272,7 @@ final class MusicPlayer {
     ) {
         refreshTask?.cancel()
         refreshTask = nil
+        preloaded = nil
         self.stream = stream
         nowPlaying = track
         error = nil
@@ -242,6 +292,7 @@ final class MusicPlayer {
     }
 
     private func teardownCurrent() {
+        preloaded = nil
         loadGeneration += 1
         refreshTask?.cancel()
         refreshTask = nil
@@ -264,6 +315,7 @@ final class MusicPlayer {
         let generation = loadGeneration
         isLoading = true
         error = nil
+        cancelPreload()
         engine.pause()
         notifyStateChange()
         refreshTask = Task { [weak self] in
@@ -301,6 +353,14 @@ final class MusicPlayer {
         onTick?(position, playing)
     }
 
+    /// The engine moved on to a track the queue does not want: it is silenced and the old track's end is handled as an
+    /// ordinary one, which starts the queue's own next track (or leaves the player finished).
+    private func rejectAdvance() {
+        preloaded = nil
+        engine.pause()
+        handle(.ended)
+    }
+
     private func handle(_ event: PlaybackEngineEvent) {
         defer { notifyStateChange() }
         switch event {
@@ -319,6 +379,19 @@ final class MusicPlayer {
             isLoading = false
             if duration > 0 { currentTime = duration }
             onEnded?()
+        case .advanced(let videoId):
+            guard let next = preloaded?.track, next.videoId == videoId, let onAdvanced else {
+                // Nothing here knows this track: the old track is over, and the service starts the right one.
+                rejectAdvance()
+                return
+            }
+            // The old track ran out: its position is its length, as for an end.
+            if duration > 0 { currentTime = duration }
+            if !onAdvanced(next) {
+                rejectAdvance()
+                return
+            }
+            if preloaded != nil { adoptPreloaded() }
         case .failed:
             guard refreshTask == nil else { return }
             if !recoveryUsed, nowPlaying != nil, onNeedsFreshStream != nil {

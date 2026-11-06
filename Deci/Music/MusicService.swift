@@ -46,7 +46,9 @@ final class MusicService {
     private(set) var lastError: String?
     let player: MusicPlayer
     /// What plays next: the tapped track, then the radio's tracks as they arrive, or a page's tracks in page order.
-    private(set) var queue = MusicQueue()
+    private(set) var queue = MusicQueue() {
+        didSet { reconcilePreload() }
+    }
     /// Home, Library, History and the pages opened from them.
     let browse: MusicBrowseStore
     /// Synced lyrics of the playing track, for the lyrics panel.
@@ -90,11 +92,17 @@ final class MusicService {
     /// A queue page or a radio is loading, or about to be asked for again: Up next shows that more is on its way.
     private(set) var isFillingQueue = false
     /// The queue plays in a shuffled order. Remembered across launches.
-    private(set) var isShuffleOn: Bool
+    private(set) var isShuffleOn: Bool {
+        didSet { reconcilePreload() }
+    }
     /// What happens when a track or the queue ends. Remembered across launches.
-    private(set) var loopMode: MusicLoopMode
+    private(set) var loopMode: MusicLoopMode {
+        didSet { reconcilePreload() }
+    }
     /// Keep playing recommended songs after a playlist or an album has finished. Remembered across launches.
-    private(set) var isAutoplayOn: Bool
+    private(set) var isAutoplayOn: Bool {
+        didSet { reconcilePreload() }
+    }
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
     @ObservationIgnored var onNativePlayingChange: (@MainActor (Bool) -> Void)?
     /// Told when a tap turns Like or Dislike on for the song playing now, as its state flips and before YouTube Music
@@ -189,6 +197,8 @@ final class MusicService {
     @ObservationIgnored private var nativePlaying = false
     @ObservationIgnored private var radioGeneration = 0
     @ObservationIgnored private var prefetchAttempt: String?
+    /// The video id last handed to the player as the preload; nil when none is out. One offer per track and window.
+    @ObservationIgnored private var preloadOffered: String?
     @ObservationIgnored private var prefetched: ResolvedStream?
     /// History pings earned and not yet sent. One drain task sends them one at a time, in the order they were earned.
     @ObservationIgnored private var pendingPings: [HistoryPing] = []
@@ -331,6 +341,7 @@ final class MusicService {
         }
         player.onEnded = { [weak self] in self?.handleTrackEnded() }
         player.onFailed = { [weak self] in self?.handlePlayerFailure() }
+        player.onAdvanced = { [weak self] track in self?.handleAdvanced(to: track) ?? false }
         player.onStateChange = { [weak self] in self?.playerStateChanged() }
         player.onLocalFileChange = { [weak self] videoId in self?.downloads?.noteLocalPlayback(of: videoId) }
         nowPlaying.onCommand = { [weak self] command in self?.handleRemote(command) }
@@ -367,6 +378,7 @@ final class MusicService {
         radioTask?.cancel()
         queueRetryTask?.cancel()
         prefetchTask?.cancel()
+        cancelPreload()
         trackingTask?.cancel()
         #if DEBUG
         memoryProbe?.cancel()
@@ -1393,6 +1405,8 @@ final class MusicService {
         guard player.nowPlaying != nil else { return }
         noteActivity()
         player.seek(to: seconds)
+        // A seek out of the last stretch of the track: the preload would only sit there, and the window offers it again.
+        if preloadOffered != nil, !isInPreloadWindow(position: player.currentTime) { cancelPreload() }
         // The jump is not listening time, however short: restart the count from where it landed.
         _ = session?.accumulator.record(position: player.currentTime, isPlaying: false, canFire: false)
         // The stretch heard before it and the one after are two stretches of the watchtime ping.
@@ -1427,12 +1441,7 @@ final class MusicService {
         do {
             let stream = try await streamForPlayback(of: track)
             guard generation == playGeneration, !Task.isCancelled else { return }
-            session = Session(
-                cpn: CPN.make(),
-                startedAt: now(),
-                trackingURL: stream.playbackTrackingURL,
-                watchtimeURL: stream.watchtimeTrackingURL
-            )
+            session = makeSession(for: stream)
             player.load(stream: stream, track: track)
             fetchTrackingURLs(for: stream, generation: generation)
             scheduleMemoryProbe()
@@ -1440,6 +1449,15 @@ final class MusicService {
             guard generation == playGeneration else { return }
             handleResolveFailure(error)
         }
+    }
+
+    private func makeSession(for stream: ResolvedStream) -> Session {
+        Session(
+            cpn: CPN.make(),
+            startedAt: now(),
+            trackingURL: stream.playbackTrackingURL,
+            watchtimeURL: stream.watchtimeTrackingURL
+        )
     }
 
     /// The stream resolved ahead of time when it is still good, otherwise a fresh one.
@@ -1494,6 +1512,8 @@ final class MusicService {
 
     /// Used by the player to replace a dead or expired stream. The playback session carries on.
     private func resolveFreshStream(for track: MusicTrack) async throws -> ResolvedStream {
+        // The stream under the player is being replaced: the standby's item is not worth keeping while it settles.
+        cancelPreload()
         let generation = playGeneration
         // With no network, or no account to ask with, a file that fails has nowhere to retry: the song stays failed, and
         // nothing is asked (an answer of "signed out" would clear the pages the listener is looking at).
@@ -1575,6 +1595,47 @@ final class MusicService {
             return
         }
         begin(track)
+    }
+
+    /// The engine played the old track to its end and the preloaded one plays on without a gap. Does what `handleTrackEnded`
+    /// and `begin` do for the next track, minus the teardown and the load: the engine already has the audio. False when the
+    /// preloaded track is not the one the queue would start (the player then treats it as an ordinary end).
+    private func handleAdvanced(to track: MusicTrack) -> Bool {
+        guard let expected = preloadTarget, expected.videoId == track.videoId,
+              let stream = player.preloadedStream, stream.videoId == track.videoId else { return false }
+        // Consumed, not withdrawn: the queue moving on below must not take it back from the player.
+        preloadOffered = nil
+        // The old session closes with its final ping (it reads the player's position, still the old track's end).
+        sendFinalPing()
+        direction = .forward
+        let replay = loopMode == .song
+        if !replay {
+            guard let next = advanceQueue(), next.videoId == track.videoId else {
+                // The queue disagreed after all (it was edited between the check and here): the ordinary path starts it.
+                return false
+            }
+        }
+        touchSession()
+        playTask?.cancel()
+        playGeneration += 1
+        let generation = playGeneration
+        // The preload is consumed: the prefetch bookkeeping starts over for the track after this one.
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        prefetchAttempt = nil
+        if prefetched?.videoId == track.videoId { prefetched = nil }
+        trackingTask?.cancel()
+        trackingTask = nil
+        pendingAdvance = nil
+        refreshError = nil
+        lastError = nil
+        session = makeSession(for: stream)
+        player.adoptPreloaded()
+        fetchTrackingURLs(for: stream, generation: generation)
+        scheduleMemoryProbe()
+        topUpQueue()
+        saveSession()
+        return true
     }
 
     /// Autoplay plays after a page that has run out, unless Loop playlist starts the page over instead.
@@ -2017,6 +2078,7 @@ final class MusicService {
             guard let self, let stream = try? await self.streamForSource(of: next.videoId) else { return }
             guard !Task.isCancelled, self.prefetchAttempt == next.videoId else { return }
             self.prefetched = stream
+            self.offerPreload(position: self.player.currentTime)
         }
     }
 
@@ -2035,6 +2097,46 @@ final class MusicService {
         prefetchTask?.cancel()
         prefetchTask = nil
         prefetchAttempt = nil
+        cancelPreload()
+    }
+
+    // MARK: - Preload (gapless)
+
+    /// The track the engine may be given to start the moment this one ends, only when it is certain: Loop song replays the
+    /// track, otherwise it is the next queued track, or the staged autoplay's first one when the page has run out. Not
+    /// offline (songs are stepped over there), not while a Next waits for the radio, and not for a wrapped lap or a mix
+    /// that can still grow (their next song is not known yet).
+    private var preloadTarget: MusicTrack? {
+        guard !isOffline, pendingAdvance == nil else { return nil }
+        if loopMode == .song { return queue.current }
+        if let next = queue.upcoming.first { return next }
+        if playsAutoplay { return queue.autoplay.first }
+        return nil
+    }
+
+    private func isInPreloadWindow(position: TimeInterval) -> Bool {
+        let duration = player.duration
+        return duration > Self.prefetchLead * 2 && duration - position <= Self.prefetchLead
+    }
+
+    /// Hands the player the prefetched stream of the next track when it is certain and the window has opened.
+    private func offerPreload(position: TimeInterval) {
+        guard let stream = prefetched, let target = preloadTarget, stream.videoId == target.videoId,
+              preloadOffered != target.videoId, player.isPlaying, !player.hasEnded,
+              isInPreloadWindow(position: position) else { return }
+        preloadOffered = target.videoId
+        player.preload(stream: stream, track: target)
+    }
+
+    /// Withdraws a preload the queue or a mode no longer agrees with.
+    private func reconcilePreload() {
+        guard let offered = preloadOffered, preloadTarget?.videoId != offered else { return }
+        cancelPreload()
+    }
+
+    private func cancelPreload() {
+        preloadOffered = nil
+        player.cancelPreload()
     }
 
     // MARK: - Player state, Now Playing and media keys
@@ -2204,7 +2306,10 @@ final class MusicService {
             saveSession()
         }
         guard session != nil else { return }
-        if isPlaying { prefetchNextIfNeeded(position: position) }
+        if isPlaying {
+            prefetchNextIfNeeded(position: position)
+            offerPreload(position: position)
+        }
         let url = session?.trackingURL
         let earned = session?.accumulator.record(position: position, isPlaying: isPlaying, canFire: url != nil) == true
         // Every tick, so a stretch heard before the playback ping is in the opening watchtime ping. The clock is read

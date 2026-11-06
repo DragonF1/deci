@@ -1,5 +1,6 @@
 // Deci/Music/Playback/AVPlaybackEngine.swift
 import AVFoundation
+import CoreMedia
 import os
 
 /// What the engine reports back to `MusicPlayer`.
@@ -8,6 +9,9 @@ enum PlaybackEngineEvent: Equatable {
     case playingChanged(Bool)
     case ended
     case failed
+    /// The active item ended and the preloaded one (this video id) plays on: no gap, no `ended`. The engine now holds
+    /// the new item as its active one and nothing is preloaded any more.
+    case advanced(videoId: String)
 }
 
 /// The AVPlayer seam: `MusicPlayer` drives it, tests replace it.
@@ -30,9 +34,17 @@ protocol PlaybackEngine: AnyObject {
     func setOutputDevice(uid: String?)
     /// The volume (0...1, boost left out) and mute the player itself applies to an item the tap is not on.
     func setFallbackLevel(volume: Float, muted: Bool)
+
+    /// The video id of the item held ready for the active one's end, nil when nothing is preloaded.
+    var preloadedVideoId: String? { get }
+    /// Prepares `stream` on the standby deck (item, tap, preroll) so it can start the instant the active item ends.
+    /// Replaces an earlier preload. Never disturbs the item that is playing.
+    func preload(_ stream: ResolvedStream)
+    /// Drops the preload, whether it is still loading, ready or already scheduled to start.
+    func cancelPreload()
 }
 
-/// AVPlayer-backed engine. Observers exist only while an item is loaded.
+/// AVPlayer-backed engine with two decks. Observers exist only while an item is loaded.
 ///
 /// With a `MusicDSPChain` every item gets an `MTAudioProcessingTap` (volume, boost, EQ, AutoEQ, loudness). The tap is
 /// carried by the item's audio mix, which has to be on the item before the player gets it: an item that is playing
@@ -42,6 +54,14 @@ protocol PlaybackEngine: AnyObject {
 ///
 /// An item without the tap would ignore the row's volume and mute, so then the player's own volume and mute carry the
 /// level (`setFallbackLevel`). With the tap the player stays at unity: the tap already applies it.
+///
+/// Gapless: the engine owns an active and a standby deck, each its own `AVPlayer`. `load` always goes to the active
+/// deck. `preload` builds the next item on the standby deck the same way (same mix path, same end-time rule), waits for
+/// it to be ready and prerolls it paused. Shortly before the active item's end the standby is scheduled to start on the
+/// exact host time of that end (`setRate(_:time:atHostTime:)`), so the next track's first sample follows the last of
+/// the old one. The schedule is dropped and redone when the active deck pauses, seeks, stalls or changes rate. The end
+/// notification stays the fallback: if the standby is ready it is started right there (and becomes the active deck),
+/// and if no preload matches the engine reports `ended` as it always did.
 @MainActor
 final class AVPlaybackEngine: PlaybackEngine {
     /// Builds the audio mix that carries the tap for an asset. nil: the asset cannot be tapped.
@@ -53,10 +73,10 @@ final class AVPlaybackEngine: PlaybackEngine {
     var onTick: (@MainActor (TimeInterval, Bool) -> Void)?
     var onEvent: (@MainActor (PlaybackEngineEvent) -> Void)?
 
-    /// Called with the item at the moment it is handed to the player, mix already attached. A test seam.
+    /// Called with the item at the moment it is handed to a player, mix already attached. A test seam.
     var willInstall: ((AVPlayerItem) -> Void)?
-    /// The item the player holds right now. nil while a load is still building its mix.
-    var currentItem: AVPlayerItem? { player.currentItem }
+    /// The item the active player holds right now. nil while a load is still building its mix.
+    var currentItem: AVPlayerItem? { active.player.currentItem }
     /// How many items played without the tap because it could not be built.
     private(set) var unprocessedLoadCount = 0
     /// The output device last asked for. nil is the system default.
@@ -67,29 +87,88 @@ final class AVPlaybackEngine: PlaybackEngine {
     var onGlitchLine: (@MainActor (String) -> Void)?
 
     private static let logger = Logger(subsystem: "com.abraham.Deci", category: "AVPlaybackEngine")
+    /// The standby is scheduled once the active item has this long left, and re-scheduled while the estimate of its end moves.
+    private static let scheduleWindow: TimeInterval = 6
+    /// How far the end estimate may drift before the standby's start is moved.
+    private static let scheduleTolerance: TimeInterval = 0.04
+
+    /// One AVPlayer and everything that belongs to the item it holds.
+    @MainActor
+    private final class Deck {
+        let player = AVPlayer()
+        /// Bumped on every load and teardown: an observer or a late task from before it finds a different value and quits.
+        var token = 0
+        var videoId: String?
+        var tap: MusicTapDeck?
+        /// Whether the item on the player (or being installed) has a working tap, which applies volume and mute itself.
+        var itemIsTapped = false
+        var installPending = false
+        /// The mix build and its timeout, for the item being loaded.
+        var loadTasks: [Task<Void, Never>] = []
+        var timeObserver: Any?
+        var statusObservation: NSKeyValueObservation?
+        var controlObservation: NSKeyValueObservation?
+        var rateObservation: NSKeyValueObservation?
+        var endObserver: NSObjectProtocol?
+        var stallObserver: NSObjectProtocol?
+
+        func cancelLoadTasks() {
+            for task in loadTasks { task.cancel() }
+            loadTasks = []
+        }
+
+        /// Drops the item and every observer; the player stays for the next item.
+        func tearDown() {
+            token += 1
+            installPending = false
+            cancelLoadTasks()
+            if let timeObserver {
+                player.removeTimeObserver(timeObserver)
+                self.timeObserver = nil
+            }
+            statusObservation?.invalidate()
+            statusObservation = nil
+            controlObservation?.invalidate()
+            controlObservation = nil
+            rateObservation?.invalidate()
+            rateObservation = nil
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
+                self.endObserver = nil
+            }
+            if let stallObserver {
+                NotificationCenter.default.removeObserver(stallObserver)
+                self.stallObserver = nil
+            }
+            tap?.retire()
+            tap = nil
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            videoId = nil
+        }
+    }
 
     private let chain: MusicDSPChain?
     private let makeMix: MixBuilder
     private let mixTimeout: Duration
-    private var installPending = false
     private var loggedUnprocessed = false
-    /// Whether the item on the player (or being installed) has a working tap, which applies volume and mute itself.
-    private var itemIsTapped = false
     private var fallbackVolume: Float = 1
     private var fallbackMuted = false
-    /// The mix build and its timeout, for the item being loaded.
-    private var loadTasks: [Task<Void, Never>] = []
-    private let player = AVPlayer()
-    /// The player itself, for tests to read what the engine really set on it.
-    var avPlayer: AVPlayer { player }
-    private var timeObserver: Any?
-    private var statusObservation: NSKeyValueObservation?
-    private var controlObservation: NSKeyValueObservation?
-    private var endObserver: NSObjectProtocol?
-    private var stallObserver: NSObjectProtocol?
-    private var generation = 0
+    private var active = Deck()
+    private var standby = Deck()
+    /// The active player, for tests to read what the engine really set on it.
+    var avPlayer: AVPlayer { active.player }
+    /// The standby player, for tests.
+    var standbyAvPlayer: AVPlayer { standby.player }
     private var wantsPlay = false
     private var pendingStart: TimeInterval = 0
+
+    /// The stream being prepared on (or ready on) the standby deck.
+    private var preloadStream: ResolvedStream?
+    /// The standby's item is ready and prerolled.
+    private var preloadReady = false
+    /// The host time the standby is scheduled to start at, nil while it is not scheduled.
+    private var scheduledHost: CMTime?
 
     /// - Parameters:
     ///   - chain: The DSP to put on every item. nil plays items as they are (tests, and no mixer).
@@ -105,24 +184,42 @@ final class AVPlaybackEngine: PlaybackEngine {
         self.chain = chain
         self.makeMix = makeMix
         self.mixTimeout = mixTimeout
-        player.automaticallyWaitsToMinimizeStalling = true
+        active.player.automaticallyWaitsToMinimizeStalling = true
+        // A player that is told to start at a host time must not wait to minimise stalling (it would start when it likes).
+        standby.player.automaticallyWaitsToMinimizeStalling = false
     }
 
     isolated deinit {
-        detach()
+        cancelPreload()
+        active.tearDown()
     }
 
     var position: TimeInterval {
-        let seconds = player.currentTime().seconds
+        let seconds = active.player.currentTime().seconds
         return seconds.isFinite ? seconds : 0
     }
 
+    var preloadedVideoId: String? { preloadStream?.videoId }
+
+    // MARK: - Loading
+
     func load(_ stream: ResolvedStream, startAt: TimeInterval, autoplay: Bool) {
-        detach()
-        generation += 1
-        let token = generation
+        // Whatever was preloaded was for the track after the one that is being replaced.
+        cancelPreload()
+        active.tearDown()
         wantsPlay = autoplay
         pendingStart = startAt
+        active.player.automaticallyWaitsToMinimizeStalling = true
+        startItem(on: active, stream: stream, role: .active)
+    }
+
+    /// Builds the item for `stream` on `deck`, with its observers, and installs it once its mix is built (or has timed out).
+    private func startItem(on deck: Deck, stream: ResolvedStream, role: MusicTapDeck.Role) {
+        deck.token += 1
+        let token = deck.token
+        deck.videoId = stream.videoId
+        let tap = MusicTapDeck(role: role)
+        deck.tap = tap
 
         var options: [String: Any] = [:]
         if let userAgent = stream.httpHeaders["User-Agent"] {
@@ -136,112 +233,128 @@ final class AVPlaybackEngine: PlaybackEngine {
             item.forwardPlaybackEndTime = CMTime(seconds: knownDuration, preferredTimescale: 1000)
         }
 
-        timeObserver = player.addPeriodicTimeObserver(
+        // Observers only speak for the deck that is active: a standby deck's item is not what the listener hears yet.
+        deck.timeObserver = deck.player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
-        ) { [weak self] time in
+        ) { [weak self, weak deck] time in
             MainActor.assumeIsolated {
-                guard let self, self.generation == token else { return }
+                guard let self, let deck, self.isLive(deck, token) else { return }
                 let seconds = time.seconds
                 guard seconds.isFinite else { return }
-                self.onTick?(seconds, self.player.timeControlStatus == .playing)
+                self.onTick?(seconds, deck.player.timeControlStatus == .playing)
+                // The end estimate drifts with stalls and clock changes: keep the standby's start on it.
+                self.evaluateSchedule()
             }
         }
-
-        statusObservation = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
+        deck.statusObservation = item.observe(\.status, options: [.new]) { [weak self, weak deck] observed, _ in
             let status = observed.status
-            Task { @MainActor [weak self] in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck else { return }
                 // Never the item's own duration: it is doubled. Unknown leaves the player on the track's listed length.
-                self?.handleStatus(status, duration: knownDuration, token: token)
+                self.handleStatus(status, on: deck, duration: knownDuration, token: token)
             }
         }
-        controlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] observed, _ in
+        deck.controlObservation = deck.player.observe(\.timeControlStatus, options: [.new]) { [weak self, weak deck] observed, _ in
             let playing = observed.timeControlStatus == .playing
-            Task { @MainActor [weak self] in
-                guard let self, self.generation == token else { return }
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck, self.isLive(deck, token) else { return }
                 self.onEvent?(.playingChanged(playing))
                 self.onTick?(self.position, playing)
+                self.activeTransportChanged()
             }
         }
-        endObserver = NotificationCenter.default.addObserver(
+        deck.rateObservation = deck.player.observe(\.rate, options: [.new]) { [weak self, weak deck] _, _ in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck, self.isLive(deck, token) else { return }
+                self.activeTransportChanged()
+            }
+        }
+        deck.endObserver = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.didPlayToEndTimeNotification,
             object: item,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self, weak deck] _ in
             MainActor.assumeIsolated {
-                guard let self, self.generation == token else { return }
-                self.wantsPlay = false
-                self.onEvent?(.ended)
+                guard let self, let deck, self.isLive(deck, token) else { return }
+                self.activeItemEnded()
             }
         }
         // The player ran out of buffered audio: audible as a gap, and a glitch the log should show.
-        stallObserver = NotificationCenter.default.addObserver(
+        deck.stallObserver = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.playbackStalledNotification,
             object: item,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self, weak deck] _ in
             MainActor.assumeIsolated {
-                guard let self, self.generation == token else { return }
+                guard let self, let deck, self.isLive(deck, token) else { return }
                 self.noteStall()
             }
         }
 
         guard let chain else {
-            install(item, tapped: false)
+            install(item, on: deck, tapped: false)
             return
         }
-        installPending = true
+        deck.installPending = true
         let makeMix = makeMix
         // Called from the tap's thread: only the hop to the main actor touches the engine.
-        let onPassThrough: @Sendable () -> Void = { [weak self] in
-            Task { @MainActor [weak self] in self?.tapPassesThrough(token: token) }
+        let onPassThrough: @Sendable () -> Void = { [weak self, weak deck] in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck else { return }
+                self.tapPassesThrough(on: deck, token: token)
+            }
         }
-        let build = Task { @MainActor [weak self] in
-            let mix = await makeMix(asset, chain, onPassThrough)
-            self?.finishLoad(item, mix: mix, token: token, timedOut: false)
+        let build = Task { @MainActor [weak self, weak deck] in
+            // The deck handle reaches the tap through a task local, so the mix builder keeps its signature.
+            let mix = await MusicAudioTap.$currentDeck.withValue(tap) {
+                await makeMix(asset, chain, onPassThrough)
+            }
+            guard let self, let deck else { return }
+            self.finishLoad(item, on: deck, mix: mix, token: token, timedOut: false)
         }
-        let timeout = Task { @MainActor [weak self, mixTimeout] in
+        let timeout = Task { @MainActor [weak self, weak deck, mixTimeout] in
             try? await Task.sleep(for: mixTimeout)
-            guard !Task.isCancelled else { return }
-            self?.finishLoad(item, mix: nil, token: token, timedOut: true)
+            guard !Task.isCancelled, let self, let deck else { return }
+            self.finishLoad(item, on: deck, mix: nil, token: token, timedOut: true)
         }
-        loadTasks = [build, timeout]
+        deck.loadTasks = [build, timeout]
+    }
+
+    /// The deck's item is still the one the observers were made for, and the deck is the one that is playing.
+    private func isLive(_ deck: Deck, _ token: Int) -> Bool {
+        active === deck && deck.token == token
     }
 
     /// The mix is built or gave up waiting for. A newer load, an unload or a deinit may have happened meanwhile, and
     /// whichever of the build and the timeout comes second finds the item installed already: that one is dropped.
-    private func finishLoad(_ item: AVPlayerItem, mix: AVAudioMix?, token: Int, timedOut: Bool) {
-        guard generation == token, installPending else { return }
-        cancelLoadTasks()
+    private func finishLoad(_ item: AVPlayerItem, on deck: Deck, mix: AVAudioMix?, token: Int, timedOut: Bool) {
+        guard deck.token == token, deck.installPending else { return }
+        deck.cancelLoadTasks()
         if let mix {
             item.audioMix = mix
         } else {
             noteUnprocessed(timedOut: timedOut)
         }
-        install(item, tapped: mix != nil)
+        install(item, on: deck, tapped: mix != nil)
     }
 
-    private func cancelLoadTasks() {
-        for task in loadTasks { task.cancel() }
-        loadTasks = []
-    }
-
-    private func install(_ item: AVPlayerItem, tapped: Bool) {
-        installPending = false
-        itemIsTapped = tapped
-        applyPlayerLevel()
+    private func install(_ item: AVPlayerItem, on deck: Deck, tapped: Bool) {
+        deck.installPending = false
+        deck.itemIsTapped = tapped
+        applyLevel(to: deck)
         willInstall?(item)
-        player.replaceCurrentItem(with: item)
+        deck.player.replaceCurrentItem(with: item)
     }
 
     /// The tap met a format it cannot process and lets the audio through untouched. Only the item the report came from
     /// matters. The report runs from the tap's prepare, before its first buffer, but it reaches the main actor through
     /// a hop, so a buffer or two can still play at full level.
-    private func tapPassesThrough(token: Int) {
-        guard generation == token, itemIsTapped else { return }
-        itemIsTapped = false
+    private func tapPassesThrough(on deck: Deck, token: Int) {
+        guard deck.token == token, deck.itemIsTapped else { return }
+        deck.itemIsTapped = false
         noteUnprocessed(timedOut: false)
-        applyPlayerLevel()
+        applyLevel(to: deck)
     }
 
     /// The item stalled. One persisted line per stall, in the format the glitch report reads.
@@ -265,23 +378,27 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
     }
 
+    // MARK: - Level and output (both decks)
+
     func setFallbackLevel(volume: Float, muted: Bool) {
         if volume.isFinite { fallbackVolume = min(1, max(0, volume)) }
         fallbackMuted = muted
-        applyPlayerLevel()
+        applyLevel(to: active)
+        applyLevel(to: standby)
     }
 
     /// With the tap on the item, the tap does the volume and mute and the player stays out of it, or the level would
     /// be applied twice. Without it the player's own volume and mute are all there is.
-    private func applyPlayerLevel() {
-        player.volume = itemIsTapped ? 1 : fallbackVolume
-        player.isMuted = itemIsTapped ? false : fallbackMuted
+    private func applyLevel(to deck: Deck) {
+        deck.player.volume = deck.itemIsTapped ? 1 : fallbackVolume
+        deck.player.isMuted = deck.itemIsTapped ? false : fallbackMuted
     }
 
     func setOutputDevice(uid: String?) {
         let resolved = (uid?.isEmpty ?? true) ? nil : uid
         outputDeviceUID = resolved
-        player.audioOutputDeviceUniqueID = resolved
+        active.player.audioOutputDeviceUniqueID = resolved
+        standby.player.audioOutputDeviceUniqueID = resolved
     }
 
     /// The stream's own length (YouTube's approxDurationMs, exact to the millisecond), when it has one.
@@ -292,33 +409,49 @@ final class AVPlaybackEngine: PlaybackEngine {
         return seconds
     }
 
+    // MARK: - Transport
+
     func play() {
         wantsPlay = true
-        if player.currentItem?.status == .readyToPlay { player.play() }
+        if active.player.currentItem?.status == .readyToPlay { active.player.play() }
     }
 
     func pause() {
         wantsPlay = false
-        player.pause()
+        cancelSchedule()
+        active.player.pause()
     }
 
     func seek(to seconds: TimeInterval) {
-        if installPending {
+        if active.installPending {
             // The item is not on the player yet: the seek happens when it becomes ready.
             pendingStart = max(0, seconds)
             return
         }
+        // The end moved: the standby's start goes with it, and is set again once the seek has landed.
+        cancelSchedule()
+        let token = active.token
         let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        active.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.active.token == token else { return }
+                self.activeTransportChanged()
+            }
+        }
     }
 
     func unload() {
-        detach()
+        cancelPreload()
+        active.tearDown()
         wantsPlay = false
     }
 
-    private func handleStatus(_ status: AVPlayerItem.Status, duration: TimeInterval?, token: Int) {
-        guard generation == token else { return }
+    private func handleStatus(_ status: AVPlayerItem.Status, on deck: Deck, duration: TimeInterval?, token: Int) {
+        guard deck.token == token else { return }
+        guard deck === active else {
+            handleStandbyStatus(status, on: deck, token: token)
+            return
+        }
         switch status {
         case .readyToPlay:
             onEvent?(.ready(duration: duration))
@@ -326,14 +459,14 @@ final class AVPlaybackEngine: PlaybackEngine {
             pendingStart = 0
             if start > 0 {
                 let target = CMTime(seconds: start, preferredTimescale: 600)
-                player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.generation == token, self.wantsPlay else { return }
-                        self.player.play()
+                deck.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] _ in
+                    Task { @MainActor [weak self, weak deck] in
+                        guard let self, let deck, self.isLive(deck, token), self.wantsPlay else { return }
+                        deck.player.play()
                     }
                 }
             } else if wantsPlay {
-                player.play()
+                deck.player.play()
             }
         case .failed:
             onEvent?(.failed)
@@ -344,27 +477,150 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
     }
 
-    private func detach() {
-        generation += 1
-        installPending = false
-        cancelLoadTasks()
-        if let timeObserver {
-            player.removeTimeObserver(timeObserver)
-            self.timeObserver = nil
+    // MARK: - Preload
+
+    func preload(_ stream: ResolvedStream) {
+        cancelPreload()
+        preloadStream = stream
+        preloadReady = false
+        standby.player.automaticallyWaitsToMinimizeStalling = false
+        startItem(on: standby, stream: stream, role: .standby)
+    }
+
+    func cancelPreload() {
+        guard preloadStream != nil || standby.videoId != nil else { return }
+        scheduledHost = nil
+        preloadStream = nil
+        preloadReady = false
+        standby.tearDown()
+        standby.player.automaticallyWaitsToMinimizeStalling = false
+    }
+
+    private func handleStandbyStatus(_ status: AVPlayerItem.Status, on deck: Deck, token: Int) {
+        guard deck === standby, preloadStream != nil else { return }
+        switch status {
+        case .readyToPlay:
+            // Prerolled paused: the buffers and the decoder are warm, so the scheduled start has nothing left to wait for.
+            deck.player.preroll(atRate: 1) { [weak self, weak deck] _ in
+                Task { @MainActor [weak self, weak deck] in
+                    guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
+                    self.preloadReady = true
+                    self.evaluateSchedule()
+                }
+            }
+        case .failed:
+            // The next track cannot be prepared: the ordinary track change (resolve, load) will have to do.
+            cancelPreload()
+        case .unknown:
+            break
+        @unknown default:
+            break
         }
-        statusObservation?.invalidate()
-        statusObservation = nil
-        controlObservation?.invalidate()
-        controlObservation = nil
-        if let endObserver {
-            NotificationCenter.default.removeObserver(endObserver)
-            self.endObserver = nil
+    }
+
+    // MARK: - Hand-over
+
+    /// The active deck started, stopped, stalled or changed rate: the standby's start follows or is dropped.
+    private func activeTransportChanged() {
+        let player = active.player
+        if player.timeControlStatus == .playing, player.rate == 1 {
+            evaluateSchedule()
+        } else {
+            cancelSchedule()
         }
-        if let stallObserver {
-            NotificationCenter.default.removeObserver(stallObserver)
-            self.stallObserver = nil
+    }
+
+    /// The end of the active item as an item time, when the item has one that is known.
+    private func endTime(of item: AVPlayerItem) -> CMTime? {
+        let end = item.forwardPlaybackEndTime
+        guard end.isValid, end.isNumeric, end.seconds.isFinite, end.seconds > 0 else { return nil }
+        return end
+    }
+
+    /// Starts the standby on the host time of the active item's end, once that is near, and keeps it there.
+    private func evaluateSchedule() {
+        guard preloadStream != nil, preloadReady, let item = active.player.currentItem,
+              active.player.timeControlStatus == .playing, active.player.rate == 1,
+              let end = endTime(of: item) else { return }
+        let remaining = end.seconds - active.player.currentTime().seconds
+        guard remaining.isFinite else { return }
+        if remaining > Self.scheduleWindow {
+            cancelSchedule()
+            return
         }
-        player.pause()
-        player.replaceCurrentItem(with: nil)
+        // Too close to move it again: the end notification starts the standby if it has not started yet.
+        guard remaining > 0.05 else { return }
+        let host = hostTime(ofItemTime: end, in: item, remaining: remaining)
+        if let scheduled = scheduledHost, abs(CMTimeSubtract(scheduled, host).seconds) < Self.scheduleTolerance { return }
+        schedule(at: host)
+    }
+
+    /// The host-clock time at which `itemTime` of the playing item is heard. The item's own timebase says; an answer that
+    /// does not agree with the plain estimate (`remaining` seconds from now) is not trusted.
+    private func hostTime(ofItemTime itemTime: CMTime, in item: AVPlayerItem, remaining: TimeInterval) -> CMTime {
+        let hostClock = CMClockGetHostTimeClock()
+        let now = CMClockGetTime(hostClock)
+        if let timebase = item.timebase {
+            let converted = CMSyncConvertTime(itemTime, from: timebase, to: hostClock)
+            if converted.isValid, converted.isNumeric {
+                let delta = CMTimeSubtract(converted, now).seconds
+                if delta.isFinite, delta > -0.05, abs(delta - remaining) < max(0.5, remaining * 0.3) {
+                    return converted
+                }
+            }
+        }
+        return CMTimeAdd(now, CMTime(seconds: remaining, preferredTimescale: 1_000_000_000))
+    }
+
+    private func schedule(at host: CMTime) {
+        standby.tap?.arm()
+        standby.player.automaticallyWaitsToMinimizeStalling = false
+        standby.player.setRate(1, time: .invalid, atHostTime: host)
+        scheduledHost = host
+    }
+
+    /// Takes the standby's scheduled start back: it is paused where it was (at its first frame) and warmed up again.
+    private func cancelSchedule() {
+        guard scheduledHost != nil else { return }
+        scheduledHost = nil
+        standby.tap?.disarm()
+        standby.player.pause()
+        if preloadReady { standby.player.preroll(atRate: 1, completionHandler: nil) }
+    }
+
+    /// The active item played to its end. With a ready preload the standby plays on from here, and `advanced` is reported
+    /// in place of `ended`; with none (or one that is not ready) it is the ordinary end of playback.
+    private func activeItemEnded() {
+        guard let stream = preloadStream, preloadReady else {
+            cancelPreload()
+            wantsPlay = false
+            onEvent?(.ended)
+            return
+        }
+        let incoming = standby
+        let outgoing = active
+        let startedOnSchedule = scheduledHost != nil
+
+        // The chain changes hands: the new deck's tap owns it, the old one renders nothing more.
+        incoming.tap?.activate()
+        outgoing.tap?.retire()
+        active = incoming
+        standby = outgoing
+        scheduledHost = nil
+        preloadStream = nil
+        preloadReady = false
+
+        // The fallback: the end notification came before (or without) the scheduled start, so start it now.
+        if !startedOnSchedule { incoming.player.play() }
+        incoming.player.automaticallyWaitsToMinimizeStalling = true
+        outgoing.tearDown()
+        outgoing.player.automaticallyWaitsToMinimizeStalling = false
+        applyLevel(to: incoming)
+        applyLevel(to: outgoing)
+
+        wantsPlay = true
+        pendingStart = 0
+        onEvent?(.advanced(videoId: stream.videoId))
+        onTick?(position, incoming.player.timeControlStatus == .playing)
     }
 }

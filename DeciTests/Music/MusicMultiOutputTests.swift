@@ -72,6 +72,9 @@ final class LoggingPlaybackEngine: PlaybackEngine {
     func seek(to seconds: TimeInterval) {}
     func unload() {}
     func setFallbackLevel(volume: Float, muted: Bool) {}
+    var preloadedVideoId: String? { nil }
+    func preload(_ stream: ResolvedStream) {}
+    func cancelPreload() {}
 
     func setOutputDevice(uid: String?) {
         outputDevices.append(uid)

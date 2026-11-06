@@ -801,7 +801,31 @@ final class FakePlaybackEngine: PlaybackEngine {
     private(set) var fallbackLevels: [FallbackLevel] = []
 
     func load(_ stream: ResolvedStream, startAt: TimeInterval, autoplay: Bool) {
+        preloadedVideoId = nil
         loads.append(Load(stream: stream, startAt: startAt, autoplay: autoplay))
+    }
+
+    /// Every stream the player handed over to be prepared on the standby deck, in order.
+    private(set) var preloads: [ResolvedStream] = []
+    private(set) var cancelPreloadCount = 0
+    /// The video id the standby deck holds, nil when nothing is preloaded.
+    private(set) var preloadedVideoId: String?
+
+    func preload(_ stream: ResolvedStream) {
+        preloads.append(stream)
+        preloadedVideoId = stream.videoId
+    }
+
+    func cancelPreload() {
+        cancelPreloadCount += 1
+        preloadedVideoId = nil
+    }
+
+    /// What the real engine does when the active item ends and the preloaded one plays on.
+    func advance() {
+        guard let id = preloadedVideoId else { return }
+        preloadedVideoId = nil
+        onEvent?(.advanced(videoId: id))
     }
 
     func setOutputDevice(uid: String?) { outputDevices.append(uid) }
@@ -810,7 +834,10 @@ final class FakePlaybackEngine: PlaybackEngine {
     func play() { playCount += 1 }
     func pause() { pauseCount += 1 }
     func seek(to seconds: TimeInterval) { seeks.append(seconds) }
-    func unload() { unloadCount += 1 }
+    func unload() {
+        unloadCount += 1
+        preloadedVideoId = nil
+    }
 
     func emit(_ event: PlaybackEngineEvent) { onEvent?(event) }
     func tick(_ position: TimeInterval, playing: Bool) {

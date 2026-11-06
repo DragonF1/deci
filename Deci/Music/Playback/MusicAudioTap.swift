@@ -11,6 +11,10 @@ import os
 enum MusicAudioTap {
     private static let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicAudioTap")
 
+    /// The deck handle the tap being built belongs to. The engine sets it around a mix build, so the mix builder keeps its
+    /// signature; with none, the tap is the active deck's (it claims the chain as it prepares, as it always did).
+    @TaskLocal static var currentDeck: MusicTapDeck?
+
     /// The audio mix for `asset`'s first audio track with the tap attached, or nil when the asset has no readable audio
     /// track or the tap cannot be created (the caller then plays the item unprocessed).
     ///
@@ -30,7 +34,8 @@ enum MusicAudioTap {
             if !Task.isCancelled { noteLoadFailure(error) }
             return nil
         }
-        guard let tap = makeTap(chain: chain, onPassThrough: onPassThrough) else { return nil }
+        guard let tap = makeTap(chain: chain, deck: currentDeck ?? MusicTapDeck(role: .active), onPassThrough: onPassThrough)
+        else { return nil }
 
         let parameters = AVMutableAudioMixInputParameters(track: track)
         parameters.audioTapProcessor = tap
@@ -52,8 +57,10 @@ enum MusicAudioTap {
         logger.error("Loading the audio track for the tap failed: \(nsError.domain, privacy: .public) \(nsError.code, privacy: .public)")
     }
 
-    private static func makeTap(chain: MusicDSPChain, onPassThrough: @escaping @Sendable () -> Void) -> MTAudioProcessingTap? {
-        let context = Unmanaged.passRetained(MusicTapContext(chain: chain, onPassThrough: onPassThrough))
+    private static func makeTap(
+        chain: MusicDSPChain, deck: MusicTapDeck, onPassThrough: @escaping @Sendable () -> Void
+    ) -> MTAudioProcessingTap? {
+        let context = Unmanaged.passRetained(MusicTapContext(chain: chain, deck: deck, onPassThrough: onPassThrough))
         var callbacks = MTAudioProcessingTapCallbacks(
             version: kMTAudioProcessingTapCallbacksVersion_0,
             clientInfo: context.toOpaque(),
@@ -77,6 +84,82 @@ enum MusicAudioTap {
     }
 }
 
+/// The engine's handle on one deck's tap. The engine creates it before the mix is built; the tap's prepare attaches the
+/// lease it makes, and the engine drives the lease through it: arm just before the deck's scheduled start, activate when
+/// the deck becomes the one that plays, retire when it is over. Thread-safe: the tap prepares on a Core Audio thread.
+final class MusicTapDeck: @unchecked Sendable {
+    enum Role: Sendable { case active, standby }
+
+    let role: Role
+    private struct State {
+        var lease: MusicRenderLease?
+        var armed = false
+        var active = false
+    }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    init(role: Role) {
+        self.role = role
+    }
+
+    /// Called from the tap's prepare with the lease it made (which does not claim). An active deck claims the chain now;
+    /// a standby deck waits to be armed and activated, whichever of those came before its tap was ready.
+    func attach(_ lease: MusicRenderLease) {
+        let (shouldClaim, shouldArm) = state.withLock { state -> (Bool, Bool) in
+            state.lease = lease
+            return (role == .active || state.active, state.armed && !state.active)
+        }
+        if shouldClaim {
+            lease.claim()
+        } else if shouldArm {
+            lease.arm()
+        }
+    }
+
+    /// Called from the tap's unprepare: the lease is going away.
+    func detach() {
+        state.withLock { $0.lease = nil }
+    }
+
+    /// Lets this deck's tap render next to the playing deck's.
+    func arm() {
+        let lease = state.withLock { state -> MusicRenderLease? in
+            state.armed = true
+            return state.lease
+        }
+        lease?.arm()
+    }
+
+    /// Puts the deck back to silence (its start was cancelled).
+    func disarm() {
+        let lease = state.withLock { state -> MusicRenderLease? in
+            state.armed = false
+            return state.lease
+        }
+        lease?.disarm()
+    }
+
+    /// This deck is the one that plays now: its tap owns the chain.
+    func activate() {
+        let lease = state.withLock { state -> MusicRenderLease? in
+            state.active = true
+            state.armed = false
+            return state.lease
+        }
+        lease?.claim()
+    }
+
+    /// This deck is over: its tap stops rendering.
+    func retire() {
+        let lease = state.withLock { state -> MusicRenderLease? in
+            state.active = false
+            state.armed = false
+            return state.lease
+        }
+        lease?.release()
+    }
+}
+
 /// What the tap's C callbacks reach through the tap's storage. Holds the chain and a pass-through report, nothing else:
 /// no player, no service, no UI. Retained once with `Unmanaged.passRetained` when the tap is made and released in
 /// `finalize`.
@@ -84,13 +167,15 @@ final class MusicTapContext: @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.abraham.Deci", category: "MusicAudioTap")
 
     let chain: MusicDSPChain
+    private let deck: MusicTapDeck
     /// Told from `prepare` when the format is one the DSP cannot process and the audio goes through untouched.
     private let onPassThrough: @Sendable () -> Void
     /// Set in prepare, cleared in unprepare. The tap calls prepare, process and unprepare one after another.
     private nonisolated(unsafe) var lease: MusicRenderLease?
 
-    init(chain: MusicDSPChain, onPassThrough: @escaping @Sendable () -> Void = {}) {
+    init(chain: MusicDSPChain, deck: MusicTapDeck = MusicTapDeck(role: .active), onPassThrough: @escaping @Sendable () -> Void = {}) {
         self.chain = chain
+        self.deck = deck
         self.onPassThrough = onPassThrough
     }
 
@@ -115,10 +200,13 @@ final class MusicTapContext: @unchecked Sendable {
             onPassThrough()
             return
         }
-        lease = MusicRenderLease(chain: chain, sampleRate: format.mSampleRate, maxFrames: maxFrames)
+        let made = MusicRenderLease(chain: chain, sampleRate: format.mSampleRate, maxFrames: maxFrames, claims: false)
+        lease = made
+        deck.attach(made)
     }
 
     func unprepare() {
+        deck.detach()
         lease?.release()
         lease = nil
     }
