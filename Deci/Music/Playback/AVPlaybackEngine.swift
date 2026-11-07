@@ -935,6 +935,42 @@ final class AVPlaybackEngine: PlaybackEngine {
         scheduleCrossfadeStart(at: host)
     }
 
+    // MARK: - Aligned start (the tier 3b seam)
+
+    /// The host-clock time at which the active item's time `seconds` is heard, nil when the active deck is not playing at
+    /// rate 1 (then there is no grid to aim at). Built on the same item-timebase conversion the hand-over uses.
+    func hostTime(ofActiveItemTime seconds: TimeInterval) -> CMTime? {
+        let player = active.player
+        guard seconds.isFinite, let item = player.currentItem, player.timeControlStatus == .playing, player.rate == 1
+        else { return nil }
+        let now = player.currentTime().seconds
+        guard now.isFinite else { return nil }
+        return hostTime(ofItemTime: CMTime(seconds: seconds, preferredTimescale: 1_000_000), in: item, remaining: seconds - now)
+    }
+
+    /// Starts the prerolled standby at host time `host` at `rate` (a nudged rate keeps its pitch through the item's time
+    /// pitch algorithm), and arms its tap `armLead` before. This is the beat-matched mix's entry: the caller picks a host
+    /// time on the playing deck's beat grid. It sets no crossfade and no `scheduledHost`, so the gapless hand-over's own
+    /// schedule is untouched. False (nothing changes) when the preload is not ready, a fade is running, or `host` or
+    /// `rate` is unusable.
+    @discardableResult
+    func startStandby(atHostTime host: CMTime, rate: Float) -> Bool {
+        guard preloadStream != nil, preloadReady, draining == nil, host.isValid, host.isNumeric,
+              rate.isFinite, rate > 0 else { return false }
+        let deck = standby
+        let token = deck.token
+        deck.player.automaticallyWaitsToMinimizeStalling = false
+        deck.player.setRate(rate, time: .invalid, atHostTime: host)
+        armTask?.cancel()
+        let wait = CMTimeSubtract(host, CMClockGetTime(CMClockGetHostTimeClock())).seconds - Self.armLead
+        armTask = Task { @MainActor [weak self, weak deck] in
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            guard !Task.isCancelled, let self, let deck, deck === self.standby, deck.token == token else { return }
+            deck.tap?.arm()
+        }
+        return true
+    }
+
     /// Fires the crossfade `fadeLead` before the standby's start. Moves with the schedule.
     private func scheduleCrossfadeStart(at host: CMTime) {
         fadeStartTask?.cancel()
