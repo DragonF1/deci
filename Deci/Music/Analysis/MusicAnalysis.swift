@@ -6,7 +6,9 @@ import Foundation
 
 struct MusicAnalysis: Sendable, Equatable {
     /// Bump to have older entries redone quietly in the background.
-    static let currentVersion = 1
+    static let currentVersion = 2
+    /// First version whose rows may carry a beat grid; older rows keep their fade fields but have no grid.
+    static let gridVersion = 2
     /// One UInt8 step of the energy curve, in dB.
     static let energyStepDb: Float = 0.5
     /// Energy code 0.
@@ -70,6 +72,12 @@ struct MusicAnalysis: Sendable, Equatable {
     var keyInfo: Data? = nil
     /// The nudge, remembered forever. No UI in 2a.
     var userMixPointMs: Int? = nil
+
+    /// The stored beat grid, only from a row that is at least `gridVersion` and decodes cleanly.
+    var usableGrid: MusicBeatGrid? {
+        guard version >= Self.gridVersion, let beatGrid else { return nil }
+        return MusicBeatGrid.decode(beatGrid)
+    }
 
     /// RMS level of block `block` in dBFS; -infinity when out of range.
     func energyDb(at block: Int) -> Float {

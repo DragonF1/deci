@@ -501,6 +501,26 @@ struct MusicTransitionPlannerTests {
         #expect(!P.isFresh(a, for: Self.stream()))
     }
 
+    @Test func v1RowIsFreshForFadesButHasNoGrid() {
+        var a = Self.analysis("aaaaaaaaaaa", silenceStart: 1, silenceEnd: 198, outroStart: 190)
+        a.version = 1
+        a.beatGrid = MusicBeatGridTests.sample().encode()
+        #expect(P.isFresh(a, for: Self.stream()))
+        #expect(P.usableGrid(a) == nil)
+        a.version = 2
+        #expect(P.usableGrid(a) == MusicBeatGridTests.sample())
+    }
+
+    @Test func v1RowsStillGetASmartPlanWithFades() {
+        var i = Self.smart()
+        i.outgoing.analysis?.version = 1
+        i.incoming.analysis?.version = 1
+        let plan = P.plan(i)
+        #expect(plan.mode == .smart)
+        #expect(plan.fadeSeconds > 0)
+        #expect(plan == P.plan(Self.smart()))
+    }
+
     @Test func formatMismatchFails() {
         let a = Self.analysis("aaaaaaaaaaa")
         #expect(!P.isFresh(a, for: Self.stream(duration: 201)))

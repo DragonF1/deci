@@ -266,6 +266,8 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
                 youtubePerceptualLoudnessDb: stream.perceptualLoudnessDb
             )
             try await store.put(entry)
+            let grid = result.measurement.beatGrid.map { String(format: "%.1f@%.2f", $0.bpm, $0.beatConfidence) } ?? "nil"
+            logger.notice("analysis_grid id=\(stream.videoId, privacy: .public) grid=\(grid, privacy: .public)")
             return true
         } catch {
             return false

@@ -180,6 +180,23 @@ struct MusicAnalysisCoordinatorTests {
         #expect(await rig.store.entry(for: id)?.version == MusicAnalysis.currentVersion)
     }
 
+    @Test("a version 1 row is re-analysed in the background and comes back as version 2")
+    func versionOneBecomesTwo() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+        var old = try #require(await rig.store.entry(for: id))
+        old.version = 1
+        old.beatGrid = nil
+        try await rig.store.put(old)
+        #expect(await rig.store.freshness(of: id, matching: nil) == .staleVersion)
+
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+
+        #expect(await rig.store.entry(for: id)?.version == 2)
+        #expect(await rig.store.freshness(of: id, matching: nil) == .fresh)
+    }
+
     @Test("two ensure calls for one song at once share one fetch and one analysis")
     func coalesces() async throws {
         let rig = Rig(payload: payload)

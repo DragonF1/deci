@@ -176,9 +176,12 @@ enum MusicTransitionPlanner {
 
     // MARK: Freshness
 
+    /// The row's beat grid when the row is version 2 or newer and the grid decodes; nil otherwise (tier 3b).
+    static func usableGrid(_ analysis: MusicAnalysis) -> MusicBeatGrid? { analysis.usableGrid }
+
     /// True when the row describes exactly the audio of `stream` and is usable for planning.
     static func isFresh(_ analysis: MusicAnalysis, for stream: ResolvedStream) -> Bool {
-        guard analysis.version == MusicAnalysis.currentVersion,
+        guard analysis.version >= 1, analysis.version <= MusicAnalysis.currentVersion,
               analysis.videoId == stream.videoId,
               let duration = validDuration(stream.durationSeconds) else { return false }
         let format = MusicAnalysis.Format(

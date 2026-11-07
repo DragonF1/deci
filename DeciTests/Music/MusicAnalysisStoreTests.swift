@@ -61,6 +61,36 @@ struct MusicAnalysisStoreTests {
         #expect(await store.count() == 1)
     }
 
+    @Test("A real beat grid survives the BLOB, and a v1 row without one still loads and reports staleVersion")
+    func beatGridBlob() async throws {
+        let store = MusicAnalysisStore(url: nil)
+        var entry = Self.sample()
+        entry.beatGrid = MusicBeatGridTests.sample().encode()
+        try await store.put(entry)
+        let back = try #require(await store.entry(for: Self.id))
+        #expect(back.usableGrid == MusicBeatGridTests.sample())
+        #expect(await store.freshness(of: Self.id, matching: nil) == .fresh)
+
+        var old = Self.sample(version: 1)
+        old.beatGrid = nil
+        try await store.put(old)
+        let row = try #require(await store.entry(for: Self.id))
+        #expect(row.version == 1 && row.usableGrid == nil)
+        #expect(await store.freshness(of: Self.id, matching: nil) == .staleVersion)
+        #expect(await store.staleVideoIds(limit: 10) == [Self.id])
+    }
+
+    @Test("A v1 row cannot lend a grid even when the BLOB decodes")
+    func v1GridIsIgnored() {
+        var entry = Self.sample(version: 1)
+        entry.beatGrid = MusicBeatGridTests.sample().encode()
+        #expect(entry.usableGrid == nil)
+        entry.version = 2
+        #expect(entry.usableGrid != nil)
+        entry.beatGrid = Data([1, 2, 3])
+        #expect(entry.usableGrid == nil)
+    }
+
     @Test("An all-gated song stores a NULL integrated loudness and reads back as minus infinity")
     func gatedLoudness() async throws {
         let store = MusicAnalysisStore(url: nil)

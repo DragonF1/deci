@@ -5,7 +5,7 @@
 // programming beat tracking with a transition penalty on log(interval / period). All DSP is vDSP; nothing is copied
 // from aubio, Essentia or madmom.
 //
-// Nothing here touches the analysis store, the schema or the background analyzer; tier 3b wires it in.
+// The beat grid (MusicBeatFinderGrid.swift) refines this result on the bass band; the analysis decode loop feeds it.
 
 import Foundation
 import Accelerate
@@ -62,6 +62,12 @@ nonisolated enum MusicBeatFinder {
     static func analyze(samples: [Float], sampleRate: Double) -> MusicBeatResult {
         guard sampleRate.isFinite, sampleRate >= 8_000, Double(samples.count) >= minSeconds * sampleRate else { return .empty }
         guard let (audio, rate) = decimate(samples, sampleRate: sampleRate) else { return .empty }
+        return analyze(decimated: audio, rate: rate)
+    }
+
+    /// The same, from audio already decimated to about 22 kHz (`MusicBeatDecimator`).
+    static func analyze(decimated audio: [Float], rate: Double) -> MusicBeatResult {
+        guard rate.isFinite, rate >= 8_000, Double(audio.count) >= minSeconds * rate else { return .empty }
         guard let envelopes = onsetEnvelopes(audio, rate: rate) else { return .empty }
         let frameRate = rate / Double(envelopes.hop)
         // Broadband flux plus the bass bands: a bass drum touches few mel bands, a hat touches many, and log flux makes

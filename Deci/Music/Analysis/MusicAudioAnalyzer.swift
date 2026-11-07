@@ -46,6 +46,8 @@ nonisolated struct MusicAnalysisMeasurement: Sendable, Equatable {
     var duration: Double
     /// No window rose above -60 dBFS (or there was no audio): the analysis is not worth storing.
     var isSilent: Bool
+    /// Beat grid (tier 3b); nil from the pure core and whenever beat finding failed. Set by the file front end.
+    var beatGrid: MusicBeatGrid? = nil
 }
 
 nonisolated struct MusicAudioAnalyzer: Sendable {
@@ -451,6 +453,7 @@ nonisolated enum MusicFileAnalyzer {
         var scratch = [Float]()
         var decoded = 0
         var hitLimit = false
+        let decimator = MusicBeatDecimator(inputRate: sampleRate)
         while let buffer = output.copyNextSampleBuffer() {
             if Task.isCancelled {
                 reader.cancelReading()
@@ -469,7 +472,10 @@ nonisolated enum MusicFileAnalyzer {
                 throw Failure.unreadable
             }
             let take = min(frames, frameLimit - decoded)
-            scratch.withUnsafeBufferPointer { analyzer.consume(interleaved: $0, frames: take) }
+            scratch.withUnsafeBufferPointer {
+                analyzer.consume(interleaved: $0, frames: take)
+                if let base = $0.baseAddress { decimator.consume(interleaved: base, frames: take, channels: channels) }
+            }
             decoded += take
             if decoded >= frameLimit { hitLimit = true; break }
         }
@@ -480,16 +486,33 @@ nonisolated enum MusicFileAnalyzer {
         if hitLimit { reader.cancelReading() } else if reader.status == .failed { throw Failure.unreadable }
         guard decoded > 0 else { throw Failure.empty }
 
-        let measurement = analyzer.finish(exactDuration: exactDuration)
+        var measurement = analyzer.finish(exactDuration: exactDuration)
         guard !measurement.isSilent else { throw Failure.empty }
+        // A grid failure never fails the analysis.
+        measurement.beatGrid = Task.isCancelled ? nil : beatGrid(from: decimator)
         let format = MusicAnalysis.Format(
             codec: codecString(asbd), itag: 0, durationMs: Int(((exactDuration ?? measurement.duration) * 1000).rounded())
         )
         let elapsed = started.duration(to: .now)
         let ms = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
         let lufs = measurement.integratedLUFS.map { String(format: "%.2f", $0) } ?? "nil"
-        logger.notice("analysis_done id=\(file.deletingPathExtension().lastPathComponent, privacy: .public) ms=\(ms) lufs=\(lufs, privacy: .public)")
+        let grid = measurement.beatGrid.map { String(format: "%.1f@%.2f", $0.bpm, $0.beatConfidence) } ?? "nil"
+        logger.notice("analysis_done id=\(file.deletingPathExtension().lastPathComponent, privacy: .public) ms=\(ms) lufs=\(lufs, privacy: .public) grid=\(grid, privacy: .public)")
         return Result(measurement: measurement, format: format, decodedSeconds: Double(decoded) / sampleRate)
+    }
+
+    /// Beat finding after the decode loop, on the audio the decimator kept.
+    private static func beatGrid(from decimator: MusicBeatDecimator) -> MusicBeatGrid? {
+        let clock = ContinuousClock()
+        let (audio, rate) = decimator.finish()
+        guard !audio.isEmpty else { return nil }
+        let start = clock.now
+        let result = MusicBeatFinder.analyze(decimated: audio, rate: rate)
+        let middle = clock.now
+        let grid = MusicBeatFinder.grid(from: result, decimated: audio, rate: rate)
+        func ms(_ d: Duration) -> Int { Int(d.components.seconds * 1000 + d.components.attoseconds / 1_000_000_000_000_000) }
+        logger.notice("analysis_grid_ms finder=\(ms(start.duration(to: middle))) refine=\(ms(middle.duration(to: clock.now)))")
+        return grid
     }
 
     private static func codecString(_ asbd: AudioStreamBasicDescription) -> String {
@@ -521,7 +544,8 @@ extension MusicAnalysis {
             integratedLUFS: m.integratedLUFS ?? -.infinity,
             samplePeakDb: m.samplePeakDb.isFinite ? m.samplePeakDb : -200,
             introLUFS: m.introLUFS, outroLUFS: m.outroLUFS, energy: m.energy,
-            youtubeLoudnessDb: youtubeLoudnessDb, youtubePerceptualLoudnessDb: youtubePerceptualLoudnessDb
+            youtubeLoudnessDb: youtubeLoudnessDb, youtubePerceptualLoudnessDb: youtubePerceptualLoudnessDb,
+            beatGrid: m.beatGrid?.encode()
         )
     }
 
