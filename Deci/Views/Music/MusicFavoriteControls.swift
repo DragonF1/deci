@@ -13,24 +13,41 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
     case crossfade
     case like
 
-    /// The playback toggle this control is, when it is one of the four that Up next has too.
-    var playbackToggle: MusicPlaybackToggle? {
-        switch self {
-        case .shuffle: .shuffle
-        case .loop: .loop
-        case .autoplay: .autoplay
-        case .crossfade: .crossfade
-        case .like: nil
+    /// What a control is: one of the playback toggles Up next has too, or Like. Exhaustive, so a new case does not
+    /// compile until it says which.
+    enum Kind: Equatable, Sendable {
+        case toggle(MusicPlaybackToggle)
+        case like
+
+        var toggle: MusicPlaybackToggle? {
+            switch self {
+            case .toggle(let toggle): toggle
+            case .like: nil
+            }
         }
     }
 
-    /// The name in the "Show here" submenu and for VoiceOver (Loop's own wording says its mode there).
-    func title(loop: MusicLoopMode = .off) -> String {
-        if let playbackToggle { return playbackToggle.title(loop: loop) }
-        return "Like"
+    var kind: Kind {
+        switch self {
+        case .shuffle: .toggle(.shuffle)
+        case .loop: .toggle(.loop)
+        case .autoplay: .toggle(.autoplay)
+        case .crossfade: .toggle(.crossfade)
+        case .like: .like
+        }
     }
 
-    /// The name in the "Show here" submenu: the control, not the state it is in.
+    /// The control a playback toggle is. Exhaustive: a new toggle does not compile until it has a control.
+    init(_ toggle: MusicPlaybackToggle) {
+        switch toggle {
+        case .shuffle: self = .shuffle
+        case .loop: self = .loop
+        case .autoplay: self = .autoplay
+        case .crossfade: self = .crossfade
+        }
+    }
+
+    /// The one name of the control: the "Show here" submenu and the Playback menu use it.
     var menuTitle: String {
         switch self {
         case .shuffle: "Shuffle"
@@ -41,15 +58,28 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
         }
     }
 
+    /// The name in a slot, for VoiceOver: the control's name, except Loop, which says its mode.
+    func title(loop: MusicLoopMode = .off) -> String {
+        switch self {
+        case .loop: loop.label
+        case .shuffle, .autoplay, .crossfade, .like: menuTitle
+        }
+    }
+
     /// The glyph: the Up next header's for the four toggles, the strip's thumbs up (filled once liked) for Like.
     func symbol(loop: MusicLoopMode, isLiked: Bool) -> String {
-        if let playbackToggle { return playbackToggle.symbol(loop: loop) }
-        return MusicRateButtonLook(kind: .like, status: isLiked ? .like : nil).symbolName
+        switch kind {
+        case .toggle(let toggle): toggle.symbol(loop: loop)
+        case .like: MusicRateButtonLook(kind: .like, status: isLiked ? .like : nil).symbolName
+        }
     }
 
     /// Only the two buttons the row has always had keep their tooltip; nothing added later gets one.
     var hasTooltip: Bool {
-        self == .shuffle || self == .loop
+        switch self {
+        case .shuffle, .loop: true
+        case .autoplay, .crossfade, .like: false
+        }
     }
 }
 
@@ -170,11 +200,16 @@ nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
     init(shuffle: Bool, loop: MusicLoopMode, autoplay: Bool, crossfade: Bool, fadeSeconds: Double, slotControl: MusicFavoriteControl) {
         // Settings' stepper stays live with Crossfade off, so Fade length is never greyed out here either.
         let seconds = Int(MusicPlaybackPreferences.clampedCrossfade(fadeSeconds).rounded())
-        entries = [
-            .toggle(.shuffle, isOn: shuffle),
-            .loop(selected: loop),
-            .toggle(.autoplay, isOn: autoplay),
-            .toggle(.crossfade, isOn: crossfade),
+        // One entry per playback toggle, in toggle order, so a new toggle cannot be left out of the menu.
+        let toggles: [Entry] = MusicPlaybackToggle.allCases.map { toggle in
+            switch toggle {
+            case .shuffle: .toggle(.shuffle, isOn: shuffle)
+            case .loop: .loop(selected: loop)
+            case .autoplay: .toggle(.autoplay, isOn: autoplay)
+            case .crossfade: .toggle(.crossfade, isOn: crossfade)
+            }
+        }
+        entries = toggles + [
             .fadeLength(selected: seconds, options: Self.fadeOptions),
             .divider,
             .showHere(selected: slotControl, options: MusicFavoriteControl.allCases),

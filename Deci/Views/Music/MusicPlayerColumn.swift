@@ -15,8 +15,8 @@ struct MusicPlayerColumn: View {
     let spectrum: MusicSpectrumDriver
     /// The like animation the strip's Like or Dislike icon is playing; nil when there is none.
     let burst: MusicRateBurstCenter.Event?
-    /// Settings, where the favorite slots and the fade length live; nil leaves the slots at their defaults.
-    var settings: SettingsManager?
+    /// Settings, where the favorite slots and the fade length live.
+    let settings: SettingsManager
 
     @Environment(\.musicAccent) private var accent
     @Environment(\.musicTrackMenu) private var trackMenu
@@ -287,7 +287,7 @@ struct MusicPlayerColumn: View {
 
     private func transport(_ state: MusicPlayerColumnState) -> some View {
         let service = service
-        let slots = settings?.appSettings.musicFavoriteSlots ?? .default
+        let slots = settings.appSettings.musicFavoriteSlots
         let snapshot = MusicFavoriteSnapshot(
             shuffle: service?.isShuffleOn ?? false, loop: service?.loopMode ?? .off,
             autoplay: service?.isAutoplayOn ?? true, crossfade: service?.isCrossfadeOn ?? false,
@@ -299,23 +299,18 @@ struct MusicPlayerColumn: View {
             next: { service?.next() },
             perform: { control in
                 guard let service else { return }
-                switch control {
-                case .shuffle: service.setShuffle(!service.isShuffleOn)
-                case .loop: service.cycleLoopMode()
-                case .autoplay: service.setAutoplay(!service.isAutoplayOn)
-                case .crossfade: service.setCrossfade(!service.isCrossfadeOn)
+                switch control.kind {
+                case .toggle(let toggle): service.perform(toggle)
                 case .like: Task { service.trackActions.postIfFailed(await service.toggleLike()) }
                 }
             },
             setLoop: { service?.setLoopMode($0) },
             setFadeSeconds: { seconds in
-                guard let settings else { return }
                 var appSettings = settings.appSettings
                 appSettings.musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(Double(seconds))
                 settings.updateAppSettings(appSettings)
             },
             show: { control, side in
-                guard let settings else { return }
                 var appSettings = settings.appSettings
                 appSettings.musicFavoriteSlots = appSettings.musicFavoriteSlots.choosing(control, for: side)
                 settings.updateAppSettings(appSettings)

@@ -130,6 +130,18 @@ nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
     }
 }
 
+extension MusicService {
+    /// What a click on a playback toggle does: the one entry point for the Up next header and the favorite slots.
+    func perform(_ toggle: MusicPlaybackToggle) {
+        switch toggle {
+        case .shuffle: setShuffle(!isShuffleOn)
+        case .loop: cycleLoopMode()
+        case .autoplay: setAutoplay(!isAutoplayOn)
+        case .crossfade: setCrossfade(!isCrossfadeOn)
+        }
+    }
+}
+
 /// What the Lyrics panel says around the lines: the tag by the title, the kicker at the foot and the paragraphs of
 /// lyrics that are not timed.
 @MainActor

@@ -15,7 +15,18 @@ struct MusicFavoriteSnapshot: Equatable {
     var fadeSeconds = MusicPlaybackPreferences.defaultCrossfadeSeconds
 
     func isOn(_ control: MusicFavoriteControl) -> Bool {
-        control == .like ? isLiked : (control.playbackToggle?.isOn(shuffle: shuffle, loop: loop, autoplay: autoplay, crossfade: crossfade) ?? false)
+        switch control.kind {
+        case .toggle(let toggle): toggle.isOn(shuffle: shuffle, loop: loop, autoplay: autoplay, crossfade: crossfade)
+        case .like: isLiked
+        }
+    }
+
+    /// Whether a click on the control does anything now: Like needs a song and a signed-in listener.
+    func isAvailable(_ control: MusicFavoriteControl) -> Bool {
+        switch control.kind {
+        case .toggle: true
+        case .like: canLike
+        }
     }
 }
 
@@ -28,8 +39,15 @@ struct MusicTransportActions {
     var setLoop: (MusicLoopMode) -> Void = { _ in }
     var setFadeSeconds: (Int) -> Void = { _ in }
     var show: (MusicFavoriteControl, MusicFavoriteSide) -> Void = { _, _ in }
+    /// Fade length and Show here need Settings; a row without it (a preview) leaves them out of the menu.
+    var hasSettings = true
 
-    static var none: MusicTransportActions { MusicTransportActions() }
+    /// No-op actions for a row with no Settings behind it (a render): its menu leaves out Fade length and Show here.
+    static var none: MusicTransportActions {
+        var actions = MusicTransportActions()
+        actions.hasSettings = false
+        return actions
+    }
 }
 
 /// The player column's transport: a favorite slot, Previous, play and pause (`center`), Next and a favorite slot. Five
@@ -69,7 +87,7 @@ struct MusicTransportRow<Center: View>: View {
     private func slot(_ side: MusicFavoriteSide) -> some View {
         let control = slots[side]
         let isOn = snapshot.isOn(control)
-        let unavailable = control == .like && !snapshot.canLike
+        let unavailable = !snapshot.isAvailable(control)
         let rest = MusicTransportMetrics.restingGlyphOpacity
         return MusicColumnGlyphButton(
             title: control.title(loop: snapshot.loop),
@@ -86,13 +104,22 @@ struct MusicTransportRow<Center: View>: View {
 
     // MARK: - Menu
 
+    /// An entry that needs Settings is hidden when there is none; so is the divider that only led to them.
+    private func isShown(_ entry: MusicFavoriteMenuModel.Entry) -> Bool {
+        guard !actions.hasSettings else { return true }
+        switch entry {
+        case .fadeLength, .showHere, .divider: return false
+        case .toggle, .loop: return true
+        }
+    }
+
     @ViewBuilder
     private func menu(for side: MusicFavoriteSide) -> some View {
         let model = MusicFavoriteMenuModel(
             shuffle: snapshot.shuffle, loop: snapshot.loop, autoplay: snapshot.autoplay, crossfade: snapshot.crossfade,
             fadeSeconds: snapshot.fadeSeconds, slotControl: slots[side]
         )
-        ForEach(Array(model.entries.enumerated()), id: \.offset) { _, entry in
+        ForEach(Array(model.entries.filter(isShown).enumerated()), id: \.offset) { _, entry in
             switch entry {
             case .toggle(let control, let isOn):
                 Toggle(control.menuTitle, isOn: Binding(get: { isOn }, set: { _ in actions.perform(control) }))

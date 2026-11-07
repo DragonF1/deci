@@ -158,20 +158,11 @@ struct MusicPlaybackToggles: View {
                     title: toggle.title(loop: service.loopMode),
                     symbol: toggle.symbol(loop: service.loopMode),
                     isOn: toggle.isOn(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn, crossfade: service.isCrossfadeOn)
-                ) { perform(toggle) }
+                ) { service.perform(toggle) }
             }
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(MusicStyle.Opacity.segmentTrack)))
-    }
-
-    private func perform(_ toggle: MusicPlaybackToggle) {
-        switch toggle {
-        case .shuffle: service.setShuffle(!service.isShuffleOn)
-        case .loop: service.cycleLoopMode()
-        case .autoplay: service.setAutoplay(!service.isAutoplayOn)
-        case .crossfade: service.setCrossfade(!service.isCrossfadeOn)
-        }
     }
 }
 

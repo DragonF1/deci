@@ -206,3 +206,80 @@ struct MusicFavoriteControlsTests {
         #expect(menu(slot: .shuffle).entries.last == .showHere(selected: .shuffle, options: [.shuffle, .loop, .autoplay, .crossfade, .like]))
     }
 }
+
+// MARK: - One source of truth
+
+extension MusicFavoriteControlsTests {
+    @Test("every playback toggle maps to a control, and back")
+    func toggleMapping() {
+        for toggle in MusicPlaybackToggle.allCases {
+            let control = MusicFavoriteControl(toggle)
+            #expect(control.kind == .toggle(toggle))
+        }
+        #expect(MusicFavoriteControl.like.kind == .like)
+        #expect(MusicFavoriteControl.allCases.compactMap { $0.kind.toggle } == MusicPlaybackToggle.allCases)
+    }
+
+    @Test("the menu covers every playback toggle, in toggle order, before Fade length")
+    func menuCoversEveryToggle() {
+        let entries = menu().entries
+        let covered: [MusicFavoriteControl] = entries.compactMap {
+            switch $0 {
+            case .toggle(let control, _): control
+            case .loop: .loop
+            default: nil
+            }
+        }
+        #expect(covered == MusicPlaybackToggle.allCases.map(MusicFavoriteControl.init))
+        #expect(entries.firstIndex { $0.title == "Fade length" } == covered.count)
+    }
+
+    @Test("a control's menu name is its slot title except Loop, which says its mode")
+    func oneNameSource() {
+        for control in MusicFavoriteControl.allCases where control != .loop {
+            #expect(control.title() == control.menuTitle)
+        }
+        #expect(MusicFavoriteControl.loop.title(loop: .song) == "Loop song")
+    }
+
+    @Test("the snapshot says which controls can be used")
+    func availability() {
+        let signedOut = MusicFavoriteSnapshot(canLike: false)
+        #expect(signedOut.isAvailable(.like) == false)
+        for control in MusicFavoriteControl.allCases where control != .like {
+            #expect(signedOut.isAvailable(control))
+        }
+        #expect(MusicFavoriteSnapshot(canLike: true).isAvailable(.like))
+        #expect(MusicFavoriteSnapshot(isLiked: true).isOn(.like))
+        #expect(MusicFavoriteSnapshot(shuffle: true).isOn(.shuffle))
+    }
+
+    @Test("MusicService.perform drives each toggle")
+    func servicePerform() {
+        let clock = MutableClock()
+        let service = MusicService(
+            backend: FakeMusicBackend(),
+            player: MusicPlayer(engine: FakePlaybackEngine()),
+            presentSignIn: { _ in },
+            presentChannelPicker: { _, _ in },
+            closeSignInWindow: {},
+            raiseSignInWindow: {},
+            nowPlaying: NowPlayingController(surface: FakeNowPlayingSurface(), fetchArtwork: { _ in nil }),
+            now: { clock.now },
+            preferences: MusicPlaybackPreferences(),
+            savePreferences: { _ in },
+            refreshOnCreate: false
+        )
+        service.perform(.shuffle)
+        #expect(service.isShuffleOn)
+        service.perform(.shuffle)
+        #expect(service.isShuffleOn == false)
+        service.perform(.loop)
+        #expect(service.loopMode == .playlist)
+        let autoplay = service.isAutoplayOn
+        service.perform(.autoplay)
+        #expect(service.isAutoplayOn == !autoplay)
+        service.perform(.crossfade)
+        #expect(service.isCrossfadeOn)
+    }
+}
