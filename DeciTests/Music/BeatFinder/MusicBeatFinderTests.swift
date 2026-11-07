@@ -150,4 +150,30 @@ struct MusicBeatFinderTests {
         #expect(seconds < 1, "release budget")
         #endif
     }
+
+    @Test("a tiny-amplitude track (subnormal power) gives an empty result, never NaN")
+    func tiny() {
+        var track = BeatSynth.pulse(bpm: 120, seconds: 20, click: false)
+        track.samples = track.samples.map { $0 * 1e-24 }
+        let result = MusicBeatFinder.analyze(samples: track.samples, sampleRate: track.sampleRate)
+        Self.expectNoNaN(result)
+        #expect(result.isEmpty)
+    }
+
+    @Test("decodeMono stops at maxSeconds and the default cap is ten minutes")
+    func decodeCap() async throws {
+        #expect(MusicBeatDecoder.defaultMaxSeconds == 600)
+        let url = URL(fileURLWithPath: "/Volumes/Storage/_test/deci-3a/decode-cap.m4a")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let track = BeatSynth.pulse(bpm: 120, seconds: 6, click: false)
+        var stereo = [Float](repeating: 0, count: track.samples.count * 2)
+        for (index, value) in track.samples.enumerated() { stereo[index * 2] = value; stereo[index * 2 + 1] = value }
+        try? FileManager.default.removeItem(at: url)
+        try await ToneFile.write(interleavedStereo: stereo, sampleRate: 44_100, to: url)
+        let capped = try await MusicBeatDecoder.decodeMono(file: url, maxSeconds: 2)
+        #expect(capped.sampleRate == 44_100)
+        #expect(abs(Double(capped.samples.count) / 44_100 - 2) < 0.2)
+        let full = try await MusicBeatDecoder.decodeMono(file: url)
+        #expect(Double(full.samples.count) / 44_100 > 5)
+    }
 }

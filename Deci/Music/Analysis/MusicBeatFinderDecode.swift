@@ -15,8 +15,13 @@ nonisolated enum MusicBeatDecoder {
         var sampleRate: Double
     }
 
-    /// The whole file averaged to mono at its own sample rate. `maxSeconds` stops reading early.
-    static func decodeMono(file: URL, maxSeconds: Double? = nil) async throws -> Decoded {
+    /// Longest stretch read by default: 10 minutes of 48 kHz mono is about 115 MB, and the finder copies it once.
+    static let defaultMaxSeconds = 600.0
+
+    /// The file averaged to mono at its own sample rate, at most `maxSeconds` of it. `@concurrent` keeps the blocking
+    /// read off the caller's actor (the app target runs nonisolated async code on the caller's actor otherwise).
+    @concurrent
+    static func decodeMono(file: URL, maxSeconds: Double = defaultMaxSeconds) async throws -> Decoded {
         let asset = AVURLAsset(url: file)
         guard let track = try? await asset.loadTracks(withMediaType: .audio).first,
               let description = try? await track.load(.formatDescriptions).first,
@@ -38,10 +43,11 @@ nonisolated enum MusicBeatDecoder {
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw Failure.unreadable }
         reader.add(output)
-        let frameLimit = maxSeconds.map { Int(($0 * sampleRate).rounded()) } ?? Int.max
+        let frameLimit = max(1, Int((min(maxSeconds, 24 * 3600) * sampleRate).rounded()))
         guard reader.startReading() else { throw Failure.unreadable }
 
         var mono = [Float]()
+        mono.reserveCapacity(min(frameLimit, Int(sampleRate * 600)))
         var scratch = [Float]()
         while mono.count < frameLimit, let buffer = output.copyNextSampleBuffer() {
             if Task.isCancelled { reader.cancelReading(); throw CancellationError() }

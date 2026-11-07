@@ -202,7 +202,8 @@ nonisolated enum MusicBeatFinder {
 
         var peak: Float = 0
         vDSP_maxv(mel, 1, &peak, vDSP_Length(mel.count))
-        guard peak.isFinite, peak > 0 else { return nil }
+        // Under the smallest normal float 1 / peak overflows to infinity and fills the log with NaN.
+        guard peak.isFinite, peak > Float.leastNormalMagnitude else { return nil }
 
         // Power to dB relative to the loudest cell, floored at -80 dB.
         var scaled = [Float](repeating: 0, count: mel.count)
