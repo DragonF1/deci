@@ -2665,7 +2665,8 @@ final class MusicService {
         inputs.albumInOrder = playsAlbumInOrder
         inputs.loopSong = loopMode == .song
         inputs.beatMixEnabled = isBeatMixOn && beatFallbackFor != inputs.incoming.videoId
-        inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
+        // earliestMixOutSec stays what it was at the offer: moving it with the playhead would turn a ready beat plan
+        // into a smart one inside the last seconds.
         let flags = transitionFlags(from: inputs.outgoing.videoId, to: inputs.incoming.videoId)
         inputs.cleanStartFlag = flags.startsClean
         inputs.cleanPairFlag = flags.pairIsClean
@@ -2673,9 +2674,12 @@ final class MusicService {
         // The standby is parked on a beat plan's mix-in and starts at its rate (and one parked for another plan cannot take
         // a beat mix): a replan that changes either is the preload withdrawn and offered again with the new plan.
         let wasBeat = offered.plan.mode == .beat
-        if wasBeat != (plan.mode == .beat) || (wasBeat && (plan.incomingRate != offered.plan.incomingRate
-            || plan.mixInSec != offered.plan.mixInSec)) {
-            cancelPreload()
+        // A ready preload whose beat mix-out is still ahead is kept: withdrawing it this late drops the next song.
+        let readyAhead = wasBeat && player.preloadIsReady && (offered.plan.mixOutSec ?? 0) > player.currentTime
+        if wasBeat != (plan.mode == .beat) {
+            if !readyAhead { cancelPreload(); return }
+        } else if wasBeat, plan.incomingRate != offered.plan.incomingRate || plan.mixInSec != offered.plan.mixInSec {
+            if !readyAhead { cancelPreload() }
             return
         }
         // An album in order or Loop song takes the trims away, but the standby is parked at the old offset: the preload is

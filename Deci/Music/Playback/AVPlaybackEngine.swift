@@ -333,6 +333,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         glide.map { Self.glideRate(from: $0.from, elapsed: $0.elapsed, total: $0.total) }
     }
     var debugPlannedRate: Float { plannedRate }
+    var debugGlideTicking: Bool { glideTask != nil }
     var debugBeatOverlap: BeatOverlap? { beatOverlap }
     func debugSetBeatOverlap(_ overlap: BeatOverlap?) { beatOverlap = overlap }
     func debugSetWantsPlay(_ on: Bool) { wantsPlay = on }
@@ -618,6 +619,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             if let glide {
                 // A glide that was held by a pause goes on from where it was, not from 1.
                 active.player.rate = Self.glideRate(from: glide.from, elapsed: glide.elapsed, total: glide.total)
+                runGlideTask()
             } else {
                 active.player.play()
             }
@@ -638,6 +640,10 @@ final class AVPlaybackEngine: PlaybackEngine {
                 CMClockGetTime(CMClockGetHostTimeClock()),
                 CMTime(seconds: Self.resumeLead, preferredTimescale: 1_000_000_000)
             )
+            // setRate(_:time:atHostTime:) traps while a deck waits to minimise stalling; the flip turned that on for the
+            // active deck, so both are made ready here and the active one gets it back when the drain ends.
+            self.active.player.automaticallyWaitsToMinimizeStalling = false
+            draining.player.automaticallyWaitsToMinimizeStalling = false
             if !self.hasRunOut(draining.player) {
                 draining.player.setRate(1, time: .invalid, atHostTime: host)
             }
@@ -663,6 +669,9 @@ final class AVPlaybackEngine: PlaybackEngine {
     func pause() {
         wantsPlay = false
         cancelSchedule()
+        // A held glide does not tick while paused; play() starts it again.
+        glideTask?.cancel()
+        glideTask = nil
         active.player.pause()
         draining?.player.pause()
     }
@@ -760,7 +769,10 @@ final class AVPlaybackEngine: PlaybackEngine {
         let wanted = plan?.incomingStartSec ?? 0
         guard wanted == requestedStartOffset else { return }
         // The standby is parked on the beat plan's mix-in and will start at its rate: a plan with another rate is refused.
-        guard (plan?.incomingRate ?? 1) == (transitionPlan?.incomingRate ?? 1) else { return }
+        // A plan that is not a beat plan (a manual skip's) takes the rate back to 1, which the standby can do at any time.
+        if plan?.mode == .beat {
+            guard (plan?.incomingRate ?? 1) == (transitionPlan?.incomingRate ?? 1) else { return }
+        }
         let old = transitionPlan
         var adopted = plan
         // The standby is parked where it really is, which may differ from what was asked.
@@ -933,6 +945,14 @@ final class AVPlaybackEngine: PlaybackEngine {
             from: active.videoId ?? "-", to: preloadStream?.videoId ?? "-", mode: plan.mode, reason: reason
         )
         Self.logger.notice("\(line, privacy: .public)")
+        // A beat plan that ends up as an end-of-item start skips into the next song's mix-in point: say so.
+        if plan.mode == .beat {
+            let beat = MusicTransitionLog.beatFallbackLine(
+                from: active.videoId ?? "-", to: preloadStream?.videoId ?? "-",
+                reason: "engine" + reason.prefix(1).uppercased() + reason.dropFirst(), bpmA: nil, bpmB: nil
+            )
+            Self.logger.notice("\(beat, privacy: .public)")
+        }
     }
 
     // MARK: - Hand-over
@@ -1448,6 +1468,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         // A beat mix is over: the incoming song's rate relaxes back to 1.
         if let beat = beatOverlap {
             beatOverlap = nil
+            // The flip turned stalling-wait off for the synchronised start; the deck plays on its own from here.
+            active.player.automaticallyWaitsToMinimizeStalling = true
             startGlide(from: beat.rate, over: beat.glideSeconds)
         }
     }
@@ -1465,6 +1487,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         glide = Glide(from: rate, total: seconds)
         Self.logger.notice("\(MusicTransitionLog.glideLine(event: .start, rate: Double(rate), seconds: seconds), privacy: .public)")
+        runGlideTask()
+    }
+
+    private func runGlideTask() {
+        glideTask?.cancel()
         glideTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(Self.glideTick))

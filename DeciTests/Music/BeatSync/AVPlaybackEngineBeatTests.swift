@@ -263,4 +263,102 @@ struct AVPlaybackEngineBeatTests {
         #expect(engine.debugGlide == nil)
         engine.unload()
     }
+
+    @Test("a plan that is not a beat plan (a manual skip's) is accepted on a beat preload, at the same park offset")
+    func skipPlanIsAccepted() async throws {
+        let first = try await writeTone("k1", seconds: 30)
+        let second = try await writeTone("k2", seconds: 30)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("k1", duration: 30, url: first), startAt: 0, autoplay: false)
+        engine.preload(stream("k2", duration: 30, url: second), plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 20, overlap: 4))
+        let ready = await waitUntil(timeout: .seconds(30)) { engine.preloadIsReady }
+        #expect(ready)
+        let skip = TransitionPlan(
+            mode: .fixed, incomingStartSec: 2, outgoingEndSec: nil, fadeStartSec: nil, fadeSeconds: 0.3,
+            incomingGainDb: 0, incomingGlideSeconds: 0, outgoingGainDb: 0, outgoingRampSeconds: 0, reason: .ok
+        )
+        engine.updateTransitionPlan(skip)
+        #expect(engine.transitionPlan?.mode == .fixed)
+        #expect(engine.transitionPlan?.incomingRate == 1)
+        // A beat plan with another rate is still refused.
+        engine.updateTransitionPlan(beatPlan(rate: 0.97, mixIn: 2, mixOut: 20, overlap: 4))
+        #expect(engine.transitionPlan?.mode == .fixed)
+    }
+
+    @Test("a pause stops the glide's ticker and a play starts it again from where it was held")
+    func pauseStopsGlideTicker() async throws {
+        let first = try await writeTone("t1", seconds: 8)
+        let engine = makeEngine()
+        engine.load(stream("t1", duration: 8, url: first), startAt: 0, autoplay: false)
+        let loaded = await waitUntil(timeout: .seconds(30)) { engine.avPlayer.currentItem?.status == .readyToPlay }
+        #expect(loaded)
+        engine.debugSetWantsPlay(true)
+        engine.debugStartGlide(from: 0.95, over: 10)
+        #expect(engine.debugGlideTicking)
+        engine.pause()
+        #expect(!engine.debugGlideTicking, "no ticker while paused")
+        let held = engine.debugGlide
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(engine.debugGlide == held)
+        engine.play()
+        #expect(engine.debugGlideTicking, "the held glide ticks again")
+        let moved = await waitUntil(timeout: .seconds(5)) { (engine.debugGlide?.elapsed ?? 0) > 0.15 }
+        #expect(moved)
+        engine.unload()
+    }
+
+    /// Plays A into B on a real beat overlap and returns once the flip has happened.
+    private func overlapEngine() async throws -> AVPlaybackEngine {
+        let first = try await writeTone("ra", seconds: 16)
+        let second = try await writeTone("rb", seconds: 20)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("ra", duration: 16, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("rb", duration: 20, url: second), plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 8))
+        let flipped = await waitUntil(timeout: .seconds(40)) { engine.isCrossfading && engine.debugBeatOverlap != nil }
+        #expect(flipped)
+        try await Task.sleep(for: .milliseconds(600))
+        return engine
+    }
+
+    private func drift(_ engine: AVPlaybackEngine, rate: Float = 0.95) -> Double {
+        let incoming = engine.avPlayer.currentTime().seconds
+        let outgoing = engine.debugDrainingPlayer?.currentTime().seconds ?? .nan
+        return AVPlaybackEngine.overlapDrift(incoming: incoming, outgoing: outgoing, rate: rate, mixIn: 2, mixOut: 5)
+    }
+
+    @Test("pause then play in a beat overlap does not trap: both decks restart at their rates, the flag is off, and it is restored after the drain")
+    func resumeInOverlap() async throws {
+        let engine = try await overlapEngine()
+        engine.pause()
+        #expect(engine.avPlayer.rate == 0)
+        engine.play()
+        let restarted = await waitUntil(timeout: .seconds(5)) { abs(engine.avPlayer.rate - 0.95) < 0.001 }
+        #expect(restarted, "incoming rate \(engine.avPlayer.rate)")
+        #expect(abs((engine.debugDrainingPlayer?.rate ?? 0) - 1) < 0.001)
+        #expect(!engine.avPlayer.automaticallyWaitsToMinimizeStalling)
+        #expect(engine.debugBeatOverlap != nil)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(abs(drift(engine)) < 0.06, "drift after a short pause \(drift(engine))")
+        let drained = await waitUntil(timeout: .seconds(30)) { !engine.isCrossfading }
+        #expect(drained)
+        #expect(engine.avPlayer.automaticallyWaitsToMinimizeStalling, "restored once the glide starts")
+        engine.unload()
+    }
+
+    @Test("a resume that finds the incoming deck more than 30 ms off the grid puts it back before restarting")
+    func resumeSnapsOverDriftTolerance() async throws {
+        let engine = try await overlapEngine()
+        engine.pause()
+        let now = engine.avPlayer.currentTime().seconds
+        await engine.avPlayer.seek(to: CMTime(seconds: now + 1.0, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        #expect(abs(drift(engine)) > 0.1, "set up: the incoming deck is ahead")
+        engine.play()
+        let restarted = await waitUntil(timeout: .seconds(5)) { abs(engine.avPlayer.rate - 0.95) < 0.001 }
+        #expect(restarted)
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(abs(drift(engine)) < 0.06, "drift after the snap \(drift(engine))")
+        engine.unload()
+    }
 }

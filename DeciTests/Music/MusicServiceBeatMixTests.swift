@@ -231,17 +231,53 @@ struct MusicServiceBeatMixTests {
         }
     }
 
-    @Test("toggling Crossfade off under a beat plan withdraws the preload instead of updating the parked plan")
-    func toggleUnderBeatPlanRepreloads() async throws {
+    @Test("toggling Crossfade off under a beat plan whose preload is still loading withdraws it")
+    func toggleUnderBeatPlanNotReadyRepreloads() async throws {
         let h = BeatHarness()
         await start(h)
         await h.tick(126)
         await h.tick(170)
         #expect(h.lastPlan?.mode == .beat)
+        h.engine.preloadReady = false
         let cancels = h.engine.cancelPreloadCount
         h.service.setCrossfade(false)
         #expect(h.engine.cancelPreloadCount == cancels + 1)
         #expect(h.engine.updatedPlans.isEmpty)
+    }
+
+    @Test("a replan inside the last seconds keeps a ready preload: the plan goes non-beat at the same park offset")
+    func lateReplanKeepsReadyPreload() async throws {
+        let h = BeatHarness()
+        await start(h)
+        await h.tick(126)
+        await h.tick(170)
+        let beat = try #require(h.lastPlan)
+        #expect(beat.mode == .beat)
+        let mixOut = try #require(beat.mixOutSec)
+        await h.tick(mixOut - 7.5)
+        let cancels = h.engine.cancelPreloadCount
+        h.service.setCrossfade(false)
+        #expect(h.engine.cancelPreloadCount == cancels, "the ready preload stays")
+        let updated = try #require(h.engine.updatedPlans.last ?? nil)
+        #expect(updated.mode != .beat)
+        #expect(updated.incomingRate == 1)
+        #expect(updated.incomingStartSec == beat.incomingStartSec)
+    }
+
+    @Test("a manual skip on a beat preload hands the engine the skip plan, at the beat plan's park offset")
+    func manualSkipOnBeatPreload() async throws {
+        let h = BeatHarness()
+        await start(h)
+        await h.tick(126)
+        await h.tick(170)
+        let beat = try #require(h.lastPlan)
+        #expect(beat.mode == .beat)
+        h.service.next()
+        let updated = try #require(h.engine.updatedPlans.last ?? nil)
+        #expect(updated.mode == .fixed)
+        #expect(updated.incomingRate == 1)
+        #expect(updated.incomingStartSec == beat.incomingStartSec)
+        #expect(h.engine.transitionPlan?.mode == .fixed)
     }
 }
 
