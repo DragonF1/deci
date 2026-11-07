@@ -70,6 +70,8 @@ nonisolated struct AppSettings: Codable, Equatable {
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
     var musicCrossfadeEnabled: Bool = false        // Fade the next song in over the end of the playing one (off is gapless)
     var musicCrossfadeSeconds: Double = 6          // How long that fade lasts, 1 to 12 seconds
+    var musicFavoriteLeft: String = MusicFavoriteControl.shuffle.rawValue  // What the player's left favorite slot holds (a MusicFavoriteControl raw value)
+    var musicFavoriteRight: String = MusicFavoriteControl.loop.rawValue    // Same for the right slot
     var musicAnalyzeInBackground: Bool = true      // Analyse liked songs and playlists one at a time while Music is idle
 
     // Music Home
@@ -115,6 +117,10 @@ nonisolated struct AppSettings: Codable, Equatable {
         musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(
             (try? c.decodeIfPresent(Double.self, forKey: .musicCrossfadeSeconds)) ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
         )
+        // Kept as the raw strings: a control a later build added or dropped reads as the slot's default
+        // (`MusicFavoriteSlots`) without this build overwriting what the file says.
+        musicFavoriteLeft = (try? c.decodeIfPresent(String.self, forKey: .musicFavoriteLeft)) ?? MusicFavoriteControl.shuffle.rawValue
+        musicFavoriteRight = (try? c.decodeIfPresent(String.self, forKey: .musicFavoriteRight)) ?? MusicFavoriteControl.loop.rawValue
         musicAnalyzeInBackground = (try? c.decodeIfPresent(Bool.self, forKey: .musicAnalyzeInBackground)) ?? true
         // Pins this build cannot read must not cost the listener the rest of their settings either, and one
         // unreadable pin costs only itself. A file from before Home held more than artists has only the old key,

@@ -15,6 +15,8 @@ struct MusicPlayerColumn: View {
     let spectrum: MusicSpectrumDriver
     /// The like animation the strip's Like or Dislike icon is playing; nil when there is none.
     let burst: MusicRateBurstCenter.Event?
+    /// Settings, where the favorite slots and the fade length live; nil leaves the slots at their defaults.
+    var settings: SettingsManager?
 
     @Environment(\.musicAccent) private var accent
     @Environment(\.musicTrackMenu) private var trackMenu
@@ -285,35 +287,45 @@ struct MusicPlayerColumn: View {
 
     private func transport(_ state: MusicPlayerColumnState) -> some View {
         let service = service
-        let canGoNext = service?.canGoNext ?? false
-        let isShuffleOn = service?.isShuffleOn ?? false
-        let loopMode = service?.loopMode ?? .off
-        let rest = MusicTransportMetrics.restingGlyphOpacity
-        return HStack(spacing: 0) {
-            MusicColumnGlyphButton(
-                title: "Shuffle", systemImage: "shuffle", fontSize: 12, box: MusicTransportMetrics.box(.shuffle),
-                color: isShuffleOn ? accent.solid : Color.white.opacity(rest), isSelected: isShuffleOn
-            ) { service?.setShuffle(!isShuffleOn) }
-            Spacer(minLength: 0)
-            MusicColumnGlyphButton(
-                title: "Previous", systemImage: "backward.end.fill", fontSize: 14,
-                box: MusicTransportMetrics.box(.previous), color: Color.white.opacity(0.90)
-            ) { service?.previous() }
-            Spacer(minLength: 0)
+        let slots = settings?.appSettings.musicFavoriteSlots ?? .default
+        let snapshot = MusicFavoriteSnapshot(
+            shuffle: service?.isShuffleOn ?? false, loop: service?.loopMode ?? .off,
+            autoplay: service?.isAutoplayOn ?? true, crossfade: service?.isCrossfadeOn ?? false,
+            isLiked: service?.likeStatus == .like, canLike: service?.canRate == true,
+            fadeSeconds: service?.crossfadeSeconds ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
+        )
+        let actions = MusicTransportActions(
+            previous: { service?.previous() },
+            next: { service?.next() },
+            perform: { control in
+                guard let service else { return }
+                switch control {
+                case .shuffle: service.setShuffle(!service.isShuffleOn)
+                case .loop: service.cycleLoopMode()
+                case .autoplay: service.setAutoplay(!service.isAutoplayOn)
+                case .crossfade: service.setCrossfade(!service.isCrossfadeOn)
+                case .like: Task { service.trackActions.postIfFailed(await service.toggleLike()) }
+                }
+            },
+            setLoop: { service?.setLoopMode($0) },
+            setFadeSeconds: { seconds in
+                guard let settings else { return }
+                var appSettings = settings.appSettings
+                appSettings.musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(Double(seconds))
+                settings.updateAppSettings(appSettings)
+            },
+            show: { control, side in
+                guard let settings else { return }
+                var appSettings = settings.appSettings
+                appSettings.musicFavoriteSlots = appSettings.musicFavoriteSlots.choosing(control, for: side)
+                settings.updateAppSettings(appSettings)
+            }
+        )
+        return MusicTransportRow(
+            slots: slots, snapshot: snapshot, canGoNext: service?.canGoNext ?? false, actions: actions
+        ) {
             playPause(state)
-            Spacer(minLength: 0)
-            MusicColumnGlyphButton(
-                title: "Next", systemImage: "forward.end.fill", fontSize: 14, box: MusicTransportMetrics.box(.next),
-                color: Color.white.opacity(canGoNext ? 0.90 : 0.30), isDisabled: !canGoNext
-            ) { service?.next() }
-            Spacer(minLength: 0)
-            MusicColumnGlyphButton(
-                title: loopMode.label, systemImage: loopMode.systemImage, fontSize: 12,
-                box: MusicTransportMetrics.box(.loop),
-                color: loopMode != .off ? accent.solid : Color.white.opacity(rest), isSelected: loopMode != .off
-            ) { service?.cycleLoopMode() }
         }
-        .frame(width: MusicPopupMetrics.playerColumnContentWidth, height: MusicTransportMetrics.height)
         .opacity(state.controlsOpacity)
         .disabled(!state.controlsAreEnabled)
     }
@@ -389,7 +401,7 @@ struct MusicPlayerColumn: View {
 
 /// One glyph of the transport, bare. Its hit area reaches past the glyph (the glyphs are small and spaced apart) and
 /// stays out of the layout.
-private struct MusicColumnGlyphButton: View {
+struct MusicColumnGlyphButton: View {
     let title: String
     let systemImage: String
     let fontSize: CGFloat
@@ -398,6 +410,8 @@ private struct MusicColumnGlyphButton: View {
     let color: Color
     var isSelected = false
     var isDisabled = false
+    /// Off for a control that was never in the row: nothing added later carries a tooltip.
+    var showsHelp = true
     let action: () -> Void
 
     private static let reach: CGFloat = 6
@@ -416,7 +430,7 @@ private struct MusicColumnGlyphButton: View {
         .disabled(isDisabled)
         .accessibilityLabel(title)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .help(title)
+        .help(showsHelp ? title : "")
     }
 }
 
