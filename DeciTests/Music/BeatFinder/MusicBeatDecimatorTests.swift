@@ -30,6 +30,12 @@ struct MusicBeatDecimatorTests {
         return decimator.finish()
     }
 
+    @Test("an unusable input rate gives empty output instead of trapping", arguments: [0.0, -44_100, .nan, .infinity, 1e300])
+    func badRate(rate: Double) {
+        let out = Self.stream([0.1, 0.2, 0.3, 0.4], rate: rate, chunk: 2)
+        #expect(out.samples.isEmpty)
+    }
+
     @Test("matches the one-shot decimate within 1e-6 for any chunk size", arguments: [44_100.0, 48_000], [1, 512, 4096, 99_999])
     func matchesOneShot(rate: Double, chunk: Int) throws {
         let samples = Self.signal(rate: rate, seconds: chunk == 1 ? 0.5 : 3)

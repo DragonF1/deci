@@ -25,19 +25,27 @@ nonisolated struct MusicBeatGrid: Equatable, Sendable {
 
     /// The first beat at or after `t` (a beat within a nanosecond of `t` counts as at it).
     func nextBeat(atOrAfter t: Double) -> (index: Int, time: Double) {
-        let k = Int(((t - anchorSec) / periodSec - 1e-9).rounded(.up))
+        let position = ((t - anchorSec) / periodSec - 1e-9).rounded(.up)
+        guard position.isFinite, abs(position) < 1e15 else { return (0, anchorSec) }
+        let k = Int(position)
         return (k, beatTime(k))
     }
 
     /// Bar index 0 is the first bar whose downbeat is inside the span; bars are 4 beats. nil without a downbeat.
     func barTime(_ bar: Int) -> Double? {
-        guard let phase = downbeatPhase else { return nil }
+        guard let phase = downbeatPhase, periodSec > 0, periodSec.isFinite, anchorSec.isFinite,
+              spanStartSec.isFinite else { return nil }
         var k = nextBeat(atOrAfter: spanStartSec).index
         k += ((phase - k) % 4 + 4) % 4
         return beatTime(k + 4 * bar)
     }
 
     // MARK: Payload
+
+    /// Periods outside 30 to 300 bpm are never produced; anything else is a corrupt payload.
+    static let periodRange = (60.0 / 300)...(60.0 / 30)
+    /// Anchor and span values (seconds) at or beyond this are corrupt.
+    static let maxSeconds = 1e7
 
     static let payloadVersion: UInt8 = 1
     static let unknownPhase: UInt8 = 255
@@ -57,7 +65,7 @@ nonisolated struct MusicBeatGrid: Equatable, Sendable {
         return data
     }
 
-    /// nil on a wrong version, a short payload, a non-finite number, a non-positive period or a reversed span.
+    /// nil on a wrong version, a short payload, a non-finite number, a period outside 30 to 300 bpm, a huge anchor or span, or a reversed span.
     static func decode(_ data: Data) -> MusicBeatGrid? {
         let bytes = [UInt8](data)
         guard bytes.count >= payloadSize, bytes[0] == payloadVersion else { return nil }
@@ -83,7 +91,8 @@ nonisolated struct MusicBeatGrid: Equatable, Sendable {
         let doubles = [grid.periodSec, grid.anchorSec, grid.spanStartSec, grid.spanEndSec]
         let floats = [grid.beatConfidence, grid.downbeatConfidence, grid.intervalSpread, grid.driftSec]
         guard doubles.allSatisfy(\.isFinite), floats.allSatisfy(\.isFinite),
-              grid.periodSec > 0, grid.spanEndSec >= grid.spanStartSec else { return nil }
+              periodRange.contains(grid.periodSec), grid.spanEndSec >= grid.spanStartSec,
+              [grid.anchorSec, grid.spanStartSec, grid.spanEndSec].allSatisfy({ abs($0) < maxSeconds }) else { return nil }
         return grid
     }
 

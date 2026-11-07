@@ -54,6 +54,36 @@ struct MusicBeatGridTests {
         #expect(MusicBeatGrid.decode(grid.encode()) == nil)
     }
 
+    @Test("an absurd period or a huge anchor or span is rejected, and extrapolation never traps")
+    func corruptRanges() {
+        var grid = Self.sample()
+        for period in [1e-300, 0.19, 2.01, 1e300] {
+            grid.periodSec = period
+            #expect(MusicBeatGrid.decode(grid.encode()) == nil, "period \(period)")
+        }
+        for period in [0.2, 2.0] {
+            grid.periodSec = period
+            #expect(MusicBeatGrid.decode(grid.encode()) != nil, "period \(period)")
+        }
+        grid = Self.sample(); grid.anchorSec = 1e9
+        #expect(MusicBeatGrid.decode(grid.encode()) == nil)
+        grid = Self.sample(); grid.anchorSec = -1e9
+        #expect(MusicBeatGrid.decode(grid.encode()) == nil)
+        grid = Self.sample(); grid.spanEndSec = 1e9
+        #expect(MusicBeatGrid.decode(grid.encode()) == nil)
+        // Built directly (not decoded): the helpers must still not trap.
+        var raw = Self.sample(phase: 1)
+        raw.periodSec = 1e-300
+        _ = raw.nextBeat(atOrAfter: 1e9)
+        _ = raw.barTime(0)
+        raw = Self.sample(phase: 1); raw.anchorSec = 1e300
+        _ = raw.nextBeat(atOrAfter: -1e300)
+        _ = raw.barTime(3)
+        raw.periodSec = .nan
+        _ = raw.nextBeat(atOrAfter: 5)
+        #expect(raw.barTime(0) == nil)
+    }
+
     @Test("a phase byte between 4 and 254 is rejected")
     func badPhase() {
         var data = Self.sample().encode()

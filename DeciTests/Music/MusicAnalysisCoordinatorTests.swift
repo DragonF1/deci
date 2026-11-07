@@ -197,6 +197,28 @@ struct MusicAnalysisCoordinatorTests {
         #expect(await rig.store.freshness(of: id, matching: nil) == .fresh)
     }
 
+    @Test("a version 1 row whose file can never be analysed becomes a v2 row with its fades and no grid")
+    func versionOneUnreadableIsUpgraded() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+        var old = try #require(await rig.store.entry(for: id))
+        old.version = 1
+        old.beatGrid = nil
+        try await rig.store.put(old)
+        #expect(await rig.store.staleVideoIds(limit: 10).contains(id))
+
+        rig.spy.fails = true
+        let outcome = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+
+        guard case .failed = outcome else { Issue.record("expected .failed, got \(outcome)"); return }
+        let row = try #require(await rig.store.entry(for: id))
+        #expect(row.version == MusicAnalysis.currentVersion)
+        #expect(row.beatGrid == nil)
+        #expect(row.energy == old.energy && row.silenceEnd == old.silenceEnd && row.introEnd == old.introEnd)
+        #expect(await rig.store.staleVideoIds(limit: 10).contains(id) == false)
+    }
+
     @Test("two ensure calls for one song at once share one fetch and one analysis")
     func coalesces() async throws {
         let rig = Rig(payload: payload)

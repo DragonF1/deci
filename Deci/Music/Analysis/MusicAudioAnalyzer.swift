@@ -509,10 +509,11 @@ nonisolated enum MusicFileAnalyzer {
         let start = clock.now
         let result = MusicBeatFinder.analyze(decimated: audio, rate: rate)
         let middle = clock.now
+        guard !Task.isCancelled else { return nil }
         let grid = MusicBeatFinder.grid(from: result, decimated: audio, rate: rate)
         func ms(_ d: Duration) -> Int { Int(d.components.seconds * 1000 + d.components.attoseconds / 1_000_000_000_000_000) }
         logger.notice("analysis_grid_ms finder=\(ms(start.duration(to: middle))) refine=\(ms(middle.duration(to: clock.now)))")
-        return grid
+        return Task.isCancelled ? nil : grid
     }
 
     private static func codecString(_ asbd: AudioStreamBasicDescription) -> String {

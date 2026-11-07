@@ -78,6 +78,8 @@ actor MusicAnalysisStore {
         statement.bind(videoId, at: 1)
         guard statement.step() == SQLITE_ROW else { return .missing }
         let version = Int(statement.int(0))
+        // Exact equality is intentional: any older version must be re-analysed (it drives the stale sweep). The planner
+        // reads v1 rows too, through its own 1...currentVersion range.
         guard version == MusicAnalysis.currentVersion, MusicAnalysisPayload.decode(statement.data(4)) != nil else {
             return .staleVersion
         }

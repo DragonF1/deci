@@ -21,10 +21,12 @@ nonisolated final class MusicBeatDecimator {
 
     init(inputRate: Double, maxSeconds: Double = 600) {
         self.inputRate = inputRate
-        factor = max(1, Int((inputRate / MusicBeatFinder.targetRate).rounded()))
+        // A rate that is not a plain positive number yields empty output instead of trapping in an Int conversion.
+        let valid = inputRate.isFinite && inputRate > 0 && inputRate <= 1e7
+        factor = valid ? max(1, Int((inputRate / MusicBeatFinder.targetRate).rounded())) : 1
         taps = factor == 1 ? 1 : 16 * factor + 1
         half = (taps - 1) / 2
-        maxFrames = maxSeconds.isFinite && maxSeconds > 0 ? Int(maxSeconds * inputRate) : 0
+        maxFrames = valid && maxSeconds.isFinite && maxSeconds > 0 && maxSeconds <= 1e5 ? Int(maxSeconds * inputRate) : 0
         filter = Self.firFilter(factor: factor, taps: taps)
         pending = [Float](repeating: 0, count: half)
     }

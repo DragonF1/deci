@@ -48,7 +48,9 @@ nonisolated extension MusicBeatFinder {
     static func refineOnBass(
         decimated: [Float], rate: Double, period: Double, anchor: Double
     ) -> (anchor: Double, confidence: Float) {
+        guard period > 0, period.isFinite, anchor.isFinite, rate > 0 else { return (anchor, 0) }
         let band = bassBand(decimated, rate: rate)
+        guard !Task.isCancelled else { return (anchor, 0) }
         let last = Int(floor((Double(decimated.count) / rate - anchor) / period))
         let first = Int(ceil(-anchor / period))
         guard first <= last, let refined = refine(band: band, period: period, anchor: anchor, beats: first...last) else {
@@ -66,6 +68,7 @@ nonisolated extension MusicBeatFinder {
         let last = Int(((result.beats[result.beats.count - 1] - fit.start) / fit.period).rounded())
         guard first < last else { return nil }
         let band = bassBand(decimated, rate: rate)
+        guard !Task.isCancelled else { return nil }
         let refined = refine(band: band, period: fit.period, anchor: fit.start, beats: first...last)
         let anchor = refined?.anchor ?? fit.start
         let period = refined?.period ?? fit.period
@@ -89,18 +92,28 @@ nonisolated extension MusicBeatFinder {
     // MARK: Bass band
 
     /// Two Butterworth biquads (4th order) at `bassCutoffHz`, rectified, 3 ms moving average, then a 2 ms centred rise.
+    /// Memory: at most two song-length Float arrays are alive at once besides the input (the filtered signal is rectified
+    /// in place, then freed once the envelope exists). An empty band comes back when the task is cancelled.
     static func bassBand(_ audio: [Float], rate: Double) -> Band {
         let count = audio.count
-        let low = lowPass(audio, rate: rate)
-        var rectified = [Float](repeating: 0, count: count)
-        vDSP_vabs(low, 1, &rectified, 1, vDSP_Length(count))
+        var low = lowPass(audio, rate: rate)
+        guard !Task.isCancelled, count > 0 else { return Band(env: [], flux: [], rate: rate) }
+        vDSP_vabs(low, 1, &low, 1, vDSP_Length(count))
 
         let width = max(1, Int((0.003 * rate).rounded())) | 1
         let half = width / 2
-        var padded = [Float](repeating: 0, count: count + 2 * half)
-        padded.replaceSubrange(half..<(half + count), with: rectified)
         var env = [Float](repeating: 0, count: count)
-        vDSP_vswsum(padded, 1, &env, 1, vDSP_Length(count), vDSP_Length(width))
+        if count >= width {
+            // env[i + half] = sum of low[i ..< i + width]; the first and last `half` samples see a zero-padded window.
+            vDSP_vswsum(low, 1, &env[half], 1, vDSP_Length(count - width + 1), vDSP_Length(width))
+        }
+        let edges = count >= width ? Array(0..<half) + Array((count - half)..<count) : Array(0..<count)
+        for index in edges {
+            var sum: Float = 0
+            for tap in max(0, index - half)...min(count - 1, index + half) { sum += low[tap] }
+            env[index] = sum
+        }
+        low = []
         var scale = 1 / Float(width)
         vDSP_vsmul(env, 1, &scale, &env, 1, vDSP_Length(count))
 
@@ -118,26 +131,24 @@ nonisolated extension MusicBeatFinder {
         return Band(env: env, flux: flux, rate: rate)
     }
 
-    /// Zero-state 4th order Butterworth low-pass (two RBJ biquads in Double).
+    /// Zero-state 4th order Butterworth low-pass: two RBJ biquads run as one vDSP cascade in Float.
     static func lowPass(_ audio: [Float], rate: Double) -> [Float] {
         let count = audio.count
-        guard count > 0 else { return [] }
-        var current = [Double](repeating: 0, count: count + 2)
-        audio.withUnsafeBufferPointer { vDSP_vspdp($0.baseAddress!, 1, &current[2], 1, vDSP_Length(count)) }
-        var next = [Double](repeating: 0, count: count + 2)
+        guard count > 0, rate > 0, rate.isFinite else { return [] }
+        let w = 2 * Double.pi * min(bassCutoffHz, rate / 4) / rate
+        var coefficients: [Double] = []
         for q in [0.5411961, 1.3065630] {
-            let w = 2 * Double.pi * min(bassCutoffHz, rate / 4) / rate
             let alpha = sin(w) / (2 * q)
             let a0 = 1 + alpha
-            let coefficients = [(1 - cos(w)) / 2 / a0, (1 - cos(w)) / a0, (1 - cos(w)) / 2 / a0, -2 * cos(w) / a0, (1 - alpha) / a0]
-            current.withUnsafeBufferPointer { input in
-                vDSP_deq22D(input.baseAddress!, 1, coefficients, &next, 1, vDSP_Length(count))
-            }
-            swap(&current, &next)
-            next[0] = 0; next[1] = 0
+            coefficients += [(1 - cos(w)) / 2 / a0, (1 - cos(w)) / a0, (1 - cos(w)) / 2 / a0, -2 * cos(w) / a0, (1 - alpha) / a0]
         }
+        guard let setup = vDSP_biquad_CreateSetup(coefficients, 2) else { return [] }
+        defer { vDSP_biquad_DestroySetup(setup) }
+        var delay = [Float](repeating: 0, count: 2 * 2 + 2)
         var out = [Float](repeating: 0, count: count)
-        current.withUnsafeBufferPointer { vDSP_vdpsp($0.baseAddress! + 2, 1, &out, 1, vDSP_Length(count)) }
+        audio.withUnsafeBufferPointer { input in
+            vDSP_biquad(setup, &delay, input.baseAddress!, 1, &out, 1, vDSP_Length(count))
+        }
         return out
     }
 
