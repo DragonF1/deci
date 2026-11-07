@@ -12,9 +12,7 @@ struct MusicFavoriteRowRenderTests {
     static let outDir = "/Volumes/Storage/_test/deci-favorites"
 
     private func row(_ slots: MusicFavoriteSlots, snapshot: MusicFavoriteSnapshot) -> some View {
-        MusicTransportRow(slots: slots, snapshot: snapshot, canGoNext: true, actions: .none) {
-            Circle().fill(Color.white.opacity(0.95)).frame(width: MusicTransportMetrics.box(.playPause), height: MusicTransportMetrics.height)
-        }
+        MusicTransportRow(slots: slots, snapshot: snapshot, canGoNext: true, state: .paused, actions: .none)
         .padding(12)
         .background(MusicStyle.Palette.playerPanel)
         .environment(\.colorScheme, .light)

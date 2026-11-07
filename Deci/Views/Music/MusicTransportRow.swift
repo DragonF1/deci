@@ -34,6 +34,7 @@ struct MusicFavoriteSnapshot: Equatable {
 struct MusicTransportActions {
     var previous: () -> Void = {}
     var next: () -> Void = {}
+    var togglePlayback: () -> Void = {}
     /// The slot's own click: toggles Shuffle, Autoplay and Crossfade, cycles Loop, likes or unlikes the song.
     var perform: (MusicFavoriteControl) -> Void = { _ in }
     var setLoop: (MusicLoopMode) -> Void = { _ in }
@@ -50,20 +51,37 @@ struct MusicTransportActions {
     }
 }
 
-/// The player column's transport: a favorite slot, Previous, play and pause (`center`), Next and a favorite slot. Five
+/// The player column's transport: a favorite slot, Previous, play and pause, Next and a favorite slot. Five
 /// boxes in a row with the spare width shared by the four Spacers (`MusicTransportMetrics`); a slot holds the same
 /// 13 pt box whatever it shows, so swapping it moves nothing. A left click does what the control does; a right click
 /// opens the Playback menu (`MusicFavoriteMenuModel`).
-struct MusicTransportRow<Center: View>: View {
+///
+/// It is Equatable on what it draws and what its menu shows, and the closures are left out of `==`: used with
+/// `.equatable()`, its body runs only when one of those changes. That matters because an open context menu is rebuilt,
+/// with its submenus closed, whenever the body that holds it runs; a tick of the playhead must not do that.
+struct MusicTransportRow: View, Equatable {
     let slots: MusicFavoriteSlots
     let snapshot: MusicFavoriteSnapshot
     let canGoNext: Bool
+    let state: MusicPlayerColumnState
     let actions: MusicTransportActions
-    @ViewBuilder let center: Center
+
+    static func == (lhs: MusicTransportRow, rhs: MusicTransportRow) -> Bool {
+        lhs.slots == rhs.slots && lhs.snapshot == rhs.snapshot && lhs.canGoNext == rhs.canGoNext && lhs.state == rhs.state
+    }
+
+    #if DEBUG
+    /// Test seams, told when this row's body runs and when its menu is built (not part of `==`).
+    var debugOnBody: () -> Void = {}
+    var debugOnMenuBuild: () -> Void = {}
+    #endif
 
     @Environment(\.musicAccent) private var accent
 
     var body: some View {
+        #if DEBUG
+        let _ = debugOnBody()
+        #endif
         HStack(spacing: 0) {
             slot(.left)
             Spacer(minLength: 0)
@@ -72,7 +90,7 @@ struct MusicTransportRow<Center: View>: View {
                 box: MusicTransportMetrics.box(.previous), color: Color.white.opacity(0.90)
             ) { actions.previous() }
             Spacer(minLength: 0)
-            center
+            playPause
             Spacer(minLength: 0)
             MusicColumnGlyphButton(
                 title: "Next", systemImage: "forward.end.fill", fontSize: 14, box: MusicTransportMetrics.box(.next),
@@ -82,6 +100,34 @@ struct MusicTransportRow<Center: View>: View {
             slot(.right)
         }
         .frame(width: MusicPopupMetrics.playerColumnContentWidth, height: MusicTransportMetrics.height)
+    }
+
+    private var playPause: some View {
+        let isPlaying = state == .playing
+        return Button {
+            actions.togglePlayback()
+        } label: {
+            ZStack {
+                Circle().fill(Color.white.opacity(0.95))
+                if state == .loading {
+                    MusicSpinner(
+                        size: 16, lineWidth: 1.6,
+                        color: MusicStyle.Palette.popupBackground,
+                        track: MusicStyle.Palette.popupBackground.opacity(0.18)
+                    )
+                } else {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(MusicStyle.Palette.popupBackground)
+                }
+            }
+            .frame(width: MusicTransportMetrics.box(.playPause), height: MusicTransportMetrics.height)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(state == .loading)
+        .accessibilityLabel(state == .loading ? "Loading" : (isPlaying ? "Pause" : "Play"))
+        .help(isPlaying ? "Pause" : "Play")
     }
 
     private func slot(_ side: MusicFavoriteSide) -> some View {
@@ -115,6 +161,9 @@ struct MusicTransportRow<Center: View>: View {
 
     @ViewBuilder
     private func menu(for side: MusicFavoriteSide) -> some View {
+        #if DEBUG
+        let _ = debugOnMenuBuild()
+        #endif
         let model = MusicFavoriteMenuModel(
             shuffle: snapshot.shuffle, loop: snapshot.loop, autoplay: snapshot.autoplay, crossfade: snapshot.crossfade,
             fadeSeconds: snapshot.fadeSeconds, slotControl: slots[side]

@@ -20,9 +20,6 @@ struct MusicPlayerColumn: View {
 
     @Environment(\.musicAccent) private var accent
     @Environment(\.musicTrackMenu) private var trackMenu
-    /// The popup stays mounted while hidden: its times are read only while it is on screen, so a closed popup is not
-    /// redrawn at every tick of the player.
-    @Environment(\.musicPopupIsVisible) private var isPopupVisible
 
     private var player: MusicPlayer? { service?.player }
     private var track: MusicTrack? { player?.nowPlaying }
@@ -181,7 +178,7 @@ struct MusicPlayerColumn: View {
     private func spectrumBlock(_ state: MusicPlayerColumnState) -> some View {
         VStack(alignment: .leading, spacing: MusicPopupMetrics.spectrumBlockSpacing) {
             MusicSpectrumView(state: state, track: track, service: service, spectrum: spectrum)
-            timesRow(state)
+            MusicTimesRow(player: player, track: track, state: state)
         }
     }
 
@@ -208,9 +205,105 @@ struct MusicPlayerColumn: View {
         .disabled(!state.controlsAreEnabled)
     }
 
+    // MARK: - Transport
+
+    private func transport(_ state: MusicPlayerColumnState) -> some View {
+        let service = service
+        let slots = settings.appSettings.musicFavoriteSlots
+        let snapshot = MusicFavoriteSnapshot(
+            shuffle: service?.isShuffleOn ?? false, loop: service?.loopMode ?? .off,
+            autoplay: service?.isAutoplayOn ?? true, crossfade: service?.isCrossfadeOn ?? false,
+            isLiked: service?.likeStatus == .like, canLike: service?.canRate == true,
+            fadeSeconds: service?.crossfadeSeconds ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
+        )
+        let actions = MusicTransportActions(
+            previous: { service?.previous() },
+            next: { service?.next() },
+            togglePlayback: { service?.togglePlayback() },
+            perform: { control in
+                guard let service else { return }
+                switch control.kind {
+                case .toggle(let toggle): service.perform(toggle)
+                case .like: Task { service.trackActions.postIfFailed(await service.toggleLike()) }
+                }
+            },
+            setLoop: { service?.setLoopMode($0) },
+            setFadeSeconds: { seconds in
+                var appSettings = settings.appSettings
+                appSettings.musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(Double(seconds))
+                settings.updateAppSettings(appSettings)
+            },
+            show: { control, side in
+                var appSettings = settings.appSettings
+                appSettings.musicFavoriteSlots = appSettings.musicFavoriteSlots.choosing(control, for: side)
+                settings.updateAppSettings(appSettings)
+            }
+        )
+        // Equatable on what the row shows, so a tick of the playhead (which re-runs this body) leaves the row, and the
+        // menu a right click has open, alone.
+        return MusicTransportRow(
+            slots: slots, snapshot: snapshot, canGoNext: service?.canGoNext ?? false, state: state, actions: actions
+        )
+        .equatable()
+        .opacity(state.controlsOpacity)
+        .disabled(!state.controlsAreEnabled)
+    }
+
+    // MARK: - Views
+
+    /// Lyrics, Related and Up next as words in one row: Lyrics on the left edge of the column, Up next on the right
+    /// edge, Related between them, with the two spaces taking the same width (`MusicViewButtons`). Each button dims
+    /// and turns off on its own (`MusicViewButtons.isAvailable`), not the row: an open Related panel's button stays
+    /// live when nothing plays.
+    private func viewButtons(_ state: MusicPlayerColumnState) -> some View {
+        let hasLyrics = service?.lyrics.track != nil
+        let hasSong = track != nil
+        let hasQueue = !(service?.queue.isEmpty ?? true)
+        let relatedIsOpen = navigation?.showsRelated ?? false
+        // Lyrics, Related and Up next are the signed-in column's panels: signed out the right column is the sign-in note
+        // or the downloads, which have none of them.
+        let hasAccount = service?.authState == .signedIn
+        func available(_ kind: MusicViewButtons.Kind) -> Bool {
+            MusicViewButtons.isAvailable(
+                kind, controlsAreEnabled: state.controlsAreEnabled && hasAccount, hasLyrics: hasLyrics, hasSong: hasSong,
+                hasQueue: hasQueue, relatedIsOpen: relatedIsOpen
+            )
+        }
+        return HStack(spacing: 0) {
+            MusicColumnViewButton(
+                title: MusicViewButtons.Kind.lyrics.title,
+                isActive: navigation?.showsLyrics ?? false, isAvailable: available(.lyrics)
+            ) { navigation?.toggleLyrics() }
+            Spacer(minLength: 0)
+            MusicColumnViewButton(
+                title: MusicViewButtons.Kind.related.title,
+                isActive: relatedIsOpen, isAvailable: available(.related)
+            ) { navigation?.toggleRelated() }
+            Spacer(minLength: 0)
+            MusicColumnViewButton(
+                title: MusicViewButtons.Kind.queue.title,
+                isActive: navigation?.showsQueue ?? false, isAvailable: available(.queue)
+            ) { navigation?.toggleQueue() }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 12)
+    }
+}
+
+/// The times row under the spectrum. A view of its own so that the playhead, which ticks twice a second, re-runs only
+/// this body and not the column's: the column's body builds the context menus (the song's actions and the favorite
+/// slots), and a menu that is open is rebuilt, its submenus closed, every time that body runs.
+private struct MusicTimesRow: View {
+    let player: MusicPlayer?
+    let track: MusicTrack?
+    let state: MusicPlayerColumnState
+
+    /// The popup stays mounted while hidden: its times are read only while it is on screen.
+    @Environment(\.musicPopupIsVisible) private var isPopupVisible
+
     /// The row under the spectrum. A song that plays reads "0:08 / 4:15" on the left and its view count on the right
     /// ("1.2M views"); loading shows the spinner and nothing on the right; with no song it is a dimmed "0:00 / 0:00".
-    private func timesRow(_ state: MusicPlayerColumnState) -> some View {
+    var body: some View {
         let duration = player?.duration ?? 0
         let total = duration > 0 ? duration : TimeInterval(track?.durationSeconds ?? 0)
         return HStack(spacing: 0) {
@@ -281,116 +374,6 @@ struct MusicPlayerColumn: View {
             .font(.system(size: 10, design: .monospaced))
             .monospacedDigit()
             .foregroundStyle(Color.white.opacity(opacity))
-    }
-
-    // MARK: - Transport
-
-    private func transport(_ state: MusicPlayerColumnState) -> some View {
-        let service = service
-        let slots = settings.appSettings.musicFavoriteSlots
-        let snapshot = MusicFavoriteSnapshot(
-            shuffle: service?.isShuffleOn ?? false, loop: service?.loopMode ?? .off,
-            autoplay: service?.isAutoplayOn ?? true, crossfade: service?.isCrossfadeOn ?? false,
-            isLiked: service?.likeStatus == .like, canLike: service?.canRate == true,
-            fadeSeconds: service?.crossfadeSeconds ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
-        )
-        let actions = MusicTransportActions(
-            previous: { service?.previous() },
-            next: { service?.next() },
-            perform: { control in
-                guard let service else { return }
-                switch control.kind {
-                case .toggle(let toggle): service.perform(toggle)
-                case .like: Task { service.trackActions.postIfFailed(await service.toggleLike()) }
-                }
-            },
-            setLoop: { service?.setLoopMode($0) },
-            setFadeSeconds: { seconds in
-                var appSettings = settings.appSettings
-                appSettings.musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(Double(seconds))
-                settings.updateAppSettings(appSettings)
-            },
-            show: { control, side in
-                var appSettings = settings.appSettings
-                appSettings.musicFavoriteSlots = appSettings.musicFavoriteSlots.choosing(control, for: side)
-                settings.updateAppSettings(appSettings)
-            }
-        )
-        return MusicTransportRow(
-            slots: slots, snapshot: snapshot, canGoNext: service?.canGoNext ?? false, actions: actions
-        ) {
-            playPause(state)
-        }
-        .opacity(state.controlsOpacity)
-        .disabled(!state.controlsAreEnabled)
-    }
-
-    private func playPause(_ state: MusicPlayerColumnState) -> some View {
-        let isPlaying = state == .playing
-        return Button {
-            service?.togglePlayback()
-        } label: {
-            ZStack {
-                Circle().fill(Color.white.opacity(0.95))
-                if state == .loading {
-                    MusicSpinner(
-                        size: 16, lineWidth: 1.6,
-                        color: MusicStyle.Palette.popupBackground,
-                        track: MusicStyle.Palette.popupBackground.opacity(0.18)
-                    )
-                } else {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(MusicStyle.Palette.popupBackground)
-                }
-            }
-            .frame(width: MusicTransportMetrics.box(.playPause), height: MusicTransportMetrics.height)
-            .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .disabled(state == .loading)
-        .accessibilityLabel(state == .loading ? "Loading" : (isPlaying ? "Pause" : "Play"))
-        .help(isPlaying ? "Pause" : "Play")
-    }
-
-    // MARK: - Views
-
-    /// Lyrics, Related and Up next as words in one row: Lyrics on the left edge of the column, Up next on the right
-    /// edge, Related between them, with the two spaces taking the same width (`MusicViewButtons`). Each button dims
-    /// and turns off on its own (`MusicViewButtons.isAvailable`), not the row: an open Related panel's button stays
-    /// live when nothing plays.
-    private func viewButtons(_ state: MusicPlayerColumnState) -> some View {
-        let hasLyrics = service?.lyrics.track != nil
-        let hasSong = track != nil
-        let hasQueue = !(service?.queue.isEmpty ?? true)
-        let relatedIsOpen = navigation?.showsRelated ?? false
-        // Lyrics, Related and Up next are the signed-in column's panels: signed out the right column is the sign-in note
-        // or the downloads, which have none of them.
-        let hasAccount = service?.authState == .signedIn
-        func available(_ kind: MusicViewButtons.Kind) -> Bool {
-            MusicViewButtons.isAvailable(
-                kind, controlsAreEnabled: state.controlsAreEnabled && hasAccount, hasLyrics: hasLyrics, hasSong: hasSong,
-                hasQueue: hasQueue, relatedIsOpen: relatedIsOpen
-            )
-        }
-        return HStack(spacing: 0) {
-            MusicColumnViewButton(
-                title: MusicViewButtons.Kind.lyrics.title,
-                isActive: navigation?.showsLyrics ?? false, isAvailable: available(.lyrics)
-            ) { navigation?.toggleLyrics() }
-            Spacer(minLength: 0)
-            MusicColumnViewButton(
-                title: MusicViewButtons.Kind.related.title,
-                isActive: relatedIsOpen, isAvailable: available(.related)
-            ) { navigation?.toggleRelated() }
-            Spacer(minLength: 0)
-            MusicColumnViewButton(
-                title: MusicViewButtons.Kind.queue.title,
-                isActive: navigation?.showsQueue ?? false, isAvailable: available(.queue)
-            ) { navigation?.toggleQueue() }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 12)
     }
 }
 
