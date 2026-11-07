@@ -13,7 +13,7 @@ enum MusicBeatPlanner {
     /// Why beat mode was refused; the raw value goes into `TransitionPlan.fallbackReason` and the log.
     enum Fallback: String, Sendable {
         case disabled, albumInOrder, loopSong, noMixFlag, manualSkip, tooShort, noDuration
-        case gridMissing, gridLowConf, tempoClash, noPhraseRoom
+        case gridMissing, gridLowConf, tempoClash, noPhraseRoom, tooLate
     }
 
     static let tempoTolerance = 0.08
@@ -21,6 +21,12 @@ enum MusicBeatPlanner {
     static let maxIntervalSpread: Float = 0.04
     static let maxDriftSec: Float = 0.003
     static let phraseBars = 8
+    /// An overlap longer than this is never planned (very slow songs fall to a shorter length, then to the smart plan).
+    static let maxOverlapSec = 40.0
+    /// How far past the validated beat span a mix may reach, in beats of the song concerned.
+    static let spanSlackBeats = 2.0
+    /// Anchors and spans beyond this (seconds) are not believed even when they come in through `side.grid`.
+    static let maxGridSeconds = 1e7
     /// How far before the outgoing outro start a phrase boundary may be.
     static let outroSlackBars = 8
     /// The incoming song must still have this much left after the overlap.
@@ -32,7 +38,8 @@ enum MusicBeatPlanner {
     // MARK: Tempo
 
     /// The incoming rate that puts the incoming beats on the outgoing beats. `multiple` is how many incoming beats
-    /// fit in one outgoing beat at the same tempo: 1 same, 2 the incoming is double time, 0.5 half time. The match with
+    /// fit in one outgoing beat at the same tempo: 1 same, 2 the incoming is double time, 0.5 half time. For 2 and 0.5
+    /// the beats align but the bars do not (an incoming bar is half or two outgoing bars long). The match with
     /// the smallest rate error wins; nil when none is within `tolerance`.
     static func tempoMatch(
         outBpm: Double, inBpm: Double, tolerance: Double = tempoTolerance
@@ -74,15 +81,23 @@ enum MusicBeatPlanner {
         let aEnd = smart.outgoingEndSec ?? aDuration
         let barSec = 4 * aGrid.periodSec
         let bothPhrased = aGrid.downbeatPhase != nil && bGrid.downbeatPhase != nil
+        let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration
         let lengths = inputs.bassSwapAvailable && bothPhrased ? [16, 8] : [8]
+        var late = false
 
         for bars in lengths {
             let overlap = Double(bars) * barSec
-            guard let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd),
+            guard overlap <= maxOverlapSec,
+                  let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd),
                   let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else { continue }
+            if let earliest = inputs.earliestMixOutSec, mixOut < earliest {
+                late = true
+                continue
+            }
             // The incoming song advances `rate` item seconds per outgoing second.
             let consumed = overlap * tempo.rate
-            guard bDuration - (mixIn + consumed) >= minIncomingRemainingSec else { continue }
+            guard bEnd - (mixIn + consumed) >= minIncomingRemainingSec,
+                  mixIn + consumed <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else { continue }
 
             var plan = smart
             plan.mode = .beat
@@ -105,14 +120,14 @@ enum MusicBeatPlanner {
             }
             return plan
         }
-        return refuse(.noPhraseRoom)
+        return refuse(late ? .tooLate : .noPhraseRoom)
     }
 
     // MARK: Pieces
 
     private static func trusted(_ grid: MusicBeatGrid) -> Bool {
-        MusicBeatGrid.periodRange.contains(grid.periodSec) && grid.anchorSec.isFinite
-            && grid.spanStartSec.isFinite && grid.spanEndSec.isFinite
+        MusicBeatGrid.periodRange.contains(grid.periodSec)
+            && [grid.anchorSec, grid.spanStartSec, grid.spanEndSec].allSatisfy({ $0.isFinite && abs($0) <= maxGridSeconds })
             && grid.beatConfidence >= minConfidence && grid.intervalSpread <= maxIntervalSpread
             && abs(grid.driftSec) <= maxDriftSec
     }
@@ -129,7 +144,9 @@ enum MusicBeatPlanner {
         let limit = end - Double(bars) * barSec
         let earliest = max(0, grid.spanStartSec, analysis.outroStart - Double(outroSlackBars) * barSec)
         guard limit.isFinite, earliest.isFinite, limit >= earliest else { return nil }
-        let latest = min(limit, grid.spanEndSec)
+        // The whole overlap stays inside the validated span, give or take two beats.
+        let latest = min(limit, grid.spanEndSec + spanSlackBeats * grid.periodSec - Double(bars) * barSec)
+        guard latest >= earliest else { return nil }
         var candidate: Double?
         if let first = grid.barTime(0) {
             let phrase = Double(phraseBars) * barSec
@@ -145,7 +162,8 @@ enum MusicBeatPlanner {
 
     /// The first incoming bar boundary (any beat when the downbeat is unknown) at or after `start`.
     static func mixInTime(grid: MusicBeatGrid, start: Double) -> Double? {
-        var k = grid.nextBeat(atOrAfter: start).index
+        let from = max(start, grid.spanStartSec - spanSlackBeats * grid.periodSec)
+        var k = grid.nextBeat(atOrAfter: from).index
         if let phase = grid.downbeatPhase { k += ((phase - k) % 4 + 4) % 4 }
         let time = grid.beatTime(k)
         return time.isFinite && time >= 0 ? time : nil

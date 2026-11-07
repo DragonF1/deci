@@ -27,13 +27,13 @@ struct MusicBeatPlannerTests {
     static func inputs(
         a: MusicBeatGrid? = grid(), b: MusicBeatGrid? = grid(anchor: 0.1, phase: 1, span: 0.1...236),
         aDuration: Double = 240, aEnd: Double = 236, aOutro: Double = 200, bDuration: Double = 240,
-        bSilenceStart: Double = 0, swap: Bool = false
+        bSilenceStart: Double = 0, bSilenceEnd: Double? = nil, swap: Bool = false
     ) -> MusicTransitionInputs {
         var i = T.inputs(
             a: T.side("aaaaaaaaaaa", duration: aDuration, analysis: T.analysis(
                 "aaaaaaaaaaa", duration: aDuration, silenceEnd: aEnd, outroStart: aOutro)),
             b: T.side("bbbbbbbbbbb", duration: bDuration, analysis: T.analysis(
-                "bbbbbbbbbbb", duration: bDuration, silenceStart: bSilenceStart, introEnd: bSilenceStart + 8))
+                "bbbbbbbbbbb", duration: bDuration, silenceStart: bSilenceStart, silenceEnd: bSilenceEnd, introEnd: bSilenceStart + 8))
         )
         i.outgoing.grid = a
         i.incoming.grid = b
@@ -191,6 +191,118 @@ struct MusicBeatPlannerTests {
         #expect(plan.mode == .smart && plan.fallbackReason == "noPhraseRoom")
     }
 
+    // MARK: Review guards
+
+    @Test("the whole overlap stays inside the outgoing validated span, give or take two beats")
+    func overlapInsideSpan() throws {
+        let a = Self.grid(span: 0.2...215)
+        let plan = Self.plan(Self.inputs(a: a))
+        #expect(plan.mode == .beat)
+        let mixOut = try #require(plan.mixOutSec)
+        #expect(mixOut + plan.overlapSec <= 215 + 2 * 0.5 + 1e-9)
+        // Without the guard the latest phrase would start at 208.2 and end at 224.2.
+        #expect(mixOut < 208)
+    }
+
+    @Test("the incoming mix in is not before its validated span, and its overlap ends inside it")
+    func incomingSpan() throws {
+        let late = Self.grid(anchor: 0.1, phase: 1, span: 20...236)
+        let plan = Self.plan(Self.inputs(b: late))
+        let mixIn = try #require(plan.mixInSec)
+        #expect(plan.mode == .beat && mixIn >= 20 - 1 - 1e-9 && mixIn < 20 + 4)
+        let short = Self.grid(anchor: 0.1, phase: 1, span: 0.1...12)
+        let refused = Self.plan(Self.inputs(b: short))
+        #expect(refused.mode == .smart && refused.fallbackReason == "noPhraseRoom")
+    }
+
+    @Test("an overlap over 40 s is never planned")
+    func maxOverlap() {
+        let slow = Self.grid(period: 1.5)
+        let both = Self.plan(Self.inputs(a: slow, b: Self.grid(period: 1.5, anchor: 0.1, phase: 1), swap: true))
+        #expect(both.mode == .smart && both.fallbackReason == "noPhraseRoom")
+        // 60 bpm: 8 bars are 32 s, fine; 16 bars (64 s) are skipped.
+        let sixty = Self.grid(period: 1)
+        let plan = Self.plan(Self.inputs(a: sixty, b: Self.grid(period: 1, anchor: 0.1, phase: 1), swap: true))
+        #expect(plan.mode == .beat && plan.overlapBars == 8 && plan.overlapSec == 32)
+    }
+
+    @Test("a mix out already in the past is refused as tooLate, or shortened when a shorter overlap still lies ahead")
+    func tooLate() throws {
+        var i = Self.inputs()
+        let base = try #require(Self.plan(i).mixOutSec)
+        i.earliestMixOutSec = base - 1
+        #expect(Self.plan(i).mixOutSec == base)
+        i.earliestMixOutSec = base + 1
+        let late = Self.plan(i)
+        #expect(late.mode == .smart && late.fallbackReason == "tooLate")
+        var swap = Self.inputs(aOutro: 40, swap: true)
+        let sixteen = Self.plan(swap)
+        #expect(sixteen.overlapBars == 16)
+        swap.earliestMixOutSec = try #require(sixteen.mixOutSec) + 1
+        let shorter = Self.plan(swap)
+        #expect(shorter.mode == .beat && shorter.overlapBars == 8)
+        #expect(try #require(shorter.mixOutSec) >= swap.earliestMixOutSec!)
+    }
+
+    @Test("a missing grid is only reported when a grid was expected")
+    func gridMissingReporting() {
+        // No song has a grid: silent (every song before 3b).
+        #expect(MusicTransitionPlanner.plan(Self.inputs(a: nil, b: nil)).fallbackReason == nil)
+        // The other song has one and this version 2 row has none: reported.
+        #expect(MusicTransitionPlanner.plan(Self.inputs(a: nil)).fallbackReason == "gridMissing")
+        // A version 2 row whose stored grid is corrupt: reported even when nothing else has a grid.
+        var broken = Self.inputs(a: nil, b: nil)
+        broken.outgoing.analysis?.beatGrid = Data([1, 2, 3])
+        #expect(MusicTransitionPlanner.plan(broken).fallbackReason == "gridMissing")
+        // A version 1 row: silent.
+        var v1 = Self.inputs(a: nil)
+        v1.outgoing.analysis?.version = 1
+        #expect(MusicTransitionPlanner.plan(v1).fallbackReason == nil)
+    }
+
+    @Test("the incoming room is measured to its trimmed end")
+    func silentTail() {
+        // 60 s song, audio ends at 50: 16.6 s used leaves 33 s.
+        #expect(Self.plan(Self.inputs(bDuration: 60, bSilenceEnd: 50)).mode == .beat)
+        // Audio ends at 36: only 19.4 s would remain, though the file runs to 60.
+        let plan = Self.plan(Self.inputs(bDuration: 60, bSilenceEnd: 36))
+        #expect(plan.mode == .smart && plan.fallbackReason == "noPhraseRoom")
+    }
+
+    @Test("grids handed in directly with absurd anchors or spans are not trusted")
+    func absurdGrids() {
+        expectFallback(Self.inputs(a: Self.grid(anchor: 2e7)), "gridLowConf")
+        expectFallback(Self.inputs(b: Self.grid(span: 0.2...3e7)), "gridLowConf")
+        expectFallback(Self.inputs(a: Self.grid(anchor: -2e7)), "gridLowConf")
+    }
+
+    @Test("a negative anchor and a span that starts after the silence still land on the grid")
+    func oddGrids() throws {
+        let a = Self.grid(anchor: -5.3, span: 30...236)
+        let analysis = T.analysis("aaaaaaaaaaa", duration: 240, silenceEnd: 236, outroStart: 200)
+        let mixOut = try #require(B.mixOutTime(grid: a, analysis: analysis, bars: 8, barSec: 2, end: 236))
+        let beats = (mixOut - a.anchorSec) / a.periodSec
+        #expect(mixOut >= 30 && mixOut + 16 <= 236 && abs(beats - beats.rounded()) < 1e-9)
+        let b = Self.grid(anchor: -3.1, phase: 2, span: 30...236)
+        let mixIn = try #require(B.mixInTime(grid: b, start: 0))
+        #expect(mixIn >= 29 - 1e-9 && mixIn < 29 + 2.5)
+        let k = (mixIn - b.anchorSec) / b.periodSec
+        #expect(abs(k - k.rounded()) < 1e-9)
+        #expect(((Int(k.rounded()) - 2) % 4 + 4) % 4 == 0)
+    }
+
+    @Test("with the beat mix off, replan and skip style inputs give the smart plan with no reason")
+    func disabledIsSmart() {
+        var off = Self.inputs(); off.beatMixEnabled = false
+        #expect(MusicTransitionPlanner.plan(off) == MusicTransitionPlanner.smartPlan(off))
+        #expect(MusicTransitionPlanner.plan(off).fallbackReason == nil)
+        var skip = off; skip.manualSkip = true
+        #expect(MusicTransitionPlanner.plan(skip) == MusicTransitionPlanner.smartPlan(skip))
+        #expect(MusicTransitionPlanner.plan(skip).fallbackReason == nil)
+        var on = Self.inputs(); on.manualSkip = true
+        #expect(MusicTransitionPlanner.plan(on).mode == .fixed)
+    }
+
     // MARK: Fallbacks
 
     func expectFallback(_ i: MusicTransitionInputs, _ reason: String, sourceLocation: SourceLocation = #_sourceLocation) {
@@ -334,6 +446,10 @@ struct MusicBeatPlannerTests {
             #expect(plan.overlapBars == 8 || plan.overlapBars == 16)
             #expect(abs(plan.incomingRate - 1) <= 0.08 + 1e-9)
             #expect(plan.incomingRate > 0.9 && plan.incomingRate < 1.1)
+            #expect(mixOut + plan.overlapSec <= a.spanEndSec + 2 * a.periodSec + 1e-6)
+            #expect(mixIn >= b.spanStartSec - 2 * b.periodSec - 1e-6)
+            #expect(mixIn + plan.overlapSec * plan.incomingRate <= b.spanEndSec + 2 * b.periodSec + 1e-6)
+            #expect(plan.overlapSec <= B.maxOverlapSec)
         }
         #expect(beatPlans > 100, "only \(beatPlans) of 600 random pairs got a beat plan")
     }

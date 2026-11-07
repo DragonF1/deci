@@ -83,6 +83,8 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var beatMixEnabled: Bool = true
     /// True once the bass swap exists: only then may an overlap be 16 bars.
     var bassSwapAvailable: Bool = false
+    /// Outgoing item time before which a mix cannot start (the playhead plus the preroll is already past it). nil = no limit.
+    var earliestMixOutSec: Double? = nil
     static let skipFadeSeconds = 0.3
 
     init(
@@ -122,6 +124,19 @@ enum MusicTransitionPlanner {
         guard inputs.beatMixEnabled, base.mode == .smart else { return base }
         let beat = MusicBeatPlanner.plan(inputs, smart: base)
         if beat.mode == .beat || beat.fallbackReason != MusicBeatPlanner.Fallback.gridMissing.rawValue { return beat }
+        // No grid: stay silent for v1 rows and for pairs where no song has a grid (every song before 3b is on). Say so
+        // when a version 2 row's grid is unusable while the other song has one, or its stored grid is corrupt.
+        func grid(_ side: MusicTransitionSide) -> MusicBeatGrid? { side.grid ?? side.analysis?.usableGrid }
+        func brokenV2(_ side: MusicTransitionSide) -> Bool {
+            guard let row = side.analysis, row.version >= MusicAnalysis.gridVersion, grid(side) == nil else { return false }
+            return row.beatGrid != nil
+        }
+        let anyGrid = grid(inputs.outgoing) != nil || grid(inputs.incoming) != nil
+        let v2WithoutGrid = [inputs.outgoing, inputs.incoming].contains {
+            guard let row = $0.analysis else { return false }
+            return row.version >= MusicAnalysis.gridVersion && grid($0) == nil
+        }
+        if brokenV2(inputs.outgoing) || brokenV2(inputs.incoming) || (anyGrid && v2WithoutGrid) { return beat }
         return base
     }
 
