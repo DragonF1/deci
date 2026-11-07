@@ -19,7 +19,7 @@ struct MusicTrackActionsDownloadTests {
         MusicTrackActions.available(
             for: track, in: .none, home: home, offersQueue: queue, canRate: canRate, download: download,
             downloadHeldByCollectionOnly: collectionOnly
-        )
+        ).withoutSongData
     }
 
     // MARK: - By state
@@ -44,7 +44,7 @@ struct MusicTrackActionsDownloadTests {
     @Test("with no download state the menu is what it was before downloads")
     func leftOutByDefault() {
         #expect(actions(track, download: nil) == [.saveToPlaylist, .related])
-        #expect(MusicTrackActions.available(for: track, in: .none) == [.saveToPlaylist, .related])
+        #expect(MusicTrackActions.available(for: track, in: .none).withoutSongData == [.saveToPlaylist, .related])
     }
 
     @Test("an id that cannot be a video id offers neither entry")
@@ -92,7 +92,7 @@ struct MusicTrackActionsDownloadTests {
 
         let offered = MusicTrackActions.available(
             for: credited, in: own, home: .canPin, offersQueue: true, canRate: true, likeStatus: nil, download: MusicDownloadState.none
-        )
+        ).withoutSongData
 
         #expect(offered == [
             .playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .download,

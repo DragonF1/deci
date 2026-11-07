@@ -70,7 +70,11 @@ actor StreamResolver {
             httpHeaders: ["User-Agent": MusicAuthHeaders.userAgent],
             audioCodec: format.codecs,
             loudnessDb: response.loudnessDb,
-            perceptualLoudnessDb: response.perceptualLoudnessDb
+            perceptualLoudnessDb: response.perceptualLoudnessDb,
+            bitrate: format.bitrate,
+            audioSampleRate: format.audioSampleRate,
+            audioChannels: format.audioChannels,
+            contentLength: format.contentLength
         )
     }
 

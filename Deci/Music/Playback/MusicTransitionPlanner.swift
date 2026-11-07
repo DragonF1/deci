@@ -199,6 +199,14 @@ enum MusicTransitionPlanner {
         return trimOut(analysis, duration: duration)
     }
 
+    /// The item time the incoming song starts at when its leading silence is trimmed; nil when it plays from its start. The
+    /// Song data panel shows it next to `trimmedEnd`.
+    static func trimmedStart(of analysis: MusicAnalysis, duration: Double) -> Double? {
+        guard let duration = validDuration(duration), usable(analysis) else { return nil }
+        let value = trimIn(analysis, duration: duration)
+        return value > 0 ? value : nil
+    }
+
     // MARK: Loudness
 
     /// dB the incoming sits above (+) or below (-) the outgoing, clamped to +-6. nil when the sources

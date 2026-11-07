@@ -194,13 +194,19 @@ final class MusicSearchNavigation {
         service.related.state != .idle
     }
 
+    /// The Song data panel is open: its store is for one song. The store is the only record of that, so a sign-out that
+    /// resets it closes the panel with nothing left to clear. It is never on with Up next, Lyrics or Related.
+    var showsSongData: Bool {
+        service.songData.isOpen
+    }
+
     /// The save to playlist menu is open. The store owns it; it floats over the popup and leaves the column as it was.
     var showsPicker: Bool {
         service.trackActions.picker != nil
     }
 
     var isBrowsing: Bool {
-        !showsQueue && !showsResults && !showsLyrics && !showsRelated
+        !showsQueue && !showsResults && !showsLyrics && !showsRelated && !showsSongData
     }
 
     /// Home's root is on screen with nothing over it, so the header offers the refresh button.
@@ -210,7 +216,9 @@ final class MusicSearchNavigation {
 
     /// What fills the right column: browse, or Lyrics, Up next or Related in place of it.
     var rightColumn: MusicRightColumn {
-        MusicRightColumn.resolve(showsLyrics: showsLyrics, showsQueue: showsQueue, showsRelated: showsRelated)
+        MusicRightColumn.resolve(
+            showsLyrics: showsLyrics, showsQueue: showsQueue, showsRelated: showsRelated, showsSongData: showsSongData
+        )
     }
 
     /// The header tab to highlight: the tab on screen, whether its root or a page opened from it.
@@ -266,7 +274,7 @@ final class MusicSearchNavigation {
         switch rightColumn {
         case .queue: isQueueFieldOpen
         case .browse: (browseScope.isLocal ? filterAnchor : searchAnchor) == currentAnchor
-        case .lyrics, .related: false
+        case .lyrics, .related, .songData: false
         }
     }
 
@@ -548,6 +556,7 @@ final class MusicSearchNavigation {
     func toggleQueue() {
         service.lyrics.setPanelOpen(false)
         closeRelated()
+        closeSongData()
         closePicker()
         queueForced.toggle()
         // A queue opens with its field closed.
@@ -559,6 +568,7 @@ final class MusicSearchNavigation {
     func toggleLyrics() {
         queueForced = false
         closeRelated()
+        closeSongData()
         closePicker()
         service.lyrics.setPanelOpen(!service.lyrics.isPanelOpen)
     }
@@ -568,6 +578,7 @@ final class MusicSearchNavigation {
     func openLyrics() {
         queueForced = false
         closeRelated()
+        closeSongData()
         closePicker()
         service.lyrics.setPanelOpen(true)
     }
@@ -607,17 +618,43 @@ final class MusicSearchNavigation {
 
     /// What Related takes the column from: Up next (its field with it), Lyrics and the save menu.
     private func makeRoomForRelated() {
+        closeSongData()
         queueForced = false
         closeQueueField()
         service.lyrics.setPanelOpen(false)
         closePicker()
     }
 
-    /// Lyrics, Up next or Related goes back to browse, the screen under it.
+    /// A song's menu, Song data: the panel lists what Deci knows about that song and stays on it, whatever the player
+    /// does. A panel that is already open swaps to the song. The like state is read for the row, as a song's menu does.
+    func openSongData(for track: MusicTrack) {
+        makeRoomForSongData()
+        service.loadLikeStatus(of: track)
+        service.songData.show(track)
+    }
+
+    /// The Song data panel goes back to browse, the screen under it, and its store stops asking. Does nothing when it is
+    /// closed already.
+    func closeSongData() {
+        guard showsSongData else { return }
+        service.songData.close()
+    }
+
+    /// What Song data takes the column from: Up next (its field with it), Lyrics, Related and the save menu.
+    private func makeRoomForSongData() {
+        queueForced = false
+        closeQueueField()
+        service.lyrics.setPanelOpen(false)
+        closeRelated()
+        closePicker()
+    }
+
+    /// Lyrics, Up next, Related or Song data goes back to browse, the screen under it.
     func closePanel() {
         queueForced = false
         closeQueueField()
         closeRelated()
+        closeSongData()
         service.lyrics.setPanelOpen(false)
     }
 
@@ -640,6 +677,7 @@ final class MusicSearchNavigation {
         queueForced = false
         closeQueueField()
         closeRelated()
+        closeSongData()
         service.lyrics.setPanelOpen(false)
         closePicker()
     }
@@ -680,7 +718,7 @@ final class MusicSearchNavigation {
             closePicker()
             return true
         }
-        if showsLyrics || showsRelated {
+        if showsLyrics || showsRelated || showsSongData {
             closePanel()
             return true
         }
@@ -787,6 +825,8 @@ final class MusicSearchNavigation {
             if let artist = MusicTrackActions.artistCollection(for: track, in: context) { openArtist(artist) }
         case .related:
             openRelated(for: track)
+        case .songData:
+            openSongData(for: track)
         case .saveToPlaylist:
             service.trackActions.openPicker(for: track)
         case .removeFromPlaylist:
@@ -961,7 +1001,7 @@ final class MusicSearchNavigation {
             service.trackActions.openPicker(for: collection)
         case .pinHome:
             if let item = MusicPinnedItem(collection: collection) { service.pinnedItems.toggle(item) }
-        case .playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist, .like, .dislike, .download, .removeDownload:
+        case .playNext, .addToQueue, .removeFromQueue, .removeFromPlaylist, .like, .dislike, .download, .removeDownload, .songData:
             break
         }
     }

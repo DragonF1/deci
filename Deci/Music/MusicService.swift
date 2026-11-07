@@ -59,6 +59,8 @@ final class MusicService {
     let likes: MusicLikeStore
     /// The songs YouTube Music suggests next to a song, for the Related panel.
     let related: MusicRelatedStore
+    /// What Deci knows about one song, for the Song data panel.
+    let songData: MusicSongDataStore
     /// The artists, playlists, albums and songs pinned to the top of Home. Remembered across launches, and kept
     /// through sign-out and account switches: they belong to the app, not to an account.
     let pinnedItems: MusicPinnedItems
@@ -379,6 +381,7 @@ final class MusicService {
         self.trackActions = MusicTrackActionsStore(backend: backend, browse: browse)
         self.likes = MusicLikeStore(backend: backend)
         self.related = MusicRelatedStore(backend: backend, browse: browse)
+        self.songData = MusicSongDataStore(backend: backend)
         self.lyrics = lyrics
         self.pinnedItems = MusicPinnedItems(items: pinnedItems, save: savePinnedItems)
         self.downloads = downloads
@@ -424,6 +427,12 @@ final class MusicService {
         trackActions.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         likes.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
         related.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
+        songData.onSessionExpired = { [weak self] in self?.browseSessionExpired() }
+        songData.sources = MusicSongDataStore.Sources(
+            heldStream: { [weak self] id in self?.heldStream(for: id) },
+            analysis: { [weak self] id in await self?.storedAnalysis(for: id) },
+            isOffline: { [weak self] in self?.isOffline ?? false }
+        )
         likes.onRatingShown = { [weak self] videoId, status, previous in
             self?.ratingShown(videoId: videoId, status: status, previous: previous)
         }
@@ -477,6 +486,7 @@ final class MusicService {
         browse.accountReturned()
         // A Related panel that could not ask without the account asks now.
         related.connectionReturned()
+        songData.connectionReturned()
         // Offline the account cannot be read: it is, when the network returns (see `connectivityChanged`).
         if !isOffline { refreshIdentity() }
         loadLikeStatus()
@@ -490,6 +500,7 @@ final class MusicService {
         guard online else { return networkLost() }
         queueRetryAttempts = 0
         related.connectionReturned()
+        songData.connectionReturned()
         if deferredSearch != nil { search() }
         if authState == .signedIn {
             if isBrandChannel == nil { refreshChannelIdentity() }
@@ -568,6 +579,7 @@ final class MusicService {
         trackActions.reset()
         likes.reset()
         related.reset()
+        songData.reset()
         signOutTask = Task { [backend] in await backend.signOut() }
     }
 
@@ -679,6 +691,7 @@ final class MusicService {
         trackActions.reset()
         likes.reset()
         related.reset()
+        songData.reset()
         clearAccount()
         refreshIdentity()
     }
@@ -771,6 +784,7 @@ final class MusicService {
         // The other channel has its own likes: the song playing is read again.
         likes.reset()
         related.reset()
+        songData.reset()
         loadLikeStatus()
         // The card shows the channel that was picked, not the one that was left.
         clearAccount()
@@ -2662,6 +2676,19 @@ final class MusicService {
         return likes.status(of: track.videoId)
     }
 
+    /// The stream the player holds for a song: the one that plays, or the one prefetched to follow it. Nil for any other.
+    /// The Song data panel reads it so these two open without a call.
+    func heldStream(for videoId: String) -> ResolvedStream? {
+        if let current = player.currentStream, current.videoId == videoId { return current }
+        if let next = prefetched, next.videoId == videoId { return next }
+        return nil
+    }
+
+    /// The stored analysis row of a song, if it was ever analysed. Nil with no analysis store, and for a song with no row.
+    func storedAnalysis(for videoId: String) async -> MusicAnalysis? {
+        await analysisReader?.analysis(for: videoId)
+    }
+
     /// Reads the state of the song playing now, once per song (`MusicLikeStore.load` remembers what it has asked).
     private func loadLikeStatus() {
         guard let track = player.nowPlaying else { return }
@@ -2935,6 +2962,7 @@ final class MusicService {
             trackActions.reset()
             likes.reset()
             related.reset()
+            songData.reset()
             clearAccount()
             signOutTask = Task { [backend] in await backend.signOut() }
             return

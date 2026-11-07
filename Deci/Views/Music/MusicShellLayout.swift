@@ -9,13 +9,15 @@ nonisolated enum MusicRightColumn: Equatable {
     case lyrics
     case queue
     case related
+    case songData
 
     /// The panels are never on together, since turning one on turns the others off; if two ever were, Lyrics wins, then
-    /// Up next, then Related.
-    static func resolve(showsLyrics: Bool, showsQueue: Bool, showsRelated: Bool) -> MusicRightColumn {
+    /// Up next, then Related, then Song data.
+    static func resolve(showsLyrics: Bool, showsQueue: Bool, showsRelated: Bool, showsSongData: Bool = false) -> MusicRightColumn {
         if showsLyrics { return .lyrics }
         if showsQueue { return .queue }
         if showsRelated { return .related }
+        if showsSongData { return .songData }
         return .browse
     }
 
@@ -26,6 +28,7 @@ nonisolated enum MusicRightColumn: Equatable {
         case lyrics
         case queue
         case related
+        case songData
     }
 
     var header: Header {
@@ -33,6 +36,7 @@ nonisolated enum MusicRightColumn: Equatable {
         case .lyrics: .lyrics
         case .queue: .queue
         case .related: .related
+        case .songData: .songData
         case .browse: .browse
         }
     }
@@ -40,7 +44,7 @@ nonisolated enum MusicRightColumn: Equatable {
     /// Lyrics, Up next and Related sit on an accent wash; browse is plain.
     var hasWash: Bool {
         switch self {
-        case .lyrics, .queue, .related: true
+        case .lyrics, .queue, .related, .songData: true
         case .browse: false
         }
     }

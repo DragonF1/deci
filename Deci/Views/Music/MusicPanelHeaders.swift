@@ -117,6 +117,32 @@ struct MusicRelatedHeader: View {
     }
 }
 
+// MARK: - Song data
+
+/// "Song data" and, quietly beside it, the title of the song the panel is for. No magnifier: Song data has no search.
+struct MusicSongDataHeader: View {
+    let store: MusicSongDataStore
+
+    var body: some View {
+        MusicPanelHeaderBar(sidePadding: MusicPopupMetrics.rightPaddingSide) {
+            Text("Song data")
+                .musicText(MusicStyle.Typeface.heading)
+                .foregroundStyle(MusicStyle.Palette.textHeading)
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityAddTraits(.isHeader)
+            if let subtitle = store.subtitle {
+                Text(subtitle)
+                    .musicText(MusicStyle.Typeface.secondary)
+                    .foregroundStyle(MusicStyle.Palette.textMeta)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
 // MARK: - Up next
 
 /// "Up next" and the playback toggles in one group. No magnifier (owner 2026-11-06: not needed, the toggles get the

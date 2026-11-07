@@ -24,7 +24,7 @@ struct MusicTrackActionsLimitedTests {
         MusicTrackActions.available(
             for: rich, in: context ?? editable, home: .canPin, offersQueue: queue, canRate: true, likeStatus: nil,
             download: download, limited: limited, playsOffline: playsOffline
-        )
+        ).withoutSongData
     }
 
     @Test("online the menu is whole, so the limits below are what removes the entries")

@@ -97,6 +97,12 @@ struct ResolvedStream: Sendable, Equatable {
     /// YouTube's own loudness numbers from the player response.
     let loudnessDb: Double?
     let perceptualLoudnessDb: Double?
+    /// The chosen format's own numbers from the player response, for the Song data panel; nil when YouTube sent none or the
+    /// stream is a file on this Mac.
+    let bitrate: Int?
+    let audioSampleRate: Int?
+    let audioChannels: Int?
+    let contentLength: Int?
 
     init(
         videoId: String,
@@ -111,7 +117,11 @@ struct ResolvedStream: Sendable, Equatable {
         origin: Origin = .network,
         audioCodec: String? = nil,
         loudnessDb: Double? = nil,
-        perceptualLoudnessDb: Double? = nil
+        perceptualLoudnessDb: Double? = nil,
+        bitrate: Int? = nil,
+        audioSampleRate: Int? = nil,
+        audioChannels: Int? = nil,
+        contentLength: Int? = nil
     ) {
         self.videoId = videoId
         self.url = url
@@ -126,6 +136,10 @@ struct ResolvedStream: Sendable, Equatable {
         self.audioCodec = audioCodec
         self.loudnessDb = loudnessDb
         self.perceptualLoudnessDb = perceptualLoudnessDb
+        self.bitrate = bitrate
+        self.audioSampleRate = audioSampleRate
+        self.audioChannels = audioChannels
+        self.contentLength = contentLength
     }
 
     /// The same song, same tracking URLs and the same exact duration, playing from `file`.
@@ -136,7 +150,8 @@ struct ResolvedStream: Sendable, Equatable {
             expiresAt: .distantFuture, playbackTrackingURL: playbackTrackingURL,
             watchtimeTrackingURL: watchtimeTrackingURL, viewCount: viewCount, httpHeaders: [:],
             origin: .trackCache, audioCodec: audioCodec, loudnessDb: loudnessDb,
-            perceptualLoudnessDb: perceptualLoudnessDb
+            perceptualLoudnessDb: perceptualLoudnessDb, bitrate: bitrate, audioSampleRate: audioSampleRate,
+            audioChannels: audioChannels, contentLength: contentLength
         )
     }
 }

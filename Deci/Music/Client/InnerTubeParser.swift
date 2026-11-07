@@ -23,6 +23,10 @@ struct PlayerFormat: Sendable, Equatable {
     let url: String?
     let signatureCipher: String?
     let approxDurationMs: Double?
+    /// Sample rate in Hz, channel count and size in bytes; YouTube sends them as strings on audio formats.
+    var audioSampleRate: Int? = nil
+    var audioChannels: Int? = nil
+    var contentLength: Int? = nil
 
     /// The codec string inside the mimeType (`audio/mp4; codecs="mp4a.40.2"` gives `mp4a.40.2`); nil when it names none.
     var codecs: String? {
@@ -532,7 +536,10 @@ enum InnerTubeParser {
             bitrate: int(json["bitrate"]),
             url: string(json["url"]),
             signatureCipher: string(json["signatureCipher"]) ?? string(json["cipher"]),
-            approxDurationMs: double(json["approxDurationMs"])
+            approxDurationMs: double(json["approxDurationMs"]),
+            audioSampleRate: int(json["audioSampleRate"]),
+            audioChannels: int(json["audioChannels"]),
+            contentLength: int(json["contentLength"])
         )
     }
 

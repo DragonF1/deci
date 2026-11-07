@@ -47,6 +47,8 @@ enum MusicTrackAction: Hashable, Sendable {
     case goToArtist
     /// The Related panel for the song, or for the first song of an album, playlist, mix or artist.
     case related
+    /// The Song data panel: everything Deci knows about the song. Single songs only; a selection of several has no entry.
+    case songData
 
     var title: String {
         switch self {
@@ -63,16 +65,18 @@ enum MusicTrackAction: Hashable, Sendable {
         case .goToAlbum: "Go to album"
         case .goToArtist: "Go to artist"
         case .related: "Related songs"
+        case .songData: "Song data"
         }
     }
 
     /// The action needs YouTube Music: the account, a page, a rating or a playlist. Offline, or signed out, these have
     /// nothing to talk to. Play next and Add to queue are not on the list (a downloaded song plays from its file), nor
-    /// are the download entries and Remove from queue, which touch only this Mac.
+    /// are the download entries, Remove from queue and Song data, which touch only this Mac (Song data shows what is
+    /// kept, and says Offline for the rest).
     var isOnlineOnly: Bool {
         switch self {
         case .saveToPlaylist, .removeFromPlaylist, .pinHome, .like, .dislike, .goToAlbum, .goToArtist, .related: true
-        case .playNext, .addToQueue, .removeFromQueue, .download, .removeDownload: false
+        case .playNext, .addToQueue, .removeFromQueue, .download, .removeDownload, .songData: false
         }
     }
 
@@ -102,6 +106,8 @@ enum MusicTrackAction: Hashable, Sendable {
         case rate
         case navigate
         case remove
+        /// What Deci knows about the song; a block of its own after the destructive one.
+        case inspect
 
         static func < (lhs: Group, rhs: Group) -> Bool { lhs.rawValue < rhs.rawValue }
     }
@@ -113,6 +119,7 @@ enum MusicTrackAction: Hashable, Sendable {
         case .like, .dislike: .rate
         case .goToAlbum, .goToArtist, .related: .navigate
         case .removeFromPlaylist, .removeFromQueue: .remove
+        case .songData: .inspect
         }
     }
 }
@@ -128,7 +135,8 @@ enum MusicTrackActions {
     /// nil while it is unknown, and it turns the entry that is on into its Remove. Related songs shows for any song
     /// that has an id to ask about. `download` is the song's download state; nil leaves both download entries out, and
     /// so does an id that cannot be downloaded. Download shows when nothing is downloaded or the last try failed, Remove
-    /// download when the song is queued, downloading or downloaded. `downloadHeldByCollectionOnly` is a song that a
+    /// download when the song is queued, downloading or downloaded. Song data ends the list, in a block of its own, for any
+    /// song that has an id, even on a `limited` tab. `downloadHeldByCollectionOnly` is a song that a
     /// downloaded playlist or album lists and that was not downloaded on its own: while it is queued, downloading or
     /// downloaded it offers neither entry (the page's pill removes it); one not yet fetched, or that failed, still
     /// offers Download. `limited` is a Music tab that has only this Mac to work with, offline or signed out: every entry
@@ -159,6 +167,7 @@ enum MusicTrackActions {
         if hasId(track) { actions.append(.related) }
         if canRemove(track, in: context) { actions.append(.removeFromPlaylist) }
         if offersQueue, context.isUpNext { actions.append(.removeFromQueue) }
+        if hasId(track) { actions.append(.songData) }
         guard limited else { return actions }
         return actions.filter { action in
             if action.isOnlineOnly { return false }

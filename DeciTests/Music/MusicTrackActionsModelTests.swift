@@ -16,7 +16,7 @@ struct MusicTrackActionsModelTests {
     private func actions(
         _ track: Deci.MusicTrack, in context: MusicTrackContext = .none, home: MusicHomePinState? = nil, queue: Bool = false
     ) -> [MusicTrackAction] {
-        MusicTrackActions.available(for: track, in: context, home: home, offersQueue: queue)
+        MusicTrackActions.available(for: track, in: context, home: home, offersQueue: queue).withoutSongData
     }
 
     // MARK: - Save to playlist
@@ -417,7 +417,7 @@ struct MusicTrackActionsModelTests {
         _ track: Deci.MusicTrack, status: MusicLikeStatus? = nil, canRate: Bool = true,
         in context: MusicTrackContext = .none, home: MusicHomePinState? = nil
     ) -> [MusicTrackAction] {
-        MusicTrackActions.available(for: track, in: context, home: home, canRate: canRate, likeStatus: status)
+        MusicTrackActions.available(for: track, in: context, home: home, canRate: canRate, likeStatus: status).withoutSongData
     }
 
     @Test("A song the user can rate offers Like and Dislike, and a list asked for without a rating has neither")
@@ -483,7 +483,7 @@ struct MusicTrackActionsModelTests {
     func rateEntriesInFullOrder() {
         let offered = MusicTrackActions.available(
             for: fullTrack(), in: ownPlaylist, home: .canPin, offersQueue: true, canRate: true, likeStatus: .like
-        )
+        ).withoutSongData
         #expect(offered == [
             .playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin),
             .like(removing: true), .dislike(removing: false),

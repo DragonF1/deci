@@ -196,7 +196,7 @@ struct MusicSearchNavigationRelatedTests {
         var credited = MusicSamples.track("v1")
         credited.albumBrowseId = "MPREb1"
         credited.artistLinks = [MusicArtistLink(name: "Band", browseId: "UC1")]
-        #expect(h.nav.actions(for: credited, in: .none).suffix(2) == [.goToArtist, .related])
+        #expect(h.nav.actions(for: credited, in: .none).withoutSongData.suffix(2) == [.goToArtist, .related])
 
         let artist = MusicSamples.collection("UC1", kind: .artist, title: "Band")
         #expect(h.nav.actions(for: artist, in: .none).last == .related)

@@ -61,7 +61,7 @@ private struct MusicServiceView: View {
     }
 }
 
-/// The signed-in right column: the browse screens, kept alive under Lyrics, Related and Up next so they keep
+/// The signed-in right column: the browse screens, kept alive under Lyrics, Related, Song data and Up next so they keep
 /// their place. Which one shows comes from `navigation.rightColumn`. The tabs and the avatar are the column's header, the
 /// song's controls are the player column.
 private struct MusicSignedInView: View {
@@ -149,6 +149,9 @@ private struct MusicSignedInView: View {
                     .transition(.opacity)
             case .related:
                 MusicRelatedView(service: service)
+                    .transition(.opacity)
+            case .songData:
+                MusicSongDataView(service: service)
                     .transition(.opacity)
             }
         }

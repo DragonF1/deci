@@ -49,7 +49,7 @@ nonisolated enum MusicSearchScope: Equatable {
     @MainActor
     static func resolve(column: MusicRightColumn, tab: MusicBrowseStore.Tab, page: MusicPageKind?) -> MusicSearchScope {
         switch column {
-        case .lyrics, .related:
+        case .lyrics, .related, .songData:
             return .none
         case .queue:
             return .queue
