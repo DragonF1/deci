@@ -33,6 +33,8 @@ enum MusicSongFactsMatcher {
         text = replace(text, featuringTail, " ")
         text = replace(text, vevoTail, " ")
         text = text.replacingOccurrences(of: "&", with: " and ")
+        // An apostrophe is part of the word ("don't" is "dont"), not a break between two.
+        text = text.replacingOccurrences(of: "'", with: "").replacingOccurrences(of: "\u{2019}", with: "")
         let kept = text.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? Character($0) : " " }
         return String(kept).split(separator: " ").joined(separator: " ")
     }
@@ -87,6 +89,8 @@ enum MusicSongFactsMatcher {
         let passing = candidates.filter { candidate in
             let titleOK = titlesMatch(askedTitle, candidate.title)
                 || candidate.titleShort.map { titlesMatch(askedTitle, $0) } == true
+                // The YouTube title may carry the version ("Song (Live at the Forum)") that Deezer keeps apart.
+                || candidate.titleVersion.map { !$0.isEmpty && titlesMatch(askedTitle, "\(candidate.title) \($0)") } == true
             guard titleOK, artistsMatch(query.artist, candidate.artist) else { return false }
             guard abs(Double(candidate.duration) - seconds) <= durationTolerance else { return false }
             let version = "\(candidate.titleVersion ?? "") \(candidate.title)"

@@ -92,7 +92,7 @@ actor MusicSongFactsStore {
     // MARK: - Public
 
     func record(for videoId: String) -> MusicSongFactsRecord? {
-        guard let db, MusicDownloadStore.isValidVideoId(videoId),
+        guard let db,
               let statement = Statement(db, "SELECT outcome, looked_up_at, measured_at, payload FROM facts WHERE video_id = ?1")
         else { return nil }
         statement.bind(videoId, at: 1)
@@ -141,7 +141,7 @@ actor MusicSongFactsStore {
     }
 
     func delete(videoId: String) {
-        guard let db, MusicDownloadStore.isValidVideoId(videoId),
+        guard let db,
               let statement = Statement(db, "DELETE FROM facts WHERE video_id = ?1") else { return }
         statement.bind(videoId, at: 1)
         _ = statement.step()
@@ -155,7 +155,7 @@ actor MusicSongFactsStore {
     // MARK: - Rows
 
     private func write(_ record: MusicSongFactsRecord, videoId: String) {
-        guard let db, MusicDownloadStore.isValidVideoId(videoId),
+        guard let db,
               let payload = try? JSONEncoder().encode(record.facts),
               let statement = Statement(db, """
               INSERT INTO facts (video_id, outcome, looked_up_at, measured_at, payload) VALUES (?1, ?2, ?3, ?4, ?5)

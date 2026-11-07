@@ -61,7 +61,7 @@ struct MusicOfflineMenuReviewTests {
         defer { rig.cleanUp() }
         let nav = MusicSearchNavigation(service: rig.service)
 
-        #expect(nav.actions(for: richTrack(), in: editable) == [.download])
+        #expect(nav.actions(for: richTrack(), in: editable).withoutSongData == [.download])
         // The player's save button reads the same menu.
         #expect(!nav.actions(for: richTrack(), in: .none).contains(.saveToPlaylist))
     }
@@ -72,7 +72,7 @@ struct MusicOfflineMenuReviewTests {
         defer { rig.cleanUp() }
         let nav = MusicSearchNavigation(service: rig.service)
 
-        #expect(nav.actions(for: richTrack(), in: editable) == [.playNext, .addToQueue, .removeDownload])
+        #expect(nav.actions(for: richTrack(), in: editable).withoutSongData == [.playNext, .addToQueue, .removeDownload])
     }
 
     @Test("online and signed in the menu is whole")
@@ -82,7 +82,7 @@ struct MusicOfflineMenuReviewTests {
         await rig.service.refreshAuth()
         let nav = MusicSearchNavigation(service: rig.service)
 
-        #expect(nav.actions(for: richTrack(), in: editable) == [
+        #expect(nav.actions(for: richTrack(), in: editable).withoutSongData == [
             .playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .download,
             .like(removing: false), .dislike(removing: false), .goToAlbum, .goToArtist, .related, .removeFromPlaylist,
         ])
@@ -161,7 +161,7 @@ struct MusicOfflineMenuReviewTests {
 
         nav.perform(.removeDownload, for: other, in: .none)
 
-        #expect(nav.actions(for: other, in: .none) == [.download])
+        #expect(nav.actions(for: other, in: .none).withoutSongData == [.download])
     }
 
     @Test("an album, playlist or artist tile offers nothing, and its actions do nothing", arguments: ReviewLimit.allCases)

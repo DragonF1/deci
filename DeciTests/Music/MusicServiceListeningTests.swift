@@ -168,10 +168,11 @@ struct MusicServiceListeningTests {
         let h = ListeningHarness()
         await h.startQueue(["a", "b", "c"])
         h.listen(seconds: 40)
+        // enterWindow jumps to 186 (not heard) and then plays on to 186.5: that one tick is a real 0.5 s of listening.
         await h.enterWindow()
         h.engine.advance()
         await h.settle()
-        #expect(h.log.notes == [.init(videoId: "a", seconds: 40, countsAsPlay: true)])
+        #expect(h.log.notes == [.init(videoId: "a", seconds: 40.5, countsAsPlay: true)])
 
         // The flip made "b" the current song, and nothing more was noted for "a".
         #expect(h.engine.currentVideoId == "b")
@@ -181,7 +182,7 @@ struct MusicServiceListeningTests {
         h.service.next()
         await h.settle()
         #expect(h.log.notes == [
-            .init(videoId: "a", seconds: 40, countsAsPlay: true),
+            .init(videoId: "a", seconds: 40.5, countsAsPlay: true),
             .init(videoId: "b", seconds: 35, countsAsPlay: true)
         ])
     }

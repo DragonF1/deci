@@ -52,6 +52,8 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
         /// A step could not be asked or answered (a limit, a failure).
         var trouble = false
         var stopped = false
+        /// The Deezer step itself failed before it matched the song (quota, oversize reply, bad reply).
+        var deezerFailedUnmatched = false
     }
 
     private let transport: any HTTPTransport
@@ -94,7 +96,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
         await recco(&run)
         await musicBrainz(&run)
         if !run.hasFeatures { await audioDB(query, &run) }
-        if Task.isCancelled { return .failed }
+        if Task.isCancelled || run.deezerFailedUnmatched { return .failed }
         if run.facts.isEmpty { return run.trouble ? .failed : .notFound }
         return run.trouble ? .partial(run.facts) : .found(run.facts)
     }
@@ -133,6 +135,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
             }
         } catch {
             note(error, &run)
+            if run.facts.deezerId == nil { run.deezerFailedUnmatched = true }
         }
     }
 

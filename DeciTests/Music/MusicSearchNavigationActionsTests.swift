@@ -344,7 +344,7 @@ struct MusicSearchNavigationActionsTests {
         var track = MusicSamples.track("v1", albumBrowseId: "MPREbFixture")
         track.artistLinks = [MusicArtistLink(name: "Fixture Artist", browseId: "UCfixtureArtist")]
         #expect(
-            h.nav.actions(for: track, in: .none)
+            h.nav.actions(for: track, in: .none).withoutSongData
                 == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .goToAlbum, .goToArtist, .related]
         )
     }
@@ -353,18 +353,18 @@ struct MusicSearchNavigationActionsTests {
     func pinHomeAndUnpin() {
         let h = ActionNavHarness()
         let track = MusicSamples.track("v1")
-        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
+        #expect(h.nav.actions(for: track, in: .none).withoutSongData == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
 
         h.nav.perform(.pinHome(.canPin), for: track, in: .none)
 
         #expect(h.service.pinnedItems.items.map(\.id) == ["v1"])
         #expect(h.service.pinnedItems.items.first?.kind == .song)
-        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned), .related])
+        #expect(h.nav.actions(for: track, in: .none).withoutSongData == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned), .related])
 
         h.nav.perform(.pinHome(.pinned), for: track, in: .none)
 
         #expect(h.service.pinnedItems.isEmpty)
-        #expect(h.nav.actions(for: track, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
+        #expect(h.nav.actions(for: track, in: .none).withoutSongData == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
     }
 
     @Test("Pin to Home never reaches the account: nothing is sent to YouTube")
@@ -387,8 +387,8 @@ struct MusicSearchNavigationActionsTests {
         }
         #expect(h.service.pinnedItems.isFull)
         let fresh = MusicSamples.track("v1")
-        #expect(h.nav.actions(for: fresh, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.full), .related])
-        #expect(h.nav.actions(for: pinned, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned), .related])
+        #expect(h.nav.actions(for: fresh, in: .none).withoutSongData == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.full), .related])
+        #expect(h.nav.actions(for: pinned, in: .none).withoutSongData == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.pinned), .related])
 
         h.nav.perform(.pinHome(.full), for: fresh, in: .none)
         #expect(h.service.pinnedItems.items.count == MusicPinnedItems.limit)
@@ -396,7 +396,7 @@ struct MusicSearchNavigationActionsTests {
 
         h.nav.perform(.pinHome(.pinned), for: pinned, in: .none)
         #expect(!h.service.pinnedItems.isPinned(pinned))
-        #expect(h.nav.actions(for: fresh, in: .none) == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
+        #expect(h.nav.actions(for: fresh, in: .none).withoutSongData == [.playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .related])
     }
 
     // MARK: - Play next, Add to queue, Remove from queue
@@ -420,7 +420,7 @@ struct MusicSearchNavigationActionsTests {
         h.playSomething()
         let other = MusicSamples.track("other")
         #expect(!h.nav.actions(for: other, in: .none).contains(.removeFromQueue))
-        #expect(h.nav.actions(for: other, in: .upNext).last == .removeFromQueue)
+        #expect(h.nav.actions(for: other, in: .upNext).withoutSongData.last == .removeFromQueue)
         #expect(!h.nav.actions(for: MusicSamples.track("playing"), in: .upNext).contains(.removeFromQueue))
     }
 
@@ -454,7 +454,7 @@ struct MusicSearchNavigationActionsTests {
         let h = ActionNavHarness()
         await h.service.refreshAuth()
         let track = MusicSamples.track("v1")
-        #expect(h.nav.actions(for: track, in: .none)
+        #expect(h.nav.actions(for: track, in: .none).withoutSongData
             == [
                 .playNext, .addToQueue, .saveToPlaylist, .pinHome(.canPin), .like(removing: false), .dislike(removing: false),
                 .related,

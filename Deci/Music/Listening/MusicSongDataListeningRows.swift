@@ -6,7 +6,9 @@ import Foundation
 extension MusicSongDataRows {
     static let notCountedNote = "Not played since Deci started counting"
 
-    static func listeningSection(_ entry: MusicListeningEntry?, now: Date) -> MusicSongDataSection {
+    static func listeningSection(
+        _ entry: MusicListeningEntry?, now: Date, timeZone: TimeZone = .autoupdatingCurrent
+    ) -> MusicSongDataSection {
         guard let entry else {
             return MusicSongDataSection(title: "Your listening", rows: [], note: notCountedNote)
         }
@@ -14,7 +16,7 @@ extension MusicSongDataRows {
             MusicSongDataRow(label: "Plays", value: "\(entry.playCount)", isNumeric: true),
             MusicSongDataRow(label: "Time listened", value: listenedText(entry.totalSeconds), isNumeric: true),
             MusicSongDataRow(label: "Last played", value: lastPlayedText(entry.lastPlayed, now: now), isNumeric: false),
-            MusicSongDataRow(label: "First played", value: firstPlayedText(entry.firstPlayed), isNumeric: false)
+            MusicSongDataRow(label: "First played", value: firstPlayedText(entry.firstPlayed, in: timeZone), isNumeric: false)
         ])
     }
 
@@ -36,15 +38,13 @@ extension MusicSongDataRows {
         return relativeFormatter.localizedString(for: date, relativeTo: now)
     }
 
-    private static func firstPlayedText(_ date: Date) -> String {
-        dayFormatter.string(from: date)
-    }
-
-    nonisolated(unsafe) private static let dayFormatter: DateFormatter = {
+    /// The day in the listener's own time zone (a formatter is made per call, so a changed zone is followed).
+    private static func firstPlayedText(_ date: Date, in timeZone: TimeZone) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US")
+        formatter.timeZone = timeZone
         formatter.dateStyle = .medium
         formatter.timeStyle = .none
-        return formatter
-    }()
+        return formatter.string(from: date)
+    }
 }

@@ -203,14 +203,15 @@ struct MusicSongDataListeningRowsTests {
 
     @Test("a song with a row has Plays, Time listened, Last played and First played")
     func rows() {
-        let section = MusicSongDataRows.listeningSection(entry(), now: now)
+        let section = MusicSongDataRows.listeningSection(entry(), now: now, timeZone: TimeZone(identifier: "UTC")!)
         #expect(section.title == "Your listening")
         #expect(section.note == nil)
         #expect(section.rows.map(\.label) == ["Plays", "Time listened", "Last played", "First played"])
         #expect(section.rows[0].value == "3")
         #expect(section.rows[1].value == "12m 5s")
         #expect(section.rows[2].value == "3 hours ago")
-        #expect(section.rows[3].value == "Oct 4, 2023")
+        // 1_700_000_000 is 2023-11-14 22:13 UTC; 40 days earlier is Oct 5 in UTC.
+        #expect(section.rows[3].value == "Oct 5, 2023")
         #expect(section.rows[0].isNumeric && section.rows[1].isNumeric)
         #expect(!section.rows[2].isNumeric && !section.rows[3].isNumeric)
     }
