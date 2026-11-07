@@ -253,6 +253,9 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var preloadReady = false
     /// The host time the standby is scheduled to start at, nil while it is not scheduled.
     private var scheduledHost: CMTime?
+    /// The standby was started by `startStandby(atHostTime:rate:)` (a beat-matched entry at a nudged rate). The gapless
+    /// schedule leaves it alone while this is set, and every path that takes the standby back clears it.
+    private(set) var alignedStart = false
     /// The preroll was retried once already for this preload.
     private var prerollRetried = false
     /// Arms the standby's tap shortly before its scheduled start (not when the start is scheduled, up to 6 s earlier).
@@ -269,6 +272,13 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// Makes the next seek to a planned incoming offset count as failed. A test seam.
     var debugFailNextParkSeek = false
     var debugActiveTap: MusicTapDeck? { active.tap }
+    /// Marks the preload ready without any media, so the aligned-start paths can be tested. A test seam.
+    func debugMarkPreloadReady() { if preloadStream != nil { preloadReady = true } }
+    /// Sets the aligned flag without starting the player (a fake item can not take a synchronized start). A test seam.
+    func debugSetAlignedStart() { alignedStart = true }
+    /// Runs the end-of-item hand-over and the schedule check directly. Test seams.
+    func debugActiveItemEnded() { activeItemEnded() }
+    func debugEvaluateSchedule() { evaluateSchedule() }
     var debugStandbyTap: MusicTapDeck? { standby.tap }
     /// Called when a preroll of the standby has completed, with its `finished` flag. A test seam.
     var onStandbyPrerolled: ((Bool) -> Void)?
@@ -511,7 +521,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         let resolved = (uid?.isEmpty ?? true) ? nil : uid
         outputDeviceUID = resolved
         // Moving a player to another device can drop a start that is scheduled on it: take it back and set it again.
-        let rescheduled = scheduledHost != nil
+        let rescheduled = scheduledHost != nil || alignedStart
         if rescheduled { cancelSchedule() }
         active.player.audioOutputDeviceUniqueID = resolved
         standby.player.audioOutputDeviceUniqueID = resolved
@@ -693,6 +703,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     }
 
     func cancelPreload() {
+        alignedStart = false
         guard preloadStream != nil || standby.videoId != nil else { return }
         scheduledHost = nil
         armTask?.cancel()
@@ -871,6 +882,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// crossfade the start is `lead` seconds earlier (the fade's length, or longer when a smart plan starts it earlier)
     /// and the fade is started with it.
     private func evaluateSchedule() {
+        guard !alignedStart else { return }
         guard preloadStream != nil, preloadReady, draining == nil, let item = active.player.currentItem,
               active.player.timeControlStatus == .playing, active.player.rate == 1,
               let end = endTime(of: item) else { return }
@@ -944,7 +956,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard seconds.isFinite, let item = player.currentItem, player.timeControlStatus == .playing, player.rate == 1
         else { return nil }
         let now = player.currentTime().seconds
-        guard now.isFinite else { return nil }
+        guard now.isFinite, seconds > now else { return nil }
         return hostTime(ofItemTime: CMTime(seconds: seconds, preferredTimescale: 1_000_000), in: item, remaining: seconds - now)
     }
 
@@ -955,8 +967,11 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// `rate` is unusable.
     @discardableResult
     func startStandby(atHostTime host: CMTime, rate: Float) -> Bool {
-        guard preloadStream != nil, preloadReady, draining == nil, host.isValid, host.isNumeric,
+        guard preloadStream != nil, preloadReady, draining == nil, scheduledHost == nil, host.isValid, host.isNumeric,
               rate.isFinite, rate > 0 else { return false }
+        // AVPlayer raises (not fails) for a synchronized start before the item is ready.
+        guard standby.player.status == .readyToPlay else { return false }
+        alignedStart = true
         let deck = standby
         let token = deck.token
         deck.player.automaticallyWaitsToMinimizeStalling = false
@@ -1005,7 +1020,9 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// Takes the standby's scheduled start back: it is paused, put back at its first frame (it may have started a few
     /// milliseconds already) and warmed up again, and the schedule is set again once that has landed.
     private func cancelSchedule() {
-        guard scheduledHost != nil else { return }
+        let wasAligned = alignedStart
+        alignedStart = false
+        guard scheduledHost != nil || wasAligned else { return }
         scheduledHost = nil
         armTask?.cancel()
         armTask = nil
@@ -1047,6 +1064,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         let outgoing = active
         outgoingPositionAtCrossfade = nil
         let hostClock = CMClockGetHostTimeClock()
+        let wasAligned = alignedStart
+        alignedStart = false
         let untilStart = scheduledHost.map { CMTimeSubtract($0, CMClockGetTime(hostClock)).seconds }
 
         // A start that was planned as a crossfade but never fired (its timer lost the race to the end): the end is here,
@@ -1086,7 +1105,8 @@ final class AVPlaybackEngine: PlaybackEngine {
             scheduledAdvanceCount += 1
         } else {
             if untilStart != nil { lateStartCount += 1 } else { fallbackAdvanceCount += 1 }
-            incoming.player.play()
+            // An aligned standby is already running at its nudged rate: play() would reset it to 1.
+            if !(wasAligned && incoming.player.rate != 0) { incoming.player.play() }
         }
         armTask?.cancel()
         armTask = nil
@@ -1155,6 +1175,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         fadeStartTask = nil
         armTask?.cancel()
         armTask = nil
+        alignedStart = false
         let plan = transitionPlan
         let outgoingEnd = active.player.currentItem.flatMap { endTime(of: $0) }?.seconds
         // The outgoing lease drains before the incoming one claims the chain, so it is never silenced in between.

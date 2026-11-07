@@ -62,4 +62,79 @@ struct AVPlaybackEngineAlignedStartTests {
         #expect(engine.hostTime(ofActiveItemTime: 10) == nil, "an item that is not playing")
         #expect(engine.hostTime(ofActiveItemTime: .nan) == nil)
     }
+
+    private func alignedEngine() -> AVPlaybackEngine {
+        let engine = AVPlaybackEngine()
+        engine.load(stream("active"), startAt: 0, autoplay: false)
+        engine.preload(stream("standby"))
+        engine.debugMarkPreloadReady()
+        return engine
+    }
+
+    @Test("a ready preload starts aligned, and the gapless schedule leaves it alone")
+    func alignedStartSetsFlagAndSkipsSchedule() {
+        let engine = alignedEngine()
+        engine.debugSetAlignedStart()
+        #expect(engine.alignedStart)
+        engine.debugEvaluateSchedule()
+        #expect(engine.scheduledStartHost == nil)
+    }
+
+    @Test("pause takes an aligned standby back so it cannot start alone")
+    func pauseStopsAlignedStandby() {
+        let engine = alignedEngine()
+        engine.debugSetAlignedStart()
+        engine.pause()
+        #expect(engine.alignedStart == false)
+        #expect(engine.standbyAvPlayer.rate == 0)
+    }
+
+    @Test("a seek takes an aligned standby back")
+    func seekStopsAlignedStandby() {
+        let engine = alignedEngine()
+        engine.debugSetAlignedStart()
+        engine.seek(to: 5)
+        #expect(engine.alignedStart == false)
+        #expect(engine.standbyAvPlayer.rate == 0)
+    }
+
+    @Test("an output device change takes an aligned standby back")
+    func outputChangeStopsAlignedStandby() {
+        let engine = alignedEngine()
+        engine.debugSetAlignedStart()
+        engine.setOutputDevice(uid: nil)
+        #expect(engine.alignedStart == false)
+        #expect(engine.standbyAvPlayer.rate == 0)
+    }
+
+    @Test("cancelling the preload clears the aligned flag")
+    func cancelPreloadClearsFlag() {
+        let engine = alignedEngine()
+        engine.debugSetAlignedStart()
+        engine.cancelPreload()
+        #expect(engine.alignedStart == false)
+    }
+
+    @Test("the hand-over at the end clears the flag and clears the flag")
+    func activeItemEndedKeepsNudgedRate() {
+        let engine = alignedEngine()
+        engine.debugSetAlignedStart()
+        engine.debugActiveItemEnded()
+        #expect(engine.alignedStart == false)
+        #expect(engine.fallbackAdvanceCount == 1)
+    }
+
+    @Test("a ready preload whose item is not ready on the player is refused, with no flag")
+    func refusedWhenItemNotReadyOnPlayer() {
+        let engine = alignedEngine()
+        #expect(engine.startStandby(atHostTime: soon, rate: 1) == false)
+        #expect(engine.alignedStart == false)
+    }
+
+    @Test("the host time of a time that has already passed is nil")
+    func pastItemTimeIsNil() {
+        let engine = AVPlaybackEngine()
+        engine.load(stream("active"), startAt: 0, autoplay: false)
+        #expect(engine.hostTime(ofActiveItemTime: -1) == nil)
+    }
 }
