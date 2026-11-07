@@ -1,0 +1,49 @@
+// Deci/Music/Listening/MusicSongDataListeningRows.swift
+import Foundation
+
+/// The YOUR LISTENING block of the Song data panel: the listener's own plays of one song, from the local listening
+/// store. Pure like the other blocks: no clock but the `now` it is given.
+extension MusicSongDataRows {
+    static let notCountedNote = "Not played since Deci started counting"
+
+    static func listeningSection(_ entry: MusicListeningEntry?, now: Date) -> MusicSongDataSection {
+        guard let entry else {
+            return MusicSongDataSection(title: "Your listening", rows: [], note: notCountedNote)
+        }
+        return MusicSongDataSection(title: "Your listening", rows: [
+            MusicSongDataRow(label: "Plays", value: "\(entry.playCount)", isNumeric: true),
+            MusicSongDataRow(label: "Time listened", value: listenedText(entry.totalSeconds), isNumeric: true),
+            MusicSongDataRow(label: "Last played", value: lastPlayedText(entry.lastPlayed, now: now), isNumeric: false),
+            MusicSongDataRow(label: "First played", value: firstPlayedText(entry.firstPlayed), isNumeric: false)
+        ])
+    }
+
+    /// Hours, minutes and seconds, each only when it is not zero: 1h 2m 5s, 2m, 45s. Nothing heard is 0s.
+    static func listenedText(_ totalSeconds: TimeInterval) -> String {
+        let whole = totalSeconds.isFinite ? max(Int(totalSeconds.rounded()), 0) : 0
+        let hours = whole / 3600
+        let minutes = whole % 3600 / 60
+        let seconds = whole % 60
+        var parts: [String] = []
+        if hours > 0 { parts.append("\(hours)h") }
+        if minutes > 0 { parts.append("\(minutes)m") }
+        if seconds > 0 || parts.isEmpty { parts.append("\(seconds)s") }
+        return parts.joined(separator: " ")
+    }
+
+    private static func lastPlayedText(_ date: Date, now: Date) -> String {
+        guard now.timeIntervalSince(date) >= 60 else { return "Just now" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: now)
+    }
+
+    private static func firstPlayedText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+}

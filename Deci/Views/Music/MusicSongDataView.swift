@@ -19,7 +19,7 @@ struct MusicSongDataView: View {
                     stream: store.stream,
                     analysis: store.analysis,
                     now: Date()
-                )
+                ) + [MusicSongDataRows.listeningSection(store.listening, now: Date())]
             )
             // Another song starts at the top.
             .id(track.videoId)

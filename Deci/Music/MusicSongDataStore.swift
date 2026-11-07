@@ -40,6 +40,8 @@ final class MusicSongDataStore {
         var lookupFacts: (@MainActor (MusicTrack) async -> Void)?
         /// Analyses the song (when `needAnalysis`) and measures its tempo (when `needBPM`) from its stream. Nil: none.
         var measure: (@MainActor (ResolvedStream, _ needAnalysis: Bool, _ needBPM: Bool) async -> MusicSongMeasureResult)?
+        /// The listener's own plays of a song, from the local listening store.
+        var listening: @MainActor (String) async -> MusicListeningEntry? = { _ in nil }
     }
 
     /// The song the panel is open for; nil while it is closed.
@@ -48,6 +50,7 @@ final class MusicSongDataStore {
     private(set) var analysis: MusicAnalysis?
     /// The song's music data and whether it is still being looked up or measured.
     private(set) var music = MusicSongDataMusicState()
+    private(set) var listening: MusicListeningEntry?
 
     var isOpen: Bool { track != nil }
 
@@ -89,6 +92,7 @@ final class MusicSongDataStore {
         self.track = track
         analysis = nil
         music = MusicSongDataMusicState(lookingUp: true)
+        listening = nil
         let id = track.videoId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else {
             stream = .unavailable
@@ -97,6 +101,7 @@ final class MusicSongDataStore {
         }
         loadAnalysis(id: id, run: run)
         loadFacts(track, id: id, run: run)
+        loadListening(id: id, run: run)
         if let held = sources?.heldStream(id) {
             stream = .loaded(held)
         } else {
@@ -123,6 +128,7 @@ final class MusicSongDataStore {
         track = nil
         analysis = nil
         music = MusicSongDataMusicState()
+        listening = nil
         stream = .loading
     }
 
@@ -267,6 +273,15 @@ final class MusicSongDataStore {
             }
             self.measureTask = nil
             self.lastMeasure = nil
+        }
+    }
+
+    private func loadListening(id: String, run: Int) {
+        guard let read = sources?.listening else { return }
+        Task { [weak self] in
+            let row = await read(id)
+            guard let self, run == self.runCounter else { return }
+            self.listening = row
         }
     }
 
