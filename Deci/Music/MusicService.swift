@@ -2547,7 +2547,7 @@ final class MusicService {
             ),
             crossfadeOn: isCrossfadeOn, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
-            manualSkip: false
+            manualSkip: false, beatMixEnabled: false
         )
         let plan = MusicTransitionPlanner.plan(inputs)
         let rows = Set([outgoing, incoming].compactMap { $0?.videoId })

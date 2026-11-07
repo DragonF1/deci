@@ -5,7 +5,7 @@
 import Foundation
 
 struct TransitionPlan: Equatable, Sendable {
-    enum Mode: String, Sendable { case smart, fixed, gapless, clean }
+    enum Mode: String, Sendable { case smart, fixed, gapless, clean, beat }
     enum Reason: String, Sendable {
         case ok, noAnalysis, partialAnalysis, albumInOrder, loopSong, noDuration, noMix, off, tooShort, late
     }
@@ -28,6 +28,25 @@ struct TransitionPlan: Equatable, Sendable {
     var outgoingRampSeconds: Double
     var reason: Reason
 
+    // Tier 3b (beat mix). All defaulted, so every plan built before 3b means what it meant.
+    /// Playback rate of the incoming deck during the overlap (pitch kept); 1 outside beat mode.
+    var incomingRate: Double = 1
+    /// Outgoing item time where the overlap starts (beat mode).
+    var mixOutSec: Double? = nil
+    /// Incoming item time that lands on `mixOutSec` (beat mode).
+    var mixInSec: Double? = nil
+    var overlapBars: Int = 0
+    var overlapSec: Double = 0
+    /// One outgoing bar (4 beats) in seconds.
+    var barSec: Double = 0
+    /// Offset from the overlap start where the bass hands over; nil when there is no swap.
+    var bassSwapAtSec: Double? = nil
+    var bassHandoverSec: Double = 0
+    /// Seconds the incoming rate takes to glide back to 1 after the outgoing song has gone.
+    var glideBackSec: Double = 0
+    /// Why beat mode was refused, when it was (a `MusicBeatPlanner.Fallback` raw value).
+    var fallbackReason: String? = nil
+
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(
         mode: .gapless, incomingStartSec: 0, outgoingEndSec: nil, fadeStartSec: nil, fadeSeconds: 0,
@@ -42,6 +61,8 @@ struct MusicTransitionSide: Equatable, Sendable {
     /// Already filtered by isFresh; nil = missing or stale.
     var analysis: MusicAnalysis?
     var youtubeLoudnessDb: Double?
+    /// The beat grid, when known. Without it the planner reads `analysis.usableGrid` (version 2 rows only).
+    var grid: MusicBeatGrid? = nil
 }
 
 struct MusicTransitionInputs: Equatable, Sendable {
@@ -58,12 +79,17 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var cleanPairFlag: Bool
     /// Quick fade (fadeSeconds 0.3, mode .fixed).
     var manualSkip: Bool
+    /// Tier 3b: false keeps the plan exactly the tier 2 plan (the app passes false until the engine can mix on beats).
+    var beatMixEnabled: Bool = true
+    /// True once the bass swap exists: only then may an overlap be 16 bars.
+    var bassSwapAvailable: Bool = false
     static let skipFadeSeconds = 0.3
 
     init(
         outgoing: MusicTransitionSide, incoming: MusicTransitionSide, crossfadeOn: Bool,
         settingSeconds: Double, albumInOrder: Bool = false, loopSong: Bool = false,
-        cleanStartFlag: Bool = false, cleanPairFlag: Bool = false, manualSkip: Bool = false
+        cleanStartFlag: Bool = false, cleanPairFlag: Bool = false, manualSkip: Bool = false,
+        beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false
     ) {
         self.outgoing = outgoing
         self.incoming = incoming
@@ -74,6 +100,8 @@ struct MusicTransitionInputs: Equatable, Sendable {
         self.cleanStartFlag = cleanStartFlag
         self.cleanPairFlag = cleanPairFlag
         self.manualSkip = manualSkip
+        self.beatMixEnabled = beatMixEnabled
+        self.bassSwapAvailable = bassSwapAvailable
     }
 }
 
@@ -86,7 +114,19 @@ enum MusicTransitionPlanner {
 
     // MARK: Plan
 
+    /// The tier 2 plan, upgraded to a beat mix when `MusicBeatPlanner` finds one. A refusal because a song has no grid
+    /// at all leaves the plan untouched (that is every song until 3b is on); any other refusal keeps the smart plan and
+    /// records `fallbackReason`.
     static func plan(_ inputs: MusicTransitionInputs) -> TransitionPlan {
+        let base = smartPlan(inputs)
+        guard inputs.beatMixEnabled, base.mode == .smart else { return base }
+        let beat = MusicBeatPlanner.plan(inputs, smart: base)
+        if beat.mode == .beat || beat.fallbackReason != MusicBeatPlanner.Fallback.gridMissing.rawValue { return beat }
+        return base
+    }
+
+    /// The tier 2 plan alone.
+    static func smartPlan(_ inputs: MusicTransitionInputs) -> TransitionPlan {
         func tier1(_ reason: TransitionPlan.Reason) -> TransitionPlan {
             var plan = TransitionPlan.tier1Gapless
             plan.reason = reason

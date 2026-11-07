@@ -126,6 +126,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private static let fadeLead: TimeInterval = 0.05
     /// A fade shorter than this is not worth it: the switch is gapless instead.
     private static let minimumFade: TimeInterval = 1
+    /// Tier 3b: seconds added to the incoming start host time so two beats land together (measured in the 3a spike).
+    nonisolated static let beatCalibrationSec = -0.007
     /// Never schedule a fade start closer than this to now.
     private static let fadeGuard: TimeInterval = 0.25
     /// A scheduled start stays this far (more than the 0.05 s the scheduler needs) from the item's end.
