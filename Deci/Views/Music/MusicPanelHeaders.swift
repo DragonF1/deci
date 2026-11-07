@@ -119,8 +119,8 @@ struct MusicRelatedHeader: View {
 
 // MARK: - Up next
 
-/// "Up next", the magnifier and the three playback toggles in one group. The magnifier opens a field that searches the
-/// queue; while it is open the field sits at the trailing end and the toggles step aside.
+/// "Up next" and the playback toggles in one group. No magnifier (owner 2026-11-06: not needed, the toggles get the
+/// room). If the queue's search field is opened another way, it sits at the trailing end and the toggles step aside.
 struct MusicQueueHeader: View {
     let service: MusicService
     let navigation: MusicSearchNavigation
@@ -140,7 +140,6 @@ struct MusicQueueHeader: View {
                 MusicNavigationSearchField(service: service, navigation: navigation)
                     .frame(width: Self.fieldWidth)
             } else {
-                MusicSearchButton { navigation.openField() }
                 MusicPlaybackToggles(service: service)
             }
         }
