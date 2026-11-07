@@ -833,7 +833,8 @@ final class FakePlaybackEngine: PlaybackEngine {
 
     /// Like the engine: ignored with nothing preloaded or a different park offset.
     func updateTransitionPlan(_ plan: TransitionPlan?) {
-        guard preloadedVideoId != nil, (plan?.incomingStartSec ?? 0) == (transitionPlan?.incomingStartSec ?? 0) else { return }
+        guard preloadedVideoId != nil, (plan?.incomingStartSec ?? 0) == (transitionPlan?.incomingStartSec ?? 0),
+              (plan?.incomingRate ?? 1) == (transitionPlan?.incomingRate ?? 1) else { return }
         updatedPlans.append(plan)
         transitionPlan = plan
     }

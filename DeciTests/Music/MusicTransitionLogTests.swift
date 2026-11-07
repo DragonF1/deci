@@ -56,6 +56,61 @@ struct MusicTransitionLogTests {
         #expect(line.split(separator: " ").count == 10)
     }
 
+    // MARK: - Tier 3b P3 beat lines
+
+    private func beatPlan() -> TransitionPlan {
+        var plan = TransitionPlan(
+            mode: .beat, incomingStartSec: 12.5, outgoingEndSec: 139.4, fadeStartSec: 123.4, fadeSeconds: 16,
+            incomingGainDb: 0, incomingGlideSeconds: 0, outgoingGainDb: 0, outgoingRampSeconds: 0, reason: .ok)
+        plan.incomingRate = 0.952381
+        plan.mixOutSec = 123.4
+        plan.mixInSec = 12.5
+        plan.overlapBars = 8
+        plan.overlapSec = 16
+        return plan
+    }
+
+    @Test func beatPlanLineGolden() {
+        #expect(MusicTransitionLog.beatPlanLine(from: "aaaaaaaaaaa", to: "bbbbbbbbbbb", plan: beatPlan(), bpmA: 126, bpmB: 120)
+            == "transition_beat_plan from=aaaaaaaaaaa to=bbbbbbbbbbb bpmA=126.00 bpmB=120.00 rate=0.9524 bars=8 mixOut=123.40 mixIn=12.50 swapAt=- handover=0.00")
+        var swap = beatPlan()
+        swap.bassSwapAtSec = 8
+        swap.bassHandoverSec = 0.25
+        let line = MusicTransitionLog.beatPlanLine(from: "a", to: "b", plan: swap, bpmA: nil, bpmB: .nan)
+        #expect(line.contains("bpmA=- bpmB=-"))
+        #expect(line.hasSuffix("swapAt=8.00 handover=0.25"))
+    }
+
+    @Test func beatFallbackLineGolden() {
+        #expect(MusicTransitionLog.beatFallbackLine(from: "a", to: "b", reason: "tempoClash", bpmA: 120, bpmB: nil)
+            == "transition_beat_fallback from=a to=b reason=tempoClash bpmA=120.00 bpmB=-")
+    }
+
+    @Test func beatAppliedLineGolden() {
+        #expect(MusicTransitionLog.beatAppliedLine(from: "a", to: "b", rate: 0.952381, calibrationSec: -0.007)
+            == "transition_beat_applied from=a to=b rate=0.9524 calib=-7.0ms")
+    }
+
+    @Test func glideLinesGolden() {
+        #expect(MusicTransitionLog.glideLine(event: .start, rate: 0.952381, seconds: 10) == "transition_glide start rate=0.9524 over=10.0")
+        #expect(MusicTransitionLog.glideLine(event: .end, rate: 1, seconds: 0) == "transition_glide end")
+        #expect(MusicTransitionLog.glideLine(event: .cancel(why: "seek"), rate: 0.981, seconds: 0) == "transition_glide cancel why=seek rate=0.9810")
+    }
+
+    @Test func beatLinesCarryNoUrlsAndNoDashes() {
+        let lines = [
+            MusicTransitionLog.beatPlanLine(from: "a", to: "b", plan: beatPlan(), bpmA: 120, bpmB: 126),
+            MusicTransitionLog.beatFallbackLine(from: "a", to: "b", reason: "notReady", bpmA: 120, bpmB: 126),
+            MusicTransitionLog.beatAppliedLine(from: "a", to: "b", rate: 1.04, calibrationSec: -0.007),
+            MusicTransitionLog.glideLine(event: .cancel(why: "output"), rate: .nan, seconds: 0),
+        ]
+        for line in lines {
+            #expect(!line.contains("http"))
+            #expect(!line.contains("\u{2014}"))
+            #expect(!line.contains("nan"))
+        }
+    }
+
     @Test func loggerExists() {
         _ = MusicTransitionLog.logger
     }

@@ -246,6 +246,115 @@ final class BeatSyncRig {
         return record
     }
 
+    /// Tier 3b P3: A (120 bpm) mixed into B (126 bpm) the way the app does it. B is preloaded with a beat plan (mix-in 0,
+    /// rate 120/126) and the engine itself schedules the start on A's beat at `rate`, with the calibration. The run stops
+    /// when the overlap ends, before the rate glide. Nothing is heard: the capture mutes this process.
+    func measureBeatMix(label: String, overlapSeconds: Double = 16) async throws -> BeatSyncRunRecord {
+        let bBpm = 126.0
+        let period = 60 / bBpm
+        let rate = BeatSyncSignal.bpm / bBpm
+        try FileManager.default.createDirectory(at: BeatSyncPaths.files, withIntermediateDirectories: true)
+        let urlB126 = BeatSyncPaths.files.appendingPathComponent("click-b-3200-126bpm.m4a")
+        if !FileManager.default.fileExists(atPath: urlB126.path) {
+            let mono = BeatSyncSignal.clickTrack(
+                frequency: Self.bFrequency, sampleRate: 44_100, seconds: Self.fileSeconds, period: period
+            )
+            var stereo = [Float](repeating: 0, count: mono.count * 2)
+            for (index, value) in mono.enumerated() {
+                stereo[index * 2] = value
+                stereo[index * 2 + 1] = value
+            }
+            try await ToneFile.write(interleavedStereo: stereo, sampleRate: 44_100, to: urlB126)
+        }
+        let chain = MusicDSPChain(sampleRate: capture.sampleRate)
+        chain.setTargetGain(1, snap: true)
+        let engine = AVPlaybackEngine(chain: chain)
+        engine.setOutputDevice(uid: capture.outputDeviceUID)
+        engine.avPlayer.preventsDisplaySleepDuringVideoPlayback = false
+        engine.crossfadeSeconds = 6
+        let hostClock = CMClockGetHostTimeClock()
+
+        capture.beginRecording()
+        engine.load(stream("a", url: urlA), startAt: 0, autoplay: true)
+        let playing = await waitUntil(timeout: .seconds(30)) {
+            engine.position > 0.5 && engine.avPlayer.timeControlStatus == .playing
+        }
+        guard playing else {
+            _ = capture.endRecording()
+            engine.unload()
+            throw Failure(description: "deck A never played")
+        }
+        // The mix-out is A's beat about 14 s on: the engine needs the preload and the schedule window before it.
+        let beat = Int(((engine.position + 14) / BeatSyncSignal.beatPeriod).rounded(.up))
+        let mixOut = Double(beat) * BeatSyncSignal.beatPeriod
+        var plan = TransitionPlan(
+            mode: .beat, incomingStartSec: 0, outgoingEndSec: mixOut + overlapSeconds, fadeStartSec: mixOut,
+            fadeSeconds: overlapSeconds, incomingGainDb: 0, incomingGlideSeconds: 0, outgoingGainDb: 0,
+            outgoingRampSeconds: 0, reason: .ok
+        )
+        plan.incomingRate = rate
+        plan.mixOutSec = mixOut
+        plan.mixInSec = 0
+        plan.overlapBars = Int(overlapSeconds / (4 * BeatSyncSignal.beatPeriod))
+        plan.overlapSec = overlapSeconds
+        plan.barSec = 4 * BeatSyncSignal.beatPeriod
+        plan.glideBackSec = 10
+        engine.preload(
+            ResolvedStream(
+                videoId: "b", url: urlB126, itag: 140, durationSeconds: Self.fileSeconds,
+                expiresAt: .distantFuture, playbackTrackingURL: nil, httpHeaders: [:]
+            ),
+            plan: plan
+        )
+        let scheduled = await waitUntil(timeout: .seconds(40)) { engine.scheduledStartHost != nil }
+        guard scheduled, let host = engine.scheduledStartHost else {
+            _ = capture.endRecording()
+            engine.unload()
+            throw Failure(description: "the engine never scheduled the beat mix")
+        }
+        let plannedRate = engine.debugPlannedRate
+        let stopAt = host.seconds + overlapSeconds - 0.1
+        while CMClockGetTime(hostClock).seconds < stopAt { try await Task.sleep(for: .milliseconds(50)) }
+        let recording = capture.endRecording()
+        engine.unload()
+
+        let samples = recording.samples
+        let sampleRate = recording.sampleRate
+        let aOnsets = ClickDetector.detect(samples, sampleRate: sampleRate, frequency: Self.aFrequency)
+        let bOnsets = ClickDetector.detect(samples, sampleRate: sampleRate, frequency: Self.bFrequency)
+        var record = BeatSyncRunRecord(
+            label: label, rate: rate, algorithm: "spectral", clock: "none",
+            device: capture.outputDeviceName, deviceUID: capture.outputDeviceUID, sampleRate: sampleRate,
+            startBeat: beat, overlapSeconds: overlapSeconds,
+            aCount: aOnsets.count, bCount: bOnsets.count,
+            startErrorMs: 0, firstErrorMs: 0, meanErrorMs: 0, driftMs: 0, slopeDriftMs: 0, jitterMs: 0, matched: 0,
+            hostStartErrorMs: 0, aGridHostErrorMs: 0, failure: nil, errorsMs: [], bOnsets: bOnsets
+        )
+        guard abs(Double(plannedRate) - rate) < 1e-4 else {
+            record.failure = "the engine planned rate \(plannedRate), not \(rate)"
+            return record
+        }
+        guard aOnsets.count > beat, !bOnsets.isEmpty else {
+            record.failure = "clicks not found (A \(aOnsets.count), B \(bOnsets.count), start beat \(beat))"
+            return record
+        }
+        guard let stats = BeatGrid.compare(
+            aOnsets: aOnsets, bOnsets: bOnsets, startBeat: beat, rate: rate, period: period
+        ) else {
+            record.failure = "B's clicks do not match the expected grid (first at \(bOnsets[0]) s)"
+            return record
+        }
+        record.startErrorMs = stats.startErrorMs
+        record.firstErrorMs = stats.firstErrorMs
+        record.meanErrorMs = stats.meanErrorMs
+        record.driftMs = stats.driftMs
+        record.slopeDriftMs = stats.slopeDriftMs
+        record.jitterMs = stats.jitterMs
+        record.matched = stats.matched
+        record.errorsMs = stats.errorsMs
+        return record
+    }
+
     /// Appends the record to `runs.jsonl` (one JSON object per line) as soon as it exists.
     static func append(_ record: BeatSyncRunRecord) throws {
         try FileManager.default.createDirectory(at: BeatSyncPaths.root, withIntermediateDirectories: true)

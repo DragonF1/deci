@@ -177,6 +177,12 @@ final class MusicService {
     static let analysisLead: TimeInterval = 75
     /// Songs shorter than this are not fetched early: the stream preload at its own window serves them.
     static let analysisMinDuration: TimeInterval = 150
+    /// A beat mix can start up to a phrase plus its 8-bar overlap before the trimmed end: its window opens this early
+    /// (inside `analysisLead`, so the next song's file is cached and analysed by then and nothing starts sooner).
+    static let beatLead: TimeInterval = 70
+    /// The engine needs about this long to park, preroll and arm the next song: a beat mix starts no sooner than this
+    /// after the plan is made, and a song that is not parked this long before the mix point is mixed the smart way.
+    static let beatPrerollLead: TimeInterval = 8
     /// With less than this left to the trimmed end the next song is offered with whatever analysis it has (scheduleWindow
     /// 6 s plus a 4 s preroll margin): waiting for its analysis stops here (tier 2b).
     static let analysisDeadline: TimeInterval = 10
@@ -214,6 +220,12 @@ final class MusicService {
     /// The fade length as Settings has it right now, read when a transition is planned. Nil: the length the service started with.
     @ObservationIgnored private let liveCrossfadeSeconds: (@MainActor () -> Double)?
     @ObservationIgnored private var startingCrossfadeSeconds: Double
+    /// Settings' beat-matched transitions switch, read live when the service is wired to settings.
+    @ObservationIgnored private let liveBeatMix: (@MainActor () -> Bool)?
+    @ObservationIgnored private var startingBeatMix: Bool
+    /// The incoming song a beat mix was given up for (it was not parked in time): its transition is planned the smart
+    /// way from then on. Forgotten when the track changes.
+    @ObservationIgnored private var beatFallbackFor: String?
     /// True while a settings reset puts the options back: the file was cleared already, so nothing is written.
     @ObservationIgnored private var holdsPreferences = false
     @ObservationIgnored private var shuffleGenerator: MusicShuffleGenerator
@@ -367,6 +379,7 @@ final class MusicService {
         preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(),
         savePreferences: @escaping @MainActor (MusicPlaybackPreferences) -> Void = { _ in },
         crossfadeSeconds: (@MainActor () -> Double)? = nil,
+        beatMix: (@MainActor () -> Bool)? = nil,
         pinnedItems: [MusicPinnedItem] = [],
         savePinnedItems: @escaping @MainActor ([MusicPinnedItem]) -> Void = { _ in },
         // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
@@ -418,6 +431,8 @@ final class MusicService {
         self.isCrossfadeOn = preferences.crossfade
         self.startingCrossfadeSeconds = preferences.crossfadeSeconds
         self.liveCrossfadeSeconds = crossfadeSeconds
+        self.startingBeatMix = preferences.beatMix
+        self.liveBeatMix = beatMix
         self.savePreferences = savePreferences
         self.shuffleGenerator = MusicShuffleGenerator(seed: shuffleSeed ?? UInt64.random(in: .min ... .max))
         self.lastActivity = now()
@@ -1447,6 +1462,9 @@ final class MusicService {
         MusicPlaybackPreferences.clampedCrossfade(liveCrossfadeSeconds?() ?? startingCrossfadeSeconds)
     }
 
+    /// Beat-matched transitions are on (they also need Crossfade on, which the planner checks).
+    var isBeatMixOn: Bool { liveBeatMix?() ?? startingBeatMix }
+
     /// An album page played in its own order: it stays gapless, whatever Crossfade says (an album is mixed to run on).
     private var playsAlbumInOrder: Bool {
         guard !queue.isShuffled, case .page(let browseId)? = queue.source else { return false }
@@ -1467,7 +1485,7 @@ final class MusicService {
         // nothing); a flag change re-plans through `performMix`.
         let settings = ReplanSettings(
             crossfadeOn: isCrossfadeOn, seconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
-            loopSong: loopMode == .song
+            loopSong: loopMode == .song, beatMix: isBeatMixOn
         )
         guard settings != syncedSettings else { return }
         syncedSettings = settings
@@ -1479,13 +1497,14 @@ final class MusicService {
         var seconds: Double
         var albumInOrder: Bool
         var loopSong: Bool
+        var beatMix: Bool
     }
 
     private func savePlaybackPreferences() {
         guard !holdsPreferences else { return }
         savePreferences(MusicPlaybackPreferences(
             shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn,
-            crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds
+            crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds, beatMix: isBeatMixOn
         ))
     }
 
@@ -2406,6 +2425,7 @@ final class MusicService {
         guard analysis != nil else { return }
         let leaving = analysisCurrentID
         analysisCurrentID = id
+        beatFallbackFor = nil
         // The mirror keeps the playing song and the one being fetched for next, nothing older.
         transitionAnalyses = transitionAnalyses.filter { $0.key == id || $0.key == analysisTarget }
         if let id, analysisReader != nil {
@@ -2497,6 +2517,10 @@ final class MusicService {
         guard plansTransitions, let row = freshRow(for: player.currentStream) else { return (leadTime, duration) }
         let end = MusicTransitionPlanner.trimmedEnd(of: row, duration: duration) ?? duration
         let smart = Self.prefetchLead + MusicTransitionPlanner.maxLead
+        if isBeatMixOn, isCrossfadeOn, let next, beatFallbackFor != next.videoId, row.usableGrid != nil,
+           freshRow(for: next)?.usableGrid != nil || isAwaitingRow(for: next), duration > Self.beatLead * 2 {
+            return (Self.beatLead, end)
+        }
         guard isCrossfadeOn, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
             return (leadTime, end)
         }
@@ -2527,6 +2551,41 @@ final class MusicService {
             from: plan.offered.inputs.outgoing.videoId, to: stream.videoId, plan: plan.plan,
             outgoingDuration: plan.offered.inputs.outgoing.durationSeconds
         ))
+        logBeat(plan.offered)
+    }
+
+    /// The beat line of an offered plan: the beat plan, or why a pair that could have beat-mixed did not.
+    private func logBeat(_ offered: OfferedPlan) {
+        let outgoing = offered.inputs.outgoing
+        let incoming = offered.inputs.incoming
+        let bpmA = (outgoing.grid ?? outgoing.analysis?.usableGrid)?.bpm
+        let bpmB = (incoming.grid ?? incoming.analysis?.usableGrid)?.bpm
+        if offered.plan.mode == .beat {
+            log(MusicTransitionLog.beatPlanLine(
+                from: outgoing.videoId, to: incoming.videoId, plan: offered.plan, bpmA: bpmA, bpmB: bpmB
+            ))
+        } else if offered.inputs.beatMixEnabled, offered.inputs.crossfadeOn, let reason = offered.plan.fallbackReason {
+            log(MusicTransitionLog.beatFallbackLine(
+                from: outgoing.videoId, to: incoming.videoId, reason: reason, bpmA: bpmA, bpmB: bpmB
+            ))
+        }
+    }
+
+    /// A beat mix whose song is not parked and prerolled by `beatPrerollLead` before the mix point cannot start on its
+    /// grid: it is given up for the smart plan of the same pair (the preload is offered again, planned without beats).
+    private func giveUpBeatMixIfNotReady(position: TimeInterval) {
+        guard let offered = offeredPlan, offered.plan.mode == .beat, let mixOut = offered.plan.mixOutSec,
+              preloadOffered == offered.inputs.incoming.videoId, !player.preloadIsReady,
+              position >= mixOut - Self.beatPrerollLead else { return }
+        let outgoing = offered.inputs.outgoing
+        let incoming = offered.inputs.incoming
+        log(MusicTransitionLog.beatFallbackLine(
+            from: outgoing.videoId, to: incoming.videoId, reason: "notReady",
+            bpmA: (outgoing.grid ?? outgoing.analysis?.usableGrid)?.bpm,
+            bpmB: (incoming.grid ?? incoming.analysis?.usableGrid)?.bpm
+        ))
+        beatFallbackFor = incoming.videoId
+        cancelPreload()
     }
 
     /// The plan for the transition from the playing song into `next`, with the inputs it came from. Nil when the player
@@ -2536,7 +2595,7 @@ final class MusicService {
         let outgoing = freshRow(for: current)
         let incoming = freshRow(for: next)
         let flags = transitionFlags(from: current.videoId, to: next.videoId)
-        let inputs = MusicTransitionInputs(
+        var inputs = MusicTransitionInputs(
             outgoing: MusicTransitionSide(
                 videoId: current.videoId, durationSeconds: current.durationSeconds, analysis: outgoing,
                 youtubeLoudnessDb: current.loudnessDb
@@ -2547,8 +2606,10 @@ final class MusicService {
             ),
             crossfadeOn: isCrossfadeOn, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
-            manualSkip: false, beatMixEnabled: false
+            manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId
         )
+        // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
+        inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
         let plan = MusicTransitionPlanner.plan(inputs)
         let rows = Set([outgoing, incoming].compactMap { $0?.videoId })
         return (plan, OfferedPlan(inputs: inputs, plan: plan, plannedWithRows: rows))
@@ -2603,10 +2664,20 @@ final class MusicService {
         inputs.settingSeconds = crossfadeSeconds
         inputs.albumInOrder = playsAlbumInOrder
         inputs.loopSong = loopMode == .song
+        inputs.beatMixEnabled = isBeatMixOn && beatFallbackFor != inputs.incoming.videoId
+        inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
         let flags = transitionFlags(from: inputs.outgoing.videoId, to: inputs.incoming.videoId)
         inputs.cleanStartFlag = flags.startsClean
         inputs.cleanPairFlag = flags.pairIsClean
         var plan = MusicTransitionPlanner.plan(inputs)
+        // The standby is parked on a beat plan's mix-in and starts at its rate (and one parked for another plan cannot take
+        // a beat mix): a replan that changes either is the preload withdrawn and offered again with the new plan.
+        let wasBeat = offered.plan.mode == .beat
+        if wasBeat != (plan.mode == .beat) || (wasBeat && (plan.incomingRate != offered.plan.incomingRate
+            || plan.mixInSec != offered.plan.mixInSec)) {
+            cancelPreload()
+            return
+        }
         // An album in order or Loop song takes the trims away, but the standby is parked at the old offset: the preload is
         // withdrawn and offered again on a later tick, with a plan that starts at 0.
         if offered.plan.incomingStartSec != 0, plan.reason == .albumInOrder || plan.reason == .loopSong {
@@ -2850,6 +2921,7 @@ final class MusicService {
         if isPlaying, session?.pingsDropped != true {
             prefetchNextIfNeeded(position: position)
             offerPreload(position: position)
+            giveUpBeatMixIfNotReady(position: position)
         }
         let url = session?.trackingURL
         let earned = session?.accumulator.record(position: position, isPlaying: isPlaying, canFire: url != nil) == true

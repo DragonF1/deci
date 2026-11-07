@@ -48,6 +48,49 @@ enum MusicTransitionLog {
         "transition_late from=\(from) to=\(to) song=\(late) reason=late"
     }
 
+    /// transition_beat_plan from=<id> to=<id> bpmA=120.00 bpmB=126.00 rate=0.9524 bars=8 mixOut=123.40 mixIn=12.50
+    /// swapAt=- handover=0.00 (service side, at the offer). `bpmA` is the playing song, `bpmB` the next one.
+    static func beatPlanLine(from: String, to: String, plan: TransitionPlan, bpmA: Double?, bpmB: Double?) -> String {
+        let swap = plan.bassSwapAtSec.map { fixed($0, 2) } ?? "-"
+        return "transition_beat_plan from=\(from) to=\(to) bpmA=\(bpm(bpmA)) bpmB=\(bpm(bpmB))"
+            + " rate=\(fixed(plan.incomingRate, 4)) bars=\(plan.overlapBars)"
+            + " mixOut=\(fixed(plan.mixOutSec ?? 0, 2)) mixIn=\(fixed(plan.mixInSec ?? 0, 2))"
+            + " swapAt=\(swap) handover=\(fixed(plan.bassHandoverSec, 2))"
+    }
+
+    /// transition_beat_fallback from=<id> to=<id> reason=tempoClash bpmA=120.00 bpmB=-
+    /// A pair that is mixed the smart way though beat mixing was on: the planner's reason, or `notReady` when the next
+    /// song was not parked in time. A bpm that is not known prints "-".
+    static func beatFallbackLine(from: String, to: String, reason: String, bpmA: Double?, bpmB: Double?) -> String {
+        "transition_beat_fallback from=\(from) to=\(to) reason=\(reason) bpmA=\(bpm(bpmA)) bpmB=\(bpm(bpmB))"
+    }
+
+    /// transition_beat_applied from=<id> to=<id> rate=0.9524 calib=-7.0ms (engine side, at the flip)
+    static func beatAppliedLine(from: String, to: String, rate: Double, calibrationSec: Double) -> String {
+        "transition_beat_applied from=\(from) to=\(to) rate=\(fixed(rate, 4)) calib=\(fixed(calibrationSec * 1000, 1))ms"
+    }
+
+    enum GlideEvent: Equatable {
+        case start
+        case end
+        case cancel(why: String)
+    }
+
+    /// transition_glide start rate=0.9524 over=10.0 | transition_glide end | transition_glide cancel why=seek rate=0.9810
+    /// The incoming song's rate on its way back to 1 after a beat mix. `cancel` is a seek, a skip or an output change.
+    static func glideLine(event: GlideEvent, rate: Double, seconds: Double) -> String {
+        switch event {
+        case .start: return "transition_glide start rate=\(fixed(rate, 4)) over=\(fixed(seconds, 1))"
+        case .end: return "transition_glide end"
+        case .cancel(let why): return "transition_glide cancel why=\(why) rate=\(fixed(rate, 4))"
+        }
+    }
+
+    private static func bpm(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return "-" }
+        return fixed(value, 2)
+    }
+
     private static func fixed(_ value: Double, _ digits: Int) -> String {
         guard value.isFinite else { return "0" }
         let text = String(format: "%.\(digits)f", value)

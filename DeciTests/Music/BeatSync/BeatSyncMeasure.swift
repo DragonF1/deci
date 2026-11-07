@@ -15,14 +15,15 @@ nonisolated enum BeatSyncSignal {
 
     /// A mono click track: one burst per beat, centres at `firstCenter + k * beatPeriod (+ centreShift)`.
     static func clickTrack(
-        frequency: Double, sampleRate: Double, seconds: Double, amplitude: Float = 0.5, centreShift: Double = 0
+        frequency: Double, sampleRate: Double, seconds: Double, amplitude: Float = 0.5, centreShift: Double = 0,
+        period: Double = beatPeriod
     ) -> [Float] {
         let frames = max(0, Int(seconds * sampleRate))
         var track = [Float](repeating: 0, count: frames)
         let half = burstSeconds / 2
         var beat = 0
         while true {
-            let centre = firstCenter + Double(beat) * beatPeriod + centreShift
+            let centre = firstCenter + Double(beat) * period + centreShift
             if centre - half > seconds { break }
             let first = max(0, Int(((centre - half) * sampleRate).rounded(.up)))
             let last = min(frames - 1, Int(((centre + half) * sampleRate).rounded(.down)))

@@ -210,6 +210,17 @@ struct GeneralTab: View {
             }
             SettingsRowDivider()
             SettingsRow(
+                "Beat-matched transitions",
+                description: "When Crossfade is on, songs of matching tempo are lined up on the beat over eight bars. The next song speeds up or slows down a little (up to 8%) and relaxes back to normal after the fade. Other songs keep the usual fade."
+            ) {
+                Toggle("", isOn: $settings.appSettings.musicBeatMix)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
+            .disabled(!settings.appSettings.musicCrossfadeEnabled)
+            SettingsRowDivider()
+            SettingsRow(
                 "Analyse songs in the background",
                 description: "Reads liked songs and playlists one at a time while Music is idle, finds quiet intros and outros, then deletes the audio. The song that is playing and the next one are analysed either way."
             ) {

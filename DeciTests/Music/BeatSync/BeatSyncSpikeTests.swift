@@ -82,4 +82,29 @@ struct BeatSyncSpikeTests {
         try BeatSyncReport.write()
         #expect(failures.isEmpty, "\(failures)")
     }
+
+    @Test("tier 3b P3: 120 bpm into 126 bpm through the engine's own beat plan path stays within 10 ms across the overlap")
+    func beatMixWithinTenMs() async throws {
+        let rig = try await BeatSyncRig.open(deviceUID: spikeDevice)
+        defer { rig.close() }
+        var worst = 0.0
+        var summary: [String] = []
+        for run in 1...3 {
+            let record = try await rig.measureBeatMix(label: "beatmix-120-126-\(run)")
+            try BeatSyncRig.append(record)
+            #expect(record.failure == nil, "\(record.failure ?? "")")
+            guard record.failure == nil else { continue }
+            let peak = record.errorsMs.map { abs($0) }.max() ?? .infinity
+            worst = max(worst, peak)
+            summary.append(String(
+                format: "run %d: matched %d, max |error| %.2f ms, mean %.2f ms, slope drift %.2f ms, jitter %.2f ms",
+                run, record.matched, peak, record.meanErrorMs, record.slopeDriftMs, record.jitterMs))
+            #expect(record.matched >= 8)
+            #expect(peak <= 10, "beat error \(peak) ms")
+        }
+        let text = summary.joined(separator: "\n") + String(format: "\nworst %.2f ms\n", worst)
+        try text.write(
+            to: BeatSyncPaths.root.appendingPathComponent("beatmix-p3.txt"), atomically: true, encoding: .utf8)
+        print("BEATMIX " + summary.joined(separator: " | ") + String(format: " | worst %.2f ms", worst))
+    }
 }

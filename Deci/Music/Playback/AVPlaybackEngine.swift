@@ -233,6 +233,50 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var pendingGlide: TimeInterval = 0
     /// The fall-back reason of this preload was logged already.
     private var loggedFallback = false
+    /// The rate the scheduled standby start was planned at: the beat plan's nudge, 1 for every other transition.
+    private var plannedRate: Float = 1
+    /// A beat mix's overlap, from its flip until the outgoing deck has drained: what a resume needs to realign the decks.
+    private var beatOverlap: BeatOverlap?
+    /// The rate glide back to 1 that follows a beat mix, nil outside one.
+    private var glide: Glide?
+    private var glideTask: Task<Void, Never>?
+
+    /// What is kept of a beat mix while both decks play.
+    struct BeatOverlap: Equatable {
+        var rate: Float
+        var mixIn: TimeInterval
+        var mixOut: TimeInterval
+        var glideSeconds: TimeInterval
+    }
+
+    /// The incoming song's rate on its way back to 1. `elapsed` counts play-intent seconds only.
+    struct Glide: Equatable {
+        var from: Float
+        var total: TimeInterval
+        var elapsed: TimeInterval = 0
+    }
+
+    /// The glide's rate after `elapsed` of `total` seconds: a smoothstep from `from` to 1, so it starts and ends flat.
+    nonisolated static func glideRate(from: Float, elapsed: TimeInterval, total: TimeInterval) -> Float {
+        guard from.isFinite, total > 0, elapsed.isFinite else { return 1 }
+        let x = Float(min(1, max(0, elapsed / total)))
+        let eased = x * x * (3 - 2 * x)
+        return from + (1 - from) * eased
+    }
+
+    /// How far the incoming deck is from where the grid says it should be, given where both decks are (positive: ahead).
+    nonisolated static func overlapDrift(
+        incoming: TimeInterval, outgoing: TimeInterval, rate: Float, mixIn: TimeInterval, mixOut: TimeInterval
+    ) -> TimeInterval {
+        incoming - (mixIn + Double(rate) * (outgoing - mixOut))
+    }
+
+    /// A resume that finds the decks further apart than this puts the incoming song back on the grid first.
+    nonisolated static let resumeDriftTolerance: TimeInterval = 0.03
+    /// How far ahead of now both decks are restarted together after a pause in the overlap.
+    nonisolated static let resumeLead: TimeInterval = 0.15
+    /// The step of the rate glide.
+    nonisolated static let glideTick: TimeInterval = 0.1
     /// How many crossfades started (a scheduled one or a manual one). A test seam.
     private(set) var crossfadeCount = 0
     private(set) var outgoingPositionAtCrossfade: TimeInterval?
@@ -281,6 +325,22 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// Runs the end-of-item hand-over and the schedule check directly. Test seams.
     func debugActiveItemEnded() { activeItemEnded() }
     func debugEvaluateSchedule() { evaluateSchedule() }
+    /// The rate glide, driven by hand. Test seams.
+    func debugStartGlide(from rate: Float, over seconds: TimeInterval) { startGlide(from: rate, over: seconds) }
+    func debugAdvanceGlide(by seconds: TimeInterval) { advanceGlide(by: seconds) }
+    var debugGlide: Glide? { glide }
+    var debugGlideCurrentRate: Float? {
+        glide.map { Self.glideRate(from: $0.from, elapsed: $0.elapsed, total: $0.total) }
+    }
+    var debugPlannedRate: Float { plannedRate }
+    var debugBeatOverlap: BeatOverlap? { beatOverlap }
+    func debugSetBeatOverlap(_ overlap: BeatOverlap?) { beatOverlap = overlap }
+    func debugSetWantsPlay(_ on: Bool) { wantsPlay = on }
+    func debugBeatSchedule(rate: Float, at host: CMTime) {
+        plannedRate = rate
+        plannedFade = 0
+        schedule(at: host)
+    }
     var debugStandbyTap: MusicTapDeck? { standby.tap }
     /// Called when a preroll of the standby has completed, with its `finished` flag. A test seam.
     var onStandbyPrerolled: ((Bool) -> Void)?
@@ -325,6 +385,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     func load(_ stream: ResolvedStream, startAt: TimeInterval, autoplay: Bool) {
         // Whatever was preloaded was for the track after the one that is being replaced.
         cancelPreload()
+        snapRate(why: "skip")
         endDrain(fast: true)
         pendingGlide = 0
         outgoingPositionAtCrossfade = nil
@@ -349,6 +410,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         let asset = AVURLAsset(url: stream.url, options: options)
         let item = AVPlayerItem(asset: asset)
+        // A nudged rate keeps its pitch, and the beats stay put on the grid (the default algorithm does neither well).
+        item.audioTimePitchAlgorithm = .spectral
         let knownDuration = Self.knownDuration(of: stream)
         deck.naturalEnd = knownDuration
         if let knownDuration {
@@ -525,6 +588,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         // Moving a player to another device can drop a start that is scheduled on it: take it back and set it again.
         let rescheduled = scheduledHost != nil || alignedStart
         if rescheduled { cancelSchedule() }
+        snapRate(why: "output")
         active.player.audioOutputDeviceUniqueID = resolved
         standby.player.audioOutputDeviceUniqueID = resolved
         // Both decks of a crossfade move together: one left on the old device would play its half of the fade there.
@@ -544,9 +608,56 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     func play() {
         wantsPlay = true
-        if active.player.currentItem?.status == .readyToPlay { active.player.play() }
+        // A beat mix paused in the middle goes on with both decks on the same host time, so they stay on the grid.
+        if let draining, draining.player.currentItem != nil, let overlap = beatOverlap,
+           active.player.currentItem?.status == .readyToPlay {
+            resumeBeatOverlap(draining: draining, overlap: overlap)
+            return
+        }
+        if active.player.currentItem?.status == .readyToPlay {
+            if let glide {
+                // A glide that was held by a pause goes on from where it was, not from 1.
+                active.player.rate = Self.glideRate(from: glide.from, elapsed: glide.elapsed, total: glide.total)
+            } else {
+                active.player.play()
+            }
+        }
         // A crossfade that was paused in the middle goes on, both decks together.
         if let draining, draining.player.currentItem != nil { draining.player.play() }
+    }
+
+    /// Restarts both decks of a paused beat overlap at the same host time. An incoming deck that is more than 30 ms off
+    /// the grid (the two pauses did not land on the same sample) is put back on it first.
+    private func resumeBeatOverlap(draining: Deck, overlap: BeatOverlap) {
+        let outgoing = draining.player.currentTime().seconds
+        let incoming = active.player.currentTime().seconds
+        let token = active.token
+        let restart: @MainActor () -> Void = { [weak self] in
+            guard let self, self.wantsPlay, self.active.token == token, let draining = self.draining else { return }
+            let host = CMTimeAdd(
+                CMClockGetTime(CMClockGetHostTimeClock()),
+                CMTime(seconds: Self.resumeLead, preferredTimescale: 1_000_000_000)
+            )
+            if !self.hasRunOut(draining.player) {
+                draining.player.setRate(1, time: .invalid, atHostTime: host)
+            }
+            self.active.player.setRate(overlap.rate, time: .invalid, atHostTime: host)
+        }
+        guard outgoing.isFinite, incoming.isFinite, !hasRunOut(draining.player) else {
+            restart()
+            return
+        }
+        let drift = Self.overlapDrift(
+            incoming: incoming, outgoing: outgoing, rate: overlap.rate, mixIn: overlap.mixIn, mixOut: overlap.mixOut
+        )
+        guard abs(drift) > Self.resumeDriftTolerance else {
+            restart()
+            return
+        }
+        let expected = incoming - drift
+        active.player.seek(
+            to: CMTime(seconds: max(0, expected), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero
+        ) { _ in Task { @MainActor in restart() } }
     }
 
     func pause() {
@@ -562,6 +673,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             pendingStart = max(0, seconds)
             return
         }
+        snapRate(why: "seek")
         // A seek in the middle of a crossfade lands on the incoming track, which is the current one already: the old one
         // is let go almost at once and the new one comes up to full level.
         if draining != nil {
@@ -583,6 +695,7 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     func unload() {
         cancelPreload()
+        snapRate(why: "skip")
         endDrain(fast: true)
         pendingGlide = 0
         active.tearDown()
@@ -646,6 +759,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard preloadStream != nil, draining == nil else { return }
         let wanted = plan?.incomingStartSec ?? 0
         guard wanted == requestedStartOffset else { return }
+        // The standby is parked on the beat plan's mix-in and will start at its rate: a plan with another rate is refused.
+        guard (plan?.incomingRate ?? 1) == (transitionPlan?.incomingRate ?? 1) else { return }
         let old = transitionPlan
         var adopted = plan
         // The standby is parked where it really is, which may differ from what was asked.
@@ -689,7 +804,7 @@ final class AVPlaybackEngine: PlaybackEngine {
               let natural = active.naturalEnd else { return }
         let trimmed = min(end, natural)
         var lead = max(0, plan.fadeSeconds)
-        if plan.mode == .smart, let start = plan.fadeStartSec, start.isFinite { lead = max(lead, trimmed - start) }
+        if plan.mode == .smart || plan.mode == .beat, let start = plan.fadeStartSec, start.isFinite { lead = max(lead, trimmed - start) }
         guard seconds >= trimmed - (lead + 1) else { return }
         restoreOutgoingEnd()
         endRestoredBySeek = true
@@ -714,6 +829,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         fadeStartTask = nil
         plannedFade = 0
         plannedLead = 0
+        plannedRate = 1
         plannedPlan = nil
         restoreOutgoingEnd()
         endRestoredBySeek = false
@@ -853,38 +969,50 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// planned now. Without a plan this is Tier 1: the fade and the lead are the same. A smart plan starts the fade at its
     /// own `fadeStartSec` (the lead is then longer than the fade); a fixed plan anchors it at the end. Gapless and clean
     /// plans have neither. A plan that cannot fade (no tap or lease on a deck) degrades to the gapless switch.
-    private func transitionNumbers(remaining: TimeInterval, end: CMTime) -> (fade: TimeInterval, lead: TimeInterval) {
+    private func transitionNumbers(
+        remaining: TimeInterval, end: CMTime
+    ) -> (fade: TimeInterval, lead: TimeInterval, rate: Float) {
         guard let plan = transitionPlan, !endRestoredBySeek else {
             let fade = fadeLength(remaining: remaining, end: end)
-            return (fade, fade)
+            return (fade, fade, 1)
         }
-        guard plan.mode == .smart || plan.mode == .fixed, plan.fadeSeconds >= Self.minimumFade else { return (0, 0) }
+        guard plan.mode == .smart || plan.mode == .fixed || plan.mode == .beat,
+              plan.fadeSeconds >= Self.minimumFade else { return (0, 0, 1) }
         guard chain != nil, active.itemIsTapped, standby.itemIsTapped,
               active.tap?.hasLease == true, standby.tap?.hasLease == true else {
             logFallback(reason: "noLease")
-            return (0, 0)
+            return (0, 0, 1)
         }
         let fade = min(plan.fadeSeconds, remaining - Self.fadeGuard)
+        let isBeat = plan.mode == .beat
         // Too little is left for the plan's fade: the setting's own fade, held to what remains (gapless only when even
-        // that is under a second).
-        guard fade >= Self.minimumFade else {
+        // that is under a second). A beat mix cut short is no longer on the grid, so it runs at rate 1 as a plain fade.
+        guard fade >= Self.minimumFade, !isBeat || fade >= plan.fadeSeconds - 0.05 else {
+            if isBeat { logFallback(reason: "late") }
             let fixed = fadeLength(remaining: remaining, end: end)
-            return (fixed, fixed)
+            return (fixed, fixed, 1)
         }
         var lead = fade
-        if plan.mode == .smart, let start = plan.fadeStartSec, start.isFinite {
+        if plan.mode == .smart || isBeat, let start = plan.fadeStartSec, start.isFinite {
             lead = max(fade, end.seconds - start)
         }
         // A smart lead longer than what remains (a plan that came late) starts the overlap as early as it still can.
-        lead = max(fade, min(lead, remaining - Self.latestLeadMargin))
-        return (fade, lead)
+        // A beat mix is never started early: its start is the grid, so a late plan gives up the rate instead.
+        let latest = max(fade, min(lead, remaining - Self.latestLeadMargin))
+        if isBeat, latest < lead - 0.05 {
+            logFallback(reason: "late")
+            let fixed = fadeLength(remaining: remaining, end: end)
+            return (fixed, fixed, 1)
+        }
+        lead = latest
+        return (fade, lead, isBeat ? Float(plan.incomingRate) : 1)
     }
 
     /// Starts the standby on the host time of the active item's end, once that is near, and keeps it there. With a
     /// crossfade the start is `lead` seconds earlier (the fade's length, or longer when a smart plan starts it earlier)
     /// and the fade is started with it.
     private func evaluateSchedule() {
-        guard !alignedStart else { return }
+        guard !alignedStart, glide == nil else { return }
         guard preloadStream != nil, preloadReady, draining == nil, let item = active.player.currentItem,
               active.player.timeControlStatus == .playing, active.player.rate == 1,
               let end = endTime(of: item) else { return }
@@ -896,7 +1024,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             return
         }
         let numbers = scheduledHost != nil
-            ? (fade: plannedFade, lead: plannedLead)
+            ? (fade: plannedFade, lead: plannedLead, rate: plannedRate)
             : transitionNumbers(remaining: remaining, end: end)
         let fade = numbers.fade
         let lead = numbers.lead
@@ -907,7 +1035,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         // Too close to move it again: the end notification starts the standby if it has not started yet.
         guard remaining - lead > 0.05 else {
-            if scheduledHost == nil, let plan = transitionPlan, plan.mode == .smart || plan.mode == .fixed, lead > 0 || plan.fadeSeconds > 0 {
+            if scheduledHost == nil, let plan = transitionPlan, plan.mode == .smart || plan.mode == .fixed || plan.mode == .beat, lead > 0 || plan.fadeSeconds > 0 {
                 logFallback(reason: "late")
             }
             return
@@ -917,6 +1045,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         if let scheduled = scheduledHost, abs(CMTimeSubtract(scheduled, host).seconds) < Self.scheduleTolerance { return }
         plannedFade = fade
         plannedLead = lead
+        plannedRate = numbers.rate
         plannedFor = crossfadeSeconds
         plannedPlan = transitionPlan
         schedule(at: host)
@@ -943,7 +1072,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         standby.player.automaticallyWaitsToMinimizeStalling = false
         // A crossfade's incoming deck is held silent until the fade starts, so its first frames never sound at full level.
         if plannedFade > 0 { standby.tap?.fade(to: 0) }
-        standby.player.setRate(1, time: .invalid, atHostTime: host)
+        // A beat mix starts at its rate, a few milliseconds early: the player's start lands that late (the 3a spike).
+        let start = plannedRate == 1
+            ? host
+            : CMTimeAdd(host, CMTime(seconds: Self.beatCalibrationSec, preferredTimescale: 1_000_000_000))
+        standby.player.setRate(plannedRate, time: .invalid, atHostTime: start)
         scheduledHost = host
         armStandbyTap(before: host)
         scheduleCrossfadeStart(at: host)
@@ -1033,6 +1166,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         if plannedFade > 0 { standby.tap?.fade(to: 1) }
         plannedFade = 0
         plannedLead = 0
+        plannedRate = 1
         standby.tap?.disarm()
         let deck = standby
         let token = deck.token
@@ -1069,18 +1203,22 @@ final class AVPlaybackEngine: PlaybackEngine {
         let wasAligned = alignedStart
         alignedStart = false
         let untilStart = scheduledHost.map { CMTimeSubtract($0, CMClockGetTime(hostClock)).seconds }
+        let glideBack = transitionPlan?.glideBackSec ?? 0
+        snapRate(why: "skip")
 
         // A start that was planned as a crossfade but never fired (its timer lost the race to the end): the end is here,
         // so it is a gapless switch. The incoming deck was held silent for the fade.
         if plannedFade > 0 { incoming.tap?.fade(to: 1) }
         plannedFade = 0
         plannedLead = 0
+        plannedRate = 1
         plannedPlan = nil
         fadeStartTask?.cancel()
         fadeStartTask = nil
         if let plan = transitionPlan {
             let line = MusicTransitionLog.appliedLine(
-                from: outgoing.videoId ?? "-", to: stream.videoId, mode: plan.mode == .smart || plan.mode == .fixed ? .gapless : plan.mode,
+                from: outgoing.videoId ?? "-", to: stream.videoId,
+                mode: plan.mode == .smart || plan.mode == .fixed || plan.mode == .beat ? .gapless : plan.mode,
                 fade: 0, lead: 0, skipped: 0
             )
             Self.logger.notice("\(line, privacy: .public)")
@@ -1112,6 +1250,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         armTask?.cancel()
         armTask = nil
+        // A standby that already runs at a nudged rate (a beat start that lost its fade) glides back like a mix would.
+        let runningRate = incoming.player.rate
+        if startedOnSchedule, runningRate > 0, abs(runningRate - 1) > 0.0005, glideBack > 0 {
+            startGlide(from: runningRate, over: glideBack)
+        }
         incoming.player.automaticallyWaitsToMinimizeStalling = true
         outgoing.tearDown()
         outgoing.player.automaticallyWaitsToMinimizeStalling = false
@@ -1180,10 +1323,27 @@ final class AVPlaybackEngine: PlaybackEngine {
         alignedStart = false
         let plan = transitionPlan
         let outgoingEnd = active.player.currentItem.flatMap { endTime(of: $0) }?.seconds
+        // The outgoing deck may still be gliding from an earlier mix: it goes back to 1 for its fade-out.
+        snapRate(why: "skip")
+        // The incoming deck's rate: a scheduled beat mix keeps its nudge, a manual skip never does.
+        var beat: BeatOverlap?
+        if scheduled, let plan, plan.mode == .beat, plan.incomingRate != 1, plan.incomingRate.isFinite,
+           let mixIn = plan.mixInSec, let mixOut = plan.mixOutSec {
+            beat = BeatOverlap(
+                rate: Float(plan.incomingRate), mixIn: mixIn, mixOut: mixOut, glideSeconds: max(0, plan.glideBackSec)
+            )
+        }
         // The outgoing lease drains before the incoming one claims the chain, so it is never silenced in between.
         outgoing.tap?.drain(over: fade)
         pendingGlide = 0
+        beatOverlap = nil
         if let plan {
+            if let beat {
+                let line = MusicTransitionLog.beatAppliedLine(
+                    from: outgoing.videoId ?? "-", to: stream.videoId, rate: Double(beat.rate), calibrationSec: Self.beatCalibrationSec
+                )
+                Self.logger.notice("\(line, privacy: .public)")
+            }
             if scheduled, plan.outgoingGainDb < 0 {
                 outgoing.tap?.setOffset(to: Self.linearGain(db: plan.outgoingGainDb), over: plan.outgoingRampSeconds)
             }
@@ -1211,6 +1371,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         scheduledHost = nil
         plannedFade = 0
         plannedLead = 0
+        plannedRate = 1
         plannedPlan = nil
         transitionPlan = nil
         requestedStartOffset = 0
@@ -1218,7 +1379,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         endRestoredBySeek = false
         preloadStream = nil
         preloadReady = false
-        if startStandby { incoming.player.play() }
+        if startStandby {
+            // The grid is lost anyway (the start was late), but the nudge and the glide back stay consistent.
+            if let beat { incoming.player.rate = beat.rate } else { incoming.player.play() }
+        }
+        beatOverlap = beat
         incoming.player.automaticallyWaitsToMinimizeStalling = true
         applyLevel(to: incoming)
         applyLevel(to: outgoing)
@@ -1280,6 +1445,72 @@ final class AVPlaybackEngine: PlaybackEngine {
             active.tap?.setOffset(to: 1, over: pendingGlide)
             pendingGlide = 0
         }
+        // A beat mix is over: the incoming song's rate relaxes back to 1.
+        if let beat = beatOverlap {
+            beatOverlap = nil
+            startGlide(from: beat.rate, over: beat.glideSeconds)
+        }
+    }
+
+    // MARK: - Rate glide
+
+    /// Brings the active deck's rate from `rate` back to 1 over `seconds` of play intent, in 100 ms smoothstep steps.
+    /// The next mix is not scheduled while it runs (the schedule maths assumes rate 1).
+    private func startGlide(from rate: Float, over seconds: TimeInterval) {
+        glideTask?.cancel()
+        glideTask = nil
+        guard rate.isFinite, abs(rate - 1) > 0.0005, seconds > 0 else {
+            glide = nil
+            return
+        }
+        glide = Glide(from: rate, total: seconds)
+        Self.logger.notice("\(MusicTransitionLog.glideLine(event: .start, rate: Double(rate), seconds: seconds), privacy: .public)")
+        glideTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Self.glideTick))
+                guard !Task.isCancelled, let self, self.glide != nil else { return }
+                self.advanceGlide(by: Self.glideTick)
+            }
+        }
+    }
+
+    /// One glide step. Only play-intent time counts, so a pause holds the glide where it is.
+    private func advanceGlide(by seconds: TimeInterval) {
+        guard var current = glide, wantsPlay else { return }
+        current.elapsed += seconds
+        guard current.elapsed < current.total else {
+            finishGlide()
+            return
+        }
+        glide = current
+        let rate = Self.glideRate(from: current.from, elapsed: current.elapsed, total: current.total)
+        // Not a deck that is not playing: setting a rate would start it.
+        if active.player.rate != 0 { active.player.rate = rate }
+    }
+
+    private func finishGlide() {
+        glideTask?.cancel()
+        glideTask = nil
+        glide = nil
+        if active.player.rate != 0 { active.player.rate = 1 }
+        Self.logger.notice("\(MusicTransitionLog.glideLine(event: .end, rate: 1, seconds: 0), privacy: .public)")
+        // The glide kept the next mix back: look at the schedule again.
+        evaluateSchedule()
+    }
+
+    /// A seek, a skip, an output change or a new load: the nudged rate (in the overlap or in the glide) goes to 1 at once.
+    private func snapRate(why: String) {
+        let hadGlide = glide != nil
+        let rate = glide.map { Self.glideRate(from: $0.from, elapsed: $0.elapsed, total: $0.total) } ?? active.player.rate
+        glideTask?.cancel()
+        glideTask = nil
+        glide = nil
+        beatOverlap = nil
+        let nudged = rate.isFinite && abs(rate - 1) > 0.0005
+        if active.player.rate != 0, abs(active.player.rate - 1) > 0.0005 { active.player.rate = 1 }
+        if hadGlide || (nudged && draining != nil) {
+            Self.logger.notice("\(MusicTransitionLog.glideLine(event: .cancel(why: why), rate: Double(rate), seconds: 0), privacy: .public)")
+        }
     }
 
     /// dB to a linear gain (attenuation only: never above 1).
@@ -1291,6 +1522,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// Ends a crossfade early (a seek, a skip, a new load): with `fast`, the old deck fades out in about 30 ms first.
     private func endDrain(fast: Bool) {
         guard let old = draining else { return }
+        // Cut short: no glide follows, and the incoming deck is not left at its nudged rate.
+        beatOverlap = nil
         // A paused deck cannot play its fade-out: it goes at once.
         if fast, wantsPlay, old.player.rate != 0 {
             old.tap?.drain(over: Self.quickDrain, curve: .linear)

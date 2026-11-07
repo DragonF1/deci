@@ -1,0 +1,256 @@
+// DeciTests/Music/MusicServiceBeatMixTests.swift
+// Tier 3b P3: the service offers the engine a beat plan when both songs have a grid and the setting is on, gives up the
+// pair for the smart plan when the next song is not parked in time or the mix point is too near, and never changes the
+// standby's park offset on a replan. A fake engine, provider and row reader stand in for the real ones.
+
+import Foundation
+import Testing
+@testable import Deci
+
+@MainActor
+private struct BeatHarness {
+    let backend = FakeMusicBackend()
+    let engine = FakePlaybackEngine()
+    let surface = FakeNowPlayingSurface()
+    let clock = MutableClock()
+    let connectivity = MusicConnectivity(isOnline: true)
+    let provider = FakeAnalysisProvider()
+    let reader = FakeAnalysisReader()
+    let player: MusicPlayer
+    let service: MusicService
+
+    init(crossfade: Bool = true, beatMix: Bool = true) {
+        let engine = self.engine
+        let clock = self.clock
+        let player = MusicPlayer(engine: engine)
+        self.player = player
+        service = MusicService(
+            backend: backend,
+            player: player,
+            presentSignIn: { _ in },
+            presentChannelPicker: { _, _ in },
+            closeSignInWindow: {},
+            raiseSignInWindow: {},
+            nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
+            now: { clock.now },
+            preferences: MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: 6, beatMix: beatMix),
+            queueRetryDelay: .seconds(60),
+            connectivity: connectivity,
+            refreshOnCreate: false,
+            analysis: provider,
+            analysisReader: reader
+        )
+    }
+
+    /// Row of a 240 s song ending at 236 with the outro at 200, carrying a beat grid.
+    static func row(_ id: String, period: Double, grid: Bool = true, introEnd: Double = 8) -> MusicAnalysis {
+        var row = MusicTransitionPlannerTests.analysis(
+            id, duration: 240, silenceStart: id == "a" ? 0 : 0.1, silenceEnd: id == "a" ? 236 : nil,
+            introEnd: id == "a" ? nil : introEnd, outroStart: id == "a" ? 200 : nil
+        )
+        if grid {
+            row.beatGrid = MusicBeatPlannerTests.grid(
+                period: period, anchor: id == "a" ? 0.2 : 0.1, phase: id == "a" ? 0 : 1,
+                span: (id == "a" ? 0.2 : 0.1)...236
+            ).encode()
+        }
+        return row
+    }
+
+    func settle() async {
+        while true {
+            let play = service.playTask
+            let radio = service.radioTask
+            await play?.value
+            await radio?.value
+            await service.currentAnalysisTask?.value
+            await service.analysisCleanupTask?.value
+            await service.transitionReadTask?.value
+            if service.playTask == play, service.radioTask == radio { break }
+        }
+    }
+
+    func startQueue(_ ids: [String], duration: Double = 240) async {
+        for id in ids { await backend.setStream(MusicSamples.stream(videoId: id, duration: duration)) }
+        let tracks = ids.map { MusicSamples.track($0, title: "Song \($0)") }
+        await backend.setRadio(seed: ids[0], tracks: tracks, continuation: nil)
+        service.play(tracks[0])
+        await settle()
+        engine.emit(.playingChanged(true))
+    }
+
+    func tick(_ position: TimeInterval) async {
+        engine.tick(position, playing: true)
+        await service.prefetchTask?.value
+        await service.analysisTask?.value
+        engine.tick(position + 0.5, playing: true)
+    }
+
+    var lastPlan: TransitionPlan? { engine.plans.last ?? nil }
+
+    /// What the planner makes of the two standard rows, for the mix point to aim ticks at.
+    static func expectedBeatPlan(aPeriod: Double = 0.5, bPeriod: Double = 0.48) -> TransitionPlan {
+        var inputs = MusicBeatPlannerTests.inputs(
+            a: MusicBeatPlannerTests.grid(period: aPeriod, anchor: 0.2, phase: 0),
+            b: MusicBeatPlannerTests.grid(period: bPeriod, anchor: 0.1, phase: 1, span: 0.1...236)
+        )
+        inputs.beatMixEnabled = true
+        return MusicBeatPlannerTests.plan(inputs)
+    }
+}
+
+@MainActor
+@Suite("MusicService beat mix")
+struct MusicServiceBeatMixTests {
+    private func start(_ h: BeatHarness, bGrid: Bool = true) async {
+        await h.reader.set(BeatHarness.row("a", period: 0.5))
+        await h.reader.set(BeatHarness.row("b", period: 0.48, grid: bGrid))
+        await h.startQueue(["a", "b", "c"])
+    }
+
+    @Test("both grids present and the setting on: the engine gets a beat plan, and the log says so")
+    func beatPlanAtOffer() async throws {
+        let h = BeatHarness()
+        await start(h)
+        await h.tick(126)
+        await h.tick(170)
+        #expect(h.engine.preloads.count == 1)
+        let plan = try #require(h.lastPlan)
+        #expect(plan.mode == .beat, "plan: \(plan) lines: \(h.service.transitionLines)")
+        #expect(plan.incomingRate < 1 && abs(plan.incomingRate - 0.96) < 0.001)
+        #expect(plan.mixOutSec != nil && plan.mixInSec != nil)
+        #expect(plan.fadeStartSec == plan.mixOutSec)
+        #expect(plan.incomingStartSec == plan.mixInSec)
+        #expect(plan.fadeSeconds == plan.overlapSec)
+        #expect(plan.bassSwapAtSec == nil, "no bass swap before P4")
+        #expect(h.service.transitionLines.contains { $0.hasPrefix("transition_beat_plan from=a to=b") })
+    }
+
+    @Test("the setting off gives the smart plan and no beat line")
+    func settingOffGivesSmart() async throws {
+        let h = BeatHarness(beatMix: false)
+        await start(h)
+        await h.tick(126)
+        await h.tick(205)
+        let plan = try #require(h.lastPlan)
+        #expect(plan.mode != .beat)
+        #expect(plan.incomingRate == 1)
+        #expect(!h.service.transitionLines.contains { $0.hasPrefix("transition_beat") })
+    }
+
+    @Test("Crossfade off gives no beat plan whatever the beat setting says")
+    func crossfadeOffGivesNoBeat() async throws {
+        let h = BeatHarness(crossfade: false, beatMix: true)
+        await start(h)
+        await h.tick(126)
+        await h.tick(222)
+        let plan = try #require(h.lastPlan)
+        #expect(plan.mode != .beat)
+        #expect(plan.incomingRate == 1)
+    }
+
+    @Test("a next song without a grid gives the smart plan and a beat_fallback line with the reason")
+    func missingGridFallsBack() async throws {
+        let h = BeatHarness()
+        await start(h, bGrid: false)
+        await h.tick(126)
+        await h.tick(205)
+        let plan = try #require(h.lastPlan)
+        #expect(plan.mode != .beat)
+        #expect(h.service.transitionLines.contains { $0.hasPrefix("transition_beat_fallback from=a to=b reason=") })
+    }
+
+    @Test("a beat plan opens its window at 70 s before the trimmed end, not before")
+    func beatWindow() async {
+        let h = BeatHarness()
+        await start(h)
+        await h.tick(126)
+        await h.tick(164)
+        #expect(h.engine.preloads.isEmpty, "236 - 70 = 166: not yet at 164.5")
+        await h.tick(166)
+        #expect(h.engine.preloads.count == 1)
+    }
+
+    @Test("the next song not parked 8 s before the mix point gives the pair up: smart plan, preload offered again")
+    func notReadyFallsBackToSmart() async throws {
+        let h = BeatHarness()
+        await start(h)
+        await h.tick(126)
+        h.engine.preloadReady = false
+        await h.tick(170)
+        let first = try #require(h.lastPlan)
+        #expect(first.mode == .beat)
+        let mixOut = try #require(first.mixOutSec)
+        let cancels = h.engine.cancelPreloadCount
+        await h.tick(mixOut - 9)
+        #expect(h.engine.cancelPreloadCount == cancels, "still time to park")
+        await h.tick(mixOut - 7.9)
+        #expect(h.engine.cancelPreloadCount == cancels + 1)
+        #expect(h.service.transitionLines.contains { $0.hasPrefix("transition_beat_fallback from=a to=b reason=notReady") })
+        await h.tick(mixOut - 6)
+        #expect(h.engine.preloads.count == 2, "offered again")
+        let second = try #require(h.lastPlan)
+        #expect(second.mode != .beat)
+        #expect(second.incomingRate == 1)
+    }
+
+    @Test("a mix point nearer than the preroll gives smart (tooLate) instead of a beat plan the engine cannot meet")
+    func earliestMixOutGivesSmart() async throws {
+        let h = BeatHarness()
+        await start(h)
+        let expected = BeatHarness.expectedBeatPlan()
+        let mixOut = try #require(expected.mixOutSec)
+        await h.tick(126)
+        // The first offer comes when the playhead is already within the preroll of the mix point.
+        await h.tick(mixOut - 4)
+        let plan = try #require(h.lastPlan)
+        #expect(plan.mode != .beat)
+        #expect(plan.incomingRate == 1)
+        #expect(h.service.transitionLines.contains { $0.contains("reason=tooLate") })
+    }
+
+    @Test("a late row replan keeps the park offset: the plan the engine already holds is never moved")
+    func lateRowKeepsParkOffset() async throws {
+        let h = BeatHarness()
+        await h.reader.set(BeatHarness.row("a", period: 0.5))
+        await h.startQueue(["a", "b"])
+        let gate = MusicTestGate()
+        await h.provider.hold("b", gate)
+        await h.engine.tickNoGate(h.service, at: 126)
+        await h.engine.tickNoGate(h.service, at: 232)
+        let before = try #require(h.lastPlan)
+        await h.reader.set(BeatHarness.row("b", period: 0.48))
+        await gate.open()
+        await h.service.analysisTask?.value
+        #expect(h.lastPlan == before)
+        #expect(h.engine.updatedPlans.isEmpty)
+        h.service.setCrossfade(false)
+        if let updated = h.engine.updatedPlans.last ?? nil {
+            #expect(updated.incomingStartSec == before.incomingStartSec)
+            #expect(updated.incomingRate == 1)
+        }
+    }
+
+    @Test("toggling Crossfade off under a beat plan withdraws the preload instead of updating the parked plan")
+    func toggleUnderBeatPlanRepreloads() async throws {
+        let h = BeatHarness()
+        await start(h)
+        await h.tick(126)
+        await h.tick(170)
+        #expect(h.lastPlan?.mode == .beat)
+        let cancels = h.engine.cancelPreloadCount
+        h.service.setCrossfade(false)
+        #expect(h.engine.cancelPreloadCount == cancels + 1)
+        #expect(h.engine.updatedPlans.isEmpty)
+    }
+}
+
+@MainActor
+private extension FakePlaybackEngine {
+    /// A tick that does not wait for the held analysis job.
+    func tickNoGate(_ service: MusicService, at position: TimeInterval) async {
+        tick(position, playing: true)
+        await service.prefetchTask?.value
+        tick(position + 0.5, playing: true)
+    }
+}
