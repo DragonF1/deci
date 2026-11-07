@@ -146,6 +146,9 @@ final class MusicService {
         /// The song the session plays and its length, for the local listening count.
         var videoId: String?
         var durationSeconds: TimeInterval?
+        /// The account behind the ping URLs expired: no ping is sent or attached for this session, but it keeps counting
+        /// what the listener hears for the local listening history.
+        var pingsDropped = false
     }
 
     private enum Direction { case forward, backward }
@@ -1724,6 +1727,7 @@ final class MusicService {
     /// Gives the session the ping URLs of `stream` that it does not have yet. The 30 s may have passed while there was
     /// nowhere to send the playback ping: then it goes now.
     private func attachTrackingURLs(from stream: ResolvedStream) {
+        guard session?.pingsDropped != true else { return }
         if session?.watchtimeURL == nil { session?.watchtimeURL = stream.watchtimeTrackingURL }
         if session?.trackingURL == nil, let url = stream.playbackTrackingURL {
             session?.trackingURL = url
@@ -2842,7 +2846,8 @@ final class MusicService {
             saveSession()
         }
         guard session != nil else { return }
-        if isPlaying {
+        // A session whose account expired only counts listening: the next song is not prepared under the dead account.
+        if isPlaying, session?.pingsDropped != true {
             prefetchNextIfNeeded(position: position)
             offerPreload(position: position)
         }
@@ -2979,7 +2984,10 @@ final class MusicService {
             // What is playing keeps playing, but its pings carry the dead session's tracking URL: they are dropped
             // and the session ends without a final one, as in `signOut`, so a later sign-in never sends them.
             cancelReport()
-            session = nil
+            // The local listening count is the listener's own and goes on to the song's end: only the pings stop.
+            session?.trackingURL = nil
+            session?.watchtimeURL = nil
+            session?.pingsDropped = true
             // The next track's stream was resolved under the account that is gone: neither the prefetch nor the preload
             // may start from it.
             cancelPrefetch()

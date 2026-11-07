@@ -51,6 +51,8 @@ struct MusicSongFacts: Sendable, Equatable, Codable {
     var deezerId: Int?
     var mbid: String?
     var fetchedAt: Date
+    /// When Deci's own measurement last failed (a download or decode); the song is not fetched again for a day.
+    var measureFailedAt: Date?
     /// Field raw value to source. A string key keeps the stored JSON a plain object.
     var sources: [String: Source] = [:]
 

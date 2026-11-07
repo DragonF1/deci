@@ -110,7 +110,8 @@ actor MusicListeningStore: MusicListeningRecording {
         }
     }
 
-    /// Writes everything noted so far in one transaction. A failed write is dropped, never retried forever.
+    /// Writes everything noted so far in one transaction. A transaction that cannot begin or commit (a busy file) puts the
+    /// batch back to be written later; a row that cannot be written at all is dropped, never retried forever.
     func flush() {
         let batch = buffer.withLock { state -> [String: Pending] in
             let taken = state.pending
@@ -119,7 +120,11 @@ actor MusicListeningStore: MusicListeningRecording {
             return taken
         }
         guard !batch.isEmpty, let db else { return }
-        guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return }
+        guard sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else {
+            Self.log.error("listening_flush begin_failed code=\(sqlite3_errcode(db), privacy: .public)")
+            restore(batch)
+            return
+        }
         guard let statement = Statement(db, Self.upsertSQL) else {
             sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
             return
@@ -137,7 +142,38 @@ actor MusicListeningStore: MusicListeningRecording {
                 return
             }
         }
-        sqlite3_exec(db, "COMMIT", nil, nil, nil)
+        guard sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK else {
+            Self.log.error("listening_flush commit_failed code=\(sqlite3_errcode(db), privacy: .public)")
+            sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            restore(batch)
+            return
+        }
+    }
+
+    /// Merges a batch that was not written back into what has been noted since, and tries again after the debounce.
+    private func restore(_ batch: [String: Pending]) {
+        let schedule = buffer.withLock { state -> Bool in
+            for (id, item) in batch {
+                if var other = state.pending[id] {
+                    other.plays += item.plays
+                    other.seconds += item.seconds
+                    other.first = min(other.first, item.first)
+                    other.last = max(other.last, item.last)
+                    state.pending[id] = other
+                } else {
+                    state.pending[id] = item
+                }
+            }
+            guard !state.flushScheduled else { return false }
+            state.flushScheduled = true
+            return true
+        }
+        guard schedule else { return }
+        let wait = debounce
+        Task { [self] in
+            try? await Task.sleep(for: wait)
+            await flush()
+        }
     }
 
     /// For the quit path, which cannot await: the write runs on the actor and this waits for it up to a second.

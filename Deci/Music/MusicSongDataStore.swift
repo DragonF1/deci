@@ -78,6 +78,8 @@ final class MusicSongDataStore {
     @ObservationIgnored private var lookupDone = false
     @ObservationIgnored private var lookupSkippedOffline = false
     @ObservationIgnored private var measureAttempted = false
+    /// The last measurement of this song failed less than a day ago, so it is not downloaded again yet.
+    @ObservationIgnored private var measureFailedRecently = false
     @ObservationIgnored private var measureStarted = false
 
     init(backend: any MusicBackend) {
@@ -114,12 +116,21 @@ final class MusicSongDataStore {
         guard let track, sources?.isOffline() != true else { return }
         let id = track.videoId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return }
+        var restarted = false
         if lookupSkippedOffline {
             lookupSkippedOffline = false
             music.lookingUp = true
+            // The measuring waits for this lookup, not for the facts of before.
+            lookupDone = false
             loadFacts(track, id: id, run: runCounter)
+            restarted = true
         }
-        if stream == .offline { loadStream(id: id, run: runCounter) }
+        if stream == .offline {
+            loadStream(id: id, run: runCounter)
+            restarted = true
+        }
+        // The stream loaded and the facts were fresh, so only the measuring was held back by the network.
+        if !restarted, music.problem == .offline { advance(run: runCounter) }
     }
 
     /// The panel closed: what is out lands nowhere.
@@ -154,6 +165,7 @@ final class MusicSongDataStore {
         lookupDone = false
         lookupSkippedOffline = false
         measureAttempted = false
+        measureFailedRecently = false
         measureStarted = false
         return runCounter
     }
@@ -215,7 +227,8 @@ final class MusicSongDataStore {
             }
             self.music.facts = cached?.facts
             self.music.lookingUp = false
-            self.measureAttempted = cached?.measureAttempted ?? false
+            self.measureFailedRecently = cached?.measureFailedRecently ?? false
+            self.measureAttempted = (cached?.measureAttempted ?? false) || self.measureFailedRecently
             self.lookupDone = true
             self.factsTask = nil
             self.advance(run: run)
@@ -227,7 +240,7 @@ final class MusicSongDataStore {
     private func advance(run: Int) {
         guard run == runCounter, track != nil, let sources, let measure = sources.measure,
               lookupDone, analysisRead, !measureStarted else { return }
-        let needAnalysis = analysis == nil
+        let needAnalysis = analysis == nil && !measureFailedRecently
         let needBPM = music.facts?.bpm == nil && !measureAttempted
         guard needAnalysis || needBPM else { return }
         let held: ResolvedStream
@@ -262,7 +275,8 @@ final class MusicSongDataStore {
             let cached = await sources.cachedFacts(id)
             let row = needAnalysis ? await sources.analysis(id) : nil
             guard self.isCurrent(run) else { return }
-            self.music.facts = cached?.facts
+            // A cache read that failed leaves the facts that are shown.
+            if let facts = cached?.facts { self.music.facts = facts }
             if needAnalysis { self.analysis = row }
             self.music.measuringAnalysis = false
             self.music.measuringTempo = false

@@ -23,12 +23,20 @@ struct MusicSongFactsRecord: Sendable, Equatable {
     /// How long a miss is believed.
     static let missTTL: TimeInterval = 30 * 86_400
     static let partialTTL: TimeInterval = 86_400
+    /// How long a failed measurement keeps the song from being fetched again for it.
+    static let measureRetryTTL: TimeInterval = 86_400
 
     var facts: MusicSongFacts
     var outcome: Outcome
     var lookedUpAt: Date?
     /// When Deci's own tempo measurement finished, with or without a usable tempo; nil if it never ran to the end.
     var measuredAt: Date?
+
+    /// A measurement failed less than a day ago.
+    func isMeasureFailureRecent(at now: Date) -> Bool {
+        guard let failed = facts.measureFailedAt else { return false }
+        return now.timeIntervalSince(failed) < Self.measureRetryTTL
+    }
 
     /// The cache answers the lookup without the network.
     func isLookupFresh(at now: Date) -> Bool {
@@ -104,6 +112,7 @@ actor MusicSongFactsStore {
         case .notFound: outcome = .miss; facts = MusicSongFacts(fetchedAt: now())
         }
         let existing = record(for: videoId)
+        facts.measureFailedAt = existing?.facts.measureFailedAt
         if let tempo = existing?.facts.bpm, existing?.facts.source(of: .bpm) == .deci {
             facts.setMeasuredTempo(bpm: tempo, confidence: existing?.facts.bpmConfidence ?? 0)
         }
@@ -115,8 +124,19 @@ actor MusicSongFactsStore {
     func putMeasured(videoId: String, bpm: Double?, confidence: Double?) {
         var current = record(for: videoId)
             ?? MusicSongFactsRecord(facts: MusicSongFacts(fetchedAt: now()), outcome: .none, lookedUpAt: nil, measuredAt: nil)
-        if let bpm, bpm.isFinite, bpm > 0 { current.facts.setMeasuredTempo(bpm: bpm, confidence: confidence ?? 0) }
+        if let bpm, MusicSongFactsParsers.tempoRange.contains(bpm) { current.facts.setMeasuredTempo(bpm: bpm, confidence: confidence ?? 0) }
         current.measuredAt = now()
+        current.facts.measureFailedAt = nil
+        write(current, videoId: videoId)
+    }
+
+    /// Stores that a measurement failed (a download or decode that did not work), so the song is not fetched again for a
+    /// day. Never for a rate limit: that is not the song's fault. A measurement that did finish is left as it is.
+    func putMeasureFailed(videoId: String) {
+        var current = record(for: videoId)
+            ?? MusicSongFactsRecord(facts: MusicSongFacts(fetchedAt: now()), outcome: .none, lookedUpAt: nil, measuredAt: nil)
+        guard current.measuredAt == nil else { return }
+        current.facts.measureFailedAt = now()
         write(current, videoId: videoId)
     }
 

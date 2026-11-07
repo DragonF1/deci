@@ -17,18 +17,25 @@ protocol MusicAnalysisProviding: Sendable {
     /// Cancels an `ensure` still running for the song.
     func cancel(videoId: String) async
     /// The song's whole file for a reader that is not the analyzer (the Song data panel's beat finder): the Downloads
-    /// copy when there is one, else the track cache's, fetched when it is not there yet and pinned. The caller ends with
-    /// `release(videoId:)`. A provider with no files answers `.failed`.
+    /// copy when there is one, else the track cache's, fetched when it is not there yet and pinned. A caller that got
+    /// `.file` made the pin and ends with `release(videoId:)`; `.borrowed` is somebody else's (the player's pin, or a
+    /// Downloads copy) and must be left alone. A provider with no files answers `.failed`.
     func pinnedFile(for stream: ResolvedStream) async -> MusicSongFileOutcome
+    /// Whether somebody (the player) already holds a pin on the song's cache file.
+    func isPinned(videoId: String) async -> Bool
 }
 
 extension MusicAnalysisProviding {
     func pinnedFile(for stream: ResolvedStream) async -> MusicSongFileOutcome { .failed }
+    func isPinned(videoId: String) async -> Bool { false }
 }
 
 /// How a request for a song's file ended.
 enum MusicSongFileOutcome: Equatable, Sendable {
+    /// A file this caller pinned: it releases it when done.
     case file(URL)
+    /// A file somebody else keeps (already pinned, or a Downloads copy): read it, never release it.
+    case borrowed(URL)
     /// The fetch met a 429 or a 403: the caller should back off.
     case rateLimited
     case failed
@@ -132,15 +139,18 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
 
     func pinnedFile(for stream: ResolvedStream) async -> MusicSongFileOutcome {
         let id = stream.videoId
-        if let local = await downloads(id) { return .file(local.url) }
+        if let local = await downloads(id) { return .borrowed(local.url) }
+        let owned = await cache.pin(id)
         do {
-            await cache.pin(id)
-            return .file(try await cache.fetch(stream, resolve: resolve))
+            let file = try await cache.fetch(stream, resolve: resolve)
+            return owned ? .file(file) : .borrowed(file)
         } catch {
-            await cache.unpin(id)
+            if owned { await cache.unpin(id) }
             return MusicBackgroundAnalyzer.isRateLimit(error) ? .rateLimited : .failed
         }
     }
+
+    func isPinned(videoId: String) async -> Bool { await cache.isPinned(videoId) }
 
     func release(videoId: String) async {
         await cache.unpin(videoId)
@@ -219,11 +229,12 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
         }
 
         let file: URL
+        let madePin = await cache.pin(id)
         do {
-            await cache.pin(id)
             file = try await cache.fetch(stream, resolve: resolve)
         } catch {
-            await cache.unpin(id)
+            // A pin somebody else made (the player's) stays.
+            if madePin { await cache.unpin(id) }
             return MusicBackgroundAnalyzer.isRateLimit(error) ? .rateLimited : .failed
         }
         let stored = await analyseAndStore(

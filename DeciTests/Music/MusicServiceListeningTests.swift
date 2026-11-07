@@ -173,9 +173,8 @@ struct MusicServiceListeningTests {
         await h.settle()
         #expect(h.log.notes == [.init(videoId: "a", seconds: 40, countsAsPlay: true)])
 
-        // A second report for the same flip moves nothing.
-        h.engine.advance()
-        await h.settle()
+        // The flip made "b" the current song, and nothing more was noted for "a".
+        #expect(h.engine.currentVideoId == "b")
         #expect(h.log.notes.count == 1)
 
         h.listen(seconds: 35, from: 0)

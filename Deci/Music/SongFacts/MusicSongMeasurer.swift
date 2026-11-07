@@ -34,14 +34,18 @@ struct MusicSongMeasurer: Sendable {
         let id = stream.videoId
         // A file on this Mac (a download, or a cached copy that is playing) is read where it is: nothing to fetch or pin.
         var file: URL? = stream.url.isFileURL ? stream.url : nil
-        var pinned = false
+        // Set only when this measurement made the pin on the cache file: it alone releases it. A pin the player holds on
+        // the current or next song, and a Downloads copy, are never released here.
+        var owned = false
         var problem: MusicSongMeasureResult.Problem?
 
         // A cached copy was analysed before it was cached, so only a network stream or a download is analysed here.
         if needAnalysis, stream.origin != .trackCache {
-            switch await analysis.ensure(stream: stream, wantsFile: needBPM && file == nil) {
+            let wantsFile = needBPM && file == nil
+            let heldByPlayer = wantsFile ? await analysis.isPinned(videoId: id) : false
+            switch await analysis.ensure(stream: stream, wantsFile: wantsFile) {
             case .analysed(let kept):
-                if let kept { file = kept; pinned = true }
+                if let kept { file = kept; owned = !heldByPlayer }
             case .alreadyFresh:
                 break
             case .rateLimited:
@@ -52,24 +56,31 @@ struct MusicSongMeasurer: Sendable {
         }
 
         guard needBPM, !Task.isCancelled else {
-            if pinned { await analysis.release(videoId: id) }
+            if owned { await analysis.release(videoId: id) }
+            await recordFailure(problem, id: id)
             return MusicSongMeasureResult(problem: problem)
         }
         // A fetch that just failed is not repeated for the tempo.
         if file == nil, problem == nil {
             switch await analysis.pinnedFile(for: stream) {
-            case .file(let url): file = url; pinned = true
+            case .file(let url): file = url; owned = true
+            case .borrowed(let url): file = url
             case .rateLimited: problem = .rateLimited
             case .failed: problem = .failed
             }
         }
-        guard let file else { return MusicSongMeasureResult(problem: problem) }
+        guard let file else {
+            await recordFailure(problem, id: id)
+            return MusicSongMeasureResult(problem: problem)
+        }
 
         let outcome = await tempo(of: file)
-        if pinned { await analysis.release(videoId: id) }
+        if owned { await analysis.release(videoId: id) }
         switch outcome {
         case .tempo(let bpm, let confidence):
-            await facts.putMeasured(videoId: id, bpm: bpm, confidence: confidence)
+            // A tempo no song has (the finder can say anything on odd audio) counts as none.
+            let usable = MusicSongFactsParsers.tempoRange.contains(bpm) && confidence.isFinite
+            await facts.putMeasured(videoId: id, bpm: usable ? bpm : nil, confidence: usable ? confidence : nil)
         case .none:
             await facts.putMeasured(videoId: id, bpm: nil, confidence: nil)
         case .cancelled:
@@ -77,7 +88,15 @@ struct MusicSongMeasurer: Sendable {
         case .failed:
             problem = problem ?? .failed
         }
+        await recordFailure(problem, id: id)
         return MusicSongMeasureResult(problem: problem)
+    }
+
+    /// A failed fetch or decode is remembered for a day so the song is not downloaded again at every open. A rate limit
+    /// is not remembered: it says nothing about the song.
+    private func recordFailure(_ problem: MusicSongMeasureResult.Problem?, id: String) async {
+        guard problem == .failed, !Task.isCancelled else { return }
+        await facts.putMeasureFailed(videoId: id)
     }
 
     private enum TempoOutcome {

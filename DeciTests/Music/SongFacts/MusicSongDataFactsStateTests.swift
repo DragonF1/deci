@@ -319,6 +319,78 @@ struct MusicSongDataFactsStateTests {
         #expect(h.world.measures.isEmpty)
     }
 
+    @Test("the network back with the stream loaded and fresh facts leaves Offline and starts the measuring")
+    func connectionReturnedStartsMeasure() async {
+        let h = FactsHarness()
+        h.world.offline = true
+        h.hold("a")
+        h.world.cached["a"] = MusicSongFactsCached(facts: nil, lookupIsFresh: true, measureAttempted: false)
+        h.store.show(h.song("a"))
+        #expect(await h.until { h.store.music.problem == .offline })
+        #expect(h.world.measures.isEmpty)
+
+        h.world.offline = false
+        h.store.connectionReturned()
+        #expect(await h.until { !h.world.measures.isEmpty })
+        #expect(await h.until { h.store.music.problem == nil })
+        #expect(h.world.lookups.isEmpty)
+    }
+
+    @Test("the network back after a skipped lookup measures only after the new lookup, never on the stale facts")
+    func connectionReturnedWaitsForLookup() async {
+        let h = FactsHarness()
+        let gate = Gate()
+        h.world.offline = true
+        h.world.analyses["a"] = h.row("a")
+        h.world.cached["a"] = MusicSongFactsCached(facts: nil, lookupIsFresh: false, measureAttempted: false)
+        h.store.show(h.song("a"))
+        #expect(await h.until { !h.store.music.lookingUp })
+        #expect(h.store.stream == .offline)
+
+        h.world.offline = false
+        h.world.lookupGate = gate
+        h.world.afterLookup["a"] = MusicSongFactsCached(facts: h.facts(bpm: 150), lookupIsFresh: true, measureAttempted: false)
+        h.store.connectionReturned()
+        #expect(await h.until { h.world.lookups.count == 1 })
+        #expect(await h.until { if case .loaded = h.store.stream { true } else { false } })
+        await h.letLateWorkLand()
+        // The stream is in but the lookup is not: the measuring waits.
+        #expect(h.world.measures.isEmpty)
+        gate.open()
+        #expect(await h.until { !h.store.music.lookingUp })
+        await h.letLateWorkLand()
+        // The new facts have a tempo and the row exists: nothing is left to measure.
+        #expect(h.world.measures.isEmpty)
+        #expect(h.store.music.facts?.bpm == 150)
+    }
+
+    @Test("a cache read that fails after a measure keeps the facts on show")
+    func measureKeepsFactsOnNilCache() async {
+        let h = FactsHarness()
+        h.hold("a")
+        let shown = h.facts()
+        h.world.cached["a"] = MusicSongFactsCached(facts: shown, lookupIsFresh: true, measureAttempted: false)
+        let gate = Gate()
+        h.world.measureGates["a"] = gate
+        h.store.show(h.song("a"))
+        #expect(await h.until { h.store.music.measuringTempo })
+        h.world.cached["a"] = nil
+        gate.open()
+        #expect(await h.until { !h.store.music.measuringTempo })
+        #expect(h.store.music.facts == shown)
+    }
+
+    @Test("a measurement that failed within a day is not started again")
+    func recentFailureSkipped() async {
+        let h = FactsHarness()
+        h.hold("a")
+        h.world.cached["a"] = MusicSongFactsCached(
+            facts: nil, lookupIsFresh: true, measureAttempted: false, measureFailedRecently: true)
+        h.store.show(h.song("a"))
+        await h.letLateWorkLand()
+        #expect(h.world.measures.isEmpty)
+    }
+
     @Test("a file on this Mac is measured even offline")
     func fileOffline() async {
         let h = FactsHarness()

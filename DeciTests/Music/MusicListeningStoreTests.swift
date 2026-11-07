@@ -3,6 +3,7 @@
 // panel's YOUR LISTENING rows.
 
 import Foundation
+import SQLite3
 import Testing
 @testable import Deci
 
@@ -122,6 +123,31 @@ struct MusicListeningStoreTests {
         #expect(rowA.lastPlayed == Self.date(10))
         #expect(await second.count() == 2)
         #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test("a flush that cannot begin (the file is locked) keeps the batch and writes it once the lock is gone")
+    func lockedFileKeepsBatch() async throws {
+        let url = Self.tempURL()
+        let store = MusicListeningStore(url: url, debounce: .seconds(600))
+        store.note(videoId: Self.a, seconds: 60, countsAsPlay: true, at: Self.date(100))
+        await store.flush()
+
+        var blocker: OpaquePointer?
+        #expect(sqlite3_open(url.path, &blocker) == SQLITE_OK)
+        #expect(sqlite3_exec(blocker, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+        store.note(videoId: Self.b, seconds: 40, countsAsPlay: true, at: Self.date(200))
+        await store.flush()
+        // Noted while the batch was out: merged with it, not lost.
+        store.note(videoId: Self.b, seconds: 5, countsAsPlay: false, at: Self.date(300))
+        sqlite3_exec(blocker, "ROLLBACK", nil, nil, nil)
+        sqlite3_close(blocker)
+
+        let row = try #require(await store.entry(for: Self.b))
+        #expect(row.playCount == 1)
+        #expect(row.totalSeconds == 45)
+        #expect(row.firstPlayed == Self.date(200))
+        #expect(row.lastPlayed == Self.date(300))
+        #expect(try #require(await store.entry(for: Self.a)).totalSeconds == 60)
     }
 
     @Test("notes reach the file by themselves after the debounce, not before")

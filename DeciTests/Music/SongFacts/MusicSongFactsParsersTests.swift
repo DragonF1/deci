@@ -66,6 +66,26 @@ struct MusicSongFactsParsersTests {
         #expect(track.bpm == nil)
     }
 
+    @Test("a tempo outside 30 to 300 is absent in every service, a huge one too")
+    func tempoRange() throws {
+        for bpm in ["1e300", "29.9", "300.1", "-5", "99999999999999999999"] {
+            let deezer = "{\"id\":1,\"bpm\":\(bpm)}"
+            #expect(try #require(try Parsers.deezerTrack(data(deezer))).bpm == nil)
+            #expect(try #require(try Parsers.reccoFeatures(data("{\"content\":[{\"tempo\":\(bpm)}]}"))).tempo == nil)
+            #expect(try Parsers.audioDBTracks(data("{\"track\":[{\"intTempo\":\"\(bpm)\"}]}")).first?.tempo == nil)
+        }
+        #expect(try #require(try Parsers.deezerTrack(data("{\"id\":1,\"bpm\":30}"))).bpm == 30)
+        #expect(try #require(try Parsers.deezerTrack(data("{\"id\":1,\"bpm\":300}"))).bpm == 300)
+    }
+
+    @Test("out of range loudness, feel and gain are dropped")
+    func loudnessAndGain() throws {
+        let features = try #require(try Parsers.reccoFeatures(data("{\"content\":[{\"loudness\":-9000,\"energy\":2}]}")))
+        #expect(features.loudness == nil)
+        #expect(features.energy == nil)
+        #expect(try #require(try Parsers.deezerTrack(data("{\"id\":1,\"gain\":1e30}"))).gain == nil)
+    }
+
     @Test("a Deezer album gives genres and a label")
     func deezerAlbum() throws {
         let album = try #require(try Parsers.deezerAlbum(data(SongFactsFixtures.deezerAlbum)))

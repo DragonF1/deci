@@ -12,9 +12,13 @@ private actor FakeAnalysis: MusicAnalysisProviding {
     private(set) var ensured: [(videoId: String, wantsFile: Bool)] = []
     private(set) var pinnedAsked: [String] = []
     private(set) var released: [String] = []
+    var playerPins: Set<String> = []
 
     func setEnsure(_ outcome: MusicAnalysisCoordinator.Outcome) { ensureOutcome = outcome }
     func setFile(_ outcome: MusicSongFileOutcome) { fileOutcome = outcome }
+    func setPlayerPin(_ id: String) { playerPins.insert(id) }
+
+    func isPinned(videoId: String) async -> Bool { playerPins.contains(videoId) }
 
     func ensure(stream: ResolvedStream, wantsFile: Bool) async -> MusicAnalysisCoordinator.Outcome {
         ensured.append((stream.videoId, wantsFile))
@@ -156,7 +160,9 @@ struct MusicSongMeasurerTests {
         let result = await measurer(analysis, facts).measure(stream: stream(), needAnalysis: true, needBPM: true)
         #expect(result.problem == .failed)
         #expect(await analysis.pinnedAsked.isEmpty)
-        #expect(await facts.record(for: "a") == nil)
+        let record = await facts.record(for: "a")
+        #expect(record?.facts.measureFailedAt != nil)
+        #expect(record?.measuredAt == nil)
     }
 
     @Test("a decode that throws is a quiet failure, the pin is released, and nothing is stored")
@@ -169,6 +175,52 @@ struct MusicSongMeasurerTests {
             .measure(stream: stream(), needAnalysis: false, needBPM: true)
         #expect(result.problem == .failed)
         #expect(await analysis.released == ["a"])
+        let record = await facts.record(for: "a")
+        #expect(record?.facts.bpm == nil)
+        #expect(record?.facts.measureFailedAt != nil)
+        #expect(record?.measuredAt == nil)
+    }
+
+    @Test("a measured tempo outside 30 to 300 is not stored, but the song counts as measured")
+    func absurdTempo() async throws {
+        let analysis = FakeAnalysis()
+        await analysis.setFile(.file(Self.file))
+        let facts = store()
+        let wild = MusicBeatResult(bpm: 1e300, confidence: 0.9, beats: [0.5, 0.97, 1.44], intervalSpread: 0.01, downbeat: nil)
+        _ = await measurer(analysis, facts, result: wild).measure(stream: stream(), needAnalysis: false, needBPM: true)
+        let record = try #require(await facts.record(for: "a"))
+        #expect(record.facts.bpm == nil)
+        #expect(record.measuredAt != nil)
+    }
+
+    @Test("a file the player already pinned is read but its pin and file are left alone")
+    func playerPinKept() async {
+        let analysis = FakeAnalysis()
+        await analysis.setFile(.borrowed(Self.file))
+        let facts = store()
+        _ = await measurer(analysis, facts).measure(stream: stream(), needAnalysis: false, needBPM: true)
+        #expect(await analysis.released.isEmpty)
+        #expect(await facts.record(for: "a")?.facts.bpm == 128.4)
+    }
+
+    @Test("a download of the shared run the player pinned is not released either")
+    func playerPinKeptThroughEnsure() async {
+        let analysis = FakeAnalysis()
+        await analysis.setPlayerPin("a")
+        await analysis.setEnsure(.analysed(file: Self.file))
+        let facts = store()
+        _ = await measurer(analysis, facts).measure(stream: stream(), needAnalysis: true, needBPM: true)
+        #expect(await analysis.released.isEmpty)
+        #expect(await facts.record(for: "a")?.facts.bpm == 128.4)
+    }
+
+    @Test("a rate limit is not remembered as a failed attempt")
+    func rateLimitNotRecorded() async {
+        let analysis = FakeAnalysis()
+        await analysis.setEnsure(.rateLimited)
+        let facts = store()
+        let result = await measurer(analysis, facts).measure(stream: stream(), needAnalysis: true, needBPM: true)
+        #expect(result.problem == .rateLimited)
         #expect(await facts.record(for: "a") == nil)
     }
 

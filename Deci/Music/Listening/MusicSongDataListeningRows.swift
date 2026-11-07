@@ -20,7 +20,7 @@ extension MusicSongDataRows {
 
     /// Hours, minutes and seconds, each only when it is not zero: 1h 2m 5s, 2m, 45s. Nothing heard is 0s.
     static func listenedText(_ totalSeconds: TimeInterval) -> String {
-        let whole = totalSeconds.isFinite ? max(Int(totalSeconds.rounded()), 0) : 0
+        let whole = safeInt(totalSeconds.rounded()).map { max($0, 0) } ?? 0
         let hours = whole / 3600
         let minutes = whole % 3600 / 60
         let seconds = whole % 60
@@ -33,17 +33,18 @@ extension MusicSongDataRows {
 
     private static func lastPlayedText(_ date: Date, now: Date) -> String {
         guard now.timeIntervalSince(date) >= 60 else { return "Just now" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: now)
+        return relativeFormatter.localizedString(for: date, relativeTo: now)
     }
 
     private static func firstPlayedText(_ date: Date) -> String {
+        dayFormatter.string(from: date)
+    }
+
+    nonisolated(unsafe) private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US")
         formatter.dateStyle = .medium
         formatter.timeStyle = .none
-        return formatter.string(from: date)
-    }
+        return formatter
+    }()
 }

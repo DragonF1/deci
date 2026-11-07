@@ -166,7 +166,11 @@ actor MusicTrackCache {
     }
 
     /// Current and next songs are never evicted and never released while pinned.
-    func pin(_ videoId: String) { pinned.insert(videoId) }
+    /// Returns true when this call made the pin (the song was not pinned before): only that caller may unpin it again.
+    @discardableResult
+    func pin(_ videoId: String) -> Bool { pinned.insert(videoId).inserted }
+
+    func isPinned(_ videoId: String) -> Bool { pinned.contains(videoId) }
 
     func unpin(_ videoId: String) {
         pinned.remove(videoId)

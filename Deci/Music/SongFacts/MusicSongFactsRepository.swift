@@ -7,6 +7,8 @@ struct MusicSongFactsCached: Sendable, Equatable {
     var facts: MusicSongFacts?
     var lookupIsFresh: Bool
     var measureAttempted: Bool
+    /// A measurement failed within the last day.
+    var measureFailedRecently = false
 }
 
 /// The online chain and its cache as one thing: reading the cache never touches the network, and a lookup always stores
@@ -34,7 +36,8 @@ actor MusicSongFactsRepository {
         return MusicSongFactsCached(
             facts: record.facts.isEmpty ? nil : record.facts,
             lookupIsFresh: record.isLookupFresh(at: now()),
-            measureAttempted: record.measuredAt != nil
+            measureAttempted: record.measuredAt != nil,
+            measureFailedRecently: record.isMeasureFailureRecent(at: now())
         )
     }
 

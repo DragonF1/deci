@@ -29,6 +29,12 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
     static let audioDBInterval: TimeInterval = 2
     /// The longest Retry-After that is waited out (once) before a ReccoBeats request is tried again.
     static let maximumRetryWait: TimeInterval = 10
+    /// A host that answered 429 or 503 is left alone this long.
+    static let hostCooldown: TimeInterval = 60
+    /// The only hosts a request may reach, redirects included.
+    static let allowedHosts: Set<String> = ["api.deezer.com", "api.reccobeats.com", "musicbrainz.org", "www.theaudiodb.com"]
+    static let maximumGenres = 8
+    static let maximumTextLength = 200
 
     private static let unreserved = CharacterSet(
         charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
@@ -52,6 +58,8 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (Duration) async throws -> Void
     private var nextSlot: [Host: Date] = [:]
+    /// Per URL host, until when it is skipped (in memory only).
+    private var cooldownUntil: [String: Date] = [:]
 
     init(
         transport: any HTTPTransport,
@@ -113,7 +121,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
             if run.facts.isrc == nil { fill(&run, \.isrc, Self.isrc(track.isrc), .isrc, .deezer) }
             run.isrc = run.facts.isrc
             fill(&run, \.bpm, track.bpm, .bpm, .deezer)
-            fill(&run, \.releaseDate, track.releaseDate, .releaseDate, .deezer)
+            fill(&run, \.releaseDate, Self.validReleaseDate(track.releaseDate), .releaseDate, .deezer)
             if let explicit = track.explicit {
                 run.facts.explicit = explicit
                 run.facts.claim(.explicit, .deezer)
@@ -174,7 +182,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
             guard let recording = near?.0, Self.isMBID(recording.id) else { return }
             run.facts.mbid = recording.id
             run.facts.claim(.mbid, .musicbrainz)
-            fill(&run, \.releaseDate, recording.firstReleaseDate, .releaseDate, .musicbrainz)
+            fill(&run, \.releaseDate, Self.validReleaseDate(recording.firstReleaseDate), .releaseDate, .musicbrainz)
 
             await throttle(.musicBrainz, interval: Self.musicBrainzInterval)
             let detail = try MusicSongFactsParsers.musicBrainzDetail(
@@ -182,7 +190,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
                     "https://musicbrainz.org/ws/2/recording/\(recording.id)?inc=genres+releases&fmt=json",
                     headers: ["User-Agent": Self.musicBrainzUserAgent]))
             fillGenres(&run, detail.genres, .musicbrainz)
-            fill(&run, \.releaseDate, detail.firstReleaseDate, .releaseDate, .musicbrainz)
+            fill(&run, \.releaseDate, Self.validReleaseDate(detail.firstReleaseDate), .releaseDate, .musicbrainz)
         } catch {
             // A 400 is a request the service will not take; asking again would not help, and nothing is lost.
             if case MusicSongFactsError.http(400) = error {
@@ -232,8 +240,9 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
     }
 
     private func fillGenres(_ run: inout Run, _ names: [String], _ source: MusicSongFacts.Source) {
-        guard run.facts.genres.isEmpty, !names.isEmpty else { return }
-        run.facts.genres = names
+        let kept = names.prefix(Self.maximumGenres).map { String($0.prefix(Self.maximumTextLength)) }
+        guard run.facts.genres.isEmpty, !kept.isEmpty else { return }
+        run.facts.genres = kept
         run.facts.claim(.genres, source)
     }
 
@@ -242,6 +251,12 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
         guard let raw else { return nil }
         let clean = raw.replacingOccurrences(of: "-", with: "").uppercased()
         return clean.range(of: "^[A-Z0-9]{12}$", options: .regularExpression) != nil ? clean : nil
+    }
+
+    /// A release date only when it reads YYYY, YYYY-MM or YYYY-MM-DD.
+    static func validReleaseDate(_ raw: String?) -> String? {
+        guard let raw, raw.range(of: "^[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?$", options: .regularExpression) != nil else { return nil }
+        return raw
     }
 
     private static func isMBID(_ raw: String) -> Bool {
@@ -287,16 +302,29 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
         } catch MusicSongFactsError.rateLimited(let after) {
             guard let after, after <= Self.maximumRetryWait else { throw MusicSongFactsError.rateLimited(retryAfter: after) }
             try await sleep(.milliseconds(Int((max(after, 0) * 1000).rounded(.up))))
+            // The wait the service asked for has been served, so its cooldown is over.
+            if let host = URL(string: urlString)?.host?.lowercased() { cooldownUntil[host] = nil }
             return try await get(urlString)
         }
     }
 
     private func get(_ urlString: String, headers: [String: String] = [:]) async throws -> Data {
         guard let url = URL(string: urlString), url.scheme == "https" else { throw MusicSongFactsError.malformed }
+        let host = url.host?.lowercased() ?? ""
+        guard Self.allowedHosts.contains(host) else { throw MusicSongFactsError.malformed }
+        // A host that just said to slow down is skipped: the chain moves on.
+        if let until = cooldownUntil[host] {
+            if until > now() { throw MusicSongFactsError.rateLimited(retryAfter: nil) }
+            cooldownUntil[host] = nil
+        }
         var sent = headers
         sent["Accept"] = "application/json"
-        let response = try await transport.send(HTTPRequest(url: url, headers: sent))
+        let response = try await transport.send(HTTPRequest(
+            url: url, headers: sent, maximumResponseBytes: Self.maximumResponseBytes, allowedRedirectHosts: Self.allowedHosts))
         guard response.data.count <= Self.maximumResponseBytes else { throw MusicSongFactsError.tooLarge }
+        if response.statusCode == 429 || response.statusCode == 503 {
+            cooldownUntil[host] = now().addingTimeInterval(Self.hostCooldown)
+        }
         switch response.statusCode {
         case 200..<300:
             return response.data

@@ -13,10 +13,17 @@ enum MusicSongFactsError: Error, Equatable {
 }
 
 enum MusicSongFactsParsers {
+    /// A tempo a song can plausibly have; anything outside is a bad value, not a measure.
+    static let tempoRange: ClosedRange<Double> = 30...300
+    /// No text from a service is kept longer than this many characters.
+    static let maximumTextLength = 200
+    private static let gainRange: ClosedRange<Double> = -60...30
+    private static let loudnessRange: ClosedRange<Double> = -80...10
+
     struct DeezerTrack: Equatable {
         var id: Int?
         var isrc: String?
-        /// Only a value above zero: Deezer sends 0 for "unknown".
+        /// Only a value in 30 to 300: Deezer sends 0 for "unknown".
         var bpm: Double?
         var gain: Double?
         var releaseDate: String?
@@ -95,9 +102,9 @@ enum MusicSongFactsParsers {
         let root = try object(data)
         try checkDeezerError(root)
         guard root["error"] == nil else { return nil }
-        let bpm = number(root["bpm"]).flatMap { $0 > 0 ? $0 : nil }
+        let bpm = tempo(root["bpm"])
         return DeezerTrack(
-            id: int(root["id"]), isrc: string(root["isrc"]), bpm: bpm, gain: number(root["gain"]),
+            id: int(root["id"]), isrc: string(root["isrc"]), bpm: bpm, gain: number(root["gain"]).flatMap { gainRange.contains($0) ? $0 : nil },
             releaseDate: string(root["release_date"]), explicit: bool(root["explicit_lyrics"]),
             albumId: (root["album"] as? [String: Any]).flatMap { int($0["id"]) }, duration: int(root["duration"])
         )
@@ -125,11 +132,11 @@ enum MusicSongFactsParsers {
         guard let first = (root["content"] as? [Any])?.first as? [String: Any] else { return nil }
         let key = int(first["key"]).flatMap { (0...11).contains($0) ? $0 : nil }
         return ReccoFeatures(
-            isrc: string(first["isrc"]), tempo: number(first["tempo"]).flatMap { $0 > 0 ? $0 : nil }, key: key,
+            isrc: string(first["isrc"]), tempo: tempo(first["tempo"]), key: key,
             mode: int(first["mode"]).flatMap { ($0 == 0 || $0 == 1) ? $0 : nil }, energy: unit(first["energy"]),
             danceability: unit(first["danceability"]), valence: unit(first["valence"]), acousticness: unit(first["acousticness"]),
             instrumentalness: unit(first["instrumentalness"]), speechiness: unit(first["speechiness"]),
-            liveness: unit(first["liveness"]), loudness: number(first["loudness"])
+            liveness: unit(first["liveness"]), loudness: number(first["loudness"]).flatMap { loudnessRange.contains($0) ? $0 : nil }
         )
     }
 
@@ -165,7 +172,7 @@ enum MusicSongFactsParsers {
             guard let track = raw as? [String: Any] else { return nil }
             return AudioDBTrack(
                 artist: string(track["strArtist"]), title: string(track["strTrack"]), isrc: string(track["strISRC"]),
-                tempo: number(track["intTempo"]).flatMap { $0 > 0 ? $0 : nil },
+                tempo: tempo(track["intTempo"]),
                 energy: percent(track["intEnergy"]), danceability: percent(track["intDanceability"]),
                 genre: string(track["strGenre"]), mood: string(track["strMood"])
             )
@@ -184,7 +191,7 @@ enum MusicSongFactsParsers {
     private static func string(_ value: Any?) -> String? {
         guard let text = value as? String else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        return trimmed.isEmpty ? nil : String(trimmed.prefix(maximumTextLength))
     }
 
     /// A number, or a string that holds one ("171"); never a Bool.
@@ -201,6 +208,11 @@ enum MusicSongFactsParsers {
     private static func bool(_ value: Any?) -> Bool? {
         if let flag = value as? Bool { return flag }
         return nil
+    }
+
+    /// A tempo inside `tempoRange`; 0 (unknown) and wild values are absent.
+    private static func tempo(_ value: Any?) -> Double? {
+        number(value).flatMap { tempoRange.contains($0) ? $0 : nil }
     }
 
     /// 0 to 1 only; anything else is not a measure.

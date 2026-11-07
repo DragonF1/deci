@@ -199,6 +199,67 @@ struct MusicSongFactsClientTests {
         #expect(await client(transport).lookup(Fx.query) == .notFound)
     }
 
+    @Test("every request carries the size cap and the redirect allowlist")
+    func requestsCarryLimits() async {
+        let transport = StubSongFactsTransport(Fx.fullRoutes())
+        _ = await client(transport).lookup(Fx.query)
+        #expect(!transport.requests.isEmpty)
+        for request in transport.requests {
+            #expect(request.maximumResponseBytes == MusicSongFactsClient.maximumResponseBytes)
+            #expect(request.allowedRedirectHosts == MusicSongFactsClient.allowedHosts)
+        }
+    }
+
+    @Test("a host that answered 503 is skipped for 60 s, then asked again")
+    func hostCooldown() async {
+        let clock = SongFactsClock()
+        let transport = StubSongFactsTransport(Fx.fullRoutes())
+        transport.route("musicbrainz.org", [.success(Fx.ok("{}", status: 503))])
+        let client = client(transport, clock: clock)
+        _ = await client.lookup(Fx.query)
+        let first = transport.urls.filter { $0.contains("musicbrainz.org") }.count
+        #expect(first == 1)
+        _ = await client.lookup(Fx.query)
+        #expect(transport.urls.filter { $0.contains("musicbrainz.org") }.count == first)
+        #expect(transport.urls.filter { $0.contains("api.deezer.com/search") }.count == 2)
+        clock.advance(days: 61.0 / 86_400)
+        _ = await client.lookup(Fx.query)
+        #expect(transport.urls.filter { $0.contains("musicbrainz.org") }.count == first + 1)
+    }
+
+    @Test("a 429 from MusicBrainz starts the cooldown too, and the chain still finishes")
+    func cooldownOn429() async {
+        let transport = StubSongFactsTransport(Fx.fullRoutes())
+        transport.route("musicbrainz.org", [.success(Fx.ok("{}", status: 429))])
+        let client = client(transport)
+        let result = await client.lookup(Fx.query)
+        guard case .partial = result else { Issue.record("expected partial, got \(result)"); return }
+        _ = await client.lookup(Fx.query)
+        #expect(transport.urls.filter { $0.contains("musicbrainz.org") }.count == 1)
+    }
+
+    @Test("at most 8 genres, each cut to 200 characters, and only a plausible release date is kept")
+    func caps() async throws {
+        let long = String(repeating: "x", count: 500)
+        let names = (1...12).map { "{\"id\":\($0),\"name\":\"\($0 == 1 ? long : "g\($0)")\"}" }.joined(separator: ",")
+        let album = "{\"id\":1,\"label\":\"L\",\"genres\":{\"data\":[\(names)]}}"
+        let track = Fx.deezerTrack(bpm: 0).replacingOccurrences(of: "2020-03-20", with: "last tuesday")
+        let transport = StubSongFactsTransport(Fx.fullRoutes())
+        transport.route("api.deezer.com/album/", [.success(Fx.ok(album))])
+        transport.route("api.deezer.com/track/", [.success(Fx.ok(track))])
+        transport.route("musicbrainz.org/ws/2/isrc/", [.success(Fx.ok("{\"recordings\":[]}"))])
+        let found = try #require(facts(await client(transport).lookup(Fx.query)))
+        #expect(found.genres.count == 8)
+        #expect(found.genres.allSatisfy { $0.count <= 200 })
+        #expect(found.releaseDate == nil)
+        #expect(MusicSongFactsClient.validReleaseDate("2020") == "2020")
+        #expect(MusicSongFactsClient.validReleaseDate("2020-03") == "2020-03")
+        #expect(MusicSongFactsClient.validReleaseDate("2020-03-20") == "2020-03-20")
+        #expect(MusicSongFactsClient.validReleaseDate("20200320") == nil)
+        #expect(MusicSongFactsClient.validReleaseDate("2020-3-2") == nil)
+        #expect(MusicSongFactsClient.validReleaseDate("2020-03-20T00:00") == nil)
+    }
+
     @Test("a hit 3 s off the song's length is not a match")
     func durationOff() async {
         let transport = StubSongFactsTransport([

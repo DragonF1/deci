@@ -5,6 +5,10 @@ struct HTTPRequest: Sendable, Equatable {
     var method: String = "GET"
     var headers: [String: String] = [:]
     var body: Data?
+    /// Set: the reply is read as a stream and refused (`MusicSongFactsError.tooLarge`) once it passes this many bytes.
+    var maximumResponseBytes: Int?
+    /// Set: a redirect is followed only to https and one of these hosts (lowercase); any other ends the request.
+    var allowedRedirectHosts: Set<String>?
 }
 
 struct HTTPResponse: Sendable, Equatable {
@@ -80,16 +84,36 @@ struct URLSessionTransport: HTTPTransport {
     }
 
     func send(_ request: HTTPRequest) async throws -> HTTPResponse {
-        let (data, response) = try await session.data(
-            for: Self.urlRequest(for: request),
-            delegate: RedirectDelegate(origin: request.url)
-        )
+        let built = Self.urlRequest(for: request)
+        let delegate: any URLSessionTaskDelegate
+        if let hosts = request.allowedRedirectHosts {
+            delegate = AllowlistRedirectDelegate(hosts: hosts)
+        } else {
+            delegate = RedirectDelegate(origin: request.url)
+        }
+        guard let cap = request.maximumResponseBytes else {
+            let (data, response) = try await session.data(for: built, delegate: delegate)
+            guard let http = response as? HTTPURLResponse else { throw MusicError.http(0) }
+            return HTTPResponse(statusCode: http.statusCode, headers: Self.headers(of: http), data: data)
+        }
+        // Capped: a declared length over the cap is refused up front, and the stream is cut as soon as it passes it.
+        let (bytes, response) = try await session.bytes(for: built, delegate: delegate)
         guard let http = response as? HTTPURLResponse else { throw MusicError.http(0) }
+        if http.expectedContentLength > Int64(cap) { throw MusicSongFactsError.tooLarge }
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+            if data.count > cap { throw MusicSongFactsError.tooLarge }
+        }
+        return HTTPResponse(statusCode: http.statusCode, headers: Self.headers(of: http), data: data)
+    }
+
+    private static func headers(of http: HTTPURLResponse) -> [String: String] {
         var headers: [String: String] = [:]
         for (key, value) in http.allHeaderFields {
             if let key = key as? String, let value = value as? String { headers[key] = value }
         }
-        return HTTPResponse(statusCode: http.statusCode, headers: headers, data: data)
+        return headers
     }
 }
 
@@ -109,5 +133,28 @@ private final class RedirectDelegate: NSObject, URLSessionTaskDelegate, Sendable
     ) {
         // The completion-handler form: the async variant crashes the Swift 6.x ObjC thunk lowering.
         completionHandler(RedirectGuard.redirected(request, from: origin))
+    }
+}
+
+/// Follows a redirect only to https and a host on the list. Used by callers that know every host they may reach.
+private final class AllowlistRedirectDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    private let hosts: Set<String>
+
+    init(hosts: Set<String>) {
+        self.hosts = hosts
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        guard request.url?.scheme?.lowercased() == "https", let host = request.url?.host?.lowercased(), hosts.contains(host) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }

@@ -118,6 +118,39 @@ struct MusicSongFactsStoreTests {
         #expect(record.measuredAt != nil)
     }
 
+    @Test("a failed measurement is remembered for a day, survives a lookup, and a later success clears it")
+    func measureFailed() async throws {
+        let clock = SongFactsClock()
+        let store = try store(clock)
+        await store.putMeasureFailed(videoId: "a")
+        var record = try #require(await store.record(for: "a"))
+        #expect(record.isMeasureFailureRecent(at: clock.date))
+        #expect(record.measuredAt == nil)
+        #expect(!record.isMeasureFailureRecent(at: clock.date.addingTimeInterval(86_401)))
+
+        await store.putLookup(videoId: "a", .found(found(bpm: nil, clock: clock)))
+        record = try #require(await store.record(for: "a"))
+        #expect(record.isMeasureFailureRecent(at: clock.date))
+        #expect(record.facts.isrc == "USUG11904206")
+
+        await store.putMeasured(videoId: "a", bpm: 100, confidence: 0.5)
+        record = try #require(await store.record(for: "a"))
+        #expect(record.facts.measureFailedAt == nil)
+        #expect(record.measuredAt != nil)
+        // A finished measurement is never turned back into a failure.
+        await store.putMeasureFailed(videoId: "a")
+        #expect(try #require(await store.record(for: "a")).facts.measureFailedAt == nil)
+    }
+
+    @Test("a measured tempo outside 30 to 300 is not stored")
+    func measuredAbsurd() async throws {
+        let store = try store(SongFactsClock())
+        await store.putMeasured(videoId: "a", bpm: 1e300, confidence: 1)
+        let record = try #require(await store.record(for: "a"))
+        #expect(record.facts.bpm == nil)
+        #expect(record.measuredAt != nil)
+    }
+
     @Test("a lookup after a measurement keeps Deci's tempo only where no service gave one")
     func lookupAfterMeasure() async throws {
         let clock = SongFactsClock()

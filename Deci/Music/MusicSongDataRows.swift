@@ -130,9 +130,9 @@ enum MusicSongDataRows {
 
     /// "171 (ReccoBeats)", or "104 (measured)" for Deci's own.
     private static func tempoText(_ facts: MusicSongFacts?) -> String? {
-        guard let bpm = facts?.bpm, bpm.isFinite, bpm > 0 else { return nil }
+        guard let bpm = facts?.bpm, MusicSongFactsParsers.tempoRange.contains(bpm), let rounded = safeInt(bpm.rounded()) else { return nil }
         let name = facts?.source(of: .bpm).map { $0 == .deci ? "measured" : $0.displayName }
-        let whole = "\(Int(bpm.rounded()))"
+        let whole = "\(rounded)"
         return name.map { "\(whole) (\($0))" } ?? whole
     }
 
@@ -150,8 +150,8 @@ enum MusicSongDataRows {
     }
 
     private static func percent(_ value: Double?) -> String? {
-        guard let value, value.isFinite, value >= 0, value <= 1 else { return nil }
-        return "\(Int((value * 100).rounded()))%"
+        guard let value, value.isFinite, value >= 0, value <= 1, let whole = safeInt((value * 100).rounded()) else { return nil }
+        return "\(whole)%"
     }
 
     private static func genresText(_ facts: MusicSongFacts?) -> String? {
@@ -185,7 +185,7 @@ enum MusicSongDataRows {
                 text("Source", source),
                 text("Codec", codecText(held.audioCodec)),
                 number("Format", held.itag > 0 ? "itag \(held.itag)" : nil),
-                number("Bitrate", held.bitrate.flatMap { $0 > 0 ? "\(Int((Double($0) / 1000).rounded())) kbps" : nil }),
+                number("Bitrate", held.bitrate.flatMap { $0 > 0 ? safeInt((Double($0) / 1000).rounded()).map { "\($0) kbps" } : nil }),
                 number("Sample rate", held.audioSampleRate.flatMap { $0 > 0 ? kilohertz($0) : nil }),
                 number("Channels", held.audioChannels.flatMap { $0 > 0 ? channelsText($0) : nil }),
                 number("File size", held.contentLength.flatMap { $0 > 0 ? megabytes($0) : nil }),
@@ -279,15 +279,33 @@ enum MusicSongDataRows {
         if age < 60 {
             when = "Just now"
         } else {
-            let formatter = RelativeDateTimeFormatter()
-            formatter.locale = Locale(identifier: "en_US")
-            formatter.unitsStyle = .full
-            when = formatter.localizedString(for: analysis.analyzedAt, relativeTo: now)
+            when = relativeFormatter.localizedString(for: analysis.analyzedAt, relativeTo: now)
         }
         return "\(when) (\(source))"
     }
 
     // MARK: - Formats
+
+    /// Built once: a formatter is costly to make and the panel's body runs often.
+    nonisolated(unsafe) static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
+    nonisolated(unsafe) private static let groupedFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "en_US")
+        return formatter
+    }()
+
+    /// A whole number from a double, or nil when it is not finite or too big to be a real count (old cached rows).
+    static func safeInt(_ value: Double) -> Int? {
+        guard value.isFinite, abs(value) < 1e15 else { return nil }
+        return Int(value)
+    }
 
     /// A text row; a missing value says Unknown.
     private static func text(_ label: String, _ value: String?) -> MusicSongDataRow {
@@ -310,7 +328,8 @@ enum MusicSongDataRows {
     }
 
     private static func position(_ value: Double) -> String? {
-        value.isFinite && value >= 0 ? clock(Int(value.rounded(.down))) : nil
+        guard value.isFinite, value >= 0, let whole = safeInt(value.rounded(.down)) else { return nil }
+        return clock(whole)
     }
 
     private static func seconds(_ value: Double) -> String? {
@@ -325,7 +344,8 @@ enum MusicSongDataRows {
     private static func kilohertz(_ hertz: Int) -> String {
         let value = Double(hertz) / 1000
         let rounded = (value * 10).rounded() / 10
-        return rounded == rounded.rounded() ? "\(Int(rounded)) kHz" : String(format: "%.1f kHz", rounded)
+        if rounded == rounded.rounded(), let whole = safeInt(rounded) { return "\(whole) kHz" }
+        return String(format: "%.1f kHz", rounded)
     }
 
     private static func megabytes(_ bytes: Int) -> String {
@@ -333,9 +353,6 @@ enum MusicSongDataRows {
     }
 
     private static func grouped(_ value: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.locale = Locale(identifier: "en_US")
-        return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
+        groupedFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 }
