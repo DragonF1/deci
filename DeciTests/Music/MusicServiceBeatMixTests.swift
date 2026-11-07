@@ -89,12 +89,13 @@ private struct BeatHarness {
     var lastPlan: TransitionPlan? { engine.plans.last ?? nil }
 
     /// What the planner makes of the two standard rows, for the mix point to aim ticks at.
-    static func expectedBeatPlan(aPeriod: Double = 0.5, bPeriod: Double = 0.48) -> TransitionPlan {
+    static func expectedBeatPlan(aPeriod: Double = 0.5, bPeriod: Double = 0.48, bassSwap: Bool = true) -> TransitionPlan {
         var inputs = MusicBeatPlannerTests.inputs(
             a: MusicBeatPlannerTests.grid(period: aPeriod, anchor: 0.2, phase: 0),
             b: MusicBeatPlannerTests.grid(period: bPeriod, anchor: 0.1, phase: 1, span: 0.1...236)
         )
         inputs.beatMixEnabled = true
+        inputs.bassSwapAvailable = bassSwap
         return MusicBeatPlannerTests.plan(inputs)
     }
 }
@@ -122,7 +123,7 @@ struct MusicServiceBeatMixTests {
         #expect(plan.fadeStartSec == plan.mixOutSec)
         #expect(plan.incomingStartSec == plan.mixInSec)
         #expect(plan.fadeSeconds == plan.overlapSec)
-        #expect(plan.bassSwapAtSec == nil, "no bass swap before P4")
+        #expect(plan.bassSwapAtSec != nil && plan.bassHandoverSec > 0, "the service offers the bass swap")
         #expect(h.service.transitionLines.contains { $0.hasPrefix("transition_beat_plan from=a to=b") })
     }
 
@@ -187,7 +188,8 @@ struct MusicServiceBeatMixTests {
         await h.tick(mixOut - 7.9)
         #expect(h.engine.cancelPreloadCount == cancels + 1)
         #expect(h.service.transitionLines.contains { $0.hasPrefix("transition_beat_fallback from=a to=b reason=notReady") })
-        await h.tick(mixOut - 6)
+        // The smart lead (37 s from the end) opens the window again later than the beat lead did.
+        await h.tick(max(mixOut - 6, 210))
         #expect(h.engine.preloads.count == 2, "offered again")
         let second = try #require(h.lastPlan)
         #expect(second.mode != .beat)
@@ -198,7 +200,8 @@ struct MusicServiceBeatMixTests {
     func earliestMixOutGivesSmart() async throws {
         let h = BeatHarness()
         await start(h)
-        let expected = BeatHarness.expectedBeatPlan()
+        // The 8-bar plan (the later mix point): a 16-bar one no longer fits, so the planner drops to 8.
+        let expected = BeatHarness.expectedBeatPlan(bassSwap: false)
         let mixOut = try #require(expected.mixOutSec)
         await h.tick(126)
         // The first offer comes when the playhead is already within the preroll of the mix point.

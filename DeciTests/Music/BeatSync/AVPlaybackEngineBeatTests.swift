@@ -35,7 +35,7 @@ struct AVPlaybackEngineBeatTests {
         )
     }
 
-    private func beatPlan(rate: Double = 0.95, mixIn: Double = 2, mixOut: Double = 6, overlap: Double = 2) -> TransitionPlan {
+    private func beatPlan(rate: Double = 0.95, mixIn: Double = 2, mixOut: Double = 6, overlap: Double = 2, swapAt: Double? = nil, handover: Double = 0) -> TransitionPlan {
         var plan = TransitionPlan(
             mode: .beat, incomingStartSec: mixIn, outgoingEndSec: mixOut + overlap, fadeStartSec: mixOut,
             fadeSeconds: overlap, incomingGainDb: 0, incomingGlideSeconds: 0, outgoingGainDb: 0,
@@ -48,6 +48,8 @@ struct AVPlaybackEngineBeatTests {
         plan.overlapSec = overlap
         plan.barSec = overlap
         plan.glideBackSec = 10
+        plan.bassSwapAtSec = swapAt
+        plan.bassHandoverSec = handover
         return plan
     }
 
@@ -309,13 +311,13 @@ struct AVPlaybackEngineBeatTests {
     }
 
     /// Plays A into B on a real beat overlap and returns once the flip has happened.
-    private func overlapEngine() async throws -> AVPlaybackEngine {
+    private func overlapEngine(swapAt: Double? = nil, handover: Double = 0) async throws -> AVPlaybackEngine {
         let first = try await writeTone("ra", seconds: 16)
         let second = try await writeTone("rb", seconds: 20)
         let engine = makeEngine()
         engine.crossfadeSeconds = 2
         engine.load(stream("ra", duration: 16, url: first), startAt: 0, autoplay: true)
-        engine.preload(stream("rb", duration: 20, url: second), plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 8))
+        engine.preload(stream("rb", duration: 20, url: second), plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 8, swapAt: swapAt, handover: handover))
         let flipped = await waitUntil(timeout: .seconds(40)) { engine.isCrossfading && engine.debugBeatOverlap != nil }
         #expect(flipped)
         try await Task.sleep(for: .milliseconds(600))
@@ -359,6 +361,70 @@ struct AVPlaybackEngineBeatTests {
         #expect(restarted)
         try await Task.sleep(for: .milliseconds(400))
         #expect(abs(drift(engine)) < 0.06, "drift after the snap \(drift(engine))")
+        engine.unload()
+    }
+
+    // MARK: - Bass swap (3b P4)
+
+    @Test("a beat plan with a bass swap drives the lease channels: the outgoing deck holds 1 and hands over, the incoming holds 0")
+    func bassSwapDrivesLeases() async throws {
+        let engine = try await overlapEngine(swapAt: 4, handover: 1)
+        #expect(engine.debugBassSwapActive)
+        let outgoing = try #require(engine.debugDrainingTap?.debugBass)
+        let incoming = try #require(engine.debugActiveTap?.debugBass)
+        #expect(outgoing.active && incoming.active)
+        #expect(outgoing.initial == 1 && outgoing.target == 0)
+        #expect(incoming.initial == 0 && incoming.target == 1)
+        let rate = engine.debugActiveTap?.debugLeaseRate ?? 0
+        #expect(rate > 0)
+        #expect(outgoing.delayFrames == Int((4 * rate).rounded()) && incoming.delayFrames == outgoing.delayFrames)
+        #expect(outgoing.rampFrames == Int((1 * rate).rounded()) && incoming.rampFrames == outgoing.rampFrames)
+        engine.unload()
+    }
+
+    @Test("a plan without a swap leaves the bass channels off")
+    func noSwapNoChannels() async throws {
+        let engine = try await overlapEngine()
+        #expect(!engine.debugBassSwapActive)
+        #expect(engine.debugDrainingTap?.debugBass?.active != true)
+        #expect(engine.debugActiveTap?.debugBass?.active != true)
+        engine.unload()
+    }
+
+    @Test("when the overlap ends the channels are off again on both decks")
+    func bassSwapEndsWithTheDrain() async throws {
+        let engine = try await overlapEngine(swapAt: 4, handover: 1)
+        let drained = await waitUntil(timeout: .seconds(30)) { !engine.isCrossfading }
+        #expect(drained)
+        #expect(!engine.debugBassSwapActive)
+        #expect(engine.debugActiveTap?.debugBass?.active != true)
+        #expect(engine.debugStandbyTap?.debugBass?.active != true)
+        engine.unload()
+    }
+
+    @Test("a cancelled schedule leaves no bass channel behind on the standby deck")
+    func cancelResetsBass() async throws {
+        let first = try await writeTone("ca", seconds: 16)
+        let second = try await writeTone("cb", seconds: 20)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("ca", duration: 16, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("cb", duration: 20, url: second), plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 12, overlap: 2, swapAt: 1, handover: 0.5))
+        engine.cancelPreload()
+        #expect(!engine.debugBassSwapActive)
+        #expect(engine.debugStandbyTap?.debugBass?.active != true)
+        engine.unload()
+    }
+
+    @Test("a seek in the middle of the swap ends the drain fast and leaves both channels off")
+    func seekMidSwapResets() async throws {
+        let engine = try await overlapEngine(swapAt: 4, handover: 1)
+        #expect(engine.debugBassSwapActive)
+        engine.seek(to: 5)
+        let drained = await waitUntil(timeout: .seconds(10)) { !engine.isCrossfading }
+        #expect(drained)
+        #expect(!engine.debugBassSwapActive)
+        #expect(engine.debugActiveTap?.debugBass?.active != true)
         engine.unload()
     }
 }

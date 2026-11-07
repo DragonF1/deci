@@ -237,6 +237,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var plannedRate: Float = 1
     /// A beat mix's overlap, from its flip until the outgoing deck has drained: what a resume needs to realign the decks.
     private var beatOverlap: BeatOverlap?
+    /// True while the decks' bass channels are on (from the flip of a beat mix with a swap until the drain is over).
+    private var bassSwapActive = false
     /// The rate glide back to 1 that follows a beat mix, nil outside one.
     private var glide: Glide?
     private var glideTask: Task<Void, Never>?
@@ -335,6 +337,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     var debugPlannedRate: Float { plannedRate }
     var debugGlideTicking: Bool { glideTask != nil }
     var debugBeatOverlap: BeatOverlap? { beatOverlap }
+    var debugBassSwapActive: Bool { bassSwapActive }
     func debugSetBeatOverlap(_ overlap: BeatOverlap?) { beatOverlap = overlap }
     func debugSetWantsPlay(_ on: Bool) { wantsPlay = on }
     func debugBeatSchedule(rate: Float, at host: CMTime) {
@@ -1187,6 +1190,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         plannedFade = 0
         plannedLead = 0
         plannedRate = 1
+        standby.tap?.endBass()
         standby.tap?.disarm()
         let deck = standby
         let token = deck.token
@@ -1355,6 +1359,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         // The outgoing lease drains before the incoming one claims the chain, so it is never silenced in between.
         outgoing.tap?.drain(over: fade)
+        // A beat mix with a bass swap: the lows stay with the outgoing deck and hand over in one step on a bar boundary.
+        // A start that was late has lost the grid, so the highs just fade as they would for any plan.
+        if scheduled, !startStandby, let plan { beginBassSwap(outgoing: outgoing, incoming: incoming, plan: plan, fade: fade) }
         pendingGlide = 0
         beatOverlap = nil
         if let plan {
@@ -1412,6 +1419,29 @@ final class AVPlaybackEngine: PlaybackEngine {
         startDrainTimer(seconds: fade)
     }
 
+    /// Drives the lease bass channels of a beat plan with a swap: the outgoing deck holds the bass (1) and the incoming one
+    /// has none (0) until `bassSwapAtSec` into the overlap, then the two hand over across `bassHandoverSec` with `gA + gB =
+    /// 1`, so kicks that line up never add to more than one kick. Offsets are in rendered audio, which is wall time for
+    /// both decks (the plan's overlap is outgoing seconds, and the incoming deck's rate only changes what it plays, not how
+    /// many frames it renders), counted by each lease from its own first frame of the fade, so a pause holds them both.
+    private func beginBassSwap(outgoing: Deck, incoming: Deck, plan: TransitionPlan, fade: TimeInterval) {
+        guard plan.mode == .beat, let swap = plan.bassSwapAtSec, swap.isFinite, swap > 0, swap < fade else { return }
+        let handover = min(max(plan.bassHandoverSec, 0.05), max(0.05, fade - swap))
+        outgoing.tap?.beginBass(gain: 1)
+        incoming.tap?.beginBass(gain: 0)
+        outgoing.tap?.setBass(to: 0, over: handover, after: swap)
+        incoming.tap?.setBass(to: 1, over: handover, after: swap)
+        bassSwapActive = true
+    }
+
+    /// The bass channels go back to the plain path on both decks (and a swap that was cut short is not left half done).
+    private func endBassSwap() {
+        guard bassSwapActive else { return }
+        bassSwapActive = false
+        active.tap?.endBass()
+        standby.tap?.endBass()
+    }
+
     /// Lets the draining deck go once `seconds` of play intent have passed: counted while the engine wants to play, not
     /// while the deck's rate is non-zero (an outgoing item that reaches its end drops its rate to 0 but is still fading),
     /// so a pause holds the fade where it is and the resume goes on from there. The outgoing item running out ends it too.
@@ -1458,6 +1488,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         draining = nil
         old.tearDown()
         old.player.automaticallyWaitsToMinimizeStalling = false
+        endBassSwap()
         active.tap?.endOverlap()
         // The incoming deck was held down for a louder song: it glides back to its own level now, in frames, so a pause
         // holds it.
@@ -1553,6 +1584,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         beatOverlap = nil
         // A paused deck cannot play its fade-out: it goes at once.
         if fast, wantsPlay, old.player.rate != 0 {
+            // The lows follow the same short ramp as the highs, so the cut leaves no step in either band.
+            if bassSwapActive {
+                old.tap?.setBass(to: 0, over: Self.quickDrain)
+                active.tap?.setBass(to: 1, over: Self.quickDrain)
+            }
             old.tap?.drain(over: Self.quickDrain, curve: .linear)
             startQuickDrainTimer()
         } else {

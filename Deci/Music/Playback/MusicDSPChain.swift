@@ -423,13 +423,17 @@ final class MusicDSPChain: @unchecked Sendable {
     ) {
         let sampleCount = frames * 2
         frameCount.wrappingAdd(frames, ordering: .relaxed)
+        // Tier 3b P4: the bass channel of a beat mix (nil when idle, which is free).
+        let bass = lease.beginBassRender()
         defer {
             lease.endFade(fade.advanced(by: frames))
             lease.endOffset(offset.advanced(by: frames))
+            if let bass { lease.storeBass(bass.advanced(by: frames)) }
         }
 
         if startGain == 0 && target == 0 {
             memset(samples, 0, sampleCount * MemoryLayout<Float>.size)
+            if bass != nil { lease.resetSplit() }
             return
         }
         if metered { dsp.noteLevel(samples, count: sampleCount, scale: fade.meanValue(over: frames) * offset.meanValue(over: frames)) }
@@ -444,7 +448,7 @@ final class MusicDSPChain: @unchecked Sendable {
         dsp.processEqualizer(input: input, output: samples, frames: frames)
         dsp.compensator.process(input: input, output: samples, frameCount: frames)
 
-        Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade, offset: offset, lease: lease)
+        Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade, offset: offset, lease: lease, bass: bass)
         if metered { dsp.notePeak(samples, count: sampleCount) }
     }
 
@@ -528,9 +532,20 @@ final class MusicDSPChain: @unchecked Sendable {
     /// The limiter, then the fade. During an equal-power ramp the two are done together (see `rideAndApply`).
     private static func limitAndFade(
         _ samples: UnsafeMutablePointer<Float>, frames: Int, channels: Int, fade: MusicFade, offset: MusicFade,
-        lease: MusicRenderLease
+        lease: MusicRenderLease, bass: MusicBassGain? = nil
     ) {
-        limitAndFadeOnly(samples, frames: frames, channels: channels, fade: fade, lease: lease)
+        if let bass, channels == 2 {
+            if bass.isSteady, fade.remaining == 0, bass.value == fade.value {
+                // b == f: the output is f * x, the plain path, bit for bit. The split keeps running so it is warm the
+                // moment the two gains part.
+                lease.warmSplit(samples, frames: frames)
+                limitAndFadeOnly(samples, frames: frames, channels: channels, fade: fade, lease: lease)
+            } else {
+                bandedLimitAndFade(samples, frames: frames, fade: fade, bass: bass, lease: lease)
+            }
+        } else {
+            limitAndFadeOnly(samples, frames: frames, channels: channels, fade: fade, lease: lease)
+        }
         // Tier 2b: the loudness offset comes last, after the limiter, the rider and the fade. It is attenuation only (the
         // lease clamps it to [0, 1]), so it can only lower a level the rider already holds under 1.0. Idle is free.
         offset.apply(to: samples, frames: frames, channels: channels)
@@ -562,6 +577,59 @@ final class MusicDSPChain: @unchecked Sendable {
         fade.apply(to: samples, frames: frames, channels: channels)
     }
 
+    /// The two-band output of a beat mix, stereo interleaved in place: `y = f * high + b * low`, which is `f * x + (b - f) *
+    /// low` with `high = x - low` and `low` the 150 Hz split. The highs follow the lease's fade, the lows its bass gain.
+    /// While an equal-power ramp runs the rider holds the output to this lease's share of the summed ceiling (see
+    /// `MusicFade.headroomShare`); after it the soft limiter and the release tail do what they do for one band.
+    private static func bandedLimitAndFade(
+        _ samples: UnsafeMutablePointer<Float>, frames: Int, fade: MusicFade, bass: MusicBassGain, lease: MusicRenderLease
+    ) {
+        let ramped = fade.isHeadroomRamp ? min(frames, fade.remaining) : 0
+        let release = lease.headroomRelease
+        var env = lease.headroomEnv
+        lease.withSplit { split in
+            for frame in 0..<frames {
+                let gh = fade.heard(afterFrames: frame + 1)
+                let gl = bass.gain(afterFrames: frame + 1)
+                let base = frame * 2
+                let xl = samples[base]
+                let xr = samples[base + 1]
+                let lowL = split.lowpass(xl, channel: 0)
+                let lowR = split.lowpass(xr, channel: 1)
+                var left = gh * (xl - lowL) + gl * lowL
+                var right = gh * (xr - lowR) + gl * lowR
+                if frame < ramped {
+                    let peak = max(abs(left), abs(right))
+                    let ceiling = MusicFade.headroomShare(high: gh, low: gl)
+                    let need: Float = peak > ceiling && peak.isFinite ? ceiling / peak : 1
+                    env = need < env ? need : env + (need - env) * release
+                    left *= env
+                    right *= env
+                }
+                samples[base] = left.isFinite ? left : 0
+                samples[base + 1] = right.isFinite ? right : 0
+            }
+        }
+        let count = frames * 2
+        if ramped > 0 {
+            if ramped < frames {
+                let rest = samples + ramped * 2
+                SoftLimiter.processBuffer(rest, sampleCount: (frames - ramped) * 2)
+                zeroNonFinite(rest, count: (frames - ramped) * 2)
+                fade.releaseTail(rest, frames: frames - ramped, channels: 2, hold: 1, env: &env, release: release)
+            }
+        } else if env < 1 && fade.remaining == 0 {
+            SoftLimiter.processBuffer(samples, sampleCount: count)
+            zeroNonFinite(samples, count: count)
+            fade.releaseTail(samples, frames: frames, channels: 2, hold: 1, env: &env, release: release)
+        } else {
+            env = 1
+            SoftLimiter.processBuffer(samples, sampleCount: count)
+            zeroNonFinite(samples, count: count)
+        }
+        lease.headroomEnv = env
+    }
+
     /// Replaces NaN and infinity with silence, so nothing downstream (the limiter least of all) can turn it into noise.
     private static func zeroNonFinite(_ samples: UnsafeMutablePointer<Float>, count: Int) {
         for index in 0..<count where !samples[index].isFinite {
@@ -584,6 +652,104 @@ final class MusicDSPChain: @unchecked Sendable {
     }
 }
 
+/// Tier 3b P4: the 150 Hz split of a beat mix. `low` is a 4th-order Butterworth low-pass (two biquads), `high` is `x -
+/// low`, so the two always add back to the input exactly. Stereo, one state per channel, in Double so a 150 Hz corner at
+/// 48 kHz does not drown in rounding; states below 1e-20 are flushed so a silent input never goes denormal.
+struct MusicBassSplit {
+    static let cutoffHz = 150.0
+    /// Q of the two sections of a 4th-order Butterworth: 1 / (2 cos(pi/8)) and 1 / (2 cos(3 pi/8)).
+    private static let qualities = (0.5411961001461970, 1.3065629648763766)
+
+    private struct Section {
+        var b0 = 0.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0
+        init() {}
+        init(sampleRate: Double, q: Double) {
+            let w = 2 * Double.pi * min(MusicBassSplit.cutoffHz, sampleRate / 4) / sampleRate
+            let alpha = sin(w) / (2 * q)
+            let c = cos(w)
+            let a0 = 1 + alpha
+            b0 = (1 - c) / 2 / a0
+            b1 = (1 - c) / a0
+            b2 = b0
+            a1 = -2 * c / a0
+            a2 = (1 - alpha) / a0
+        }
+    }
+
+    private let first: Section
+    private let second: Section
+    /// Per channel (2) and section (2): the two delay states.
+    private var state = SIMD8<Double>(repeating: 0)
+
+    init(sampleRate: Double) {
+        let rate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 48_000
+        first = Section(sampleRate: rate, q: Self.qualities.0)
+        second = Section(sampleRate: rate, q: Self.qualities.1)
+    }
+
+    /// Back to silence: no ringing from an earlier stretch of audio.
+    mutating func reset() { state = SIMD8<Double>(repeating: 0) }
+
+    /// The low band of one sample of `channel` (0 or 1).
+    mutating func lowpass(_ x: Float, channel: Int) -> Float {
+        let offset = (channel & 1) * 4
+        let mid = Self.step(Double(x), first, &state, offset)
+        let out = Self.step(mid, second, &state, offset + 2)
+        return Float(out)
+    }
+
+    @inline(__always)
+    private static func step(_ x: Double, _ s: Section, _ state: inout SIMD8<Double>, _ i: Int) -> Double {
+        let y = s.b0 * x + state[i]
+        var z1 = s.b1 * x - s.a1 * y + state[i + 1]
+        var z2 = s.b2 * x - s.a2 * y
+        if abs(z1) < 1e-20 { z1 = 0 }
+        if abs(z2) < 1e-20 { z2 = 0 }
+        state[i] = z1
+        state[i + 1] = z2
+        return y
+    }
+}
+
+/// A lease's bass gain `b`: linear, per frame, held until `delay` frames have been rendered and then ramped. Frame counted
+/// like the fade, so a paused deck holds it and the two decks of a mix stay together.
+struct MusicBassGain {
+    var value: Float
+    var target: Float
+    var step: Float = 0
+    var delay = 0
+    var remaining = 0
+
+    init(value: Float) {
+        self.value = value
+        target = value
+    }
+
+    var isSteady: Bool { delay == 0 && remaining == 0 }
+
+    /// The gain as heard `used` frames from now (1 is the next frame).
+    func gain(afterFrames used: Int) -> Float {
+        guard used > delay else { return value }
+        let into = used - delay
+        return into >= remaining ? target : value + step * Float(into)
+    }
+
+    func advanced(by frames: Int) -> MusicBassGain {
+        guard !isSteady, frames > 0 else { return self }
+        var next = self
+        if frames <= delay {
+            next.delay = delay - frames
+            return next
+        }
+        let into = frames - delay
+        next.delay = 0
+        let used = min(into, remaining)
+        next.value = into >= remaining ? target : value + step * Float(into)
+        next.remaining = remaining - used
+        return next
+    }
+}
+
 /// How a lease's fade moves between its two gains.
 enum MusicFadeCurve: UInt32, Sendable {
     /// A straight ramp.
@@ -596,7 +762,7 @@ enum MusicFadeCurve: UInt32, Sendable {
 
 /// A lease's fade gain: a ramp from the current value to a target over a number of frames, applied per frame so it
 /// is exact across buffer boundaries. Idle (1, nothing remaining) until `setFade` is called.
-fileprivate struct MusicFade {
+struct MusicFade {
     var value: Float = 1
     var target: Float = 1
     var step: Float = 0
@@ -618,6 +784,32 @@ fileprivate struct MusicFade {
             let shape = target >= from ? sin(angle) : 1 - cos(angle)
             return from + (target - from) * Float(shape)
         }
+    }
+
+    /// The gain as heard `used` frames from now, whether or not a ramp is running.
+    func heard(afterFrames used: Int) -> Float {
+        remaining > 0 ? gain(afterFrames: used) : value
+    }
+
+    /// The share of the summed ceiling (1.0) this lease may fill while it fades against its partner. The partner holds the
+    /// complement: `sqrt(1 - g^2)` on the highs and `1 - b` on the lows. With `e` the larger of this lease's two gains
+    /// and `e'` the partner's, the share is `e / (e + e')`, so the two shares add to 1.
+    /// One band (`low` nil) is today's rule: `g / (g + sqrt(1 - g^2))`, which two bands with `b == g` reproduce exactly.
+    static func headroomShare(high g: Float, low: Float?) -> Float {
+        let high = min(1, max(0, g))
+        let complement = max(0, 1 - high * high).squareRoot()
+        let own: Float
+        let other: Float
+        if let low {
+            let b = min(1, max(0, low))
+            own = max(high, b)
+            other = max(complement, 1 - b)
+        } else {
+            own = high
+            other = complement
+        }
+        let sum = own + other
+        return sum > 0 ? own / sum : 0
     }
 
     /// The fade's average over the next `frames` frames (its start and end values: a linear ramp's mean).
@@ -753,6 +945,18 @@ final class MusicRenderLease: @unchecked Sendable {
     private let fadeRequest = Atomic<UInt64>(UInt64(Float(1).bitPattern) << 32)
     private let fadeGeneration = Atomic<Int>(0)
 
+    // Tier 3b P4: the bass channel. `bassActiveFlag` is off outside a beat mix (every render then takes the old path).
+    private let bassActiveFlag = Atomic<Bool>(false)
+    private let bassInitialBits = Atomic<UInt32>(Float(1).bitPattern)
+    private let bassRequest = Atomic<UInt64>(UInt64(Float(1).bitPattern) << 32)
+    private let bassDelayRequest = Atomic<Int>(0)
+    private let bassGeneration = Atomic<Int>(0)
+    private let bassEpoch = Atomic<Int>(0)
+    private nonisolated(unsafe) var bassGain = MusicBassGain(value: 1)
+    private nonisolated(unsafe) var seenBassGeneration = 0
+    private nonisolated(unsafe) var seenBassEpoch = 0
+    private nonisolated(unsafe) var split: MusicBassSplit
+
     #if DEBUG
     /// What the renderer did with this lease's frames, for the tests: through the whole chain, volume and limiter only
     /// (mono or multichannel streams), or silenced.
@@ -833,6 +1037,7 @@ final class MusicRenderLease: @unchecked Sendable {
         let token = claims ? chain.claimOwnership() : chain.newToken()
         self.token = token
         dsp = chain.makeDSP(rate: rate, token: token)
+        split = MusicBassSplit(sampleRate: rate)
         currentGain = chain.targetGain
         seenSnapGeneration = chain.snapGeneration.load(ordering: .acquiring)
     }
@@ -934,6 +1139,102 @@ final class MusicRenderLease: @unchecked Sendable {
 
     fileprivate func endFade(_ state: MusicFade) {
         fade = state
+    }
+
+    // MARK: - Bass (Tier 3b P4)
+
+    /// Starts the bass channel at `gain`: from the next render the lease outputs `f * high + b * low` with `b` held at
+    /// `gain`, and the 150 Hz split starts from silence so nothing rings from before. Any thread.
+    func beginBass(gain: Float) {
+        guard gain.isFinite else { return }
+        let clamped = min(1, max(0, gain))
+        bassInitialBits.store(clamped.bitPattern, ordering: .relaxed)
+        bassActiveFlag.store(true, ordering: .relaxed)
+        bassEpoch.wrappingAdd(1, ordering: .releasing)
+    }
+
+    /// Ramps the bass gain to `gain` over `seconds` (linear, sample accurate), starting `delay` seconds of rendered audio
+    /// from now. A later call replaces the ramp in progress. Any thread.
+    func setBass(to gain: Float, over seconds: Double = 0, after delay: Double = 0) {
+        guard gain.isFinite else { return }
+        let rate = dsp.sampleRate
+        let frames = UInt32(min((min(max(seconds.isFinite ? seconds : 0, 0), 3_600) * rate).rounded(), Double(Self.maxFadeFrames)))
+        let wait = Int(min((min(max(delay.isFinite ? delay : 0, 0), 3_600) * rate).rounded(), Double(Self.maxFadeFrames)))
+        bassDelayRequest.store(wait, ordering: .relaxed)
+        bassRequest.store(UInt64(min(1, max(0, gain)).bitPattern) << 32 | UInt64(frames), ordering: .relaxed)
+        bassGeneration.wrappingAdd(1, ordering: .releasing)
+    }
+
+    /// Back to the plain path: `y = f * x`. Any thread.
+    func endBass() {
+        bassActiveFlag.store(false, ordering: .releasing)
+    }
+
+    var isBassActive: Bool { bassActiveFlag.load(ordering: .acquiring) }
+
+    /// The bass gain the renderer is heading for.
+    var bassTarget: Float { Float(bitPattern: UInt32(bassRequest.load(ordering: .relaxed) >> 32)) }
+
+    #if DEBUG
+    /// What the last `beginBass` and `setBass` asked for, for the tests (the request, not the renderer's state).
+    struct DebugBass: Equatable, Sendable {
+        var active: Bool
+        var initial: Float
+        var target: Float
+        var rampFrames: Int
+        var delayFrames: Int
+    }
+    var debugBass: DebugBass {
+        let request = bassRequest.load(ordering: .relaxed)
+        return DebugBass(
+            active: isBassActive, initial: Float(bitPattern: bassInitialBits.load(ordering: .relaxed)),
+            target: Float(bitPattern: UInt32(request >> 32)), rampFrames: Int(request & 0xFFFF_FFFF),
+            delayFrames: bassDelayRequest.load(ordering: .relaxed)
+        )
+    }
+    #endif
+
+    /// The renderer's bass state for this block, nil while the channel is off.
+    fileprivate func beginBassRender() -> MusicBassGain? {
+        guard bassActiveFlag.load(ordering: .acquiring) else { return nil }
+        // Generation first, then the epoch: a begin stores its epoch before any later ramp bumps the generation.
+        let generation = bassGeneration.load(ordering: .acquiring)
+        let epoch = bassEpoch.load(ordering: .acquiring)
+        if epoch != seenBassEpoch {
+            seenBassEpoch = epoch
+            bassGain = MusicBassGain(value: Float(bitPattern: bassInitialBits.load(ordering: .relaxed)))
+            split.reset()
+        }
+        if generation != seenBassGeneration {
+            seenBassGeneration = generation
+            let request = bassRequest.load(ordering: .relaxed)
+            let target = Float(bitPattern: UInt32(request >> 32))
+            let frames = Int(request & 0xFFFF_FFFF)
+            let wait = bassDelayRequest.load(ordering: .relaxed)
+            if frames <= 0 && wait <= 0 {
+                bassGain = MusicBassGain(value: target)
+            } else {
+                bassGain.target = target
+                bassGain.remaining = max(1, frames)
+                bassGain.step = (target - bassGain.value) / Float(max(1, frames))
+                bassGain.delay = wait
+            }
+        }
+        return bassGain
+    }
+
+    fileprivate func storeBass(_ state: MusicBassGain) { bassGain = state }
+
+    fileprivate func resetSplit() { split.reset() }
+
+    fileprivate func withSplit(_ body: (inout MusicBassSplit) -> Void) { body(&split) }
+
+    /// Runs the split over a block without using its output.
+    fileprivate func warmSplit(_ samples: UnsafePointer<Float>, frames: Int) {
+        for frame in 0..<frames {
+            _ = split.lowpass(samples[frame * 2], channel: 0)
+            _ = split.lowpass(samples[frame * 2 + 1], channel: 1)
+        }
     }
 
     // MARK: - Offset

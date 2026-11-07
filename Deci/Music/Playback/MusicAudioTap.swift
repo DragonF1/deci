@@ -199,6 +199,26 @@ final class MusicTapDeck: @unchecked Sendable {
         }
     }
 
+    /// Tier 3b P4: starts this deck's bass channel at `gain` (see `MusicRenderLease.beginBass`).
+    func beginBass(gain: Float) {
+        state.withLock { $0.lease?.beginBass(gain: gain) }
+    }
+
+    /// Ramps the bass gain: `seconds` long, starting `delay` seconds of rendered audio from now.
+    func setBass(to gain: Float, over seconds: Double = 0, after delay: Double = 0) {
+        state.withLock { $0.lease?.setBass(to: gain, over: seconds, after: delay) }
+    }
+
+    /// Back to the plain path.
+    func endBass() {
+        state.withLock { $0.lease?.endBass() }
+    }
+
+    #if DEBUG
+    var debugBass: MusicRenderLease.DebugBass? { state.withLock { $0.lease?.debugBass } }
+    var debugLeaseRate: Double? { state.withLock { $0.lease?.processorSampleRate } }
+    #endif
+
     /// Makes this deck the outgoing side of a crossfade: it fades to silence and stays audible until it has (see
     /// `MusicRenderLease.drain`). Call before the incoming deck activates.
     func drain(over seconds: Double, curve: MusicFadeCurve = .equalPower) {

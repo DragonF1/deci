@@ -79,6 +79,7 @@ struct MusicTransitionLogTests {
         let line = MusicTransitionLog.beatPlanLine(from: "a", to: "b", plan: swap, bpmA: nil, bpmB: .nan)
         #expect(line.contains("bpmA=- bpmB=-"))
         #expect(line.hasSuffix("swapAt=8.00 handover=0.25"))
+        #expect(line == "transition_beat_plan from=a to=b bpmA=- bpmB=- rate=0.9524 bars=8 mixOut=123.40 mixIn=12.50 swapAt=8.00 handover=0.25")
     }
 
     @Test func beatFallbackLineGolden() {

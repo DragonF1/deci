@@ -2606,7 +2606,8 @@ final class MusicService {
             ),
             crossfadeOn: isCrossfadeOn, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
-            manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId
+            manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId,
+            bassSwapAvailable: true
         )
         // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
         inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
