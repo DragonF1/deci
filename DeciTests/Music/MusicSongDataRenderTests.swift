@@ -51,15 +51,15 @@ struct MusicSongDataRenderTests {
         .environment(\.colorScheme, .dark)
     }
 
-    private func render(_ view: some View, name: String) throws -> NSImage {
+    private func render(_ view: some View, name: String, dir: String = outDir) throws -> NSImage {
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2
         let image = try #require(renderer.nsImage)
         let tiff = try #require(image.tiffRepresentation)
         let rep = try #require(NSBitmapImageRep(data: tiff))
         let png = try #require(rep.representation(using: .png, properties: [:]))
-        try FileManager.default.createDirectory(atPath: Self.outDir, withIntermediateDirectories: true)
-        try png.write(to: URL(fileURLWithPath: "\(Self.outDir)/\(name)"))
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try png.write(to: URL(fileURLWithPath: "\(dir)/\(name)"))
         return image
     }
 
@@ -77,5 +77,26 @@ struct MusicSongDataRenderTests {
         #expect(populated.size == bare.size)
         #expect(FileManager.default.fileExists(atPath: "\(Self.outDir)/song-data-populated.png"))
         #expect(FileManager.default.fileExists(atPath: "\(Self.outDir)/song-data-empty.png"))
+    }
+
+    @Test("the populated panel with YOUR LISTENING renders, and a song with no row renders the same size")
+    func listeningPanel() throws {
+        let dir = "/Volumes/Storage/_test/deci-p4"
+        let played = MusicListeningEntry(
+            videoId: "dQw4w9WgXcQ", playCount: 14, totalSeconds: 3_725,
+            firstPlayed: now.addingTimeInterval(-40 * 86_400), lastPlayed: now.addingTimeInterval(-3 * 3_600)
+        )
+        let base = MusicSongDataRows.sections(
+            track: track, like: .like, isDownloaded: false, stream: .loaded(stream), analysis: analysis, now: now
+        )
+        let withRow = base + [MusicSongDataRows.listeningSection(played, now: now)]
+        let withoutRow = base + [MusicSongDataRows.listeningSection(nil, now: now)]
+        #expect(withRow.last?.title == "Your listening")
+        #expect(withRow.last?.rows.count == 4)
+        let image = try render(panel(withRow), name: "song-data-listening.png", dir: dir)
+        let bare = try render(panel(withoutRow), name: "song-data-listening-none.png", dir: dir)
+        #expect(image.size.width > 0)
+        #expect(image.size == bare.size)
+        #expect(FileManager.default.fileExists(atPath: "\(dir)/song-data-listening.png"))
     }
 }

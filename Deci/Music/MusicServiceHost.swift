@@ -109,7 +109,8 @@ final class MusicServiceHost {
                 connectivity: connectivity,
                 analysis: coordinator,
                 analysisReader: coordinator,
-                mixFlags: MusicMixFlagStore.live()
+                mixFlags: MusicMixFlagStore.live(),
+                listening: MusicListeningStore(url: MusicListeningStore.liveURL())
             )
             // Liked songs and playlists are analysed while Music is idle, when Settings allows it.
             holder.analyzer = MusicServiceHost.makeBackgroundAnalyzer(

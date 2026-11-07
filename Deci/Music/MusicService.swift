@@ -143,6 +143,9 @@ final class MusicService {
         var watchtimeURL: URL?
         var accumulator = PlaybackTimeAccumulator()
         var watchtime = WatchtimeTracker()
+        /// The song the session plays and its length, for the local listening count.
+        var videoId: String?
+        var durationSeconds: TimeInterval?
     }
 
     private enum Direction { case forward, backward }
@@ -211,7 +214,14 @@ final class MusicService {
     /// True while a settings reset puts the options back: the file was cleared already, so nothing is written.
     @ObservationIgnored private var holdsPreferences = false
     @ObservationIgnored private var shuffleGenerator: MusicShuffleGenerator
-    @ObservationIgnored private var session: Session?
+    @ObservationIgnored private var session: Session? {
+        // Every way a session ends (track change, crossfade flip, skip, stop, sign-out, quit) replaces or clears it.
+        didSet {
+            if let ended = oldValue, ended.cpn != session?.cpn { noteListening(of: ended) }
+        }
+    }
+    /// The local per-song listening history; nil (a test's default) keeps none.
+    @ObservationIgnored private let listening: (any MusicListeningRecording)?
     @ObservationIgnored private var direction = Direction.forward
     @ObservationIgnored private var failureStreak = 0
     @ObservationIgnored private var pendingAdvance: PendingAdvance?
@@ -369,9 +379,11 @@ final class MusicService {
         analysis: (any MusicAnalysisProviding)? = nil,
         analysisReader: (any MusicAnalysisReading)? = nil,
         // The listener's "do not mix" flags; nil (a test's default) means nothing is flagged.
-        mixFlags: MusicMixFlagStore? = nil
+        mixFlags: MusicMixFlagStore? = nil,
+        listening: (any MusicListeningRecording)? = nil
     ) {
         self.mixFlags = mixFlags
+        self.listening = listening
         self.analysis = analysis
         self.analysisReader = analysisReader
         self.backend = backend
@@ -431,7 +443,8 @@ final class MusicService {
         songData.sources = MusicSongDataStore.Sources(
             heldStream: { [weak self] id in self?.heldStream(for: id) },
             analysis: { [weak self] id in await self?.storedAnalysis(for: id) },
-            isOffline: { [weak self] in self?.isOffline ?? false }
+            isOffline: { [weak self] in self?.isOffline ?? false },
+            listening: { [weak self] id in await self?.listening?.entry(for: id) }
         )
         likes.onRatingShown = { [weak self] videoId, status, previous in
             self?.ratingShown(videoId: videoId, status: status, previous: previous)
@@ -809,6 +822,7 @@ final class MusicService {
         sendFinalPing()
         player.stop()
         session = nil
+        listening?.flushNow()
         // The downloads index is written a moment after each song, so a change may still be waiting for its timer.
         downloads?.flushOnQuit()
         backend.flushCookies()
@@ -979,7 +993,9 @@ final class MusicService {
             cpn: CPN.make(),
             startedAt: now(),
             trackingURL: stream.playbackTrackingURL,
-            watchtimeURL: stream.watchtimeTrackingURL
+            watchtimeURL: stream.watchtimeTrackingURL,
+            videoId: stream.videoId,
+            durationSeconds: stream.durationSeconds
         )
         restoredVideoId = track.videoId
         lastSavedSession = snapshot
@@ -1608,7 +1624,21 @@ final class MusicService {
             cpn: CPN.make(),
             startedAt: now(),
             trackingURL: stream.playbackTrackingURL,
-            watchtimeURL: stream.watchtimeTrackingURL
+            watchtimeURL: stream.watchtimeTrackingURL,
+            videoId: stream.videoId,
+            durationSeconds: stream.durationSeconds
+        )
+    }
+
+    /// A session ended: what it heard goes to the local listening history, as a play when it was enough. The heard
+    /// seconds are the accumulator's, so paused time and seek jumps are not in them. Local only, nothing is sent.
+    private func noteListening(of ended: Session) {
+        guard let listening, let id = ended.videoId else { return }
+        let heard = ended.accumulator.playedSeconds
+        listening.note(
+            videoId: id, seconds: heard,
+            countsAsPlay: MusicListeningRules.countsAsPlay(heardSeconds: heard, durationSeconds: ended.durationSeconds),
+            at: now()
         )
     }
 

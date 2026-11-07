@@ -27,12 +27,15 @@ final class MusicSongDataStore {
         var analysis: @MainActor (String) async -> MusicAnalysis?
         /// The network is gone.
         var isOffline: @MainActor () -> Bool
+        /// The listener's own plays of a song, from the local listening store.
+        var listening: @MainActor (String) async -> MusicListeningEntry? = { _ in nil }
     }
 
     /// The song the panel is open for; nil while it is closed.
     private(set) var track: MusicTrack?
     private(set) var stream: MusicSongDataStreamState = .loading
     private(set) var analysis: MusicAnalysis?
+    private(set) var listening: MusicListeningEntry?
 
     var isOpen: Bool { track != nil }
 
@@ -63,12 +66,14 @@ final class MusicSongDataStore {
         let run = newRun()
         self.track = track
         analysis = nil
+        listening = nil
         let id = track.videoId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else {
             stream = .unavailable
             return
         }
         loadAnalysis(id: id, run: run)
+        loadListening(id: id, run: run)
         if let held = sources?.heldStream(id) {
             stream = .loaded(held)
         } else {
@@ -89,6 +94,7 @@ final class MusicSongDataStore {
         _ = newRun()
         track = nil
         analysis = nil
+        listening = nil
         stream = .loading
     }
 
@@ -133,6 +139,15 @@ final class MusicSongDataStore {
             let row = await read(id)
             guard let self, !Task.isCancelled, run == self.runCounter else { return }
             self.analysis = row
+        }
+    }
+
+    private func loadListening(id: String, run: Int) {
+        guard let read = sources?.listening else { return }
+        Task { [weak self] in
+            let row = await read(id)
+            guard let self, run == self.runCounter else { return }
+            self.listening = row
         }
     }
 
