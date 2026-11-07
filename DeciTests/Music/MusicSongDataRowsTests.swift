@@ -40,10 +40,11 @@ struct MusicSongDataRowsTests {
     private func sections(
         track: MusicTrack = MusicSamples.track("vid1", title: "Song", artist: "Artist", seconds: 215, album: "Album", plays: nil),
         like: MusicLikeStatus? = .like, isDownloaded: Bool = false,
-        stream state: MusicSongDataStreamState = .loading, analysis: MusicAnalysis? = nil
+        stream state: MusicSongDataStreamState = .loading, analysis: MusicAnalysis? = nil,
+        music: MusicSongDataMusicState = MusicSongDataMusicState()
     ) -> [MusicSongDataSection] {
         MusicSongDataRows.sections(
-            track: track, like: like, isDownloaded: isDownloaded, stream: state, analysis: analysis, now: now
+            track: track, like: like, isDownloaded: isDownloaded, stream: state, analysis: analysis, now: now, music: music
         )
     }
 
@@ -57,9 +58,9 @@ struct MusicSongDataRowsTests {
 
     // MARK: - Shape
 
-    @Test("three sections in order: Basics, Stream and Audio analysis")
+    @Test("four sections in order: Basics, Music, Stream and Audio analysis")
     func order() {
-        #expect(sections().map(\.title) == ["Basics", "Stream", "Audio analysis"])
+        #expect(sections().map(\.title) == ["Basics", "Music", "Stream", "Audio analysis"])
     }
 
     // MARK: - Basics
@@ -229,15 +230,14 @@ struct MusicSongDataRowsTests {
         #expect(analysisSection?.note == "Not analysed yet")
     }
 
-    @Test("an analysis lists its rows in order and ends with a BPM that is not measured yet")
+    @Test("an analysis lists its rows in order, and the BPM now lives under Music")
     func analysisOrder() {
         let s = sections(analysis: analysis())
         #expect(section("Audio analysis", in: s)?.rows.map(\.label) == [
             "Loudness", "Sample peak", "Silence at start", "Silence at end", "Intro ends at", "Outro starts at",
-            "Intro loudness", "Outro loudness", "Smart fade trim in", "Smart fade trim out", "Analysed", "BPM"
+            "Intro loudness", "Outro loudness", "Smart fade trim in", "Smart fade trim out", "Analysed"
         ])
         #expect(section("Audio analysis", in: s)?.note == nil)
-        #expect(value("BPM", in: s) == "Not measured yet")
     }
 
     @Test("analysis values read with their units")

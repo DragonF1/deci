@@ -11,6 +11,22 @@ enum MusicSongDataStreamState: Equatable {
     case unavailable
 }
 
+/// What the panel knows of the song's music data: the facts, and whether the services are still being asked or the song is
+/// still being measured. A measurement that could not run says why in `problem`.
+struct MusicSongDataMusicState: Equatable {
+    enum Problem: Equatable {
+        case offline, signedOut, rateLimited, failed
+    }
+
+    var facts: MusicSongFacts?
+    /// The online services are being asked.
+    var lookingUp = false
+    /// The song is being downloaded and measured: its tempo, and its analysis when it had none.
+    var measuringTempo = false
+    var measuringAnalysis = false
+    var problem: Problem?
+}
+
 /// One label and value line of the panel. Numbers are set in the mono face (`isNumeric`).
 struct MusicSongDataRow: Equatable {
     let label: String
@@ -33,19 +49,21 @@ struct MusicSongDataSection: Equatable {
 }
 
 /// The panel's rows, worked out from what is known. Pure: no view, no clock but the `now` it is given, so each format
-/// and each missing-value text is tested alone. Later tiers add rows here: a BPM and key from an outside source, the
-/// analysis of a song that was fetched on demand, and the listener's own stats.
+/// and each missing-value text is tested alone. Later tiers add rows here, such as the listener's own stats.
 enum MusicSongDataRows {
     static let unknown = "Unknown"
+    static let lookingUp = "Looking up"
+    static let measuring = "Measuring"
 
     static func sections(
         track: MusicTrack, like: MusicLikeStatus?, isDownloaded: Bool, stream: MusicSongDataStreamState,
-        analysis: MusicAnalysis?, now: Date
+        analysis: MusicAnalysis?, now: Date, music: MusicSongDataMusicState = MusicSongDataMusicState()
     ) -> [MusicSongDataSection] {
         [
             basics(track: track, like: like, stream: stream),
+            musicSection(music),
             streamSection(isDownloaded: isDownloaded, stream: stream),
-            analysisSection(analysis, now: now)
+            analysisSection(analysis, now: now, music: music)
         ]
     }
 
@@ -72,6 +90,80 @@ enum MusicSongDataRows {
         case .dislike?: "Disliked"
         case nil: nil
         }
+    }
+
+    // MARK: - Music
+
+    private static let keyNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+    private static func musicSection(_ music: MusicSongDataMusicState) -> MusicSongDataSection {
+        // While the services are asked every row waits; after that a row that is missing is Unknown, but the tempo reads
+        // Measuring while the beat finder is on it.
+        func row(_ label: String, _ value: String?, numeric: Bool = true) -> MusicSongDataRow {
+            if music.lookingUp { return MusicSongDataRow(label: label, value: lookingUp, isNumeric: false) }
+            return numeric ? number(label, value) : text(label, value)
+        }
+        let facts = music.facts
+        var tempo = tempoText(facts)
+        if tempo == nil, music.measuringTempo, !music.lookingUp { tempo = measuring }
+        let tempoRow = music.lookingUp
+            ? MusicSongDataRow(label: "BPM", value: lookingUp, isNumeric: false)
+            : MusicSongDataRow(label: "BPM", value: tempo ?? unknown, isNumeric: false)
+        return MusicSongDataSection(title: "Music", rows: [
+            tempoRow,
+            row("Key", keyText(facts), numeric: false),
+            row("Energy", percent(facts?.energy)),
+            row("Danceability", percent(facts?.danceability)),
+            row("Mood", percent(facts?.valence)),
+            row("Acousticness", percent(facts?.acousticness)),
+            row("Instrumentalness", percent(facts?.instrumentalness)),
+            row("Speechiness", percent(facts?.speechiness)),
+            row("Liveness", percent(facts?.liveness)),
+            row("Genres", genresText(facts), numeric: false),
+            row("Released", facts?.releaseDate.flatMap(nonBlank)),
+            row("Label", facts?.label.flatMap(nonBlank), numeric: false),
+            row("Explicit", facts?.explicit.map { $0 ? "Yes" : "No" }, numeric: false),
+            row("ISRC", facts?.isrc.flatMap(nonBlank)),
+            row("Data from", sourcesText(facts), numeric: false)
+        ])
+    }
+
+    /// "171 (ReccoBeats)", or "104 (measured)" for Deci's own.
+    private static func tempoText(_ facts: MusicSongFacts?) -> String? {
+        guard let bpm = facts?.bpm, bpm.isFinite, bpm > 0 else { return nil }
+        let name = facts?.source(of: .bpm).map { $0 == .deci ? "measured" : $0.displayName }
+        let whole = "\(Int(bpm.rounded()))"
+        return name.map { "\(whole) (\($0))" } ?? whole
+    }
+
+    /// Sharps only ("C# major"). The services estimate the key, so an outside value says approx.
+    private static func keyText(_ facts: MusicSongFacts?) -> String? {
+        guard let key = facts?.key, keyNames.indices.contains(key) else { return nil }
+        var text = keyNames[key]
+        switch facts?.mode {
+        case 1?: text += " major"
+        case 0?: text += " minor"
+        default: break
+        }
+        if let source = facts?.source(of: .key), source != .deci { text += " (approx.)" }
+        return text
+    }
+
+    private static func percent(_ value: Double?) -> String? {
+        guard let value, value.isFinite, value >= 0, value <= 1 else { return nil }
+        return "\(Int((value * 100).rounded()))%"
+    }
+
+    private static func genresText(_ facts: MusicSongFacts?) -> String? {
+        let names = (facts?.genres ?? []).compactMap(nonBlank).prefix(4).map { name in
+            name.prefix(1).uppercased() + name.dropFirst()
+        }
+        return names.isEmpty ? nil : names.joined(separator: ", ")
+    }
+
+    private static func sourcesText(_ facts: MusicSongFacts?) -> String? {
+        let names = (facts?.usedSources ?? []).map { $0 == .deci ? "Deci (measured)" : $0.displayName }
+        return names.isEmpty ? nil : names.joined(separator: ", ")
     }
 
     // MARK: - Stream
@@ -140,9 +232,21 @@ enum MusicSongDataRows {
 
     // MARK: - Audio analysis
 
-    private static func analysisSection(_ analysis: MusicAnalysis?, now: Date) -> MusicSongDataSection {
+    private static func analysisSection(_ analysis: MusicAnalysis?, now: Date, music: MusicSongDataMusicState) -> MusicSongDataSection {
         guard let analysis else {
-            return MusicSongDataSection(title: "Audio analysis", rows: [], note: "Not analysed yet")
+            let note: String
+            if music.measuringAnalysis {
+                note = measuring
+            } else {
+                switch music.problem {
+                case .offline?: note = "Offline"
+                case .signedOut?: note = "Signed out"
+                case .rateLimited?: note = "Busy, try again later"
+                case .failed?: note = "Could not analyse"
+                case nil: note = "Not analysed yet"
+                }
+            }
+            return MusicSongDataSection(title: "Audio analysis", rows: [], note: note)
         }
         let duration = Double(analysis.format.durationMs) / 1000
         let trimIn = MusicTransitionPlanner.trimmedStart(of: analysis, duration: duration)
@@ -159,8 +263,7 @@ enum MusicSongDataRows {
             number("Outro loudness", decibels(analysis.outroLUFS, unit: "LUFS")),
             number("Smart fade trim in", trimIn.map(seconds) ?? "None"),
             number("Smart fade trim out", trimOut.map(seconds) ?? "None"),
-            text("Analysed", analysedText(analysis, now: now)),
-            text("BPM", "Not measured yet")
+            text("Analysed", analysedText(analysis, now: now))
         ])
     }
 

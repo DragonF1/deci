@@ -35,6 +35,32 @@ struct MusicSongDataRenderTests {
         )
     }
 
+    private var facts: MusicSongFacts {
+        var facts = MusicSongFacts(fetchedAt: now)
+        facts.isrc = "GBAYE8700001"
+        facts.bpm = 113
+        facts.key = 8
+        facts.mode = 1
+        facts.energy = 0.82
+        facts.danceability = 0.73
+        facts.valence = 0.92
+        facts.acousticness = 0.15
+        facts.instrumentalness = 0
+        facts.speechiness = 0.04
+        facts.liveness = 0.12
+        facts.genres = ["pop", "dance pop", "synth pop"]
+        facts.releaseDate = "1987-07-27"
+        facts.label = "RCA"
+        facts.explicit = false
+        for field in [MusicSongFacts.Field.bpm, .key, .energy, .danceability, .valence, .acousticness, .instrumentalness,
+                      .speechiness, .liveness] {
+            facts.claim(field, .reccobeats)
+        }
+        for field in [MusicSongFacts.Field.isrc, .releaseDate, .explicit] { facts.claim(field, .deezer) }
+        for field in [MusicSongFacts.Field.genres, .label] { facts.claim(field, .musicbrainz) }
+        return facts
+    }
+
     private func panel(_ sections: [MusicSongDataSection]) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -63,10 +89,27 @@ struct MusicSongDataRenderTests {
         return image
     }
 
+    @Test("the loading panel renders at the same size as the populated one")
+    func loadingPanel() throws {
+        let loading = MusicSongDataRows.sections(
+            track: track, like: .like, isDownloaded: false, stream: .loading, analysis: nil, now: now,
+            music: MusicSongDataMusicState(lookingUp: true)
+        )
+        let measuring = MusicSongDataRows.sections(
+            track: track, like: .like, isDownloaded: false, stream: .loading, analysis: nil, now: now,
+            music: MusicSongDataMusicState(measuringTempo: true, measuringAnalysis: true)
+        )
+        let first = try render(panel(loading), name: "song-data-loading.png")
+        let second = try render(panel(measuring), name: "song-data-measuring.png")
+        #expect(first.size == second.size)
+        #expect(FileManager.default.fileExists(atPath: "\(Self.outDir)/song-data-loading.png"))
+    }
+
     @Test("the populated and the empty panel render at the same size")
     func panels() throws {
         let full = MusicSongDataRows.sections(
-            track: track, like: .like, isDownloaded: false, stream: .loaded(stream), analysis: analysis, now: now
+            track: track, like: .like, isDownloaded: false, stream: .loaded(stream), analysis: analysis, now: now,
+            music: MusicSongDataMusicState(facts: facts)
         )
         let empty = MusicSongDataRows.sections(
             track: track, like: nil, isDownloaded: false, stream: .offline, analysis: nil, now: now

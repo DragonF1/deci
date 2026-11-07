@@ -111,6 +111,13 @@ final class MusicServiceHost {
                 analysisReader: coordinator,
                 mixFlags: MusicMixFlagStore.live()
             )
+            // The Song data panel asks the online services and measures what they lack.
+            let facts = MusicSongFactsRepository.live()
+            service.songData.attachFacts(
+                repository: facts,
+                measurer: MusicSongMeasurer(analysis: coordinator, facts: facts.cache),
+                isSignedOut: { [weak service] in service?.authState == .signedOut }
+            )
             // Liked songs and playlists are analysed while Music is idle, when Settings allows it.
             holder.analyzer = MusicServiceHost.makeBackgroundAnalyzer(
                 service: service, coordinator: coordinator, backend: backend, downloads: downloads,

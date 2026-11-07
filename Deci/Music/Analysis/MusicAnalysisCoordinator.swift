@@ -16,6 +16,22 @@ protocol MusicAnalysisProviding: Sendable {
     func discard(videoId: String) async
     /// Cancels an `ensure` still running for the song.
     func cancel(videoId: String) async
+    /// The song's whole file for a reader that is not the analyzer (the Song data panel's beat finder): the Downloads
+    /// copy when there is one, else the track cache's, fetched when it is not there yet and pinned. The caller ends with
+    /// `release(videoId:)`. A provider with no files answers `.failed`.
+    func pinnedFile(for stream: ResolvedStream) async -> MusicSongFileOutcome
+}
+
+extension MusicAnalysisProviding {
+    func pinnedFile(for stream: ResolvedStream) async -> MusicSongFileOutcome { .failed }
+}
+
+/// How a request for a song's file ended.
+enum MusicSongFileOutcome: Equatable, Sendable {
+    case file(URL)
+    /// The fetch met a 429 or a 403: the caller should back off.
+    case rateLimited
+    case failed
 }
 
 /// Reads the stored analysis of a song (tier 2b): what the transition planner is built from. Separate from
@@ -111,6 +127,18 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
             await task.value
         } onCancel: {
             Task { await self.leave(id, token: token, joiner: me) }
+        }
+    }
+
+    func pinnedFile(for stream: ResolvedStream) async -> MusicSongFileOutcome {
+        let id = stream.videoId
+        if let local = await downloads(id) { return .file(local.url) }
+        do {
+            await cache.pin(id)
+            return .file(try await cache.fetch(stream, resolve: resolve))
+        } catch {
+            await cache.unpin(id)
+            return MusicBackgroundAnalyzer.isRateLimit(error) ? .rateLimited : .failed
         }
     }
 
