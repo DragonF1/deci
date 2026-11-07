@@ -18,7 +18,8 @@ struct MusicSongDataView: View {
                     isDownloaded: service.downloads?.state(for: track.videoId) == .downloaded,
                     stream: store.stream,
                     analysis: store.analysis,
-                    now: Date()
+                    now: Date(),
+                    music: store.music
                 ) + [MusicSongDataRows.listeningSection(store.listening, now: Date())]
             )
             // Another song starts at the top.
