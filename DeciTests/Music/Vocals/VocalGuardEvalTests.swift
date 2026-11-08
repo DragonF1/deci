@@ -95,15 +95,25 @@ struct VocalGuardEvalTests {
         }
         #expect(songs.count >= 2)
 
+        // The same songs as e32c82b stored them: the only downbeat that estimator found on the 12 songs was Txnqzr_DZYg
+        // phase 1 (3b accuracy P2 diagnosis), and the planner reads nothing but the stored grid.
+        var songsBefore = songs
+        for index in songsBefore.indices {
+            guard var grid = songsBefore[index].analysis.usableGrid else { continue }
+            grid.downbeatPhase = songsBefore[index].id == "Txnqzr_DZYg" ? 1 : nil
+            songsBefore[index].analysis.beatGrid = grid.encode()
+        }
+
         struct Row {
             var plan: TransitionPlan
             var truth: Double
             var proxy: Double
         }
+        func run(_ set: [GSong]) -> (off: [Row], on: [Row], detail: String) {
         var off: [Row] = [], on: [Row] = []
         var detail = ""
-        for a in songs {
-            for b in songs where a.id != b.id {
+        for a in set {
+            for b in set where a.id != b.id {
                 func inputs(_ guardOn: Bool) -> MusicTransitionInputs {
                     var i = MusicTransitionInputs(
                         outgoing: MusicTransitionSide(videoId: a.id, durationSeconds: a.duration, analysis: a.analysis),
@@ -132,6 +142,10 @@ struct VocalGuardEvalTests {
                     + " proxy=\(Self.f(r1.proxy)) truth=\(Self.f(r1.truth))\n"
             }
         }
+        return (off, on, detail)
+        }
+        let (offBefore, onBefore, _) = run(songsBefore)
+        let (off, on, detail) = run(songs)
 
         let budget = MusicVocalGuard.budgetSec
         func summary(_ name: String, _ rows: [Row]) -> String {
@@ -150,6 +164,8 @@ struct VocalGuardEvalTests {
               vocalAction: \(actions.sorted { $0.key < $1.key })
               fallbackReason: \(fallbacks.sorted { $0.key < $1.key })
               beat overlap bars: \(bars.sorted { $0.key < $1.key })
+              beat plans with a bass swap: \(rows.filter { $0.plan.mode == .beat && $0.plan.bassSwapAtSec != nil }.count)
+              beat plans with a bass swap by bars: \(Dictionary(grouping: rows.filter { $0.plan.mode == .beat && $0.plan.bassSwapAtSec != nil }, by: \.plan.overlapBars).mapValues(\.count).sorted { $0.key < $1.key })
               median fade (non-beat plans, n=\(fades.count)): \(Self.f(Self.median(fades))) s
               median overlap (beat plans, n=\(overlaps.count)): \(Self.f(Self.median(overlaps))) s
               fades == 3.00 s (non-beat): \(fades.filter { abs($0 - 3) < 1e-9 }.count)
@@ -158,7 +174,9 @@ struct VocalGuardEvalTests {
               median TRUE collision: \(Self.f(Self.median(rows.map(\.truth)))) s, mean \(Self.f(rows.map(\.truth).reduce(0, +) / Double(max(rows.count, 1)))) s
             """
         }
+        report += "\n" + summary("BEFORE downbeats, guard OFF", offBefore) + "\n\n" + summary("BEFORE downbeats, guard ON", onBefore) + "\n"
         report += "\n" + summary("guard OFF", off) + "\n\n" + summary("guard ON", on) + "\n"
+        report += "\ngrids with a downbeat: before \(songsBefore.filter { $0.analysis.usableGrid?.downbeatPhase != nil }.count), after \(songs.filter { $0.analysis.usableGrid?.downbeatPhase != nil }.count) of \(songs.count)\n"
         let changed = zip(off, on).filter { $0.0.plan != $0.1.plan }
         let worse = zip(off, on).filter { $0.1.truth > $0.0.truth + 1e-9 }.count
         let better = zip(off, on).filter { $0.1.truth < $0.0.truth - 1e-9 }.count

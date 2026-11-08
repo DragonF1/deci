@@ -5,10 +5,11 @@
 // finder printed before the change (commit 6575e52, GridGateDiagnosisTests). The residual and jitter are measured to the
 // finder's own bass attack starts; the cross-check is a second onset measure that shares none of its code: where the
 // 40-100 Hz envelope leaves 20% of its local peak, minus the offset the same measure shows on a synthetic kick with a
-// known start. (A full-band version read 20 to 50 ms early on most songs, caught by the hats and vocals before the kick,
+// known start. P2 adds `downbeatEval`: the downbeat before and after, with the lyric and section checks. (A full-band version read 20 to 50 ms early on most songs, caught by the hats and vocals before the kick,
 // and a steepest-rise version sat 40 ms late on sub-bass swells, so neither is used.) Output: /Volumes/Storage/_test/deci-3c/finder-eval.txt.
 
 import Foundation
+import CryptoKit
 import Testing
 @testable import Deci
 
@@ -159,5 +160,109 @@ struct BeatFinderRealSongEvalTests {
         }
         report += "trusted before \(trustedBefore), after \(trustedAfter)\n"
         try report.write(toFile: "/Volumes/Storage/_test/deci-3c/finder-eval.txt", atomically: true, encoding: .utf8)
+    }
+
+    // MARK: Downbeat (3b accuracy P2)
+
+    /// The downbeat step before this change (e32c82b: bass level and attack per phase, confidence margin >= 0.25), run on
+    /// the same songs: phase and confidence it stored (nil phase = unknown), for the six songs whose grid was trusted.
+    private nonisolated static let downbeatBefore: [String: (phase: Int?, conf: Double)] = [
+        "B3tXcWTpgvQ": (nil, 0.009), "FZQKzpjpz0Y": (nil, 0.006), "Txnqzr_DZYg": (1, 0.315),
+        "_ZDgkYXiD9Y": (nil, 0.006), "jLmRqtKBchc": (nil, 0.100), "FXk4oLgkKL0": (nil, 0.090),
+    ]
+
+    /// Start times of the lyric lines with text (synced lyrics cache), nil without a cache file.
+    private nonisolated static func lyricStarts(_ id: String) -> [Double]? {
+        let hash = SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined()
+        let path = NSString(string: "~/Library/Caches/com.abraham.Deci/Music/Lyrics/\(hash).json").expandingTildeInPath
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let lines = json["lines"] as? [[String: Any]] else { return nil }
+        return lines.compactMap { line in
+            guard let t = (line["time"] as? NSNumber)?.doubleValue, let text = line["text"] as? String,
+                  !text.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            return t
+        }
+    }
+
+    /// For each time, the grid beat within `tolerance` and its slot relative to `phase` (0 = beat 1). Returns the counts per
+    /// slot and how many times were near a beat.
+    private nonisolated static func slots(of times: [Double], grid g: MusicBeatGrid, phase: Int, tolerance: Double = 0.12)
+        -> (counts: [Int], near: Int) {
+        var counts = [Int](repeating: 0, count: 4)
+        var near = 0
+        for t in times {
+            let kf = (t - g.anchorSec) / g.periodSec
+            let k = Int(kf.rounded())
+            guard abs(kf - Double(k)) * g.periodSec <= tolerance else { continue }
+            near += 1
+            counts[(((k - phase) % 4) + 4) % 4] += 1
+        }
+        return (counts, near)
+    }
+
+    @Test("downbeat: before and after per song, held-out agreement, and the lyric and section checks")
+    func downbeatEval() async throws {
+        let root = "/Volumes/Storage/_test/deci-3c/songs"
+        let ids = try String(contentsOfFile: root + "/ids.txt", encoding: .utf8).split(separator: "\n").map(String.init)
+        var report = "DOWNBEAT REAL SONGS (before = e32c82b estimator, after = production analyzer now)\n"
+        report += "id | grid trusted | before phase (conf) | after phase | margin (se) | effect | blocks | picks halves,parity,thirds | accepted\n"
+        report += "   lyric starts: near-beat count, share on slot 0/1/2/3 relative to the CHOSEN phase (best phase when refused)\n"
+        report += "   section: intro end and outro start, slot relative to the phase (n/a when not within 0.15 s of a beat)\n"
+        var foundBefore = 0, foundAfter = 0, trustedCount = 0
+        var lyricOnBeatOne = 0, lyricNear = 0, wrongLooking = 0
+        for id in ids {
+            guard let file = (try? FileManager.default.contentsOfDirectory(atPath: root))?
+                .first(where: { $0.hasPrefix(id + ".") && !$0.hasSuffix(".part") }) else { continue }
+            let url = URL(fileURLWithPath: root + "/" + file)
+            let result = try await MusicFileAnalyzer.analyze(file: url, exactDuration: nil)
+            let analysis = MusicAnalysis(videoId: id, result: result, source: .playbackCache)
+            guard let g = analysis.usableGrid else { report += "\(id) | NO GRID\n"; continue }
+            let isTrusted = Self.trusted(g)
+            guard isTrusted else {
+                report += "\(id) | no | - | production runs no downbeat step on an untrusted grid (phase \(g.downbeatPhase.map(String.init) ?? "nil"))\n"
+                #expect(g.downbeatPhase == nil, "\(id) untrusted grid carries a downbeat")
+                continue
+            }
+            trustedCount += 1
+            let (audio, rate) = try await GridGateDiagnosisTests.decode(url)
+            let first = Int(ceil((g.spanStartSec - g.anchorSec) / g.periodSec)), last = Int(floor((g.spanEndSec - g.anchorSec) / g.periodSec))
+            let est = MusicBeatFinder.estimateDownbeat(decimated: audio, rate: rate, grid: g, beats: first...last)
+            let old = Self.downbeatBefore[id]
+            if old?.phase != nil { foundBefore += 1 }
+            if g.downbeatPhase != nil { foundAfter += 1 }
+            let phase = g.downbeatPhase ?? est?.phase ?? 0
+            var line = "\(id) | yes | \(old?.phase.map(String.init) ?? "none") (\(Self.f(old?.conf ?? 0, 3)))"
+                + " | \(g.downbeatPhase.map(String.init) ?? "none")"
+            if let e = est {
+                line += " | \(Self.f(e.margin)) | \(Self.f(e.effect, 3)) | \(e.blocks) | \(e.splitPhases.map(String.init).joined(separator: ","))"
+                    + " | \(e.accepted ? "yes" : "no")"
+                #expect(e.accepted == (g.downbeatPhase != nil), "\(id) stored downbeat disagrees with the estimate")
+            } else { line += " | no estimate" }
+            report += line + "\n"
+            if let times = Self.lyricStarts(id) {
+                let s = Self.slots(of: times, grid: g, phase: phase)
+                let total = Double(max(1, s.near))
+                report += "   lyric: \(times.count) lines, \(s.near) near a beat, slot shares "
+                    + s.counts.map { Self.f(Double($0) / total * 100, 0) + "%" }.joined(separator: "/") + "\n"
+                if g.downbeatPhase != nil {
+                    lyricNear += s.near
+                    lyricOnBeatOne += s.counts[0]
+                    // Looks wrong when beat 1 holds fewer line starts than the average of the other three slots.
+                    if Double(s.counts[0]) < Double(s.counts[1] + s.counts[2] + s.counts[3]) / 3 { wrongLooking += 1 }
+                }
+            }
+            let marks = [("introEnd", analysis.introEnd), ("outroStart", analysis.outroStart)].map { name, t -> String in
+                let s = Self.slots(of: [t], grid: g, phase: phase, tolerance: 0.15)
+                guard s.near == 1, let slot = s.counts.firstIndex(of: 1) else { return "\(name) n/a" }
+                return "\(name) slot \(slot)"
+            }
+            report += "   section: " + marks.joined(separator: ", ") + "\n"
+        }
+        report += "trusted grids \(trustedCount): downbeat found before \(foundBefore), after \(foundAfter)\n"
+        report += "accepted songs: lyric starts on the chosen beat 1 \(lyricOnBeatOne) of \(lyricNear) near-beat starts"
+            + " (chance 25%); songs where beat 1 holds fewer starts than the other slots' average: \(wrongLooking)\n"
+        try report.write(toFile: "/Volumes/Storage/_test/deci-3c/finder-downbeat-eval.txt", atomically: true, encoding: .utf8)
+        #expect(foundAfter >= foundBefore)
     }
 }
