@@ -236,11 +236,22 @@ struct MusicQueue: Equatable, Codable {
     /// Like `append(_:continuation:)`, but while the queue is shuffled the new tracks are mixed in at random places
     /// after the next track instead of going on the end. The tracks that were already queued keep their order.
     @discardableResult
-    mutating func append<G: RandomNumberGenerator>(_ page: [MusicTrack], continuation: String?, using generator: inout G) -> Int {
+    ///
+    /// With `inOrder` (Mix) the new tracks keep the page's order and land behind every song already queued, so they never
+    /// break into the window Mix ordered; a later top-up orders them as the window reaches them.
+    mutating func append<G: RandomNumberGenerator>(
+        _ page: [MusicTrack], continuation: String?, using generator: inout G, inOrder: Bool = false
+    ) -> Int {
         var fresh = addable(from: page)
         self.continuation = continuation
         if case .radio = source { radioIds.formUnion(fresh.map(\.videoId)) }
-        guard isShuffled else {
+        if isShuffled, inOrder {
+            for track in fresh {
+                naturalRank[track.videoId] = nextRank
+                nextRank += 1
+            }
+        }
+        guard isShuffled, !inOrder else {
             // A song added to the end of a page that was still loading stays behind the rest of the page.
             let from = (currentIndex ?? -1) + 1
             let slot = isPage ? tracks[from...].firstIndex { endIds.contains($0.videoId) } : nil

@@ -116,11 +116,15 @@ struct MusicServiceMixWindowTests {
         let visible = Array(h.service.queue.upcoming.prefix(MusicMixWindow.topUpAfter)).map(\.videoId)
         let kept = Array(visible.prefix(3))
         let tailBefore = Array(h.service.queue.upcoming.dropFirst(3 + MusicMixWindow.size)).map(\.videoId)
+        let allBefore = Set(h.service.queue.upcoming.map(\.videoId))
+        let windowBefore = Array(h.service.queue.upcoming.dropFirst(3).prefix(MusicMixWindow.size)).map(\.videoId)
         await h.settle()
         let after = h.service.queue.upcoming.map(\.videoId)
         #expect(Array(after.prefix(3)) == kept)
         #expect(Array(after.dropFirst(3 + MusicMixWindow.size)) == tailBefore)
-        #expect(Set(after) == Set(h.service.queue.upcoming.map(\.videoId)))
+        #expect(Set(after) == allBefore)
+        // The window behind the three kept songs holds the same songs, laid out again.
+        #expect(Set(after.dropFirst(3).prefix(MusicMixWindow.size)) == Set(windowBefore))
     }
 
     @Test("a radio page that lands after Mix started is ordered too")

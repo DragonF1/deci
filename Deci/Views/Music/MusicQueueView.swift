@@ -118,7 +118,7 @@ struct MusicQueueView: View {
             }
             MusicSongRow(
                 track: track, isCurrent: false, isPlaying: false, layout: .playlist, selectionIndex: shownIndex,
-                mixText: mixInfo?.rowText
+                mixText: service.mixRowText(for: track.videoId)
             ) {
                 service.jump(to: track)
             }

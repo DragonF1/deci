@@ -242,6 +242,7 @@ struct MusicSongRow: View {
         if let spoken = MusicDownloadGlyph.spokenState(downloadState) { text += ", \(spoken)" }
         if isPlaying { text += ", playing" }
         if isDimmed { text += ", not downloaded" }
+        if let mixText { text += ", " + mixText.replacingOccurrences(of: " \u{00B7} ", with: ", ") }
         return text
     }
 

@@ -1035,6 +1035,7 @@ final class MusicService {
         )
         restoredVideoId = track.videoId
         lastSavedSession = snapshot
+        refreshMixPairsSoon()
         player.loadPaused(
             stream: stream, track: track,
             at: snapshot.clampedPosition(duration: stream.durationSeconds ?? Double(track.durationSeconds ?? 0))
@@ -1333,6 +1334,7 @@ final class MusicService {
         guard queue.playNext(track) else { return }
         noteActivity()
         queueEdited()
+        refreshMixPairsSoon()
         saveSession()
         trackActions.post("Playing next")
     }
@@ -1345,6 +1347,7 @@ final class MusicService {
         guard queue.addToQueue(track) else { return }
         noteActivity()
         queueEdited()
+        refreshMixPairsSoon()
         saveSession()
         trackActions.post("Added to queue")
     }
@@ -1355,6 +1358,7 @@ final class MusicService {
         guard queue.remove(videoId: track.videoId) else { return }
         noteActivity()
         topUpQueue()
+        refreshMixPairsSoon()
         saveSession()
         trackActions.post("Removed from queue")
     }
@@ -1453,6 +1457,8 @@ final class MusicService {
             mixOrderPending = false
             mixAvoid = []
             mixReplanPending = false
+            mixRows = [:]
+            mixAsked = []
         }
         if !queue.isEmpty {
             switch mode {
@@ -1517,7 +1523,10 @@ final class MusicService {
         let fixed = Array(unqueued.prefix(fixedCount))
         let window = Array(unqueued.dropFirst(fixedCount).prefix(MusicMixWindow.size))
         let anchor = fixed.last ?? queue.current
-        guard !window.isEmpty else { return }
+        guard !window.isEmpty else {
+            await refreshMixPairs()
+            return
+        }
         await readMixRows(for: window + (anchor.map { [$0] } ?? []))
         guard !Task.isCancelled, isMixOn else { return }
         let profiles = window.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
@@ -1545,9 +1554,15 @@ final class MusicService {
             guard asked < Self.mixAnalysesPerRefresh else { return }
             if Task.isCancelled || !isMixOn { return }
             asked += 1
+            guard let stream = try? await streamForSource(of: track.videoId) else {
+                if !Task.isCancelled { mixAsked.insert(track.videoId) }
+                continue
+            }
+            let outcome = await analysis.ensure(stream: stream, wantsFile: false)
+            // A run that was cancelled mid-way asks again later; a finished one is not asked twice.
+            if Task.isCancelled { return }
             mixAsked.insert(track.videoId)
-            guard let stream = try? await streamForSource(of: track.videoId) else { continue }
-            _ = await analysis.ensure(stream: stream, wantsFile: false)
+            if outcome == .rateLimited { return }
             if let row = await reader.analysis(for: track.videoId) { mixRows[track.videoId] = row }
         }
     }
@@ -1559,6 +1574,24 @@ final class MusicService {
             if Task.isCancelled { return }
             if let row = await reader.analysis(for: track.videoId) { mixRows[track.videoId] = row }
         }
+    }
+
+    /// A refresh of what Up next shows, after the queue or a setting changed. Runs behind the work already going.
+    private func refreshMixPairsSoon() {
+        guard isMixOn else { return }
+        let previous = mixTask
+        mixTask = Task { [weak self] in
+            await previous?.value
+            await self?.refreshMixPairs()
+        }
+    }
+
+    /// The tempo and key line of a song's own row ("128 \u{00B7} 8A"), nil outside Mix or without a row.
+    func mixRowText(for id: String) -> String? {
+        guard isMixOn else { return nil }
+        _ = mixPairs  // reading it makes a view that shows this line update with the pairs
+        guard let row = mixRows[id] else { return nil }
+        return MusicMixPairInfo(bpm: row.usableGrid.map { Int($0.bpm.rounded()) }, camelot: row.trustedCamelot, mode: .fade).rowText
     }
 
     /// Works out how each of the next songs is reached, from the rows read so far.
@@ -1576,6 +1609,13 @@ final class MusicService {
             )
         }
         if pairs != mixPairs { mixPairs = pairs }
+        // Keep the rows of what Mix can still use: the shown chain, the next two windows, the staged radio, the avoided.
+        var keep = Set(chain.map(\.videoId))
+        keep.formUnion(queue.unqueuedUpcoming.prefix(MusicMixWindow.size * 2).map(\.videoId))
+        keep.formUnion(queue.autoplay.prefix(MusicMixWindow.size).map(\.videoId))
+        keep.formUnion(mixAvoid.map(\.videoId))
+        if mixRows.count > keep.count { mixRows = mixRows.filter { keep.contains($0.key) } }
+        if mixAsked.count > keep.count { mixAsked = mixAsked.intersection(keep) }
     }
 
     private func mixSide(_ track: MusicTrack, row: MusicAnalysis) -> MusicTransitionSide {
@@ -1744,10 +1784,14 @@ final class MusicService {
         return browseId.hasPrefix("MPRE") || browseId.contains("OLAK")
     }
 
+    /// Songs are handed over with a fade: Crossfade is on, or Mix is (Mix mixes whatever the Crossfade toggle says, with
+    /// the length from Settings). Off and plain Shuffle follow Crossfade alone.
+    var mixesTransitions: Bool { isCrossfadeOn || isMixOn }
+
     /// The fade the next transition gets: 0 (gapless) with Crossfade off, under Loop song (a track does not fade into
     /// itself) and on an album in order.
     var effectiveCrossfadeSeconds: Double {
-        guard isCrossfadeOn, loopMode != .song, !playsAlbumInOrder else { return 0 }
+        guard mixesTransitions, loopMode != .song, !playsAlbumInOrder else { return 0 }
         return crossfadeSeconds
     }
 
@@ -1757,12 +1801,13 @@ final class MusicService {
         // The parked plan is built again only when a setting it depends on changed (a tick that changes nothing costs
         // nothing); a flag change re-plans through `performMix`.
         let settings = ReplanSettings(
-            crossfadeOn: isCrossfadeOn, seconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
+            crossfadeOn: mixesTransitions, seconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, beatMix: isBeatMixOn, vocalGuard: isVocalGuardOn
         )
         guard settings != syncedSettings else { return }
         syncedSettings = settings
         replanOffered()
+        refreshMixPairsSoon()
     }
 
     private struct ReplanSettings: Equatable {
@@ -2117,7 +2162,7 @@ final class MusicService {
     /// Runs a queue move for a manual skip. With Crossfade on and a ready preload the preload survives the move (the skip
     /// takes it or `begin` drops it); in every other case the move is the plain one.
     private func movingQueue(_ move: () -> MusicTrack?) -> MusicTrack? {
-        holdsPreloadForSkip = isCrossfadeOn && preloadOffered != nil && player.preloadIsReady
+        holdsPreloadForSkip = mixesTransitions && preloadOffered != nil && player.preloadIsReady
         let track = move()
         holdsPreloadForSkip = false
         if track == nil { reconcilePreload() }
@@ -2125,7 +2170,7 @@ final class MusicService {
     }
 
     private func crossfadeSkip(to track: MusicTrack) -> Bool {
-        guard isCrossfadeOn, !isOffline, player.isPlaying, !player.hasEnded, pendingAdvance == nil,
+        guard mixesTransitions, !isOffline, player.isPlaying, !player.hasEnded, pendingAdvance == nil,
               player.preloadedTrack?.videoId == track.videoId, player.preloadIsReady,
               let stream = player.preloadedStream, stream.videoId == track.videoId else { return false }
         // The engine may still refuse (decks without a lease, a fade already running): ask before anything is sent.
@@ -2554,7 +2599,7 @@ final class MusicService {
                 if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
                 return
             }
-            added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator)
+            added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator, inOrder: isMixOn)
             if added > 0 { mixQueueGrew() }
         }
         if added > 0, resumePendingAdvance() { return }
@@ -2804,11 +2849,11 @@ final class MusicService {
         guard plansTransitions, let row = freshRow(for: player.currentStream) else { return (leadTime, duration) }
         let end = MusicTransitionPlanner.trimmedEnd(of: row, duration: duration) ?? duration
         let smart = Self.prefetchLead + MusicTransitionPlanner.maxLead
-        if isBeatMixOn, isCrossfadeOn, let next, beatFallbackFor != next.videoId, row.usableGrid != nil,
+        if isBeatMixOn, mixesTransitions, let next, beatFallbackFor != next.videoId, row.usableGrid != nil,
            freshRow(for: next)?.usableGrid != nil || isAwaitingRow(for: next), duration > Self.beatLead * 2 {
             return (Self.beatLead, end)
         }
-        guard isCrossfadeOn, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
+        guard mixesTransitions, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
             return (leadTime, end)
         }
         return (smart, end)
@@ -2850,7 +2895,7 @@ final class MusicService {
     /// the vocal guard and the crossfade on and a transition to plan (not album in order, not Loop song). The network part
     /// (YouTube Music only) is skipped offline. Never awaited by the plan.
     func startVocalLookahead() {
-        guard let lookahead = vocalLookahead, isVocalGuardOn, isBeatMixOn, isCrossfadeOn, plansTransitions,
+        guard let lookahead = vocalLookahead, isVocalGuardOn, isBeatMixOn, mixesTransitions, plansTransitions,
               let current = player.currentStream else { return }
         let network = !isOffline
         let next = preloadTarget
@@ -2918,7 +2963,7 @@ final class MusicService {
                 videoId: next.videoId, durationSeconds: next.durationSeconds, analysis: incoming,
                 youtubeLoudnessDb: next.loudnessDb, vocalIntervals: vocalLookahead?.intervals(for: next.videoId)
             ),
-            crossfadeOn: isCrossfadeOn, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
+            crossfadeOn: mixesTransitions, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
             manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId,
             bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn
@@ -2975,7 +3020,7 @@ final class MusicService {
         guard var offered = offeredPlan, preloadOffered == offered.inputs.incoming.videoId,
               player.preloadedTrack?.videoId == offered.inputs.incoming.videoId else { return }
         var inputs = offered.inputs
-        inputs.crossfadeOn = isCrossfadeOn
+        inputs.crossfadeOn = mixesTransitions
         inputs.settingSeconds = crossfadeSeconds
         inputs.albumInOrder = playsAlbumInOrder
         inputs.loopSong = loopMode == .song
