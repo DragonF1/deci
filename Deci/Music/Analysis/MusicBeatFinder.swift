@@ -47,6 +47,8 @@ nonisolated enum MusicBeatFinder {
     static let maxBPM = 200.0
     /// The log-Gaussian prior sits at 125 BPM, not 120: with 120, a clean 174 BPM pulse loses to its half-time 87 and
     /// a clean 90 BPM pulse stays put; between 123 and 127 both come out right.
+    /// Known limit: the tempo octave is the autocorrelation's call. A kick on beats 1 and 3 only reads as half time
+    /// (150 as 75) and a busy 90 can read as 180; the grid is steady either way and the planner accepts it.
     static let priorCenterBPM = 125.0
     static let priorSigmaOctaves = 1.0
     /// Transition penalty weight of the beat tracker (librosa uses 100).

@@ -623,10 +623,37 @@ extension MusicBeatPlannerTests {
         tooLateOff.vocalGuardEnabled = false
         #expect(Self.plan(tooLate) == Self.plan(tooLateOff))
         #expect(Self.plan(tooLate).fallbackReason == "tooLate")
-        // 16 skipped for a non-vocal reason (outro too late for it), 8 colliding: no 4 bar tier, no vocalClash.
-        let mixed = Self.plan(Self.guardedInputs(outro: 219, bIntroEnd: 8, swap: true))
-        #expect(mixed.fallbackReason != "vocalClash" || mixed.mode == .smart)
-        #expect(mixed.mode != .beat || mixed.overlapBars != 4)
+        // Every length skipped for room and none colliding: noPhraseRoom, and the 4 bar tier never runs.
+        var noRoom = Self.inputs(aDuration: 30, aEnd: 30, aOutro: 29, swap: true)
+        noRoom.vocalGuardEnabled = true
+        let refused = Self.plan(noRoom)
+        #expect(refused.mode == .smart && refused.fallbackReason == "noPhraseRoom" && refused.vocalBeforeSec == nil)
+    }
+
+    @Test("16 bars with no room and 8 colliding: the 4 bar tier still runs")
+    func noRoomForSixteenStillTriesFour() {
+        let i = Self.guardedInputs(outro: 219, bIntroEnd: 8, swap: true)
+        let on = Self.plan(i)
+        #expect(on.mode == .beat && on.overlapBars == 4 && on.overlapSec == 8)
+        #expect(on.bassSwapAtSec == nil && on.bassHandoverSec == 0)
+        #expect(collision(on, i) <= MusicVocalGuard.budgetSec)
+        #expect(on.vocalAction == "shorten")
+    }
+
+    @Test("16 bars with no room, 8 and 4 colliding: vocalClash, not noPhraseRoom")
+    func noRoomForSixteenAndTheRestCollide() {
+        let i = Self.guardedInputs(outro: 224, bIntroEnd: 2, aEnd: 228, swap: true)
+        let plan = Self.plan(i)
+        #expect(plan.mode == .smart && plan.fallbackReason == "vocalClash")
+        #expect((plan.vocalBeforeSec ?? 0) > MusicVocalGuard.budgetSec)
+        let full = MusicTransitionPlanner.plan(i)
+        #expect(full.mode == .smart && full.fallbackReason == "vocalClash" && full.vocalAction == "beatToSmart")
+    }
+
+    @Test("guard off never runs the 4 bar tier")
+    func guardOffNoFourBar() {
+        let plan = Self.plan(Self.guardedInputs(outro: 219, bIntroEnd: 8, swap: true, guardOn: false))
+        #expect(plan.mode == .beat && plan.overlapBars == 8)
     }
 
     @Test("a 4 bar overlap shorter than 6 s is never tried")

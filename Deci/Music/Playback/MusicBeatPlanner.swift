@@ -85,10 +85,11 @@ enum MusicBeatPlanner {
         let lengths = inputs.bassSwapAvailable && bothPhrased ? [16, 8] : [8]
         var late = false
         // Tier 3c: lengths skipped only because two singers would overlap, and the first and least of those collisions.
-        var vocalSkipped = 0, otherSkipped = false
+        var vocalSkipped = 0
         var firstCollision: Double?, leastCollision = Double.infinity
 
-        // The 4-bar guard tier comes last, and only when every longer length collided.
+        // The 4-bar guard tier comes last, and only when a longer length had room and collided (a length with no room
+        // does not stop it: a 16 bar overlap that never fits is no reason to refuse a clean 4 bar one).
         var index = 0
         while index < lengths.count + 1 {
             defer { index += 1 }
@@ -96,7 +97,7 @@ enum MusicBeatPlanner {
             if index < lengths.count {
                 bars = lengths[index]
             } else {
-                guard inputs.vocalGuardEnabled, vocalSkipped == lengths.count, 4 * barSec >= MusicVocalGuard.minBeatTierSec
+                guard inputs.vocalGuardEnabled, vocalSkipped > 0, 4 * barSec >= MusicVocalGuard.minBeatTierSec
                 else { break }
                 bars = 4
             }
@@ -106,21 +107,16 @@ enum MusicBeatPlanner {
             guard overlap <= maxOverlapSec,
                   let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd),
                   let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else {
-                if !guardTier { otherSkipped = true }
                 continue
             }
             if let earliest = inputs.earliestMixOutSec, mixOut < earliest {
-                if !guardTier {
-                    late = true
-                    otherSkipped = true
-                }
+                if !guardTier { late = true }
                 continue
             }
             // The incoming song advances `rate` item seconds per outgoing second.
             let consumed = overlap * tempo.rate
             guard bEnd - (mixIn + consumed) >= minIncomingRemainingSec,
                   mixIn + consumed <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else {
-                if !guardTier { otherSkipped = true }
                 continue
             }
             var collision: Double?
@@ -163,7 +159,7 @@ enum MusicBeatPlanner {
             }
             return plan
         }
-        if vocalSkipped > 0, !otherSkipped {
+        if vocalSkipped > 0 {
             var plan = refuse(.vocalClash)
             plan.vocalBeforeSec = leastCollision
             return plan
