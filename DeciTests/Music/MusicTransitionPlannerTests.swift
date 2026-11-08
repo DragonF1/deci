@@ -564,3 +564,115 @@ struct MusicTransitionPlannerTests {
         #expect(P.isFresh(a, for: Self.stream()))
     }
 }
+
+// MARK: - Tier 3c: structural vocal guard
+
+extension MusicTransitionPlannerTests {
+    /// A smart plan whose fade runs [185, 197] while A sings until `outro`, B from `bIntroEnd`. Hand-made: a plan built by
+    /// `smartPlan` starts its fade at the outro, so it never collides for more than the 2 s budget.
+    static func collidingSmart(outro: Double, bIntroEnd: Double, fade: Double = 12) -> (MusicTransitionInputs, TransitionPlan) {
+        var i = smart(aEnd: 197, aOutro: 150, bIntroEnd: bIntroEnd)
+        i.outgoing.analysis?.outroStart = outro
+        i.vocalGuardEnabled = true
+        var plan = P.smartPlan(i)
+        plan.fadeSeconds = fade
+        plan.fadeStartSec = 197 - fade
+        plan.outgoingEndSec = 197
+        return (i, plan)
+    }
+
+    @Test func vocalGuardShortensAndKeepsTheOutgoingEnd() throws {
+        let (i, plan) = Self.collidingSmart(outro: 195, bIntroEnd: 4)
+        let out = P.vocalGuarded(plan, i)
+        #expect(out.vocalAction == "shorten" && out.fadeSeconds == 8)
+        #expect(try #require(out.fadeStartSec) + out.fadeSeconds == 197)
+        #expect(out.outgoingEndSec == 197 && out.incomingStartSec == plan.incomingStartSec)
+        #expect(out.vocalBeforeSec == 6 && out.vocalCollisionSec == 2)
+        // Everything else is the original plan.
+        var restored = out
+        restored.fadeSeconds = plan.fadeSeconds
+        restored.fadeStartSec = plan.fadeStartSec
+        restored.vocalAction = nil; restored.vocalBeforeSec = nil; restored.vocalCollisionSec = nil
+        #expect(restored == plan)
+    }
+
+    @Test func vocalGuardTakesTheFirstCleanFade() {
+        // B sings from 2 s: 8 s collides (8-2 = 6), 5 s collides (5-2 = 3), 3 s is clean (1).
+        let (i, plan) = Self.collidingSmart(outro: 500, bIntroEnd: 2)
+        let out = P.vocalGuarded(plan, i)
+        #expect(out.fadeSeconds == 3 && out.vocalAction == "shorten")
+        // B sings from 3.5 s: 5 s is clean (1.5).
+        let (i2, plan2) = Self.collidingSmart(outro: 500, bIntroEnd: 3.5)
+        #expect(P.vocalGuarded(plan2, i2).fadeSeconds == 5)
+    }
+
+    @Test func vocalGuardWithNothingCleanTakesTheLeastColliding() {
+        let (i, plan) = Self.collidingSmart(outro: 500, bIntroEnd: 0.4)
+        let out = P.vocalGuarded(plan, i)
+        #expect(out.vocalAction == "min" && out.fadeSeconds == 3)
+        #expect(abs((out.vocalCollisionSec ?? 0) - 2.6) < 1e-9)
+        #expect(out.fadeStartSec == 194 && out.outgoingEndSec == 197)
+    }
+
+    @Test func vocalGuardNeverGoesBelowThreeSeconds() {
+        for fade in [2.0, 2.5, 3.0] {
+            let (i, plan) = Self.collidingSmart(outro: 500, bIntroEnd: 0.1, fade: fade)
+            let out = P.vocalGuarded(plan, i)
+            #expect(out.fadeSeconds == fade, "fade \(fade) is not shortened")
+            #expect(out.fadeStartSec == plan.fadeStartSec)
+        }
+        let (i, plan) = Self.collidingSmart(outro: 500, bIntroEnd: 0.1, fade: 4)
+        #expect(P.vocalGuarded(plan, i).fadeSeconds == 3)
+    }
+
+    @Test func vocalGuardKeepsTheOutgoingRampInsideTheShorterFade() {
+        var (i, plan) = Self.collidingSmart(outro: 500, bIntroEnd: 0.1)
+        plan.outgoingGainDb = -3
+        plan.outgoingRampSeconds = 2
+        i.outgoing.analysis?.integratedLUFS = -10
+        let out = P.vocalGuarded(plan, i)
+        #expect(out.outgoingRampSeconds == 1 && out.fadeSeconds == 3)
+    }
+
+    @Test func vocalGuardOffOrCleanLeavesThePlanIdentical() {
+        var (i, plan) = Self.collidingSmart(outro: 500, bIntroEnd: 0.1)
+        i.vocalGuardEnabled = false
+        #expect(P.vocalGuarded(plan, i) == plan)
+        let clean = Self.collidingSmart(outro: 195, bIntroEnd: 8)   // 10 - 8 = 2, inside the budget
+        #expect(P.vocalGuarded(clean.1, clean.0) == clean.1)
+        // No analysis on a side, or an unusable proxy.
+        var none = Self.collidingSmart(outro: 500, bIntroEnd: 0.1)
+        none.0.incoming.analysis = nil
+        #expect(P.vocalGuarded(none.1, none.0) == none.1)
+        var bad = Self.collidingSmart(outro: 500, bIntroEnd: 0.1)
+        bad.0.outgoing.analysis?.introEnd = 600
+        #expect(P.vocalGuarded(bad.1, bad.0) == bad.1)
+    }
+
+    @Test func planNeverChangesARealSmartPlanBecauseItsFadeStartsAtTheOutro() {
+        for (aOutro, bIntro) in [(185.0, 8.0), (157, 5), (196, 0.5), (197, 8), (150, 30)] {
+            var on = Self.smart(aEnd: 197, aOutro: aOutro, bIntroEnd: bIntro)
+            on.vocalGuardEnabled = true
+            let off = Self.smart(aEnd: 197, aOutro: aOutro, bIntroEnd: bIntro)
+            #expect(P.plan(on) == P.plan(off), "outro \(aOutro)")
+        }
+    }
+
+    @Test func untouchedModesStayIdenticalWithTheGuardOn() {
+        let base = Self.smart(aEnd: 197, aOutro: 195, bIntroEnd: 0.5)
+        let variants: [(String, (inout MusicTransitionInputs) -> Void)] = [
+            ("skip", { $0.manualSkip = true }), ("clean", { $0.cleanStartFlag = true }),
+            ("cleanPair", { $0.cleanPairFlag = true }), ("album", { $0.albumInOrder = true }),
+            ("loop", { $0.loopSong = true }), ("gapless", { $0.crossfadeOn = false }),
+            ("noBeat", { $0.beatMixEnabled = false }),
+        ]
+        for (name, change) in variants {
+            var off = base
+            change(&off)
+            var on = off
+            on.vocalGuardEnabled = true
+            #expect(P.plan(on) == P.plan(off), "\(name)")
+            #expect(P.plan(on).vocalAction == nil, "\(name)")
+        }
+    }
+}

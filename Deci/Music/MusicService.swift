@@ -223,6 +223,8 @@ final class MusicService {
     /// Settings' beat-matched transitions switch, read live when the service is wired to settings.
     @ObservationIgnored private let liveBeatMix: (@MainActor () -> Bool)?
     @ObservationIgnored private var startingBeatMix: Bool
+    @ObservationIgnored private let liveVocalGuard: (@MainActor () -> Bool)?
+    @ObservationIgnored private var startingVocalGuard: Bool
     /// The incoming song a beat mix was given up for (it was not parked in time): its transition is planned the smart
     /// way from then on. Forgotten when the track changes.
     @ObservationIgnored private var beatFallbackFor: String?
@@ -380,6 +382,7 @@ final class MusicService {
         savePreferences: @escaping @MainActor (MusicPlaybackPreferences) -> Void = { _ in },
         crossfadeSeconds: (@MainActor () -> Double)? = nil,
         beatMix: (@MainActor () -> Bool)? = nil,
+        vocalGuard: (@MainActor () -> Bool)? = nil,
         pinnedItems: [MusicPinnedItem] = [],
         savePinnedItems: @escaping @MainActor ([MusicPinnedItem]) -> Void = { _ in },
         // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
@@ -433,6 +436,8 @@ final class MusicService {
         self.liveCrossfadeSeconds = crossfadeSeconds
         self.startingBeatMix = preferences.beatMix
         self.liveBeatMix = beatMix
+        self.startingVocalGuard = preferences.vocalGuard
+        self.liveVocalGuard = vocalGuard
         self.savePreferences = savePreferences
         self.shuffleGenerator = MusicShuffleGenerator(seed: shuffleSeed ?? UInt64.random(in: .min ... .max))
         self.lastActivity = now()
@@ -1464,6 +1469,7 @@ final class MusicService {
 
     /// Beat-matched transitions are on (they also need Crossfade on, which the planner checks).
     var isBeatMixOn: Bool { liveBeatMix?() ?? startingBeatMix }
+    var isVocalGuardOn: Bool { liveVocalGuard?() ?? startingVocalGuard }
 
     /// An album page played in its own order: it stays gapless, whatever Crossfade says (an album is mixed to run on).
     private var playsAlbumInOrder: Bool {
@@ -1485,7 +1491,7 @@ final class MusicService {
         // nothing); a flag change re-plans through `performMix`.
         let settings = ReplanSettings(
             crossfadeOn: isCrossfadeOn, seconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
-            loopSong: loopMode == .song, beatMix: isBeatMixOn
+            loopSong: loopMode == .song, beatMix: isBeatMixOn, vocalGuard: isVocalGuardOn
         )
         guard settings != syncedSettings else { return }
         syncedSettings = settings
@@ -1498,13 +1504,15 @@ final class MusicService {
         var albumInOrder: Bool
         var loopSong: Bool
         var beatMix: Bool
+        var vocalGuard: Bool
     }
 
     private func savePlaybackPreferences() {
         guard !holdsPreferences else { return }
         savePreferences(MusicPlaybackPreferences(
             shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn,
-            crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds, beatMix: isBeatMixOn
+            crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds, beatMix: isBeatMixOn,
+            vocalGuard: isVocalGuardOn
         ))
     }
 
@@ -2551,6 +2559,9 @@ final class MusicService {
             from: plan.offered.inputs.outgoing.videoId, to: stream.videoId, plan: plan.plan,
             outgoingDuration: plan.offered.inputs.outgoing.durationSeconds
         ))
+        if let line = MusicTransitionLog.vocalGuardLine(
+            from: plan.offered.inputs.outgoing.videoId, to: stream.videoId, plan: plan.plan
+        ) { log(line) }
         logBeat(plan.offered)
     }
 
@@ -2607,7 +2618,7 @@ final class MusicService {
             crossfadeOn: isCrossfadeOn, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
             manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId,
-            bassSwapAvailable: true
+            bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn
         )
         // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
         inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
@@ -2666,6 +2677,7 @@ final class MusicService {
         inputs.albumInOrder = playsAlbumInOrder
         inputs.loopSong = loopMode == .song
         inputs.beatMixEnabled = isBeatMixOn && beatFallbackFor != inputs.incoming.videoId
+        inputs.vocalGuardEnabled = isVocalGuardOn
         // earliestMixOutSec stays what it was at the offer: moving it with the playhead would turn a ready beat plan
         // into a smart one inside the last seconds.
         let flags = transitionFlags(from: inputs.outgoing.videoId, to: inputs.incoming.videoId)

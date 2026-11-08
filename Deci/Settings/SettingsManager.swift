@@ -70,6 +70,7 @@ nonisolated struct AppSettings: Codable, Equatable {
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
     var musicCrossfadeEnabled: Bool = false        // Fade the next song in over the end of the playing one (off is gapless)
     var musicCrossfadeSeconds: Double = 6          // How long that fade lasts, 1 to 12 seconds
+    var musicVocalGuard: Bool = true               // Keep two singers from overlapping in a crossfade (needs crossfade on)
     var musicBeatMix: Bool = true                  // Line matching-tempo songs up on the beat during a crossfade (needs crossfade on)
     var musicFavoriteLeft: String = MusicFavoriteControl.shuffle.rawValue  // What the player's left favorite slot holds (a MusicFavoriteControl raw value)
     var musicFavoriteRight: String = MusicFavoriteControl.loop.rawValue    // Same for the right slot
@@ -119,6 +120,7 @@ nonisolated struct AppSettings: Codable, Equatable {
             (try? c.decodeIfPresent(Double.self, forKey: .musicCrossfadeSeconds)) ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
         )
         musicBeatMix = (try? c.decodeIfPresent(Bool.self, forKey: .musicBeatMix)) ?? true
+        musicVocalGuard = (try? c.decodeIfPresent(Bool.self, forKey: .musicVocalGuard)) ?? true
         // Kept as the raw strings: a control a later build added or dropped reads as the slot's default
         // (`MusicFavoriteSlots`) without this build overwriting what the file says.
         musicFavoriteLeft = (try? c.decodeIfPresent(String.self, forKey: .musicFavoriteLeft)) ?? MusicFavoriteControl.shuffle.rawValue
@@ -213,7 +215,8 @@ extension AppSettings {
         get {
             MusicPlaybackPreferences(
                 shuffle: musicShuffle, loop: musicLoopMode, autoplay: musicAutoplay,
-                crossfade: musicCrossfadeEnabled, crossfadeSeconds: musicCrossfadeSeconds, beatMix: musicBeatMix
+                crossfade: musicCrossfadeEnabled, crossfadeSeconds: musicCrossfadeSeconds, beatMix: musicBeatMix,
+                vocalGuard: musicVocalGuard
             )
         }
         set {
@@ -223,6 +226,7 @@ extension AppSettings {
             musicCrossfadeEnabled = newValue.crossfade
             musicCrossfadeSeconds = newValue.crossfadeSeconds
             musicBeatMix = newValue.beatMix
+            musicVocalGuard = newValue.vocalGuard
         }
     }
 }

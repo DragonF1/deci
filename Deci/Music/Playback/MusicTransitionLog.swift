@@ -58,6 +58,15 @@ enum MusicTransitionLog {
             + " swapAt=\(swap) handover=\(fixed(plan.bassHandoverSec, 2))"
     }
 
+    /// transition_vocal_guard from=<id> to=<id> action=shorten before=6.20 after=0.00 fade=5.00
+    /// The structural vocal guard changed a plan (or found nothing clean): nil when the guard left the plan alone.
+    static func vocalGuardLine(from: String, to: String, plan: TransitionPlan) -> String? {
+        guard let action = plan.vocalAction else { return nil }
+        return "transition_vocal_guard from=\(from) to=\(to) action=\(action)"
+            + " before=\(fixed(plan.vocalBeforeSec ?? 0, 2)) after=\(fixed(plan.vocalCollisionSec ?? 0, 2))"
+            + " fade=\(fixed(plan.fadeSeconds, 2))"
+    }
+
     /// transition_beat_fallback from=<id> to=<id> reason=tempoClash bpmA=120.00 bpmB=-
     /// A pair that is mixed the smart way though beat mixing was on: the planner's reason, or `notReady` when the next
     /// song was not parked in time. A bpm that is not known prints "-".

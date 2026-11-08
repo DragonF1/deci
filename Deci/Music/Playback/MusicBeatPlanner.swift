@@ -13,7 +13,7 @@ enum MusicBeatPlanner {
     /// Why beat mode was refused; the raw value goes into `TransitionPlan.fallbackReason` and the log.
     enum Fallback: String, Sendable {
         case disabled, albumInOrder, loopSong, noMixFlag, manualSkip, tooShort, noDuration
-        case gridMissing, gridLowConf, tempoClash, noPhraseRoom, tooLate
+        case gridMissing, gridLowConf, tempoClash, noPhraseRoom, tooLate, vocalClash
     }
 
     static let tempoTolerance = 0.08
@@ -84,20 +84,53 @@ enum MusicBeatPlanner {
         let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration
         let lengths = inputs.bassSwapAvailable && bothPhrased ? [16, 8] : [8]
         var late = false
+        // Tier 3c: lengths skipped only because two singers would overlap, and the first and least of those collisions.
+        var vocalSkipped = 0, otherSkipped = false
+        var firstCollision: Double?, leastCollision = Double.infinity
 
-        for bars in lengths {
+        // The 4-bar guard tier comes last, and only when every longer length collided.
+        var index = 0
+        while index < lengths.count + 1 {
+            defer { index += 1 }
+            let bars: Int
+            if index < lengths.count {
+                bars = lengths[index]
+            } else {
+                guard inputs.vocalGuardEnabled, vocalSkipped == lengths.count, 4 * barSec >= MusicVocalGuard.minBeatTierSec
+                else { break }
+                bars = 4
+            }
             let overlap = Double(bars) * barSec
             guard overlap <= maxOverlapSec,
                   let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd),
-                  let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else { continue }
+                  let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else {
+                otherSkipped = true
+                continue
+            }
             if let earliest = inputs.earliestMixOutSec, mixOut < earliest {
                 late = true
+                otherSkipped = true
                 continue
             }
             // The incoming song advances `rate` item seconds per outgoing second.
             let consumed = overlap * tempo.rate
             guard bEnd - (mixIn + consumed) >= minIncomingRemainingSec,
-                  mixIn + consumed <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else { continue }
+                  mixIn + consumed <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else {
+                otherSkipped = true
+                continue
+            }
+            var collision: Double?
+            if inputs.vocalGuardEnabled {
+                collision = MusicVocalGuard.collisionSec(
+                    outgoing: a, incoming: b, outStart: mixOut, inStart: mixIn, rate: tempo.rate, length: overlap
+                )
+                if let c = collision, c > MusicVocalGuard.budgetSec {
+                    vocalSkipped += 1
+                    if firstCollision == nil { firstCollision = c }
+                    leastCollision = min(leastCollision, c)
+                    continue
+                }
+            }
 
             var plan = smart
             plan.mode = .beat
@@ -115,10 +148,20 @@ enum MusicBeatPlanner {
             plan.overlapSec = overlap
             plan.barSec = barSec
             plan.glideBackSec = glideBackSeconds
-            if inputs.bassSwapAvailable, bothPhrased {
+            if let first = firstCollision, let c = collision {
+                plan.vocalAction = "shorten"
+                plan.vocalCollisionSec = c
+                plan.vocalBeforeSec = first
+            }
+            if inputs.bassSwapAvailable, bothPhrased, bars != 4 {
                 plan.bassSwapAtSec = overlap / 2
                 plan.bassHandoverSec = bassHandoverBeats * aGrid.periodSec
             }
+            return plan
+        }
+        if vocalSkipped > 0, !otherSkipped {
+            var plan = refuse(.vocalClash)
+            plan.vocalBeforeSec = leastCollision
             return plan
         }
         return refuse(late ? .tooLate : .noPhraseRoom)

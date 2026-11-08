@@ -50,6 +50,15 @@ struct TransitionPlan: Equatable, Sendable {
     /// the song starts at its smart start and not on the first bar line (`incomingStartSec` is the mix-in of the beat plan).
     var fallbackIncomingStartSec: Double? = nil
 
+    // Tier 3c (structural vocal guard). Defaulted, nil on every plan the guard did not change.
+    /// What the guard did: "shorten" (a shorter fade or beat length), "beatToSmart" (a beat mix refused because every
+    /// length collided) or "min" (nothing was clean, the least colliding option was taken). nil = untouched.
+    var vocalAction: String? = nil
+    /// Seconds both singers are heard together in the plan as it stands (after the guard).
+    var vocalCollisionSec: Double? = nil
+    /// The same before the guard acted (the first colliding option).
+    var vocalBeforeSec: Double? = nil
+
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(
         mode: .gapless, incomingStartSec: 0, outgoingEndSec: nil, fadeStartSec: nil, fadeSeconds: 0,
@@ -88,13 +97,15 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var bassSwapAvailable: Bool = false
     /// Outgoing item time before which a mix cannot start (the playhead plus the preroll is already past it). nil = no limit.
     var earliestMixOutSec: Double? = nil
+    /// Tier 3c: keep two singers from overlapping in a mix. Off keeps every plan exactly as it was.
+    var vocalGuardEnabled: Bool = false
     static let skipFadeSeconds = 0.3
 
     init(
         outgoing: MusicTransitionSide, incoming: MusicTransitionSide, crossfadeOn: Bool,
         settingSeconds: Double, albumInOrder: Bool = false, loopSong: Bool = false,
         cleanStartFlag: Bool = false, cleanPairFlag: Bool = false, manualSkip: Bool = false,
-        beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false
+        beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false, vocalGuardEnabled: Bool = false
     ) {
         self.outgoing = outgoing
         self.incoming = incoming
@@ -107,6 +118,7 @@ struct MusicTransitionInputs: Equatable, Sendable {
         self.manualSkip = manualSkip
         self.beatMixEnabled = beatMixEnabled
         self.bassSwapAvailable = bassSwapAvailable
+        self.vocalGuardEnabled = vocalGuardEnabled
     }
 }
 
@@ -123,9 +135,15 @@ enum MusicTransitionPlanner {
     /// at all leaves the plan untouched (that is every song until 3b is on); any other refusal keeps the smart plan and
     /// records `fallbackReason`.
     static func plan(_ inputs: MusicTransitionInputs) -> TransitionPlan {
-        let base = smartPlan(inputs)
+        let base = vocalGuarded(smartPlan(inputs), inputs)
         guard inputs.beatMixEnabled, base.mode == .smart else { return base }
-        let beat = MusicBeatPlanner.plan(inputs, smart: base)
+        var beat = MusicBeatPlanner.plan(inputs, smart: base)
+        if beat.fallbackReason == MusicBeatPlanner.Fallback.vocalClash.rawValue {
+            // Every beat length collided: the (guarded) smart plan takes over.
+            beat.vocalAction = "beatToSmart"
+            beat.vocalCollisionSec = smartCollision(beat, inputs)
+            return beat
+        }
         if beat.mode == .beat || beat.fallbackReason != MusicBeatPlanner.Fallback.gridMissing.rawValue { return beat }
         // No grid: stay silent for v1 rows and for pairs where no song has a grid (every song before 3b is on). Say so
         // when a version 2 row's grid is unusable while the other song has one, or its stored grid is corrupt.
@@ -141,6 +159,50 @@ enum MusicTransitionPlanner {
         }
         if brokenV2(inputs.outgoing) || brokenV2(inputs.incoming) || (anyGrid && v2WithoutGrid) { return beat }
         return base
+    }
+
+    // MARK: Vocal guard
+
+    /// Wall seconds both singers are heard in a smart plan's fade; nil when the guard is a no-op for it.
+    private static func smartCollision(_ plan: TransitionPlan, _ inputs: MusicTransitionInputs) -> Double? {
+        guard plan.mode == .smart, let start = plan.fadeStartSec else { return nil }
+        return MusicVocalGuard.collisionSec(
+            outgoing: inputs.outgoing.analysis, incoming: inputs.incoming.analysis, outStart: start,
+            inStart: plan.incomingStartSec, length: plan.fadeSeconds
+        )
+    }
+
+    /// The smart plan with a colliding fade shortened, the outgoing end kept (the fade starts later) and the incoming
+    /// start untouched. Tries 8, 5 and 3 s (those shorter than the fade), takes the first clean one, else the least
+    /// colliding option (a tie goes to the longer fade). Every other plan comes back untouched.
+    static func vocalGuarded(_ plan: TransitionPlan, _ inputs: MusicTransitionInputs) -> TransitionPlan {
+        guard inputs.vocalGuardEnabled, let before = smartCollision(plan, inputs),
+              before > MusicVocalGuard.budgetSec, let start = plan.fadeStartSec else { return plan }
+        let end = start + plan.fadeSeconds
+        var best = (fade: plan.fadeSeconds, collision: before)
+        var clean = false
+        for fade in MusicVocalGuard.shortenFades where fade < plan.fadeSeconds {
+            let collision = MusicVocalGuard.collisionSec(
+                outgoing: inputs.outgoing.analysis, incoming: inputs.incoming.analysis, outStart: end - fade,
+                inStart: plan.incomingStartSec, length: fade
+            ) ?? 0
+            if collision <= MusicVocalGuard.budgetSec {
+                best = (fade, collision)
+                clean = true
+                break
+            }
+            if collision < best.collision - 1e-12 { best = (fade, collision) }
+        }
+        var out = plan
+        out.vocalAction = clean ? "shorten" : "min"
+        out.vocalCollisionSec = best.collision
+        out.vocalBeforeSec = before
+        if best.fade != plan.fadeSeconds {
+            out.fadeSeconds = best.fade
+            out.fadeStartSec = end - best.fade
+            if out.outgoingGainDb < 0 { out.outgoingRampSeconds = min(2, best.fade / 3) }
+        }
+        return out
     }
 
     /// The tier 2 plan alone.

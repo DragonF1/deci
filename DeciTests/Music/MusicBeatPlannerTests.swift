@@ -460,3 +460,148 @@ struct MusicBeatPlannerTests {
         #expect(beatPlans > 100, "only \(beatPlans) of 600 random pairs got a beat plan")
     }
 }
+
+// MARK: - Tier 3c: structural vocal guard
+
+extension MusicBeatPlannerTests {
+    /// The beat fixture with the guard on. A sings until `outro`, B from `bIntroEnd` (item time).
+    static func guardedInputs(
+        outro: Double, bIntroEnd: Double = 8, aEnd: Double = 236, swap: Bool, guardOn: Bool = true
+    ) -> MusicTransitionInputs {
+        var i = inputs(aEnd: aEnd, aOutro: outro, swap: swap)
+        i.incoming.analysis?.introEnd = bIntroEnd
+        i.vocalGuardEnabled = guardOn
+        return i
+    }
+
+    private func collision(_ p: TransitionPlan, _ i: MusicTransitionInputs) -> Double {
+        MusicVocalGuard.collisionSec(
+            outgoing: i.outgoing.analysis, incoming: i.incoming.analysis, outStart: p.mixOutSec ?? 0,
+            inStart: p.mixInSec ?? 0, rate: p.incomingRate, length: p.overlapSec
+        ) ?? 0
+    }
+
+    @Test("guard off: a colliding 16 bar overlap is planned as today")
+    func guardOffKeepsTheLongest() {
+        let off = Self.plan(Self.guardedInputs(outro: 208, swap: true, guardOn: false))
+        #expect(off.mode == .beat && off.overlapBars == 16)
+        #expect(off.vocalAction == nil && off.vocalCollisionSec == nil && off.vocalBeforeSec == nil)
+        // The same inputs on a build that never had the guard fields: identical to the plain plan.
+        var plain = Self.guardedInputs(outro: 208, swap: true, guardOn: false)
+        plain.vocalGuardEnabled = false
+        #expect(Self.plan(plain) == off)
+    }
+
+    @Test("guard on with a clean 16 bar overlap changes nothing, field by field")
+    func cleanOverlapIsIdentical() {
+        for outro in [150.0, 200.0] {
+            let on = Self.plan(Self.guardedInputs(outro: outro, swap: true))
+            let off = Self.plan(Self.guardedInputs(outro: outro, swap: true, guardOn: false))
+            #expect(on.mode == .beat)
+            #expect(on == off, "outro \(outro)")
+        }
+    }
+
+    @Test("no analysis side or an unusable proxy: the guard is a no-op")
+    func noAnalysisNoOp() {
+        var noProxy = Self.guardedInputs(outro: 208, swap: true)
+        noProxy.outgoing.analysis?.introEnd = 220     // introEnd >= outroStart
+        let off = Self.guardedInputs(outro: 208, swap: true, guardOn: false)
+        var noProxyOff = off
+        noProxyOff.outgoing.analysis?.introEnd = 220
+        #expect(Self.plan(noProxy) == Self.plan(noProxyOff))
+        #expect(Self.plan(noProxy).overlapBars == 16)
+        var nan = Self.guardedInputs(outro: 208, swap: true)
+        nan.incoming.analysis?.outroStart = .nan
+        var nanOff = off
+        nanOff.incoming.analysis?.outroStart = .nan
+        #expect(Self.plan(nan) == Self.plan(nanOff))
+    }
+
+    @Test("16 colliding, 8 clean: the 8 bar overlap is picked")
+    func sixteenCollidesEightClean() {
+        let i = Self.guardedInputs(outro: 208, swap: true)
+        let off = Self.plan(Self.guardedInputs(outro: 208, swap: true, guardOn: false))
+        #expect(off.overlapBars == 16 && collision(off, i) > MusicVocalGuard.budgetSec)
+        let on = Self.plan(i)
+        #expect(on.mode == .beat && on.overlapBars == 8 && on.overlapSec == 16)
+        #expect(collision(on, i) <= MusicVocalGuard.budgetSec)
+        #expect(on.vocalAction == "shorten")
+        #expect(on.vocalBeforeSec == collision(off, i))
+        #expect(on.vocalCollisionSec == collision(on, i))
+        // Everything else is the 8 bar plan the unguarded planner builds without the bass swap.
+        let eight = Self.plan(Self.guardedInputs(outro: 208, swap: false, guardOn: false))
+        #expect(on.mixOutSec == eight.mixOutSec && on.mixInSec == eight.mixInSec)
+        #expect(on.bassSwapAtSec != nil)
+    }
+
+    @Test("every long length colliding: the 4 bar tier is picked with no bass swap")
+    func fourBarTier() {
+        let i = Self.guardedInputs(outro: 219, bIntroEnd: 8, swap: false)
+        let off = Self.plan(Self.guardedInputs(outro: 219, bIntroEnd: 8, swap: false, guardOn: false))
+        #expect(off.overlapBars == 8 && collision(off, i) > MusicVocalGuard.budgetSec)
+        let on = Self.plan(i)
+        #expect(on.mode == .beat && on.overlapBars == 4 && on.overlapSec == 8)
+        #expect(on.bassSwapAtSec == nil && on.bassHandoverSec == 0)
+        #expect(collision(on, i) <= MusicVocalGuard.budgetSec)
+        #expect(on.vocalAction == "shorten" && on.fadeSeconds == 8 && on.outgoingEndSec == (on.mixOutSec ?? 0) + 8)
+    }
+
+    @Test("the 4 bar tier carries no bass swap even when the swap is available")
+    func fourBarTierDropsTheSwap() {
+        var i = Self.guardedInputs(outro: 219, bIntroEnd: 8, swap: true)
+        i.outgoing.analysis?.outroStart = 219
+        let on = Self.plan(i)
+        if on.overlapBars == 4 {
+            #expect(on.bassSwapAtSec == nil && on.bassHandoverSec == 0)
+        }
+        #expect(on.bassSwapAtSec == nil || on.overlapBars != 4)
+    }
+
+    @Test("every length colliding: vocalClash and the smart plan takes over")
+    func allCollide() {
+        // aEnd 228 puts the 4 bar overlap on the same phrase as the 8 bar one; B sings from 2 s on.
+        let i = Self.guardedInputs(outro: 224, bIntroEnd: 2, aEnd: 228, swap: false)
+        let smart = MusicTransitionPlanner.smartPlan(i)
+        let plan = Self.plan(i)
+        #expect(plan.mode == .smart && plan.fallbackReason == "vocalClash")
+        #expect(plan.fadeSeconds == smart.fadeSeconds && plan.fadeStartSec == smart.fadeStartSec)
+        #expect((plan.vocalBeforeSec ?? 0) > MusicVocalGuard.budgetSec)
+        // Through the transition planner the smart plan is the guarded one and says it came from a beat plan.
+        let full = MusicTransitionPlanner.plan(i)
+        #expect(full.mode == .smart && full.fallbackReason == "vocalClash" && full.vocalAction == "beatToSmart")
+        #expect(full.incomingStartSec == smart.incomingStartSec)
+    }
+
+    @Test("guard off, the same fixture: the 8 bar overlap is kept")
+    func allCollideGuardOff() {
+        let plan = Self.plan(Self.guardedInputs(outro: 224, bIntroEnd: 2, aEnd: 228, swap: false, guardOn: false))
+        #expect(plan.mode == .beat && plan.overlapBars == 8)
+    }
+
+    @Test("a length skipped for a non-vocal reason keeps today's reason")
+    func nonVocalReasonSurvives() {
+        // The guard on, the overlap clean: a refusal is the same refusal with or without the guard.
+        var tooLate = Self.guardedInputs(outro: 150, swap: true)
+        tooLate.earliestMixOutSec = 1000
+        var tooLateOff = tooLate
+        tooLateOff.vocalGuardEnabled = false
+        #expect(Self.plan(tooLate) == Self.plan(tooLateOff))
+        #expect(Self.plan(tooLate).fallbackReason == "tooLate")
+        // 16 skipped for a non-vocal reason (outro too late for it), 8 colliding: no 4 bar tier, no vocalClash.
+        let mixed = Self.plan(Self.guardedInputs(outro: 219, bIntroEnd: 8, swap: true))
+        #expect(mixed.fallbackReason != "vocalClash" || mixed.mode == .smart)
+        #expect(mixed.mode != .beat || mixed.overlapBars != 4)
+    }
+
+    @Test("a 4 bar overlap shorter than 6 s is never tried")
+    func shortFourBarTier() {
+        // 160 BPM: a bar is 1.5 s, 4 bars 6 s (tried); 200 BPM: a bar is 1.2 s, 4 bars 4.8 s (not tried).
+        let fast = Self.grid(period: 0.3, anchor: 0.2, phase: 0, span: 0.2...236)
+        var i = Self.guardedInputs(outro: 219, bIntroEnd: 8, swap: false)
+        i.outgoing.grid = fast
+        i.incoming.grid = Self.grid(period: 0.3, anchor: 0.1, phase: 1, span: 0.1...236)
+        let plan = Self.plan(i)
+        #expect(plan.mode != .beat || plan.overlapBars != 4)
+    }
+}

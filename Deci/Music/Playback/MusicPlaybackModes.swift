@@ -45,11 +45,15 @@ struct MusicPlaybackPreferences: Equatable, Sendable {
     /// Line songs of matching tempo up on the beat while they crossfade (only with Crossfade on).
     var beatMix = true
 
+    /// Keep two singers from overlapping in a mix (only with Crossfade on).
+    var vocalGuard = true
+
     init(
         shuffle: Bool = false, loop: MusicLoopMode = .off, autoplay: Bool = true, crossfade: Bool = false,
-        crossfadeSeconds: Double = defaultCrossfadeSeconds, beatMix: Bool = true
+        crossfadeSeconds: Double = defaultCrossfadeSeconds, beatMix: Bool = true, vocalGuard: Bool = true
     ) {
         self.beatMix = beatMix
+        self.vocalGuard = vocalGuard
         self.shuffle = shuffle
         self.loop = loop
         self.autoplay = autoplay
