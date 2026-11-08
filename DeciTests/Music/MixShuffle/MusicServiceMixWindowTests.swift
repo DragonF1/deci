@@ -107,13 +107,12 @@ struct MusicServiceMixWindowTests {
         let h = await harness(ids, rows: true)
         h.service.setShuffleMode(.mix)
         await h.settle()
+        // Songs that end by themselves: a manual jump would re-plan the next five (P8), which this test is not about.
         for _ in 0..<(MusicMixWindow.topUpAfter - 1) {
-            let next = try #require(h.service.queue.upcoming.first)
-            h.service.jump(to: next)
+            h.engine.emit(.ended)
             await h.settle()
         }
-        let next = try #require(h.service.queue.upcoming.first)
-        h.service.jump(to: next)
+        h.engine.emit(.ended)
         let visible = Array(h.service.queue.upcoming.prefix(MusicMixWindow.topUpAfter)).map(\.videoId)
         let kept = Array(visible.prefix(3))
         let tailBefore = Array(h.service.queue.upcoming.dropFirst(3 + MusicMixWindow.size)).map(\.videoId)
