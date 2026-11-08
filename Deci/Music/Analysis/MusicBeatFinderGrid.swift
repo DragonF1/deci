@@ -281,9 +281,10 @@ nonisolated extension MusicBeatFinder {
 
         // A least squares line follows a lopsided cloud of attacks (a bass note trailing its kick) away from the dense
         // core, so the anchor takes the shift of up to one tolerance that puts the most beats on an attack. The shift is
-        // chosen on the even beats only and the confidence is scored on the odd ones (held out), so the score is not
-        // fitted on the beats it is measured on.
-        func isOdd(_ k: Int) -> Bool { k & 1 == 1 }
+        // chosen on the even 4-beat blocks only and the confidence is scored on the odd ones (held out), so the score is
+        // not fitted on the beats it is measured on. Folding by blocks of four (not by single beats) keeps every metric
+        // slot in both folds: a kick on beats 1 and 3 only would leave every odd beat empty.
+        func isOdd(_ k: Int) -> Bool { (k >> 2) & 1 == 1 }
         func hitCount(_ anchor: Double, odd: Bool) -> Int {
             var count = 0, cursor = 0
             for k in beats where isOdd(k) == odd {
@@ -329,7 +330,7 @@ nonisolated extension MusicBeatFinder {
         if early.count >= 4, late.count >= 4 {
             drift = Float((median(late) - median(early)) / max(1, Double(total) / 2))
         }
-        // Chance level: the same onsets scored against the grid moved off the beat, odd beats only.
+        // Chance level: the same onsets scored against the grid moved off the beat, odd blocks only.
         let oddTotal = max(1, beats.filter(isOdd).count)
         var offRate = 0.0
         for fraction in chanceOffsets {

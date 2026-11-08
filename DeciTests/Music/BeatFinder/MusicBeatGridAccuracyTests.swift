@@ -131,6 +131,21 @@ struct MusicBeatGridAccuracyTests {
         #expect(((trueIndex % 4) + 4) % 4 == accent)
     }
 
+    @MainActor
+    @Test("kick on 1 and 3 only, bass-free snare and hats on the other beats: the held-out folds still hold every bar slot, so the grid is trusted",
+          arguments: [90.0, 128, 150], [0, 1, 2, 3])
+    func kickOnOneAndThree(bpm: Double, startSlot: Int) throws {
+        let built = MusicBeatDownbeatTests.song(bpm: bpm, seconds: 50, startSlot: startSlot,
+                                                  pattern: .init(noiseWithoutBass: true))
+        let grid = try #require(Self.grid(built.track))
+        #expect(grid.beatConfidence >= 0.5, "confidence \(grid.beatConfidence)")
+        // The tempo octave is the finder's call (a kick every second beat reads as half time); any of the three is a
+        // steady grid the planner can use, a different ratio would be a wrong tempo.
+        let ratio = grid.bpm / bpm
+        #expect([0.5, 1, 2].contains { abs(ratio / $0 - 1) < 0.005 }, "bpm \(grid.bpm) for \(bpm)")
+        #expect(MusicBeatGrid.periodRange.contains(grid.periodSec) && grid.intervalSpread <= MusicBeatPlanner.maxIntervalSpread)
+    }
+
     @Test("equal kicks have no downbeat")
     func flatPulse() throws {
         let track = BeatSynth.pulse(bpm: 120, seconds: 40, offset: 0.13, click: false)

@@ -15,6 +15,8 @@ struct MusicBeatDownbeatTests {
         /// A new chord every `chordBars` bars, on beat 1; 0 holds one chord for the whole song.
         var chordBars = 1
         var hats = true
+        /// Strip the bass of the snare and hats (real ones have little): two first differences, about 12 dB per octave below the mids.
+        var noiseWithoutBass = false
     }
 
     private static let chords: [[Double]] = [
@@ -27,8 +29,18 @@ struct MusicBeatDownbeatTests {
         -> (track: BeatSynth.Track, anchor: Double) {
         var samples = [Float](repeating: 0, count: Int(seconds * rate))
         let kick = BeatSynth.kickTemplate(sampleRate: rate)
-        let snare = BeatSynth.noiseTemplate(sampleRate: rate, ms: 120, decay: 30, seed: 11)
-        let hat = BeatSynth.noiseTemplate(sampleRate: rate, ms: 25, decay: 150, seed: 13)
+        var snare = BeatSynth.noiseTemplate(sampleRate: rate, ms: 120, decay: 30, seed: 11)
+        var hat = BeatSynth.noiseTemplate(sampleRate: rate, ms: 25, decay: 150, seed: 13)
+        if pattern.noiseWithoutBass {
+            for _ in 0..<2 {
+                var previous: Float = 0
+                snare = snare.map { value in defer { previous = value }; return (value - previous) * 0.5 }
+            }
+            for _ in 0..<2 {
+                var previous: Float = 0
+                hat = hat.map { value in defer { previous = value }; return (value - previous) * 0.5 }
+            }
+        }
         let quarter = 60 / bpm
         let anchor = 0.4
         var beats: [Double] = []
