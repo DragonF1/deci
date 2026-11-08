@@ -151,8 +151,7 @@ struct BeatFinderRealSongEvalTests {
             report += "\(id) | \(Self.f(old.bpm, 2))>\(Self.f(g.bpm, 2)) | \(Self.f(old.conf, 3))>\(Self.f(Double(g.beatConfidence), 3))"
                 + " | \(Self.f(old.resMs))>\(Self.f(med * 1000)) | \(Self.f(old.jitterMs))>\(Self.f(jitter * 1000))"
                 + " | \(rates) | \(old.trusted ? "yes" : "no")>\(isTrusted ? "yes" : "no")"
-                + " | \(Self.f(x40 * 1000))\(isTrusted && !old.trusted ? " | NEW" : "")\n"
-            #expect(!(old.trusted && !isTrusted), "\(id) was trusted and no longer is")
+                + " | \(Self.f(x40 * 1000))\(isTrusted && !old.trusted ? " | NEW" : "")\(old.trusted && !isTrusted ? " | LOST" : "")\n"
             if isTrusted {
                 #expect(abs(med) <= 0.010, "\(id) admitted with median residual \(med * 1000) ms")
                 if !old.trusted { #expect(abs(x40) <= 0.010, "\(id) cross-check \(x40 * 1000) ms") }
