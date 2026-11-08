@@ -45,6 +45,18 @@ struct MusicVocalIntervalsTests {
         #expect(r.first?.lowerBound == 0 && r.last?.upperBound == 100 && r.count == 2)
     }
 
+    @Test("a last line with no end runs to the 8 s cap, so a late overlap against vocals collides")
+    func openLastLine() {
+        let r = I.from(lines: [LyricLine(time: 100, text: "a", end: 101), LyricLine(time: 200, text: "last")], duration: 240)
+        #expect(r.last == 199.7...208.3)
+        let capped = I.from(lines: [LyricLine(time: 238, text: "last")], duration: 240)
+        #expect(capped == [237.7...240])
+        // A 16 bar (32 s) overlap from 196 against incoming vocals from the start.
+        let wall = MusicVocalGuardIntervals.collisionSec(
+            a: r, b: [0...100], outroStartA: 0, introEndB: 0, outStart: 196, inStart: 0, length: 32)
+        #expect(wall > MusicVocalGuard.budgetSec)
+    }
+
     // MARK: Collision
 
     private func c(_ a: [ClosedRange<Double>]?, _ b: [ClosedRange<Double>]?, rate: Double = 1) -> Double {
@@ -110,7 +122,7 @@ struct MusicVocalIntervalsTests {
         i.outgoing.vocalIntervals = [0...240]
         i.incoming.vocalIntervals = [0...240]
         let plan = MusicBeatPlannerTests.plan(i)
-        #expect(plan.mode == .smart && plan.fallbackReason == "vocalClash" || plan.overlapBars < 16)
+        #expect(plan.mode == .smart && plan.fallbackReason == "vocalClash" && (plan.vocalBeforeSec ?? 0) > MusicVocalGuard.budgetSec)
     }
 
     @Test("smart planner: lyrics clean a fade the proxy would shorten, and a hidden clash shortens it")
@@ -195,9 +207,11 @@ struct MusicVocalLookaheadTests {
     @Test("failure, plain, not found and a cached plain answer leave the proxy")
     func unknownStaysNil() async {
         for remote in [LyricsAnswer(result: .plain("x"), credit: nil), LyricsAnswer(result: .notFound, credit: nil)] {
-            let (l, _) = make(remote: { remote })
+            let (l, calls) = make(remote: { remote })
             await l.prepare(Self.query, duration: 200, allowNetwork: true)
+            let stored = await calls.stored
             #expect(l.intervals(for: "vid") == nil)
+            #expect(stored == 0, "plain and not found are never written to the cache")
         }
         let (failing, _) = make(remote: { throw Boom() })
         await failing.prepare(Self.query, duration: 200, allowNetwork: true)

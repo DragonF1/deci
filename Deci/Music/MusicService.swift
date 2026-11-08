@@ -1522,6 +1522,8 @@ final class MusicService {
         let first = anchor.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
         var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
         queue.mixOrder(orderer.order(profiles, first: first))
+        // The reorder can move the page's last own song, which the staged radio was asked for.
+        if dropStaleRadio() { topUpQueueAfterModeChange() }
         mixOrderPending = false
         mixPlayed = 0
         saveSession()
@@ -1587,6 +1589,30 @@ final class MusicService {
         isMixOn ? mixPairs[MusicMixPairInfo.key(from: previousId, to: id)] : nil
     }
 
+    /// The first pick of a placed radio is analysed in the foreground once it plays, so the songs after it can be scored.
+    @ObservationIgnored private var mixAnalyseCurrent = false
+
+    /// The order a staged radio joins the queue in under Mix: the song that mixes best out of the playing one goes
+    /// first (a seeded random one when nothing is known), and each of the next songs of the window takes the slot that
+    /// costs its neighbours least; songs past the window keep the radio's order. Rows are those Mix has read so far.
+    private func placeAutoplay(_ fresh: [MusicTrack], after current: MusicTrack?) -> [MusicTrack] {
+        let head = Array(fresh.prefix(MusicMixWindow.size))
+        let rest = Array(fresh.dropFirst(head.count))
+        func profile(_ track: MusicTrack) -> MusicMixProfile {
+            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
+        }
+        let profiles = head.map(profile)
+        let anchor = current.map(profile)
+        var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
+        guard let pick = orderer.pickBest(from: profiles, after: anchor) else { return fresh }
+        var window = [pick]
+        for candidate in profiles where candidate.videoId != pick.videoId {
+            window.insert(candidate, at: orderer.bestInsertion(of: candidate, into: window, after: anchor, minIndex: 1))
+        }
+        let byId = Dictionary(head.map { ($0.videoId, $0) }) { first, _ in first }
+        return window.compactMap { byId[$0.videoId] } + rest
+    }
+
     /// The playing song changed: in Mix, what Up next shows is worked out again for the songs after it.
     /// After `MusicMixWindow.topUpAfter` songs the next window is ordered too, behind the songs the listener can see.
     private func mixTrackChanged() {
@@ -1594,9 +1620,15 @@ final class MusicService {
         mixPlayed += 1
         let order = mixOrderPending || MusicMixWindow.needsTopUp(playedSinceOrdering: mixPlayed)
         let kept = mixOrderPending ? 0 : Self.mixVisibleKept
+        let analyseCurrent = mixAnalyseCurrent
+        mixAnalyseCurrent = false
         mixTask?.cancel()
         mixTask = Task { [weak self] in
             if order { await self?.orderMix(keeping: kept) } else { await self?.refreshMixPairs() }
+            if analyseCurrent, let self, let current = self.queue.current {
+                await self.analyseMissingRows(in: [current])
+                await self.refreshMixPairs()
+            }
         }
     }
 
@@ -2108,7 +2140,11 @@ final class MusicService {
         // at the last downloaded song.
         if isOffline { return queue.advance(where: canPlayNow) }
         if let track = queue.advance() { return track }
-        guard playsAutoplay, queue.takeAutoplay() else { return nil }
+        let mixing = isMixOn
+        guard playsAutoplay, queue.takeAutoplay(placing: mixing ? { [unowned self] fresh, current in
+            placeAutoplay(fresh, after: current)
+        } : nil) else { return nil }
+        if mixing { mixAnalyseCurrent = true }
         return queue.advance()
     }
 

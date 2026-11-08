@@ -34,10 +34,9 @@ final class MusicVocalLookahead {
     }
 
     /// The live wiring: the app's lyrics disk cache and the YouTube Music client.
-    static func live() -> MusicVocalLookahead {
-        let cache = LyricsDiskCache.live()
-        let client = YTMusicLyricsClient.live()
-        return MusicVocalLookahead(
+    /// The cache and client are the ones the lyrics chain uses (one 429 pause, one cache actor).
+    static func live(cache: LyricsDiskCache, client: YTMusicLyricsClient) -> MusicVocalLookahead {
+        MusicVocalLookahead(
             readCache: { await cache.cached(videoId: $0) },
             youtube: { try await client.answer(for: $0) },
             store: { result, credit, id in await cache.store(result, credit: credit, videoId: id) }

@@ -10,7 +10,7 @@ enum MusicVocalIntervals {
     static let maxLineSec = 8.0
 
     /// Sung intervals in song seconds, sorted, merged, clamped to 0...duration. Empty text lines are gaps.
-    /// A line with no end runs to the next line's time (or stays 0-length at the last line, then padded).
+    /// A line with no end runs to the next line's time, the last line to the 8 s cap.
     /// An empty result means no singing at all.
     static func from(lines: [LyricLine], duration: Double) -> [ClosedRange<Double>] {
         guard duration.isFinite, duration > 0 else { return [] }
@@ -18,7 +18,8 @@ enum MusicVocalIntervals {
         var raw: [ClosedRange<Double>] = []
         for (i, line) in sorted.enumerated() {
             guard !line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            let next = i + 1 < sorted.count ? sorted[i + 1].time : line.time
+            // The last line has no next line: it runs to the cap (a cached LRCLIB line carries no end).
+            let next = i + 1 < sorted.count ? sorted[i + 1].time : line.time + maxLineSec
             var end = line.end.flatMap { $0.isFinite ? $0 : nil } ?? next
             end = max(end, line.time)
             end = min(end, line.time + maxLineSec)

@@ -90,10 +90,14 @@ final class MusicServiceHost {
                 connectivity: connectivity
             )
             let coordinator = MusicServiceHost.makeAnalysis(backend: backend, downloads: downloads)
+            // One lyrics client and cache, shared by the panel's chain and the vocal guard's lookahead.
+            let lyricsCache = LyricsDiskCache.live()
+            let lyricsClient = YTMusicLyricsClient.live()
+            let lyricsChain = LyricsChain(primary: lyricsClient, fallback: LRCLibClient.live(), cache: lyricsCache)
             let service = MusicService(
                 backend: backend,
                 player: MusicServiceHost.makePlayer(mixer: mixer),
-                lyrics: .live(connectivity: connectivity),
+                lyrics: MusicLyricsStore(provider: lyricsChain, connectivity: connectivity),
                 listenerLevel: { [weak mixer] in mixer?.watchtimeLevel ?? (WatchtimeTracker.fullVolume, false) },
                 // Shuffle, loop and Autoplay are remembered in settings.json.
                 preferences: settings?.appSettings.musicPlayback ?? MusicPlaybackPreferences(),
@@ -113,7 +117,7 @@ final class MusicServiceHost {
                 analysisReader: coordinator,
                 mixFlags: MusicMixFlagStore.live(),
                 listening: MusicListeningStore(url: MusicListeningStore.liveURL()),
-                vocalLookahead: .live()
+                vocalLookahead: .live(cache: lyricsCache, client: lyricsClient)
             )
             // The Song data panel asks the online services and measures what they lack.
             let facts = MusicSongFactsRepository.live()
