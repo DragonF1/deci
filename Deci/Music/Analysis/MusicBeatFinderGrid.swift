@@ -23,6 +23,11 @@ nonisolated extension MusicBeatFinder {
     static let minDownbeatBeats = 16
     /// Where the bass attack detector lands relative to the true attack on a synthetic kick, subtracted from every onset.
     static let bassOnsetBiasSec = 0.001
+    static let onsetPeakSeparationSec = 0.04
+    static let phasePeakednessMin = 3.0
+    /// The attack starts where the rise is this fraction of its peak. A quarter caught the foot of a sustained note and
+    /// scattered the start of a loud and a soft kick by 10 to 20 ms on real songs; the half rise point does not.
+    static let attackStartFraction: Float = 0.35
     /// A pause this long in the rise ends the attack walk.
     static let attackGapSec = 0.008
 
@@ -173,47 +178,187 @@ nonisolated extension MusicBeatFinder {
         var index = peak
         while index > floor, start - index <= gap {
             index -= 1
-            if band.flux[index] > 0.25 * strength { start = index }
+            if band.flux[index] > attackStartFraction * strength { start = index }
         }
         return (Double(start) / band.rate - bassOnsetBiasSec, strength)
     }
 
-    static func refine(band: Band, period: Double, anchor: Double, beats: ClosedRange<Int>) -> BassRefinement? {
+    /// One bass attack found without any prediction: its start time (as `onset(near:)` defines it) and the rise's strength.
+    struct BassOnset {
+        var time: Double
+        var strength: Float
+        /// Where the rise is steepest.
+        var peakTime: Double = 0
+    }
+
+    /// Every bass attack of the song. Peaks of the bass rise, at least `onsetPeakSeparationSec` apart and at least
+    /// `onsetFloorFraction` of the 75th percentile peak, each walked back to its start. The search no longer depends on
+    /// where a grid is predicted (the old per-beat window chose a different hump of a sustained note for a different
+    /// prediction, so the same song measured differently from different starting grids).
+    static func bassOnsets(in band: Band) -> [BassOnset] {
+        let count = band.flux.count
+        let radius = max(1, Int((onsetPeakSeparationSec * band.rate).rounded()))
+        let width = 2 * radius + 1
+        guard count > width else { return [] }
+        var slidingMax = [Float](repeating: 0, count: count)
+        band.flux.withUnsafeBufferPointer { flux in
+            vDSP_vswmax(flux.baseAddress!, 1, &slidingMax[radius], 1, vDSP_Length(count - width + 1), vDSP_Length(width))
+        }
+        var peaks: [Int] = []
+        for index in radius..<(count - radius) where band.flux[index] > 0 && band.flux[index] == slidingMax[index] {
+            if let last = peaks.last, index - last <= radius {
+                if band.flux[index] > band.flux[last] { peaks[peaks.count - 1] = index }
+            } else {
+                peaks.append(index)
+            }
+        }
+        guard !peaks.isEmpty else { return [] }
+        let sorted = peaks.map { band.flux[$0] }.sorted()
+        let floorStrength = Float(onsetFloorFraction) * sorted[sorted.count * 3 / 4]
+        let gap = Int((attackGapSec * band.rate).rounded())
+        var result: [BassOnset] = []
+        for peak in peaks where band.flux[peak] >= floorStrength {
+            let strength = band.flux[peak]
+            var start = peak
+            var index = peak
+            let floor = max(0, peak - Int((0.12 * band.rate).rounded()))
+            while index > floor, start - index <= gap {
+                index -= 1
+                if band.flux[index] > attackStartFraction * strength { start = index }
+            }
+            result.append(BassOnset(time: Double(start) / band.rate - bassOnsetBiasSec, strength: strength, peakTime: Double(peak) / band.rate))
+        }
+        return result
+    }
+
+    static func refine(band: Band, period: Double, anchor anchor0: Double, beats: ClosedRange<Int>) -> BassRefinement? {
         guard period > 0, !beats.isEmpty else { return nil }
-        var found: [(k: Int, time: Double, strength: Float)] = []
-        for k in beats {
-            let predicted = anchor + Double(k) * period
-            guard predicted - refineWindowSec >= 0, predicted + refineWindowSec <= Double(band.flux.count) / band.rate,
-                  let hit = onset(near: predicted, in: band, window: refineWindowSec) else { continue }
-            found.append((k, hit.time, hit.strength))
-        }
-        guard !found.isEmpty else { return nil }
-        let strengths = found.map(\.strength).sorted()
-        let floorStrength = Float(onsetFloorFraction) * strengths[strengths.count / 2]
-        found = found.filter { $0.strength >= floorStrength }
-        guard found.count >= 4 else { return nil }
-
+        let duration = Double(band.flux.count) / band.rate
+        let onsets = bassOnsets(in: band).filter { $0.time >= anchor0 + Double(beats.lowerBound) * period - period / 2
+            && $0.time <= anchor0 + Double(beats.upperBound) * period + period / 2 }
+        guard onsets.count >= 4 else { return nil }
         let total = beats.count
-        let residuals = found.map { $0.time - (anchor + Double($0.k) * period) }
-        let shift = histogramMode(residuals, binWidth: 0.002)
-        var line = (anchor: anchor + shift, period: period)
 
-        let inliers = found.filter { abs($0.time - (line.anchor + Double($0.k) * period)) < 0.015 }
-        if inliers.count >= 8, let fit = lineFit(inliers.map { (Double($0.k), $0.time) }),
-           abs(fit.slope / period - 1) < 0.03 {
-            line = (fit.intercept, fit.slope)
+        // Phase: each onset's offset from its nearest beat of the finder grid, over the whole period. The fullest
+        // 2 * hitToleranceSec neighbourhood of the (strength weighted) histogram is where the bass attacks.
+        var line = (anchor: anchor0, period: period)
+        var offsets: [(offset: Double, weight: Double)] = []
+        let typical = Double(onsets.map(\.strength).sorted()[onsets.count / 2])
+        for onset in onsets {
+            let k = ((onset.time - anchor0) / period).rounded()
+            offsets.append((onset.time - (anchor0 + k * period), min(2, Double(onset.strength) / max(typical, 1e-12))))
         }
-        let hits = found.filter { abs($0.time - (line.anchor + Double($0.k) * line.period)) <= hitToleranceSec }.count
-        let confidence = Float(hits) / Float(total)
+        if let mode = phaseMode(offsets, period: period) { line.anchor = anchor0 + mode }
 
-        let after = found.map { ($0.k, $0.time - (line.anchor + Double($0.k) * line.period)) }
+        // Then the line through the attacks within tolerance of it, twice: the second pass sees the corrected period.
+        for pass in 0..<2 {
+            let tolerance = pass == 0 ? 0.015 : hitToleranceSec
+            var points: [(Double, Double)] = []
+            var bestFor: [Int: (time: Double, strength: Float)] = [:]
+            for onset in onsets {
+                let k = Int(((onset.time - line.anchor) / line.period).rounded())
+                guard abs(onset.time - (line.anchor + Double(k) * line.period)) < tolerance else { continue }
+                if let held = bestFor[k], held.strength >= onset.strength { continue }
+                bestFor[k] = (onset.time, onset.strength)
+            }
+            for (k, hit) in bestFor { points.append((Double(k), hit.time)) }
+            if points.count >= 8, let fit = lineFit(points), abs(fit.slope / period - 1) < 0.03 {
+                line = (fit.intercept, fit.slope)
+            }
+        }
+
+        // A least squares line follows a lopsided cloud of attacks (a bass note trailing its kick) away from the dense
+        // core, so the anchor takes the shift of up to one tolerance that puts the most beats on an attack.
+        func hitCount(_ anchor: Double) -> Int {
+            var count = 0, cursor = 0
+            for k in beats {
+                let predicted = anchor + Double(k) * line.period
+                while cursor < onsets.count, onsets[cursor].time < predicted - hitToleranceSec { cursor += 1 }
+                if cursor < onsets.count, onsets[cursor].time <= predicted + hitToleranceSec { count += 1 }
+            }
+            return count
+        }
+        var bestShifts: [Double] = []
+        var bestCount = -1
+        for step in -10...10 {
+            let shift = Double(step) * 0.001
+            let count = hitCount(line.anchor + shift)
+            if count > bestCount { bestCount = count; bestShifts = [shift] } else if count == bestCount { bestShifts.append(shift) }
+        }
+        line.anchor += bestShifts.reduce(0, +) / Double(bestShifts.count)
+
+        // The strongest attack within the old search window of each beat; a hit when it sits within tolerance.
+        var after: [(Int, Double)] = []
+        var hits = 0
+        var cursor = 0
+        for k in beats {
+            let predicted = line.anchor + Double(k) * line.period
+            guard predicted - refineWindowSec >= 0, predicted + refineWindowSec <= duration else { continue }
+            while cursor < onsets.count, onsets[cursor].time < predicted - refineWindowSec { cursor += 1 }
+            var best: BassOnset?
+            var probe = cursor
+            while probe < onsets.count, onsets[probe].time <= predicted + refineWindowSec {
+                if best == nil || onsets[probe].strength > best!.strength { best = onsets[probe] }
+                probe += 1
+            }
+            guard let best else { continue }
+                // The closest attack to the beat is its hit when it is within tolerance, else the strongest in reach.
+            var nearest = best
+            probe = cursor
+            while probe < onsets.count, onsets[probe].time <= predicted + refineWindowSec {
+                if abs(onsets[probe].time - predicted) < abs(nearest.time - predicted) { nearest = onsets[probe] }
+                probe += 1
+            }
+            let hit = abs(nearest.time - predicted) <= hitToleranceSec ? nearest : best
+            after.append((k, hit.time - predicted))
+            if abs(hit.time - predicted) <= hitToleranceSec { hits += 1 }
+        }
+        guard after.count >= 4 else { return nil }
         let middle = Double(beats.lowerBound + beats.upperBound) / 2
         let early = after.filter { Double($0.0) < middle }.map(\.1), late = after.filter { Double($0.0) >= middle }.map(\.1)
         var drift: Float = 0
         if early.count >= 4, late.count >= 4 {
             drift = Float((median(late) - median(early)) / max(1, Double(total) / 2))
         }
-        return BassRefinement(anchor: line.anchor, period: line.period, confidence: min(1, confidence), drift: drift)
+        return BassRefinement(
+            anchor: line.anchor, period: line.period, confidence: min(1, Float(hits) / Float(total)), drift: drift
+        )
+    }
+
+    /// The offset (in -period/2 ..< period/2) with the most weight within `hitToleranceSec` either side, as the weighted
+    /// median of the offsets inside that neighbourhood. Offsets are counted circularly.
+    /// nil unless that neighbourhood holds at least `phasePeakednessMin` times the weight an even spread would put there:
+    /// onsets with no common phase (noise, or a song without a beat in the bass) leave the finder's anchor alone.
+    static func phaseMode(_ offsets: [(offset: Double, weight: Double)], period: Double) -> Double? {
+        let binWidth = 0.002
+        let bins = max(1, Int((period / binWidth).rounded(.up)))
+        var weights = [Double](repeating: 0, count: bins)
+        for (offset, weight) in offsets {
+            let index = Int(((offset + period / 2) / binWidth).rounded(.down))
+            weights[((index % bins) + bins) % bins] += weight
+        }
+        let reach = Int((hitToleranceSec / binWidth).rounded())
+        var bestIndex = 0, bestScore = -1.0
+        for index in 0..<bins {
+            var score = 0.0
+            for d in -reach...reach { score += weights[((index + d) % bins + bins) % bins] }
+            if score > bestScore { bestScore = score; bestIndex = index }
+        }
+        let total = weights.reduce(0, +)
+        let even = total * Double(2 * reach + 1) * binWidth / period
+        guard total > 0, bestScore >= phasePeakednessMin * even else { return nil }
+        let centre = (Double(bestIndex) + 0.5) * binWidth - period / 2
+        let inside = offsets.filter {
+            var d = $0.offset - centre
+            d -= (d / period).rounded() * period
+            return abs(d) <= hitToleranceSec
+        }.map { $0.offset }
+        let wrapped = inside.map { value -> Double in
+            var d = value - centre
+            d -= (d / period).rounded() * period
+            return d
+        }
+        return centre + median(wrapped)
     }
 
     /// Centre of the fullest 3-bin neighbourhood, refined by the median of the values inside it.
