@@ -52,6 +52,7 @@ nonisolated struct LiveTransition: Sendable {
     var capturePeak: Float = 0
     var nonFinite = 0
     var dropouts = 0
+    var glideSeen = false
     var dropoutDetail = ""
     var fallbackCount = 0
     var failure: String?
@@ -126,7 +127,7 @@ nonisolated extension LiveScan {
     /// item-time jump (a seek), a rate change, the crossfade's start or end (a deck switch) or the lease's first frames.
     static func chainDropouts(
         _ snap: (records: [MusicRenderRecorder.Record], samples: [Float]),
-        fadeStart: UInt64?, fadeEnd: UInt64?, rateEvents: [LiveRateEvent], roles: [Int: String], leases: [Int: MusicRenderLease] = [:], samples timeline: [LiveSample], detail: inout [String]
+        fadeStart: UInt64?, fadeEnd: UInt64?, glideEnd: UInt64? = nil, minMs: Double = 30, rateEvents: [LiveRateEvent], roles: [Int: String], leases: [Int: MusicRenderLease] = [:], samples timeline: [LiveSample], detail: inout [String]
     ) -> (count: Int, nonFinite: Int, peak: Float) {
         var count = 0
         let sorted = snap.records.sorted { $0.sampleOffset < $1.sampleOffset }
@@ -157,7 +158,7 @@ nonisolated extension LiveScan {
                 if abs(step - Double(recs[i - 1].frames) / rate) > 0.25 { jumps.append(recs[i].hostNanos) }
             }
             let side = roles[token] ?? "other lease"
-            let minRun = Int(0.03 * rate), window = Int(0.1 * rate)
+            let minRun = Int(minMs / 1000 * rate), window = Int(0.1 * rate)
             let before = count
             var maxGap = 0.0
             for i in 1..<max(1, recs.count) { maxGap = max(maxGap, Double(recs[i].hostNanos &- recs[i - 1].hostNanos) / 1e6) }
@@ -206,6 +207,7 @@ nonisolated extension LiveScan {
                             let f = (hostSec - pts[k].w) / max(1e-6, pts[k + 1].w - pts[k].w)
                             item = pts[k].t + f * (pts[k + 1].t - pts[k].t)
                         }
+                        if let ge = glideEnd, let fe = fadeEnd, host > fe, host < ge { tags.append("during glide ticks") }
                         var inFade = false
                         if let fs = fadeStart, host >= fs, host <= (fadeEnd ?? .max) { inFade = true }
                         let sinceEnd = fadeEnd.map { liveF((Double(host) - Double($0)) / 1e6, 0) + " ms vs crossfade end" } ?? "-"
@@ -352,11 +354,29 @@ final class LiveRunner {
             let span = begun.duration(to: .now)
             record.overlapSec = Double(span.components.seconds) + Double(span.components.attoseconds) / 1e18
             let fadeEnd = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            // A nudged beat mix: keep capturing the incoming deck through the whole glide back to 1 (it starts once the
+            // outgoing deck has drained, ticks every 0.1 s and ends with a set to exactly 1).
+            var glideEnd: UInt64?
+            if abs(record.rate - 1) > 0.0005 {
+                let limit = ContinuousClock.now + .seconds(25)
+                var seenGlide = false
+                var lastActive: Float = engine.avPlayer.rate
+                while ContinuousClock.now < limit {
+                    let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                    let r = engine.avPlayer.rate
+                    if r != lastActive { rateEvents.append(LiveRateEvent(host: now, deck: "active", rate: r)); lastActive = r }
+                    if engine.debugGlide != nil { seenGlide = true }
+                    if seenGlide, engine.debugGlide == nil { glideEnd = now; rateEvents.append(LiveRateEvent(host: now, deck: "glide end", rate: r)); break }
+                    if !seenGlide, ContinuousClock.now > limit - .seconds(22) { break }
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+            }
+            record.glideSeen = glideEnd != nil
             try? await Task.sleep(for: .seconds(1.5))
             MusicRenderRecorder.current = nil
             let heard = recorder.snapshot()
             var detail: [String] = []
-            let scan = LiveScan.chainDropouts(heard, fadeStart: fadeStart, fadeEnd: fadeEnd, rateEvents: rateEvents, roles: roles, leases: leaseRefs, samples: record.samples, detail: &detail)
+            let scan = LiveScan.chainDropouts(heard, fadeStart: fadeStart, fadeEnd: fadeEnd, glideEnd: glideEnd, rateEvents: rateEvents, roles: roles, leases: leaseRefs, samples: record.samples, detail: &detail)
             record.capturePeak = scan.peak
             record.nonFinite = scan.nonFinite
             record.dropouts = scan.count
