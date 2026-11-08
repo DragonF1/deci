@@ -193,7 +193,7 @@ struct MusicAnalysisCoordinatorTests {
 
         _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
 
-        #expect(await rig.store.entry(for: id)?.version == 2)
+        #expect(await rig.store.entry(for: id)?.version == MusicAnalysis.currentVersion)
         #expect(await rig.store.freshness(of: id, matching: nil) == .fresh)
     }
 
@@ -217,6 +217,28 @@ struct MusicAnalysisCoordinatorTests {
         #expect(row.beatGrid == nil)
         #expect(row.energy == old.energy && row.silenceEnd == old.silenceEnd && row.introEnd == old.introEnd)
         #expect(await rig.store.staleVideoIds(limit: 10).contains(id) == false)
+    }
+
+    @Test("a version 2 row with a grid is stale, and its grid survives when the file can never be re-analysed")
+    func versionTwoGridSurvivesUnreadable() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+        var old = try #require(await rig.store.entry(for: id))
+        old.version = 2
+        old.beatGrid = MusicBeatGrid(
+            periodSec: 0.5, anchorSec: 1, downbeatPhase: nil, beatConfidence: 0.9, downbeatConfidence: 0,
+            intervalSpread: 0.01, driftSec: 0, spanStartSec: 1, spanEndSec: 100
+        ).encode()
+        try await rig.store.put(old)
+        #expect(await rig.store.freshness(of: id, matching: nil) == .staleVersion)
+
+        rig.spy.fails = true
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+
+        let row = try #require(await rig.store.entry(for: id))
+        #expect(row.version == MusicAnalysis.currentVersion)
+        #expect(row.usableGrid?.beatConfidence == 0.9)
     }
 
     @Test("two ensure calls for one song at once share one fetch and one analysis")

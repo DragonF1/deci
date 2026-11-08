@@ -5,9 +5,11 @@
 import Foundation
 
 struct MusicAnalysis: Sendable, Equatable {
-    /// Bump to have older entries redone quietly in the background.
-    static let currentVersion = 2
-    /// First version whose rows may carry a beat grid; older rows keep their fade fields but have no grid.
+    /// Bump to have older entries redone quietly in the background. 3: the beat finder measures bass onsets without
+    /// depending on its own prediction and locks the phase over the whole period (3b accuracy P1).
+    static let currentVersion = 3
+    /// First version whose rows may carry a beat grid; older rows keep their fade fields but have no grid. A version 2
+    /// grid stays usable until the background sweep replaces it with a version 3 one.
     static let gridVersion = 2
     /// One UInt8 step of the energy curve, in dB.
     static let energyStepDb: Float = 0.5

@@ -271,7 +271,7 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
             return true
         } catch {
             // A file that can never be analysed must not leave its v1 row in the stale sweep forever: the old fade
-            // fields stay, as a v2 row without a grid.
+            // fields (and a version 2 grid) stay, as a current row.
             if let failure = error as? MusicFileAnalyzer.Failure, failure == .empty || failure == .unreadable {
                 await upgradeLegacyRow(videoId: stream.videoId)
             }
@@ -281,8 +281,9 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
 
     private func upgradeLegacyRow(videoId: String) async {
         guard var old = await store.entry(for: videoId), old.version < MusicAnalysis.currentVersion else { return }
+        // A version 2 row keeps the grid it has (still usable); only a version 1 row never had one.
+        if old.version < MusicAnalysis.gridVersion { old.beatGrid = nil }
         old.version = MusicAnalysis.currentVersion
-        old.beatGrid = nil
         try? await store.put(old)
     }
 }
