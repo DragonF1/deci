@@ -1450,6 +1450,7 @@ final class MusicService {
             mixTask?.cancel()
             mixTask = nil
             mixPairs = [:]
+            mixOrderPending = false
         }
         if !queue.isEmpty {
             switch mode {
@@ -1481,24 +1482,70 @@ final class MusicService {
     /// How many songs after the playing one Up next shows tempo and key for.
     private static let mixShownCount = 40
 
+    /// Mix has not laid the queue out yet: the songs were not there, or the playing song changed first.
+    @ObservationIgnored private var mixOrderPending = false
+    /// Songs played since the window was last ordered; a top-up orders the next window after `MusicMixWindow.topUpAfter`.
+    @ObservationIgnored private var mixPlayed = 0
+    /// Songs Mix already asked the analyzer for, so a song that cannot be analysed is asked for once.
+    @ObservationIgnored private var mixAsked: Set<String> = []
+    /// At most this many unanalysed songs of a window are analysed in the foreground per refresh.
+    static let mixAnalysesPerRefresh = 4
+    /// A top-up leaves the next songs as they are: the listener sees them, and the first of them may be preloading.
+    static let mixVisibleKept = 3
+
     private func startMixOrdering() {
+        mixOrderPending = true
         mixTask?.cancel()
-        mixTask = Task { [weak self] in await self?.orderMix() }
+        mixTask = Task { [weak self] in await self?.orderMix(keeping: 0) }
     }
 
-    /// Reads the rows of the playing song and the unqueued songs after it, orders those songs and lays them into the
-    /// queue's slots, then works out what Up next shows. A song with no row scores neutral and is never blocked.
-    private func orderMix() async {
-        let songs = queue.unqueuedUpcoming
-        let anchor = queue.current
-        await readMixRows(for: songs + (anchor.map { [$0] } ?? []))
+    /// The queue gained songs (a radio page landed): a Mix that had nothing to order yet orders them now.
+    private func mixQueueGrew() {
+        guard isMixOn, mixOrderPending, !queue.unqueuedUpcoming.isEmpty else { return }
+        startMixOrdering()
+    }
+
+    /// Reads the rows of the playing song and the next window of unqueued songs after it, orders that window and lays it
+    /// into the queue's slots (the songs behind the window keep their order), then analyses a few songs that had no row
+    /// and works out what Up next shows. A song with no row scores neutral and is never blocked; it joins a later
+    /// window once its row is stored. `keeping` songs at the front of the unqueued songs stay where they are, and the
+    /// last of them is the song the window mixes out of.
+    private func orderMix(keeping fixedCount: Int) async {
+        let unqueued = queue.unqueuedUpcoming
+        let fixed = Array(unqueued.prefix(fixedCount))
+        let window = Array(unqueued.dropFirst(fixedCount).prefix(MusicMixWindow.size))
+        let anchor = fixed.last ?? queue.current
+        guard !window.isEmpty else { return }
+        await readMixRows(for: window + (anchor.map { [$0] } ?? []))
         guard !Task.isCancelled, isMixOn else { return }
-        let profiles = songs.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
+        let profiles = window.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
         let first = anchor.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
         var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
         queue.mixOrder(orderer.order(profiles, first: first))
+        mixOrderPending = false
+        mixPlayed = 0
         saveSession()
         await refreshMixPairs()
+        await analyseMissingRows(in: window)
+        // Rows that landed show in Up next at once; they change the order at the next top-up.
+        await refreshMixPairs()
+    }
+
+    /// Analyses, one at a time in play order, up to `mixAnalysesPerRefresh` songs of `window` that have no stored row,
+    /// through the foreground path (it shares a run with the playing song's own analysis and sits outside the background
+    /// analyzer's hourly cap). Nothing is analysed offline, signed out or under Loop song.
+    private func analyseMissingRows(in window: [MusicTrack]) async {
+        guard let analysis, let reader = analysisReader, !isOffline, authState != .signedOut, loopMode != .song else { return }
+        var asked = 0
+        for track in window where mixRows[track.videoId] == nil && !mixAsked.contains(track.videoId) {
+            guard asked < Self.mixAnalysesPerRefresh else { return }
+            if Task.isCancelled || !isMixOn { return }
+            asked += 1
+            mixAsked.insert(track.videoId)
+            guard let stream = try? await streamForSource(of: track.videoId) else { continue }
+            _ = await analysis.ensure(stream: stream, wantsFile: false)
+            if let row = await reader.analysis(for: track.videoId) { mixRows[track.videoId] = row }
+        }
     }
 
     /// Reads the stored row of every song in `tracks` that Mix has not read yet.
@@ -1541,10 +1588,16 @@ final class MusicService {
     }
 
     /// The playing song changed: in Mix, what Up next shows is worked out again for the songs after it.
+    /// After `MusicMixWindow.topUpAfter` songs the next window is ordered too, behind the songs the listener can see.
     private func mixTrackChanged() {
         guard isMixOn else { return }
+        mixPlayed += 1
+        let order = mixOrderPending || MusicMixWindow.needsTopUp(playedSinceOrdering: mixPlayed)
+        let kept = mixOrderPending ? 0 : Self.mixVisibleKept
         mixTask?.cancel()
-        mixTask = Task { [weak self] in await self?.refreshMixPairs() }
+        mixTask = Task { [weak self] in
+            if order { await self?.orderMix(keeping: kept) } else { await self?.refreshMixPairs() }
+        }
     }
 
     func setLoopMode(_ mode: MusicLoopMode) {
@@ -2404,6 +2457,7 @@ final class MusicService {
                 return
             }
             added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator)
+            if added > 0 { mixQueueGrew() }
         }
         if added > 0, resumePendingAdvance() { return }
         // Pages overlap heavily: one that adds nothing still has a continuation, so ask again at once,
@@ -2672,7 +2726,6 @@ final class MusicService {
     /// the next song's analysis while its job runs, until `analysisDeadline` seconds are left to the trimmed end.
     private func offerPreload(position: TimeInterval) {
         syncCrossfade()
-        if let stream = prefetched { startVocalLookahead(next: stream) }
         guard let stream = prefetched, let target = preloadTarget, stream.videoId == target.videoId,
               preloadOffered != target.videoId, player.isPlaying, !player.hasEnded,
               isInPreloadWindow(position: position) else { return }
@@ -2694,15 +2747,19 @@ final class MusicService {
         logBeat(plan.offered)
     }
 
-    /// Starts the lyrics lookup for the playing song and the next one (once each). Only with beat mix, the vocal guard and
-    /// the crossfade on. The network part (YouTube Music only) is skipped offline. Never awaited by the plan.
-    private func startVocalLookahead(next: ResolvedStream) {
-        guard let lookahead = vocalLookahead, isVocalGuardOn, isBeatMixOn, isCrossfadeOn,
+    /// Starts the lyrics lookup for the playing song and the next one (once each). Called on every playing tick, so it
+    /// begins when the track starts and as soon as the next song is known, never tied to the prefetch. Only with beat mix,
+    /// the vocal guard and the crossfade on and a transition to plan (not album in order, not Loop song). The network part
+    /// (YouTube Music only) is skipped offline. Never awaited by the plan.
+    func startVocalLookahead() {
+        guard let lookahead = vocalLookahead, isVocalGuardOn, isBeatMixOn, isCrossfadeOn, plansTransitions,
               let current = player.currentStream else { return }
         let network = !isOffline
+        let next = preloadTarget
+        let nextDuration = prefetched?.videoId == next?.videoId ? prefetched?.durationSeconds : nil
         let sides: [(id: String, duration: Double?, track: MusicTrack?)] = [
             (current.videoId, current.durationSeconds, player.nowPlaying),
-            (next.videoId, next.durationSeconds, preloadTarget),
+            (next?.videoId ?? "", nextDuration ?? next?.durationSeconds.map(Double.init), next),
         ]
         for side in sides where !lookahead.hasRequested(side.id) {
             guard let track = side.track, track.videoId == side.id, let duration = side.duration else { continue }
@@ -3084,6 +3141,7 @@ final class MusicService {
         guard session != nil else { return }
         // A session whose account expired only counts listening: the next song is not prepared under the dead account.
         if isPlaying, session?.pingsDropped != true {
+            startVocalLookahead()
             prefetchNextIfNeeded(position: position)
             offerPreload(position: position)
             giveUpBeatMixIfNotReady(position: position)
