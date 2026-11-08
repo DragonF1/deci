@@ -7,8 +7,9 @@ import Foundation
 struct MusicAnalysis: Sendable, Equatable {
     /// Bump to have older entries redone quietly in the background. 3: the beat finder measures bass onsets without
     /// depending on its own prediction and locks the phase over the whole period (3b accuracy P1). 4: the downbeat comes
-    /// from kick, back-beat, harmony and section cues with a held-out check (3b accuracy P2).
-    static let currentVersion = 4
+    /// from kick, back-beat, harmony and section cues with a held-out check (3b accuracy P2). 5: the row carries a musical
+    /// key and an energy rating (tier 4); an older row has neither until the sweep redoes it.
+    static let currentVersion = 5
     /// First version whose rows may carry a beat grid; older rows keep their fade fields but have no grid. A version 2
     /// or 3 grid stays usable (an unreadable file drops its old bass-only downbeat guess, a re-analysis replaces it) until the background sweep replaces it with a version 4 one.
     static let gridVersion = 2
@@ -81,6 +82,15 @@ struct MusicAnalysis: Sendable, Equatable {
         guard version >= Self.gridVersion, let beatGrid else { return nil }
         return MusicBeatGrid.decode(beatGrid)
     }
+
+    /// The stored key and energy, only from a row that is at least version 5 and decodes cleanly.
+    var keyInfoValue: MusicKeyInfo? {
+        guard version >= 5, let keyInfo else { return nil }
+        return MusicKeyInfo.decode(keyInfo)
+    }
+
+    /// Camelot code when the detector was sure enough (confidence 0.2 or more), else nil (unknown key).
+    var trustedCamelot: String? { keyInfoValue?.trustedCamelot }
 
     /// RMS level of block `block` in dBFS; -infinity when out of range.
     func energyDb(at block: Int) -> Float {
