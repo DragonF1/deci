@@ -17,7 +17,7 @@ struct GridGateDiagnosisTests {
     private nonisolated static func f(_ x: Double, _ d: Int = 4) -> String { String(format: "%.\(d)f", x) }
 
     /// The production decode: AVAssetReader at the native rate into MusicBeatDecimator.
-    private nonisolated static func decode(_ url: URL) async throws -> (samples: [Float], rate: Double) {
+    nonisolated static func decode(_ url: URL) async throws -> (samples: [Float], rate: Double) {
         let asset = AVURLAsset(url: url)
         let track = try #require(try await asset.loadTracks(withMediaType: .audio).first)
         let description = try #require(try await track.load(.formatDescriptions).first)
