@@ -1451,6 +1451,8 @@ final class MusicService {
             mixTask = nil
             mixPairs = [:]
             mixOrderPending = false
+            mixAvoid = []
+            mixReplanPending = false
         }
         if !queue.isEmpty {
             switch mode {
@@ -1589,6 +1591,46 @@ final class MusicService {
         isMixOn ? mixPairs[MusicMixPairInfo.key(from: previousId, to: id)] : nil
     }
 
+    /// The songs a manual skip left, newest last (at most `mixAvoidKept`): the re-plan after a skip pushes them and their
+    /// artists to the back. Memory only; it goes with Mix.
+    @ObservationIgnored private var mixAvoid: [MusicMixProfile] = []
+    /// A manual skip happened and the next songs have not been re-planned yet.
+    @ObservationIgnored private var mixReplanPending = false
+    static let mixAvoidKept = 3
+
+    /// Records a manual skip (Next, or a tap in Up next): the song left goes on the avoid list and the next songs are
+    /// re-planned once the new song has started. A song that ended by itself never comes here.
+    private func noteMixSkip(of leaving: MusicTrack?) {
+        guard isMixOn, let leaving else { return }
+        mixAvoid.append(MusicMixProfile(videoId: leaving.videoId, artist: leaving.artist, analysis: mixRows[leaving.videoId]))
+        if mixAvoid.count > Self.mixAvoidKept { mixAvoid.removeFirst(mixAvoid.count - Self.mixAvoidKept) }
+        mixReplanPending = true
+    }
+
+    /// Re-orders the next `MusicMixOrderer.tailCount` unqueued songs out of the song that now plays, away from what was
+    /// just skipped. A next song that is already offered for preload stays first: the change goes through the queue, so
+    /// `reconcilePreload` sees it like any other edit.
+    private func replanAfterSkip() async {
+        guard isMixOn, let current = queue.current else { return }
+        let unqueued = queue.unqueuedUpcoming
+        let fixedCount = unqueued.first.map { $0.videoId == preloadOffered } == true ? 1 : 0
+        let window = Array(unqueued.dropFirst(fixedCount).prefix(MusicMixOrderer.tailCount))
+        guard window.count > 1 else { return }
+        let anchor = unqueued.prefix(fixedCount).last ?? current
+        await readMixRows(for: window + [anchor])
+        guard !Task.isCancelled, isMixOn else { return }
+        func profile(_ track: MusicTrack) -> MusicMixProfile {
+            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
+        }
+        var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
+        let order = orderer.reorderTail(
+            anchor: profile(anchor), upcoming: window.map(profile), avoid: mixAvoid, count: MusicMixOrderer.tailCount
+        )
+        queue.mixOrder(order)
+        if dropStaleRadio() { topUpQueueAfterModeChange() }
+        saveSession()
+    }
+
     /// The first pick of a placed radio is analysed in the foreground once it plays, so the songs after it can be scored.
     @ObservationIgnored private var mixAnalyseCurrent = false
 
@@ -1633,9 +1675,13 @@ final class MusicService {
         let kept = mixOrderPending ? 0 : Self.mixVisibleKept
         let analyseCurrent = mixAnalyseCurrent
         mixAnalyseCurrent = false
+        let replan = mixReplanPending
+        mixReplanPending = false
         mixTask?.cancel()
         mixTask = Task { [weak self] in
-            if order { await self?.orderMix(keeping: kept) } else { await self?.refreshMixPairs() }
+            if order { await self?.orderMix(keeping: kept) }
+            if replan { await self?.replanAfterSkip() }
+            if !order || replan { await self?.refreshMixPairs() }
             if analyseCurrent, let self, let current = self.queue.current {
                 await self.analyseMissingRows(in: [current])
                 await self.refreshMixPairs()
@@ -1778,12 +1824,14 @@ final class MusicService {
         noteActivity()
         direction = .forward
         failureStreak = 0
+        let leaving = queue.current
         guard let track = movingQueue(advanceQueue) else {
             // The radio may still be loading: keep playing and move on when its page lands. Offline there is no radio and
             // the queue ends at its last downloaded song: Next leaves it playing.
             if !awaitRadio(for: .skipped), !wrapAround(), !isOffline { stopPlayback() }
             return
         }
+        noteMixSkip(of: leaving)
         if crossfadeSkip(to: track) { return }
         reconcilePreload()
         begin(track)
@@ -1812,7 +1860,9 @@ final class MusicService {
     func jump(to track: MusicTrack) {
         guard canPlayNow(track) else { return }
         noteActivity()
+        let leaving = queue.current
         guard let target = queue.jump(to: track.videoId) else { return }
+        noteMixSkip(of: leaving)
         direction = .forward
         failureStreak = 0
         begin(target)
