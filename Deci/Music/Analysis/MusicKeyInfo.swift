@@ -4,8 +4,9 @@
 import Foundation
 
 nonisolated struct MusicKeyInfo: Sendable, Equatable {
-    /// Below this confidence the key counts as unknown to anything that plans with it.
-    static let minTrustedConfidence: Float = 0.2
+    /// Below this confidence the key counts as unknown to anything that plans with it. Awaits calibration on
+    /// labelled songs.
+    static let minTrustedConfidence: Float = 0.10
 
     /// 0...11, C = 0.
     var tonic: Int
@@ -15,12 +16,16 @@ nonisolated struct MusicKeyInfo: Sendable, Equatable {
     /// 0...1, see `MusicEnergyRating`.
     var energy: Float
 
-    /// Camelot wheel code, "8B" for C major and "8A" for A minor.
-    var camelot: String {
+    /// Camelot wheel number 1...12 (a minor key shares the number of its relative major).
+    static func camelotNumber(tonic: Int, isMinor: Bool) -> Int {
         let t = ((tonic % 12) + 12) % 12
         let majorTonic = isMinor ? (t + 3) % 12 : t
-        let number = (majorTonic * 7 % 12 + 7) % 12 + 1
-        return "\(number)\(isMinor ? "A" : "B")"
+        return (majorTonic * 7 % 12 + 7) % 12 + 1
+    }
+
+    /// Camelot wheel code, "8B" for C major and "8A" for A minor.
+    var camelot: String {
+        "\(Self.camelotNumber(tonic: tonic, isMinor: isMinor))\(isMinor ? "A" : "B")"
     }
 
     /// The code, or nil when the detector was not sure enough.
@@ -49,7 +54,7 @@ nonisolated struct MusicKeyInfo: Sendable, Equatable {
             return Float(bitPattern: bits)
         }
         let confidence = float(3), energy = float(7)
-        guard confidence.isFinite, energy.isFinite else { return nil }
+        guard (0...2).contains(confidence), (0...1).contains(energy) else { return nil }
         return MusicKeyInfo(tonic: Int(bytes[1]), isMinor: bytes[2] == 1, confidence: confidence, energy: energy)
     }
 }

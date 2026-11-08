@@ -265,6 +265,7 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
                 analyzedAt: now(), youtubeLoudnessDb: stream.loudnessDb,
                 youtubePerceptualLoudnessDb: stream.perceptualLoudnessDb
             )
+            guard !Task.isCancelled else { return false }
             try await store.put(entry)
             let grid = result.measurement.beatGrid.map { String(format: "%.1f@%.2f", $0.bpm, $0.beatConfidence) } ?? "nil"
             logger.notice("analysis_grid id=\(stream.videoId, privacy: .public) grid=\(grid, privacy: .public)")
@@ -289,6 +290,7 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
             grid.downbeatConfidence = 0
             old.beatGrid = grid.encode()
         }
+        if old.version < 5 { old.keyInfo = nil }
         old.version = MusicAnalysis.currentVersion
         try? await store.put(old)
     }

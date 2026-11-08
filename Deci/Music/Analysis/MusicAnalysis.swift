@@ -84,13 +84,13 @@ struct MusicAnalysis: Sendable, Equatable {
     }
 
     /// The stored key and energy, only from a row that is at least version 5 and decodes cleanly.
-    var keyInfoValue: MusicKeyInfo? {
+    nonisolated var keyInfoValue: MusicKeyInfo? {
         guard version >= 5, let keyInfo else { return nil }
         return MusicKeyInfo.decode(keyInfo)
     }
 
     /// Camelot code when the detector was sure enough (confidence 0.2 or more), else nil (unknown key).
-    var trustedCamelot: String? { keyInfoValue?.trustedCamelot }
+    nonisolated var trustedCamelot: String? { keyInfoValue?.trustedCamelot }
 
     /// RMS level of block `block` in dBFS; -infinity when out of range.
     func energyDb(at block: Int) -> Float {

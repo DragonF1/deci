@@ -14,14 +14,30 @@ struct MusicKeyDetectorTests {
         return out
     }
 
-    /// Mono audio of a chord (three harmonics per note), fed to the detector in odd-sized pieces.
-    private static func detect(notes: [Double], sampleRate: Double = 44_100, seconds: Double = 8) -> (tonic: Int, isMinor: Bool, confidence: Float) {
-        let frames = Int(seconds * sampleRate)
+    private struct SeededGenerator: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    /// Mono audio of chords one after another (three harmonics per note), fed to the detector in odd-sized pieces.
+    private static func detect(
+        chords: [[Double]], secondsPerChord: Double = 2, repeats: Int = 1, sampleRate: Double = 44_100
+    ) -> (tonic: Int, isMinor: Bool, confidence: Float) {
+        let per = Int(secondsPerChord * sampleRate)
+        let frames = per * chords.count * repeats
         var samples = [Float](repeating: 0, count: frames)
-        for note in notes {
-            for (harmonic, gain) in [(1.0, 1.0), (2.0, 0.5), (3.0, 0.25)] {
-                let step = 2 * Double.pi * note * harmonic / sampleRate
-                for index in 0..<frames { samples[index] += Float(gain * 0.1 * sin(step * Double(index))) }
+        for (slot, notes) in (0..<(chords.count * repeats)).map({ ($0, chords[$0 % chords.count]) }) {
+            for note in notes {
+                for (harmonic, gain) in [(1.0, 1.0), (2.0, 0.5), (3.0, 0.25)] {
+                    let step = 2 * Double.pi * note * harmonic / sampleRate
+                    for index in 0..<per { samples[slot * per + index] += Float(gain * 0.1 * sin(step * Double(index))) }
+                }
             }
         }
         let detector = MusicKeyDetector(sampleRate: sampleRate)
@@ -32,6 +48,51 @@ struct MusicKeyDetectorTests {
             offset += take
         }
         return MusicKeyDetector.classify(chroma: detector.finish())
+    }
+
+    private static func detect(notes: [Double], sampleRate: Double = 44_100, seconds: Double = 8) -> (tonic: Int, isMinor: Bool, confidence: Float) {
+        detect(chords: [notes], secondsPerChord: seconds, sampleRate: sampleRate)
+    }
+
+    // Triads in the octave around middle C.
+    private static let C = [261.63, 329.63, 392.0], F = [174.61, 220.0, 261.63], G = [196.0, 246.94, 293.66]
+    private static let Am = [220.0, 261.63, 329.63]
+
+    @Test("an I-IV-V-vi progression in C is a trusted 8B")
+    func progressionIsTrusted() {
+        let result = Self.detect(chords: [Self.C, Self.F, Self.G, Self.Am], repeats: 2)
+        print("FINDING I-IV-V-vi tonic=\(result.tonic) minor=\(result.isMinor) confidence=\(result.confidence)")
+        let info = MusicKeyInfo(tonic: result.tonic, isMinor: result.isMinor, confidence: result.confidence, energy: 0)
+        #expect(info.trustedCamelot == "8B", "got \(info.camelot) at \(result.confidence)")
+    }
+
+    @Test("a vi-IV-I-V progression in C is a trusted 8A or 8B")
+    func minorFirstProgression() {
+        let result = Self.detect(chords: [Self.Am, Self.F, Self.C, Self.G], repeats: 2)
+        print("FINDING vi-IV-I-V tonic=\(result.tonic) minor=\(result.isMinor) confidence=\(result.confidence)")
+        let info = MusicKeyInfo(tonic: result.tonic, isMinor: result.isMinor, confidence: result.confidence, energy: 0)
+        let code = info.trustedCamelot
+        #expect(code == "8A" || code == "8B", "got \(info.camelot) at \(result.confidence)")
+    }
+
+    @Test("room tone far under the music does not move the key")
+    func quietFramesIgnored() {
+        let rate = 44_100.0
+        var generator = SeededGenerator(state: 7)
+        let tone = Self.detect(chords: [Self.C], secondsPerChord: 6)
+        #expect(tone.tonic == 0 && !tone.isMinor)
+        // Loud C chord, then a long very quiet A minor tail (about 50 dB down).
+        let loud = Int(4 * rate), quiet = Int(12 * rate)
+        var samples = [Float](repeating: 0, count: loud + quiet)
+        for note in Self.C { for index in 0..<loud { samples[index] += Float(0.1 * sin(2 * Double.pi * note * Double(index) / rate)) } }
+        for note in [220.0, 277.18, 329.63] {
+            for index in 0..<quiet { samples[loud + index] += Float(0.0003 * sin(2 * Double.pi * note * Double(index) / rate)) }
+        }
+        _ = generator.next()
+        let detector = MusicKeyDetector(sampleRate: rate)
+        samples.withUnsafeBufferPointer { detector.consume(interleaved: $0.baseAddress!, frames: samples.count, channels: 1) }
+        let result = MusicKeyDetector.classify(chroma: detector.finish())
+        #expect(result.tonic == 0 && !result.isMinor, "tonic \(result.tonic) minor \(result.isMinor)")
     }
 
     @Test("a C major triad in chroma is C major, 8B")
@@ -70,7 +131,7 @@ struct MusicKeyDetectorTests {
 
     @Test("white noise audio has confidence under 0.15")
     func whiteNoise() {
-        var generator = SystemRandomNumberGenerator()
+        var generator = SeededGenerator(state: 42)
         let frames = 22_050 * 8
         let samples = (0..<frames).map { _ in Float.random(in: -0.3...0.3, using: &generator) }
         let detector = MusicKeyDetector(sampleRate: 22_050)
@@ -81,7 +142,7 @@ struct MusicKeyDetectorTests {
 
     @Test("synthetic C major chord audio is C major at 44.1 kHz")
     func cMajorAudio() {
-        let result = Self.detect(notes: [261.63, 329.63, 392.0])
+        let result = Self.detect(notes: Self.C)
         #expect(result.tonic == 0 && !result.isMinor, "tonic \(result.tonic) minor \(result.isMinor)")
         #expect(result.confidence > 0.05)
     }
@@ -130,12 +191,16 @@ struct MusicKeyDetectorTests {
         var unknown = data; unknown[0] = 99
         #expect(MusicKeyInfo.decode(unknown) == nil)
         #expect(MusicKeyInfo.decode(Data()) == nil)
+        for (confidence, energy) in [(Float.nan, Float(0.5)), (-0.1, 0.5), (2.5, 0.5), (0.5, 1.5), (0.5, -0.1), (.infinity, 0.5)] {
+            let odd = MusicKeyInfo(tonic: 1, isMinor: false, confidence: confidence, energy: energy).encode()
+            #expect(MusicKeyInfo.decode(odd) == nil, "confidence \(confidence) energy \(energy)")
+        }
     }
 
-    @Test("below 0.2 confidence the key is unknown to later phases but still decodes")
+    @Test("below 0.1 confidence the key is unknown to later phases but still decodes")
     func trusted() {
-        let weak = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.19, energy: 0.5)
-        let strong = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.2, energy: 0.5)
+        let weak = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.09, energy: 0.5)
+        let strong = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.1, energy: 0.5)
         #expect(weak.trustedCamelot == nil)
         #expect(strong.trustedCamelot == "8B")
         #expect(MusicKeyInfo.decode(weak.encode()) == weak)

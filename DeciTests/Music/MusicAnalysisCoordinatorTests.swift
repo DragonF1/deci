@@ -274,7 +274,7 @@ struct MusicAnalysisCoordinatorTests {
         _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
         var old = try #require(await rig.store.entry(for: id))
         old.version = 4
-        old.keyInfo = nil
+        old.keyInfo = MusicKeyInfo(tonic: 3, isMinor: true, confidence: 0.5, energy: 0.5).encode()
         try await rig.store.put(old)
         #expect(await rig.store.freshness(of: id, matching: nil) == .staleVersion)
 
@@ -285,6 +285,35 @@ struct MusicAnalysisCoordinatorTests {
         #expect(row.version == MusicAnalysis.currentVersion)
         #expect(row.keyInfo == nil && row.keyInfoValue == nil)
         #expect(await rig.store.staleVideoIds(limit: 10).contains(id) == false)
+    }
+
+    @Test("a cancelled analysis never replaces a stored row, so a kept grid survives")
+    func cancelledRunKeepsOldRow() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+        var old = try #require(await rig.store.entry(for: id))
+        old.version = 4
+        old.beatGrid = MusicBeatGrid(
+            periodSec: 0.5, anchorSec: 1, downbeatPhase: 2, beatConfidence: 0.9, downbeatConfidence: 0.6,
+            intervalSpread: 0.01, driftSec: 0, spanStartSec: 1, spanEndSec: 100
+        ).encode()
+        try await rig.store.put(old)
+        let gate = MusicTestGate()
+        rig.spy.gate = gate
+        let before = rig.spy.count
+
+        // The spy returns a grid-less result even though the task was cancelled while it waited.
+        let only = Task { await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false) }
+        while rig.spy.count == before { await Task.yield() }
+        only.cancel()
+        for _ in 0..<20 { await Task.yield() }
+        await gate.open()
+        _ = await only.value
+
+        let row = try #require(await rig.store.entry(for: id))
+        #expect(row.version == 4)
+        #expect(row.usableGrid?.beatConfidence == 0.9)
     }
 
     @Test("two ensure calls for one song at once share one fetch and one analysis")

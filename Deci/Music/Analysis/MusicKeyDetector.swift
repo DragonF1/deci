@@ -9,8 +9,10 @@ import Foundation
 nonisolated final class MusicKeyDetector {
     static let fftSize = 4096
     static let hop = 2048
-    private static let lowHz: Float = 65
+    private static let lowHz: Float = 110
     private static let highHz: Float = 2000
+    /// Frames more than this far under the loudest frame so far (room tone, decay) are left out of the chroma.
+    private static let quietFrameDb: Float = 40
     /// Frames quieter than this (sum of magnitudes) say nothing about key or brightness.
     private static let silenceFloor: Float = 1e-3
 
@@ -25,11 +27,17 @@ nonisolated final class MusicKeyDetector {
     /// Bins from 65 Hz to 2 kHz, their pitch classes (index 0 is bin `chromaBins.lowerBound`).
     private let chromaBins: Range<Int>
     private let binClass: [Int8]
+    /// Semitone band (0 is the lowest) of each chroma bin, and each band's pitch class.
+    private let binNote: [Int]
+    private let noteClass: [Int8]
     private let binHz: [Float]
     private let setup: FFTSetup?
     private var pending: [Float] = []
     private var start = 0
-    private var leftover: [Float] = []
+    private var leftover: [Float]
+    private var leftoverCount = 0
+    private var loudestRms: Float = 0
+    private var noteMax: [Float] = []
     private var mono: [Float] = []
     private var reduced: [Float] = []
     private var chroma = [Float](repeating: 0, count: 12)
@@ -48,6 +56,9 @@ nonisolated final class MusicKeyDetector {
         let n = Self.fftSize
         window = (0..<n).map { Float(0.5 - 0.5 * cos(2 * Double.pi * Double($0) / Double(n))) }
         var classes: [Int8] = []
+        var notes: [Int] = []
+        var noteClasses: [Int8] = []
+        var lowestSemitone = Int.max
         var first = n / 2, last = 0
         var hz = [Float](repeating: 0, count: n / 2)
         for bin in 1..<(n / 2) {
@@ -56,11 +67,19 @@ nonisolated final class MusicKeyDetector {
             guard f >= Self.lowHz, f <= Self.highHz else { continue }
             first = min(first, bin)
             last = max(last, bin)
-            let semitones = (12 * log2(Double(f) / 440)).rounded()
-            classes.append(Int8(((Int(semitones) + 9) % 12 + 12) % 12))
+            let semitone = Int((12 * log2(Double(f) / 440)).rounded())
+            if lowestSemitone == Int.max { lowestSemitone = semitone }
+            let pc = Int8(((semitone + 9) % 12 + 12) % 12)
+            classes.append(pc)
+            let note = semitone - lowestSemitone
+            notes.append(note)
+            if note >= noteClasses.count { noteClasses.append(pc) }
         }
         chromaBins = first <= last ? first..<(last + 1) : 0..<0
         binClass = classes
+        binNote = notes
+        noteClass = noteClasses
+        leftover = [Float](repeating: 0, count: factor)
         binHz = hz
         setup = vDSP_create_fftsetup(12, FFTRadix(kFFTRadix2))
     }
@@ -71,7 +90,7 @@ nonisolated final class MusicKeyDetector {
     func consume(interleaved: UnsafePointer<Float>, frames: Int, channels: Int) {
         guard frames > 0, channels > 0, setup != nil else { return }
         // Mono mix of this call, after the samples left over from the last one.
-        let carried = leftover.count
+        let carried = leftoverCount
         let total = carried + frames
         if mono.count < total { mono = [Float](repeating: 0, count: total) }
         for index in 0..<carried { mono[index] = leftover[index] }
@@ -99,7 +118,8 @@ nonisolated final class MusicKeyDetector {
                 }
             }
         }
-        leftover = Array(mono[used..<total])
+        leftoverCount = total - used
+        for index in 0..<leftoverCount { leftover[index] = mono[used + index] }
         while pending.count - start >= Self.fftSize {
             process(from: start)
             start += Self.hop
@@ -113,7 +133,9 @@ nonisolated final class MusicKeyDetector {
     private func process(from offset: Int) {
         guard let setup else { return }
         let n = Self.fftSize, half = n / 2
+        var rms: Float = 0
         pending.withUnsafeBufferPointer { source in
+            vDSP_rmsqv(source.baseAddress! + offset, 1, &rms, vDSP_Length(n))
             vDSP_vmul(source.baseAddress! + offset, 1, window, 1, &frame, 1, vDSP_Length(n))
         }
         real.withUnsafeMutableBufferPointer { realPointer in
@@ -128,12 +150,19 @@ nonisolated final class MusicKeyDetector {
                 vDSP_zvabs(&split, 1, &magnitude, 1, vDSP_Length(half))
             }
         }
-        magnitude[0] = 0
-        // Normalise to a per-sample amplitude scale.
-        var norm = 1 / Float(n)
-        vDSP_vsmul(magnitude, 1, &norm, &magnitude, 1, vDSP_Length(half))
         var total: Float = 0
-        vDSP_sve(magnitude, 1, &total, vDSP_Length(half))
+        var peak: Float = 0
+        let count = vDSP_Length(chromaBins.count)
+        let low = chromaBins.lowerBound
+        magnitude.withUnsafeMutableBufferPointer { mag in
+            let base = mag.baseAddress!
+            base[0] = 0
+            // Normalise to a per-sample amplitude scale (in place).
+            var norm = 1 / Float(n)
+            vDSP_vsmul(base, 1, &norm, base, 1, vDSP_Length(half))
+            vDSP_sve(base, 1, &total, vDSP_Length(half))
+            if count > 0 { vDSP_maxv(base + low, 1, &peak, count) }
+        }
         guard total > Self.silenceFloor else { return }
 
         var weighted: Float = 0
@@ -141,16 +170,19 @@ nonisolated final class MusicKeyDetector {
         centroidSum += Double(weighted / total)
         centroidFrames += 1
 
-        // Only the pitched range: one peak, one compressed copy, then fold into the 12 classes.
-        let count = vDSP_Length(chromaBins.count)
-        var peak: Float = 0
-        magnitude.withUnsafeBufferPointer { vDSP_maxv($0.baseAddress! + chromaBins.lowerBound, 1, &peak, count) }
-        guard peak > 0 else { return }
-        var scale = 20 / peak
-        magnitude.withUnsafeBufferPointer { vDSP_vsmul($0.baseAddress! + chromaBins.lowerBound, 1, &scale, &compressed, 1, count) }
-        var length = Int32(chromaBins.count)
-        vvlog1pf(&compressed, compressed, &length)
-        for (offset, pc) in binClass.enumerated() { chroma[Int(pc)] += compressed[offset] }
+        // Chroma: quiet frames out, the rest weighted by their level; one value per semitone band, then 12 classes.
+        loudestRms = max(loudestRms, rms)
+        guard peak > 0, rms >= loudestRms * pow(10, -Self.quietFrameDb / 20) else { return }
+        if noteMax.count != noteClass.count { noteMax = [Float](repeating: 0, count: noteClass.count) }
+        for index in noteMax.indices { noteMax[index] = 0 }
+        for offset in 0..<binNote.count {
+            let note = binNote[offset]
+            noteMax[note] = max(noteMax[note], magnitude[low + offset])
+        }
+        let scale = 20 / peak
+        for note in noteMax.indices {
+            chroma[Int(noteClass[note])] += rms * log1p(scale * noteMax[note])
+        }
     }
 
     /// The 12-bin chroma so far, C first, scaled to a peak of 1 (all zero for silence).
@@ -164,7 +196,8 @@ nonisolated final class MusicKeyDetector {
     var meanCentroidHz: Float { centroidFrames > 0 ? Float(centroidSum / Double(centroidFrames)) : 0 }
 
     /// Best of 24 keys by the mean of Pearson correlations with the Krumhansl and Temperley profiles.
-    /// Confidence is the best score minus the second best, so a flat or empty chroma gives about 0.
+    /// Confidence is the best Camelot number's score (its A or B, whichever is higher) minus the best other
+    /// number's, so a flat or empty chroma gives about 0 and a relative-key pair is not a tie.
     static func classify(chroma: [Float]) -> (tonic: Int, isMinor: Bool, confidence: Float) {
         guard chroma.count == 12, chroma.allSatisfy(\.isFinite) else { return (0, false, 0) }
         let mean = chroma.reduce(0, +) / 12
@@ -180,7 +213,8 @@ nonisolated final class MusicKeyDetector {
         }
         let majors = [unit(krumhanslMajor), unit(temperleyMajor)]
         let minors = [unit(krumhanslMinor), unit(temperleyMinor)]
-        var scores: [(score: Float, tonic: Int, minor: Bool)] = []
+        var best: (score: Float, tonic: Int, minor: Bool) = (-.infinity, 0, false)
+        var perNumber = [Float](repeating: -.infinity, count: 13)
         for tonic in 0..<12 {
             for (minor, profiles) in [(false, majors), (true, minors)] {
                 var total: Float = 0
@@ -189,10 +223,15 @@ nonisolated final class MusicKeyDetector {
                     for pc in 0..<12 { dot += centered[(tonic + pc) % 12] * profile[pc] }
                     total += dot / norm
                 }
-                scores.append((total / Float(profiles.count), tonic, minor))
+                let score = total / Float(profiles.count)
+                if score > best.score { best = (score, tonic, minor) }
+                let number = MusicKeyInfo.camelotNumber(tonic: tonic, isMinor: minor)
+                perNumber[number] = max(perNumber[number], score)
             }
         }
-        scores.sort { $0.score > $1.score }
-        return (scores[0].tonic, scores[0].minor, max(0, scores[0].score - scores[1].score))
+        // Relative major and minor share a number, so they do not compete; the neighbours on the wheel do.
+        let own = MusicKeyInfo.camelotNumber(tonic: best.tonic, isMinor: best.minor)
+        let other = (1...12).filter { $0 != own }.map { perNumber[$0] }.max() ?? 0
+        return (best.tonic, best.minor, max(0, best.score - other))
     }
 }

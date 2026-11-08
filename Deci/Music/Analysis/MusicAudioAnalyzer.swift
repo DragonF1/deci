@@ -495,7 +495,12 @@ nonisolated enum MusicFileAnalyzer {
         var measurement = analyzer.finish(exactDuration: exactDuration)
         guard !measurement.isSilent else { throw Failure.empty }
         // A grid failure never fails the analysis.
-        measurement.beatGrid = Task.isCancelled ? nil : beatGrid(from: decimator)
+        measurement.beatGrid = beatGrid(from: decimator)
+        // A cancelled run must not hand back a row without its grid: the caller would store it as fresh.
+        if Task.isCancelled {
+            reader.cancelReading()
+            throw Failure.cancelled
+        }
         measurement.keyInfo = keyInfo(from: keyDetector, measurement: measurement)
         let format = MusicAnalysis.Format(
             codec: codecString(asbd), itag: 0, durationMs: Int(((exactDuration ?? measurement.duration) * 1000).rounded())

@@ -69,15 +69,26 @@ struct MusicFileAnalyzerTests {
     @Test("A chord file gets a key and an energy in the measurement, and the entry stores them")
     func keyAndEnergyFromFile() async throws {
         let url = try await Self.file("p1-key-cmajor.m4a", rebuild: true) {
-            let chord = [261.63, 329.63, 392.0].map {
-                MusicTestSignal.sine(frequency: $0, amplitude: 0.1, sampleRate: 44_100, frames: 44_100 * 10, channels: 1)[0]
+            // I-IV-V-vi in C, 2.5 s a chord, three harmonics a note.
+            let chords: [[Double]] = [
+                [261.63, 329.63, 392.0], [174.61, 220.0, 261.63], [196.0, 246.94, 293.66], [220.0, 261.63, 329.63],
+            ]
+            let per = 44_100 * 5 / 2
+            var mixed = [Float](repeating: 0, count: per * chords.count)
+            for (slot, notes) in chords.enumerated() {
+                for note in notes {
+                    for (harmonic, gain) in [(1.0, 1.0), (2.0, 0.5), (3.0, 0.25)] {
+                        let step = 2 * Double.pi * note * harmonic / 44_100
+                        for index in 0..<per { mixed[slot * per + index] += Float(gain * 0.1 * sin(step * Double(index))) }
+                    }
+                }
             }
-            let mixed = (0..<chord[0].count).map { chord[0][$0] + chord[1][$0] + chord[2][$0] }
             return [mixed, mixed]
         }
         let result = try await MusicFileAnalyzer.analyze(file: url, exactDuration: 10)
         let info = try #require(result.measurement.keyInfo)
         #expect(info.tonic == 0 && !info.isMinor, "tonic \(info.tonic) minor \(info.isMinor)")
+        #expect(info.trustedCamelot == "8B", "confidence \(info.confidence)")
         #expect((0...1).contains(info.energy))
         let entry = MusicAnalysis(videoId: "abcDEF12345", result: result, source: .download)
         #expect(entry.keyInfoValue == info)
