@@ -1459,6 +1459,8 @@ final class MusicService {
             mixReplanPending = false
             mixRows = [:]
             mixAsked = []
+            stagedRadioTask?.cancel()
+            radioPlacedKey = nil
         }
         if !queue.isEmpty {
             switch mode {
@@ -1616,6 +1618,7 @@ final class MusicService {
         keep.formUnion(mixAvoid.map(\.videoId))
         if mixRows.count > keep.count { mixRows = mixRows.filter { keep.contains($0.key) } }
         if mixAsked.count > keep.count { mixAsked = mixAsked.intersection(keep) }
+        await placeStagedRadio()
     }
 
     private func mixSide(_ track: MusicTrack, row: MusicAnalysis) -> MusicTransitionSide {
@@ -1652,13 +1655,15 @@ final class MusicService {
     /// `reconcilePreload` sees it like any other edit.
     private func replanAfterSkip() async {
         guard isMixOn, let current = queue.current else { return }
+        // One read covers the fixed song and the window; what is fixed is decided after it, from the queue as it is then.
+        await readMixRows(for: Array(queue.unqueuedUpcoming.prefix(MusicMixOrderer.tailCount + 1)) + [current])
+        guard !Task.isCancelled, isMixOn, let current = queue.current else { return }
         let unqueued = queue.unqueuedUpcoming
-        let fixedCount = unqueued.first.map { $0.videoId == preloadOffered } == true ? 1 : 0
+        let first = unqueued.first?.videoId
+        let fixedCount = first != nil && (first == preloadOffered || first == prefetchAttempt) ? 1 : 0
         let window = Array(unqueued.dropFirst(fixedCount).prefix(MusicMixOrderer.tailCount))
         guard window.count > 1 else { return }
         let anchor = unqueued.prefix(fixedCount).last ?? current
-        await readMixRows(for: window + [anchor])
-        guard !Task.isCancelled, isMixOn else { return }
         func profile(_ track: MusicTrack) -> MusicMixProfile {
             MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
         }
@@ -1674,36 +1679,61 @@ final class MusicService {
     /// The first pick of a placed radio is analysed in the foreground once it plays, so the songs after it can be scored.
     @ObservationIgnored private var mixAnalyseCurrent = false
 
-    /// Reads the stored rows of the staged radio's first songs, so their placement can use what is already known. Nothing
-    /// is analysed for them: only the first pick is, once it plays.
-    private func readStagedRadioRows() {
-        let staged = Array(queue.autoplay.prefix(MusicMixWindow.size))
-        let previous = mixTask
-        mixTask = Task { [weak self] in
-            await previous?.value
-            await self?.readMixRows(for: staged)
-        }
+    /// Test hooks: the re-plan on its own, and a preload offer without a player in the window.
+    func replanAfterSkipForTesting() async { await replanAfterSkip() }
+    func offerPreloadForTesting(_ id: String?) { preloadOffered = id }
+
+    /// The staged radio was placed for this hand-over song and this order; a different one places it again.
+    @ObservationIgnored private var radioPlacedKey: String?
+    @ObservationIgnored private(set) var stagedRadioTask: Task<Void, Never>?
+
+    /// Reads the stored rows of the staged radio's first songs and places it. Its own task: a skip or a track change
+    /// that cancels `mixTask` leaves it alone, and a newer staging replaces it.
+    private func placeStagedRadioSoon() {
+        stagedRadioTask?.cancel()
+        stagedRadioTask = Task { [weak self] in await self?.placeStagedRadio() }
     }
 
-    /// The order a staged radio joins the queue in under Mix: the song that mixes best out of the playing one goes
-    /// first (a seeded random one when nothing is known), and each of the next songs of the window takes the slot that
-    /// costs its neighbours least; songs past the window keep the radio's order. Rows are those Mix has read so far.
-    private func placeAutoplay(_ fresh: [MusicTrack], after current: MusicTrack?) -> [MusicTrack] {
+    /// Under Mix the staged radio is laid out when it is staged, out of the song it hands over from (the queue's last
+    /// song): the song that mixes best first (a seeded random one when nothing is known), the known songs in the slots
+    /// that cost their neighbours least, and the songs with no row after them in the radio's order. It reorders
+    /// `queue.autoplay` itself, so the hand-over takes it as it is. Nothing is analysed for the radio: only the first
+    /// pick is, once it plays.
+    private func placeStagedRadio() async {
+        guard isMixOn, let anchor = queue.tracks.last, queue.autoplay.count > 1 else { return }
+        func key(_ staged: [MusicTrack]) -> String {
+            anchor.videoId + "|" + staged.prefix(MusicMixWindow.size).map(\.videoId).joined(separator: ",")
+        }
+        let staged = queue.autoplay
+        guard key(staged) != radioPlacedKey else { return }
+        await readMixRows(for: Array(staged.prefix(MusicMixWindow.size)) + [anchor])
+        guard !Task.isCancelled, isMixOn, queue.tracks.last?.videoId == anchor.videoId,
+              key(queue.autoplay) == key(staged) else { return }
+        let placed = Self.placement(of: staged, after: anchor, rows: mixRows, seed: shuffleGenerator.next())
+        queue.reorderAutoplay(placed.map(\.videoId))
+        radioPlacedKey = key(queue.autoplay)
+    }
+
+    static func placement(
+        of fresh: [MusicTrack], after anchor: MusicTrack, rows: [String: MusicAnalysis], seed: UInt64
+    ) -> [MusicTrack] {
         let head = Array(fresh.prefix(MusicMixWindow.size))
         let rest = Array(fresh.dropFirst(head.count))
         func profile(_ track: MusicTrack) -> MusicMixProfile {
-            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
+            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: rows[track.videoId])
         }
+        func isKnown(_ p: MusicMixProfile) -> Bool { p.bpm != nil || p.camelot != nil || p.energy != nil }
         let profiles = head.map(profile)
-        let anchor = current.map(profile)
-        var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
-        guard let pick = orderer.pickBest(from: profiles, after: anchor) else { return fresh }
+        let anchorProfile = profile(anchor)
+        var orderer = MusicMixOrderer(seed: seed)
+        guard let pick = orderer.pickBest(from: profiles, after: anchorProfile) else { return fresh }
         var window = [pick]
-        for candidate in profiles where candidate.videoId != pick.videoId {
-            window.insert(candidate, at: orderer.bestInsertion(of: candidate, into: window, after: anchor, minIndex: 1))
+        for candidate in profiles where candidate.videoId != pick.videoId && isKnown(candidate) {
+            window.insert(candidate, at: orderer.bestInsertion(of: candidate, into: window, after: anchorProfile, minIndex: 1))
         }
+        let unknown = profiles.filter { $0.videoId != pick.videoId && !isKnown($0) }
         let byId = Dictionary(head.map { ($0.videoId, $0) }) { first, _ in first }
-        return window.compactMap { byId[$0.videoId] } + rest
+        return (window + unknown).compactMap { byId[$0.videoId] } + rest
     }
 
     /// The playing song changed: in Mix, what Up next shows is worked out again for the songs after it.
@@ -1719,8 +1749,9 @@ final class MusicService {
         mixReplanPending = false
         mixTask?.cancel()
         mixTask = Task { [weak self] in
-            if order { await self?.orderMix(keeping: kept) }
+            // The re-plan after a skip comes first: it is the part the listener hears next.
             if replan { await self?.replanAfterSkip() }
+            if order { await self?.orderMix(keeping: kept) }
             if !order || replan { await self?.refreshMixPairs() }
             if analyseCurrent, let self, let current = self.queue.current {
                 await self.analyseMissingRows(in: [current])
@@ -1873,7 +1904,12 @@ final class MusicService {
         guard let track = movingQueue(advanceQueue) else {
             // The radio may still be loading: keep playing and move on when its page lands. Offline there is no radio and
             // the queue ends at its last downloaded song: Next leaves it playing.
-            if !awaitRadio(for: .skipped), !wrapAround(), !isOffline { stopPlayback() }
+            if awaitRadio(for: .skipped) {
+                // The skip waits for the radio to land: it counts as a skip all the same.
+                noteMixSkip(of: leaving)
+                return
+            }
+            if !wrapAround(), !isOffline { stopPlayback() }
             return
         }
         noteMixSkip(of: leaving)
@@ -2246,11 +2282,10 @@ final class MusicService {
         // at the last downloaded song.
         if isOffline { return queue.advance(where: canPlayNow) }
         if let track = queue.advance() { return track }
-        let mixing = isMixOn
-        guard playsAutoplay, queue.takeAutoplay(placing: mixing ? { [unowned self] fresh, current in
-            placeAutoplay(fresh, after: current)
-        } : nil) else { return nil }
-        if mixing { mixAnalyseCurrent = true }
+        // Under Mix the staged radio was already placed when it was staged (see `placeStagedRadio`), so Up next, the
+        // prefetch, the preload and this hand-over all name the same first song.
+        guard playsAutoplay, queue.takeAutoplay() else { return nil }
+        if isMixOn { mixAnalyseCurrent = true }
         return queue.advance()
     }
 
@@ -2583,7 +2618,7 @@ final class MusicService {
         if case .radio(let seed) = source, continuation == nil, queue.isPage, mixId == nil {
             // The radio that follows a page waits beside it until the page runs out.
             added = queue.stageAutoplay(page.tracks, continuation: page.continuation, seed: seed)
-            if added > 0, isMixOn { readStagedRadioRows() }
+            if added > 0, isMixOn { placeStagedRadioSoon() }
         } else {
             // The radio has answered: from here the queue is the radio's, even if it had nothing new to add. A mix's
             // answer joins the queue itself and the queue stays the mix's; a plain radio asked once the mix has run dry

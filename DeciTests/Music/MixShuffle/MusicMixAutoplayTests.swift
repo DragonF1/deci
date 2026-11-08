@@ -154,6 +154,66 @@ struct MusicServiceMixAutoplayTests {
         #expect(h.order.suffix(5).map { $0 } == Self.radio)
     }
 
+    @Test("the song the engine crossfades into is the song the queue hands over to (no cut, no skipped song)")
+    func handOverMatchesPreload() async {
+        for seed in [1, 2, 3, 4] as [UInt64] {
+            let h = MixShuffleHarness(seed: seed)
+            for id in Self.page + Self.radio { await h.backend.setStream(MusicSamples.stream(videoId: id, duration: 140)) }
+            // Songs short enough that no analysis is waited for. Nothing is known, so the first radio song is a seeded random pick.
+            for id in Self.page + ["c"] { await h.backend.setAutomix(afterVideoId: id, tracks: MusicSamples.tracks(id) + Self.radio.map { MusicSamples.track($0) }) }
+            let page = MusicSamples.page("VLPL1", tracks: Self.page.map { MusicSamples.track($0, title: "Song \($0)") }, audioPlaylistId: nil)
+            h.service.play(MusicSamples.track("a", title: "Song a"), in: page)
+            await h.settle()
+            h.engine.emit(.playingChanged(true))
+            h.service.setShuffleMode(.mix)
+            await h.settle()
+            for _ in 0..<(Self.page.count - 1) {
+                h.service.next()
+                await h.settle()
+            }
+            h.engine.emit(.playingChanged(true))
+            let staged = h.service.queue.autoplay.map(\.videoId)
+            #expect(staged.count == Self.radio.count)
+            h.engine.tick(125, playing: true)
+            await h.service.prefetchTask?.value
+            h.engine.tick(125.5, playing: true)
+            let offered = h.engine.preloads.last?.videoId
+            #expect(offered == staged.first)
+            let loads = h.engine.loads.count
+            let unloads = h.engine.unloadCount
+            h.engine.advance()
+            await h.settle()
+            #expect(h.service.queue.current?.videoId == offered)
+            #expect(h.engine.loads.count == loads)
+            #expect(h.engine.unloadCount == unloads)
+        }
+    }
+
+    @Test("a skip that cancels the Mix task does not cancel the placing of the staged radio")
+    func placingSurvivesASkip() async {
+        let h = MixShuffleHarness()
+        await start(h, mix: true)
+        // The radio was staged and placed with its rows: r3 mixes best out of the page's last song.
+        #expect(h.service.queue.autoplay.first?.videoId == "r3")
+        h.service.next()
+        await h.settle()
+        #expect(h.service.queue.autoplay.first?.videoId == "r3")
+    }
+
+    @Test("with no row the radio keeps its order behind a seeded first pick")
+    func unknownKeepsRadioOrder() {
+        let radio = (1...10).map { MusicSamples.track("r\($0)", title: "Song r\($0)") }
+        let anchor = MusicSamples.track("c", title: "Song c")
+        var firsts = Set<String>()
+        for seed in 1...8 as ClosedRange<UInt64> {
+            let placed = MusicService.placement(of: radio, after: anchor, rows: [:], seed: seed).map(\.videoId)
+            #expect(Set(placed) == Set(radio.map(\.videoId)))
+            firsts.insert(placed[0])
+            #expect(Array(placed.dropFirst()) == radio.map(\.videoId).filter { $0 != placed[0] })
+        }
+        #expect(firsts.count > 1)
+    }
+
     @Test("with no row anywhere the placement is seeded and repeatable")
     func unknownIsSeeded() async {
         var firsts: [String?] = []

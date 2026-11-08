@@ -65,6 +65,8 @@ struct MixShuffleHarness {
             let play = service.playTask
             let radio = service.radioTask
             let mix = service.mixTask
+            let staged = service.stagedRadioTask
+            await staged?.value
             await play?.value
             await radio?.value
             await mix?.value
@@ -85,6 +87,11 @@ struct MixShuffleHarness {
     }
 
     var order: [String] { service.queue.tracks.map(\.videoId) }
+
+    /// How many neighbours in `order` differ in tempo (the ids in `tempos`).
+    static func tempoJumps(_ order: [String]) -> Int {
+        zip(order, order.dropFirst()).filter { tempos[$0.0] != tempos[$0.1] }.count
+    }
 }
 
 @MainActor
@@ -139,6 +146,8 @@ struct MusicServiceMixShuffleTests {
         #expect(h.order.first == "a")
         #expect(Set(h.order) == Set(natural))
         #expect(h.order.count == natural.count)
+        // Rows are known, so Mix lays the songs out by tempo: fewer jumps than the alternating natural order.
+        #expect(MixShuffleHarness.tempoJumps(h.order) < MixShuffleHarness.tempoJumps(natural))
         h.service.setShuffleMode(.off)
         #expect(h.order == natural)
         #expect(!h.service.queue.isShuffled)
@@ -273,6 +282,7 @@ struct MusicServiceMixShuffleTests {
         #expect(h.order.first == "a")
         #expect(Set(h.order) == Set(MixShuffleHarness.ids))
         #expect(h.service.queue.isShuffled)
+        #expect(MixShuffleHarness.tempoJumps(h.order) < MixShuffleHarness.tempoJumps(MixShuffleHarness.ids))
     }
 
     @Test("resetting settings puts the button back to Off, Mix included")

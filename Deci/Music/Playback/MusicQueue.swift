@@ -416,6 +416,13 @@ struct MusicQueue: Equatable, Codable {
         return autoplay.count
     }
 
+    /// Lays the staged radio out in the order of `ids`, which must name exactly its songs; anything else is ignored.
+    mutating func reorderAutoplay(_ ids: [String]) {
+        guard ids.count == autoplay.count, Set(ids) == Set(autoplay.map(\.videoId)) else { return }
+        let byId = Dictionary(autoplay.map { ($0.videoId, $0) }) { first, _ in first }
+        autoplay = ids.compactMap { byId[$0] }
+    }
+
     /// The staged radio joins the end of the queue and the queue carries on as that radio. Shuffle never mixes it into
     /// the page. False when nothing is staged.
     ///

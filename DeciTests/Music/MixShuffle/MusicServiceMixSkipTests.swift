@@ -110,4 +110,51 @@ struct MusicServiceMixSkipTests {
         await h.settle()
         #expect(upcoming(h) == Array(before.dropFirst()))
     }
+
+    /// Tempo class of a song: 80, 120 or 160 by index, so a natural run is a clash at every step.
+    private static func tempoClass(_ id: String) -> Int { (Self.ids.firstIndex(of: id) ?? 0) % 3 }
+
+    private static func clashes(_ chain: [String]) -> Int {
+        zip(chain, chain.dropFirst()).filter { tempoClass($0.0) != tempoClass($0.1) }.count
+    }
+
+    @Test("after a skip the five songs are laid out to mix better out of the new song than they were")
+    func skipImprovesTheFive() async throws {
+        // Rows only exist after Mix ordered the queue, so that order knows nothing about tempo.
+        let h = MixShuffleHarness(seed: 3)
+        await h.startQueue(Self.ids)
+        h.service.setShuffleMode(.mix)
+        await h.settle()
+        for (index, id) in Self.ids.enumerated() {
+            await h.reader.set(MixRows.row(id, bpm: [80, 120, 160][index % 3], tonic: 0, minor: false))
+        }
+        let before = upcoming(h)
+        let anchor = before[0]
+        let oldChain = [anchor] + Array(before[1...5])
+        try #require(Self.clashes(oldChain) >= 3)
+        h.service.next()
+        await h.settle()
+        let after = upcoming(h)
+        let newChain = [anchor] + Array(after.prefix(5))
+        #expect(Set(newChain) == Set(oldChain))
+        #expect(Self.clashes(newChain) < Self.clashes(oldChain))
+        #expect(Array(after.dropFirst(5)) == Array(before.dropFirst(6)))
+    }
+
+    @Test("a next song that is already offered for preload stays first when the five are re-planned")
+    func preloadedNextStaysFixed() async throws {
+        let h = MixShuffleHarness(seed: 3)
+        await h.startQueue(Self.ids)
+        h.service.setShuffleMode(.mix)
+        await h.settle()
+        for (index, id) in Self.ids.enumerated() {
+            await h.reader.set(MixRows.row(id, bpm: [80, 120, 160][index % 3], tonic: 0, minor: false))
+        }
+        let first = try #require(upcoming(h).first)
+        let others = Set(upcoming(h).dropFirst().prefix(5))
+        h.service.offerPreloadForTesting(first)
+        await h.service.replanAfterSkipForTesting()
+        #expect(upcoming(h).first == first)
+        #expect(Set(upcoming(h).dropFirst().prefix(5)) == others)
+    }
 }
