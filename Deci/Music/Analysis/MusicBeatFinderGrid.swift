@@ -30,6 +30,13 @@ nonisolated extension MusicBeatFinder {
     static let attackStartFraction: Float = 0.35
     /// A pause this long in the rise ends the attack walk.
     static let attackGapSec = 0.008
+    /// Fractions of a period at which the final grid is re-scored to learn what the same onsets give by chance.
+    static let chanceOffsets = [0.25, 0.375, 0.5, 0.625, 0.75]
+    /// The on-phase hit rate must beat the best off-phase rate by this much. Measured on the 12 real songs (held-out beats):
+    /// the grids the planner trusts lead by 0.25 (the least) to 0.62; the grids with no beat-aligned bass lead by 0.1 or
+    /// less (or trail: -0.64, a half-beat phase). Synthetic dense bass (random 808 onsets, noise, a 16th note stream against a
+    /// quarter note grid) also leads by 0.1 or less. 0.2 sits between the two groups.
+    static let chanceMargin = 0.2
 
     /// What `refine` learned about one song.
     struct BassRefinement {
@@ -37,6 +44,11 @@ nonisolated extension MusicBeatFinder {
         var period: Double
         var confidence: Float
         var drift: Float
+        /// Hit rate of the final grid, and the best hit rate of the same grid shifted to `chanceOffsets`, both on the
+        /// held-out (odd) beats. The grid is believed only when the first beats the second by `chanceMargin`.
+        var onRate: Float = 0
+        var offRate: Float = 0
+        var beatsChance: Bool { onRate - offRate >= Float(MusicBeatFinder.chanceMargin) }
     }
 
     /// The bass band of a song: rectified, smoothed envelope and its rising edge, both at the decimated rate.
@@ -58,7 +70,8 @@ nonisolated extension MusicBeatFinder {
         guard !Task.isCancelled else { return (anchor, 0) }
         let last = Int(floor((Double(decimated.count) / rate - anchor) / period))
         let first = Int(ceil(-anchor / period))
-        guard first <= last, let refined = refine(band: band, period: period, anchor: anchor, beats: first...last) else {
+        guard first <= last, let refined = refine(band: band, period: period, anchor: anchor, beats: first...last),
+              refined.beatsChance else {
             return (anchor, 0)
         }
         return (refined.anchor, refined.confidence)
@@ -74,7 +87,7 @@ nonisolated extension MusicBeatFinder {
         guard first < last else { return nil }
         let band = bassBand(decimated, rate: rate)
         guard !Task.isCancelled else { return nil }
-        let refined = refine(band: band, period: fit.period, anchor: fit.start, beats: first...last)
+        let refined = refine(band: band, period: fit.period, anchor: fit.start, beats: first...last).flatMap { $0.beatsChance ? $0 : nil }
         let anchor = refined?.anchor ?? fit.start
         let period = refined?.period ?? fit.period
         let duration = Double(decimated.count) / rate
@@ -170,17 +183,22 @@ nonisolated extension MusicBeatFinder {
         for index in lo...hi where band.flux[index] > band.flux[peak] { peak = index }
         let strength = band.flux[peak]
         guard strength > 0 else { return nil }
-        // Walk back to the earliest point still a quarter as steep. A rectified low note rises in humps with flat
-        // troughs between them, so a gap shorter than `attackGapSec` does not end the attack.
-        var start = peak
-        let floor = max(0, centre - 2 * reach)
+        let start = attackStart(peak: peak, in: band, limit: max(0, centre - 2 * reach))
+        return (Double(start) / band.rate - bassOnsetBiasSec, strength)
+    }
+
+    /// Walks back from a rise's `peak` to the earliest point (not before `limit`) still `attackStartFraction` as steep. A
+    /// rectified low note rises in humps with flat troughs between them, so a gap shorter than `attackGapSec` does not
+    /// end the attack.
+    static func attackStart(peak: Int, in band: Band, limit: Int) -> Int {
+        let strength = band.flux[peak]
         let gap = Int((attackGapSec * band.rate).rounded())
-        var index = peak
-        while index > floor, start - index <= gap {
+        var start = peak, index = peak
+        while index > limit, start - index <= gap {
             index -= 1
             if band.flux[index] > attackStartFraction * strength { start = index }
         }
-        return (Double(start) / band.rate - bassOnsetBiasSec, strength)
+        return start
     }
 
     /// One bass attack found without any prediction: its start time (as `onset(near:)` defines it) and the rise's strength.
@@ -215,20 +233,15 @@ nonisolated extension MusicBeatFinder {
         guard !peaks.isEmpty else { return [] }
         let sorted = peaks.map { band.flux[$0] }.sorted()
         let floorStrength = Float(onsetFloorFraction) * sorted[sorted.count * 3 / 4]
-        let gap = Int((attackGapSec * band.rate).rounded())
         var result: [BassOnset] = []
         for peak in peaks where band.flux[peak] >= floorStrength {
-            let strength = band.flux[peak]
-            var start = peak
-            var index = peak
-            let floor = max(0, peak - Int((0.12 * band.rate).rounded()))
-            while index > floor, start - index <= gap {
-                index -= 1
-                if band.flux[index] > attackStartFraction * strength { start = index }
-            }
-            result.append(BassOnset(time: Double(start) / band.rate - bassOnsetBiasSec, strength: strength, peakTime: Double(peak) / band.rate))
+            let start = attackStart(peak: peak, in: band, limit: max(0, peak - Int((0.12 * band.rate).rounded())))
+            result.append(BassOnset(
+                time: Double(start) / band.rate - bassOnsetBiasSec, strength: band.flux[peak], peakTime: Double(peak) / band.rate
+            ))
         }
-        return result
+        // Peak order is not start order: a quiet peak can walk back past a louder earlier one. The cursors below need time order.
+        return result.sorted { $0.time < $1.time }
     }
 
     static func refine(band: Band, period: Double, anchor anchor0: Double, beats: ClosedRange<Int>) -> BassRefinement? {
@@ -261,35 +274,32 @@ nonisolated extension MusicBeatFinder {
                 if let held = bestFor[k], held.strength >= onset.strength { continue }
                 bestFor[k] = (onset.time, onset.strength)
             }
-            for (k, hit) in bestFor { points.append((Double(k), hit.time)) }
+            for k in bestFor.keys.sorted() { points.append((Double(k), bestFor[k]!.time)) }
             if points.count >= 8, let fit = lineFit(points), abs(fit.slope / period - 1) < 0.03 {
                 line = (fit.intercept, fit.slope)
             }
         }
 
         // A least squares line follows a lopsided cloud of attacks (a bass note trailing its kick) away from the dense
-        // core, so the anchor takes the shift of up to one tolerance that puts the most beats on an attack.
-        func hitCount(_ anchor: Double) -> Int {
+        // core, so the anchor takes the shift of up to one tolerance that puts the most beats on an attack. The shift is
+        // chosen on the even beats only and the confidence is scored on the odd ones (held out), so the score is not
+        // fitted on the beats it is measured on.
+        func isOdd(_ k: Int) -> Bool { k & 1 == 1 }
+        func hitCount(_ anchor: Double, odd: Bool) -> Int {
             var count = 0, cursor = 0
-            for k in beats {
+            for k in beats where isOdd(k) == odd {
                 let predicted = anchor + Double(k) * line.period
                 while cursor < onsets.count, onsets[cursor].time < predicted - hitToleranceSec { cursor += 1 }
                 if cursor < onsets.count, onsets[cursor].time <= predicted + hitToleranceSec { count += 1 }
             }
             return count
         }
-        var bestShifts: [Double] = []
-        var bestCount = -1
-        for step in -10...10 {
-            let shift = Double(step) * 0.001
-            let count = hitCount(line.anchor + shift)
-            if count > bestCount { bestCount = count; bestShifts = [shift] } else if count == bestCount { bestShifts.append(shift) }
-        }
-        line.anchor += bestShifts.reduce(0, +) / Double(bestShifts.count)
+        let shiftCounts = (-10...10).map { hitCount(line.anchor + Double($0) * 0.001, odd: false) }
+        line.anchor += Double(bestShiftIndex(counts: shiftCounts) - 10) * 0.001
 
         // The strongest attack within the old search window of each beat; a hit when it sits within tolerance.
         var after: [(Int, Double)] = []
-        var hits = 0
+        var oddHits = 0
         var cursor = 0
         for k in beats {
             let predicted = line.anchor + Double(k) * line.period
@@ -302,7 +312,7 @@ nonisolated extension MusicBeatFinder {
                 probe += 1
             }
             guard let best else { continue }
-                // The closest attack to the beat is its hit when it is within tolerance, else the strongest in reach.
+            // The closest attack to the beat is its hit when it is within tolerance, else the strongest in reach.
             var nearest = best
             probe = cursor
             while probe < onsets.count, onsets[probe].time <= predicted + refineWindowSec {
@@ -311,7 +321,7 @@ nonisolated extension MusicBeatFinder {
             }
             let hit = abs(nearest.time - predicted) <= hitToleranceSec ? nearest : best
             after.append((k, hit.time - predicted))
-            if abs(hit.time - predicted) <= hitToleranceSec { hits += 1 }
+            if isOdd(k), abs(hit.time - predicted) <= hitToleranceSec { oddHits += 1 }
         }
         guard after.count >= 4 else { return nil }
         let middle = Double(beats.lowerBound + beats.upperBound) / 2
@@ -320,9 +330,32 @@ nonisolated extension MusicBeatFinder {
         if early.count >= 4, late.count >= 4 {
             drift = Float((median(late) - median(early)) / max(1, Double(total) / 2))
         }
+        // Chance level: the same onsets scored against the grid moved off the beat, odd beats only.
+        let oddTotal = max(1, beats.filter(isOdd).count)
+        var offRate = 0.0
+        for fraction in chanceOffsets {
+            offRate = max(offRate, Double(hitCount(line.anchor + fraction * line.period, odd: true)) / Double(oddTotal))
+        }
+        let onRate = min(1, Float(oddHits) / Float(oddTotal))
         return BassRefinement(
-            anchor: line.anchor, period: line.period, confidence: min(1, Float(hits) / Float(total)), drift: drift
+            anchor: line.anchor, period: line.period, confidence: onRate, drift: drift,
+            onRate: onRate, offRate: Float(offRate)
         )
+    }
+
+    /// Index of the middle of the longest run of consecutive best values (the first such run on a tie).
+    /// Runs that wrap past the end are not joined.
+    static func bestShiftIndex(counts: [Int]) -> Int {
+        guard let best = counts.max() else { return 0 }
+        var bestStart = 0, bestLength = 0, start = 0
+        while start < counts.count {
+            guard counts[start] == best else { start += 1; continue }
+            var end = start
+            while end + 1 < counts.count, counts[end + 1] == best { end += 1 }
+            if end - start + 1 > bestLength { bestLength = end - start + 1; bestStart = start }
+            start = end + 1
+        }
+        return bestStart + (bestLength - 1) / 2
     }
 
     /// The offset (in -period/2 ..< period/2) with the most weight within `hitToleranceSec` either side, as the weighted
@@ -338,12 +371,13 @@ nonisolated extension MusicBeatFinder {
             weights[((index % bins) + bins) % bins] += weight
         }
         let reach = Int((hitToleranceSec / binWidth).rounded())
-        var bestIndex = 0, bestScore = -1.0
+        var scores = [Double](repeating: 0, count: bins)
         for index in 0..<bins {
-            var score = 0.0
-            for d in -reach...reach { score += weights[((index + d) % bins + bins) % bins] }
-            if score > bestScore { bestScore = score; bestIndex = index }
+            for d in -reach...reach { scores[index] += weights[((index + d) % bins + bins) % bins] }
         }
+        // A flat top (a cloud wider than the window) is centred: the middle of its longest run of scores within 5% of the best.
+        let bestScore = scores.max() ?? 0
+        let bestIndex = bestShiftIndex(counts: scores.map { $0 >= 0.95 * bestScore ? 1 : 0 })
         let total = weights.reduce(0, +)
         let even = total * Double(2 * reach + 1) * binWidth / period
         guard total > 0, bestScore >= phasePeakednessMin * even else { return nil }

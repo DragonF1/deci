@@ -32,7 +32,6 @@ struct MusicBeatPhaseTests {
         let start = offset + fraction * period
         let result = MusicBeatFinder.refineOnBass(decimated: audio, rate: rate, period: period, anchor: start)
         let error = Self.phaseError(anchor: result.anchor, period: period, truth: offset)
-        print(String(format: "RELOCK fraction %.2f error %.2f ms conf %.2f", fraction, error * 1000, result.confidence))
         #expect(abs(error) <= 0.005, "error \(error * 1000) ms")
         #expect(result.confidence >= 0.9, "confidence \(result.confidence)")
     }
@@ -73,7 +72,6 @@ struct MusicBeatPhaseTests {
         }
         let sorted = errors.map(abs).sorted()
         let median = sorted[sorted.count / 2], worst = sorted[min(sorted.count - 1, Int(0.95 * Double(sorted.count)))]
-        print(String(format: "ONSETERR %.0f bpm n=%d median=%.2fms p95=%.2fms", bpm, errors.count, median * 1000, worst * 1000))
         #expect(errors.count == truth.count)
         #expect(median <= 0.003 && worst <= 0.003, "median \(median * 1000) p95 \(worst * 1000) ms")
     }

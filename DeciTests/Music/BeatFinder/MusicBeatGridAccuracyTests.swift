@@ -149,17 +149,14 @@ struct MusicBeatGridAccuracyTests {
         #expect(grid.downbeatPhase == nil)
     }
 
-    @Test("noise gives no trusted grid: never the planner's confidence gate")
+    @Test("noise gives no grid, or one far below the planner's confidence gate")
     func noise() {
-        // The phase is searched over the whole beat period, so dense random onsets reach a chance level of about a third
-        // of the beats; the planner gate (0.5) is what keeps them out.
         let rate = 44_100.0
-        for seed in [99, 7, 12345, 424_242, 31] as [UInt32] {
+        for seed in (1...20).map({ UInt32($0) * 7_919 }) {
             let samples = BeatSynth.noiseTemplate(sampleRate: rate, ms: 30_000, decay: 0, seed: seed).map { $0 * 0.3 }
             let track = BeatSynth.Track(samples: samples, sampleRate: rate, beats: [])
             let grid = Self.grid(track)
-            print("NOISEGRID seed \(seed) \(String(describing: grid.map { ($0.bpm, $0.beatConfidence) }))")
-            #expect(grid == nil || grid!.beatConfidence < 0.4, "seed \(seed) grid \(String(describing: grid))")
+            #expect(grid == nil || grid!.beatConfidence < 0.3, "seed \(seed) grid \(String(describing: grid))")
         }
     }
 
