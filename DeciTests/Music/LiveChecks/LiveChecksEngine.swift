@@ -124,7 +124,7 @@ extension LiveChecks {
         }
         let failed = runs.filter { !$0.crossfaded }
         if !failed.isEmpty { ok10 = false }
-        lines10.insert("\(runs.filter(\.crossfaded).count) transitions measured of \(runs.count) attempted; peaks are measured before any zeroing (consumePeak is post gain, the capture is the device signal); dropout = silence >= 30 ms inside signal", at: 0)
+        lines10.insert("\(runs.filter(\.crossfaded).count) transitions measured of \(runs.count) attempted; captured at the DSP chain (each lease's output after the chain and its fade, before the zeroing that keeps the test silent), started only after the seek settled; dropout = silence >= 30 ms with signal 100 ms either side", at: 0)
         finish(10, "No crackle proxy during transitions", pass: ok10, lines10 + failed.map { "not measured: " + describe($0) })
     }
 
@@ -181,6 +181,8 @@ extension LiveChecks {
         var planErrors: [Double] = []
         var inDown = 0, outDown = 0, uncovered = 0, extrapolated = 0
         var lines7: [String] = []
+        var inRange: [String] = []
+        var inRangeIn = 0, inRangeOut = 0, inRangeCount = 0
         for p in planned {
             switch p.plan.mode {
             case .beat: beat += 1
@@ -196,6 +198,12 @@ extension LiveChecks {
                 continue
             }
             if na.extrapolated || nb.extrapolated { extrapolated += 1 }
+            if !na.extrapolated, !nb.extrapolated {
+                inRangeCount += 1
+                if nb.inBar == 1, abs(nb.delta) < 0.06 { inRangeIn += 1 }
+                if na.inBar == 1, abs(na.delta) < 0.06 { inRangeOut += 1 }
+                inRange.append("\(p.a.index) > \(p.b.index): mix-out on truth beat \(na.inBar) (\(liveF(na.delta * 1000, 0)) ms), mix-in on truth beat \(nb.inBar) (\(liveF(nb.delta * 1000, 0)) ms), planner bar positions: out bar of grid A, in bar of grid B, overlap \(p.plan.overlapBars) bars")
+            }
             let err = LiveScan.wrap(na.delta - nb.delta / rate, period: na.period) * 1000
             planErrors.append(err)
             let inIsDown = nb.inBar == 1 && abs(nb.delta) < 0.06
@@ -227,6 +235,31 @@ extension LiveChecks {
         let downShare = measured == 0 ? 0 : Double(inDown) / Double(measured)
         let enginePass = engineMedians.allSatisfy { $0 <= 60 }
         let pass7 = measured >= 1 && planMedian <= 40 && downShare >= 0.6 && enginePass
+        let alignment = LiveAlignment.load()
+        var db: [LiveDownbeatResult] = []
+        var skippedAmbiguous = 0, skipped68 = 0, noPhase = 0, noOverlap = 0
+        for song in world.songs {
+            guard let a = alignment[song.key] else { continue }
+            if !a.unambiguous { skippedAmbiguous += 1; continue }
+            if a.timeSignature != "4|4" { skipped68 += 1; continue }
+            guard let grid = world.rows[song.videoId]?.usableGrid, grid.downbeatPhase != nil else { noPhase += 1; continue }
+            if let r = LiveDownbeats.compare(song: song, grid: grid) { db.append(r) } else { noOverlap += 1 }
+        }
+        let dbCompared = db.reduce(0) { $0 + $1.compared }
+        let dbMatched = db.reduce(0) { $0 + $1.matched }
+        let shifts = (0..<4).map { k in db.reduce(0) { $0 + $1.shiftCounts[k] } }
+        let songMatches = db.filter { Double($0.matched) / Double($0.compared) >= 0.5 }.count
+        let dbErrors = db.flatMap(\.timeErrorsMs).map(abs)
+        let perSong = db.map { r -> String in
+            let best = r.shiftCounts.enumerated().max { $0.element < $1.element }!
+            return "song \(r.songIndex): \(r.matched) of \(r.compared) truth downbeats match, dominant shift \(best.offset) beat(s) (\(best.element) of \(r.compared)), downbeat vote share \(liveF(Double(r.downbeatConfidence), 2))"
+        }
+        let triage7 = [
+            "TRIAGE (truth artifacts removed): songs with an unambiguous alignment and a beat_this downbeat phase: \(db.count) (left out: \(skippedAmbiguous) ambiguous alias, \(skipped68) 6/8, \(noPhase) without a usable grid or phase, \(noOverlap) with no truth downbeat on a grid beat)",
+            "beat_this downbeat vs truth downbeat, only inside the annotated range: \(dbMatched) of \(dbCompared) truth downbeats are grid downbeats (\(liveF(dbCompared == 0 ? 0 : Double(dbMatched) / Double(dbCompared) * 100, 1)) %); \(songMatches) of \(db.count) songs match at least half; time error median \(liveF(LiveScan.median(dbErrors), 1)) ms, max \(liveF(dbErrors.max() ?? .nan, 1)) ms",
+            "grid downbeat sits N beats off the truth downbeat (mod 4), counted per truth downbeat: N=0 \(shifts[0]), N=1 \(shifts[1]), N=2 \(shifts[2]), N=3 \(shifts[3])",
+            "planner beat plans with both mix points inside the annotated range (nothing extrapolated): \(inRangeCount) of \(beat); incoming on a truth downbeat \(inRangeIn), outgoing on a truth downbeat \(inRangeOut)",
+        ] + inRange + perSong
         finish(7, "Beat mixes land on the bar", pass: pass7, [
             "planned pairs: \(planned.count) (five Mix chains from check 2, seeds 11 23 37 51 77): \(beat) beat plans, \(smart) smart plans, \(other) other",
             "refusal reasons of the non-beat plans: \(reasons.sorted { $0.key < $1.key }.map { "\($0.key) x\($0.value)" }.joined(separator: ", "))",
@@ -234,7 +267,7 @@ extension LiveChecks {
             "plan phase error vs truth beats: median \(liveF(planMedian, 1)) ms, max \(liveF(planMax, 1)) ms over \(measured) of \(beat) beat plans (\(extrapolated) use a truth grid carried on past the last annotated beat, at most 15 s; \(uncovered) excluded: mix point farther out)",
             "incoming song enters on a truth downbeat: \(inDown) of \(measured); outgoing leaves on a downbeat: \(outDown) of \(measured) (thresholds: median <= 40 ms, downbeat share >= 60%, real overlaps median <= 60 ms)",
             "real engine overlaps measured as beat mixes: \(realBeat.count); \(engineMedians.isEmpty ? "none, so only the planned alignment is measured" : "see below")",
-        ] + engineLines + lines7)
+        ] + engineLines + lines7 + triage7)
 
         // Check 8
         let budget = MusicVocalGuard.budgetSec

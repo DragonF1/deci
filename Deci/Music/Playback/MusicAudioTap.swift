@@ -317,8 +317,8 @@ final class MusicTapContext: @unchecked Sendable {
     }
 
     /// Real-time safe: no allocation, locks or logging.
-    func render(_ list: UnsafeMutableAudioBufferListPointer, frames: Int) {
-        lease?.render(list, frames: frames)
+    func render(_ list: UnsafeMutableAudioBufferListPointer, frames: Int, sourceStart: Double = .nan) {
+        lease?.render(list, frames: frames, sourceStart: sourceStart)
     }
 }
 
@@ -342,11 +342,12 @@ private let tapUnprepare: MTAudioProcessingTapUnprepareCallback = { tap in
 }
 
 private let tapProcess: MTAudioProcessingTapProcessCallback = { tap, numberFrames, _, bufferListInOut, numberFramesOut, flagsOut in
-    let status = MTAudioProcessingTapGetSourceAudio(tap, numberFrames, bufferListInOut, flagsOut, nil, numberFramesOut)
+    var range = CMTimeRange()
+    let status = MTAudioProcessingTapGetSourceAudio(tap, numberFrames, bufferListInOut, flagsOut, &range, numberFramesOut)
     guard status == noErr else {
         numberFramesOut.pointee = 0
         return
     }
     let context = Unmanaged<MusicTapContext>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
-    context.render(UnsafeMutableAudioBufferListPointer(bufferListInOut), frames: Int(numberFramesOut.pointee))
+    context.render(UnsafeMutableAudioBufferListPointer(bufferListInOut), frames: Int(numberFramesOut.pointee), sourceStart: range.start.seconds)
 }

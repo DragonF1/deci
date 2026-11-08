@@ -1064,10 +1064,26 @@ final class MusicRenderLease: @unchecked Sendable {
         scratch.deallocate()
     }
 
-    /// Processes `frames` frames of the buffer list in place. Real-time safe.
-    func render(_ list: UnsafeMutableAudioBufferListPointer, frames: Int) {
+    /// Processes `frames` frames of the buffer list in place. Real-time safe. `sourceStart` is the item time of the
+    /// first frame (NaN when unknown); only the DEBUG recorder reads it.
+    func render(_ list: UnsafeMutableAudioBufferListPointer, frames: Int, sourceStart: Double = .nan) {
         chain.render(list, frames: frames, lease: self)
+        #if DEBUG
+        if let recorder = MusicRenderRecorder.current {
+            recorder.record(list, frames: frames, token: token, sourceStart: sourceStart, rate: dsp.sampleRate)
+        }
+        if MusicRenderRecorder.mutesOutput {
+            for index in 0..<list.count {
+                if let data = list[index].mData { memset(data, 0, Int(list[index].mDataByteSize)) }
+            }
+        }
+        #endif
     }
+
+    #if DEBUG
+    /// This lease's identity in a `MusicRenderRecorder` record.
+    var debugToken: Int { token }
+    #endif
 
     /// Gives up the chain: until another lease is created or claims it, every render is silence.
     func release() {
@@ -1301,3 +1317,80 @@ final class MusicRenderLease: @unchecked Sendable {
         offset = state
     }
 }
+
+#if DEBUG
+/// Test seam: records what every lease rendered (a mono mix of the output after the whole chain, with the fade, before
+/// the device), one record per render call with the item time of its first frame and the host time it ran. Off unless a
+/// test installs one. Storage is allocated up front, so a render call never allocates.
+final class MusicRenderRecorder: @unchecked Sendable {
+    struct Record: Sendable {
+        var token: Int
+        var sourceStart: Double
+        var hostNanos: UInt64
+        var frames: Int
+        var sampleOffset: Int
+        var sampleRate: Double
+    }
+
+    nonisolated(unsafe) static var current: MusicRenderRecorder?
+    /// Zeroes every lease's output after it was recorded, so a test hears nothing from the real engine.
+    nonisolated(unsafe) static var mutesOutput = false
+
+    private let samples: UnsafeMutablePointer<Float>
+    private let sampleCapacity: Int
+    private let records: UnsafeMutablePointer<Record>
+    private let recordCapacity: Int
+    private let sampleCount = Atomic<Int>(0)
+    private let recordCount = Atomic<Int>(0)
+
+    init(seconds: Double = 600, sampleRate: Double = 48_000, maxRecords: Int = 400_000) {
+        sampleCapacity = Int(seconds * sampleRate)
+        samples = .allocate(capacity: sampleCapacity)
+        samples.initialize(repeating: 0, count: sampleCapacity)
+        recordCapacity = maxRecords
+        records = .allocate(capacity: maxRecords)
+    }
+
+    deinit {
+        samples.deallocate()
+        records.deallocate()
+    }
+
+    /// Real-time safe: the render thread of one tap writes at a time per call, but two decks render on two threads, so the
+    /// space is claimed with an atomic add.
+    fileprivate func record(_ list: UnsafeMutableAudioBufferListPointer, frames: Int, token: Int, sourceStart: Double, rate: Double) {
+        guard frames > 0, list.count > 0 else { return }
+        let offset = sampleCount.wrappingAdd(frames, ordering: .relaxed).oldValue
+        let index = recordCount.wrappingAdd(1, ordering: .relaxed).oldValue
+        guard offset + frames <= sampleCapacity, index < recordCapacity else { return }
+        let out = samples + offset
+        if list.count == 1 {
+            let buffer = list[0]
+            let channels = max(1, Int(buffer.mNumberChannels))
+            guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else { return }
+            let available = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * channels)
+            let count = min(frames, available)
+            for frame in 0..<count {
+                var sum: Float = 0
+                for channel in 0..<channels { sum += data[frame * channels + channel] }
+                out[frame] = sum / Float(channels)
+            }
+        } else if let left = list[0].mData?.assumingMemoryBound(to: Float.self),
+                  let right = list[1].mData?.assumingMemoryBound(to: Float.self) {
+            let count = min(frames, Int(list[0].mDataByteSize) / MemoryLayout<Float>.size, Int(list[1].mDataByteSize) / MemoryLayout<Float>.size)
+            for frame in 0..<count { out[frame] = (left[frame] + right[frame]) * 0.5 }
+        }
+        records[index] = Record(
+            token: token, sourceStart: sourceStart, hostNanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW),
+            frames: frames, sampleOffset: offset, sampleRate: rate
+        )
+    }
+
+    /// Everything recorded so far (call after the audio stopped, or accept a torn last record).
+    func snapshot() -> (records: [Record], samples: [Float]) {
+        let n = min(recordCount.load(ordering: .acquiring), recordCapacity)
+        let m = min(sampleCount.load(ordering: .acquiring), sampleCapacity)
+        return (Array(UnsafeBufferPointer(start: records, count: n)), Array(UnsafeBufferPointer(start: samples, count: m)))
+    }
+}
+#endif

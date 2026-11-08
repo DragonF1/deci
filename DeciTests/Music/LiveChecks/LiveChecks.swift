@@ -44,11 +44,12 @@ final class LiveChecks {
         if !engineOnly { await check4(); await check6(); await check9() }
         audio = ProcessInfo.processInfo.environment["DECI_LIVE_ONLY"] == "noaudio" ? nil : await LiveAudio.shared(world: world)
         if let audio {
-            LiveReport.note("Silent capture proven: device \(audio.deviceName), probe peak \(liveF(Double(audio.probePeak), 5)) at -60 dB, then unity gain into a muted process tap.")
+            LiveReport.note("Chain-level capture proven: \(audio.deviceName), probe peak \(liveF(Double(audio.probePeak), 3)) at unity gain.")
         } else {
-            LiveReport.note("Silent capture NOT proven (\(LiveAudio.failure ?? "unknown")): the engine checks did not run.")
+            LiveReport.note("Chain-level capture NOT proven (\(LiveAudio.failure ?? "unknown")): the engine checks did not run.")
         }
         await engineRuns()
+        LiveAudio.end()
         planningChecks()
         return results
     }
