@@ -179,7 +179,7 @@ struct MusicFavoriteControlsTests {
     @Test("the toggles carry the state they are in")
     func menuToggles() {
         let entries = menu(shuffle: true, autoplay: false, crossfade: true).entries
-        #expect(entries[0] == .toggle(.shuffle, isOn: true))
+        #expect(entries[0] == .shuffle(selected: .shuffle))
         #expect(entries[2] == .toggle(.autoplay, isOn: false))
         #expect(entries[3] == .toggle(.crossfade, isOn: true))
     }
@@ -226,6 +226,7 @@ extension MusicFavoriteControlsTests {
         let covered: [MusicFavoriteControl] = entries.compactMap {
             switch $0 {
             case .toggle(let control, _): control
+            case .shuffle: .shuffle
             case .loop: .loop
             default: nil
             }
@@ -271,8 +272,12 @@ extension MusicFavoriteControlsTests {
             refreshOnCreate: false
         )
         service.perform(.shuffle)
+        #expect(service.shuffleMode == .shuffle)
+        service.perform(.shuffle)
+        #expect(service.shuffleMode == .mix)
         #expect(service.isShuffleOn)
         service.perform(.shuffle)
+        #expect(service.shuffleMode == .off)
         #expect(service.isShuffleOn == false)
         service.perform(.loop)
         #expect(service.loopMode == .playlist)
