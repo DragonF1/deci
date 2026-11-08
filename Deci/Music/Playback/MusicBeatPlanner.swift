@@ -100,23 +100,27 @@ enum MusicBeatPlanner {
                 else { break }
                 bars = 4
             }
+            // The 4 bar tier failing for a non-vocal reason keeps the vocal clash: the longer lengths were the ones refused.
+            let guardTier = index >= lengths.count
             let overlap = Double(bars) * barSec
             guard overlap <= maxOverlapSec,
                   let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd),
                   let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else {
-                otherSkipped = true
+                if !guardTier { otherSkipped = true }
                 continue
             }
             if let earliest = inputs.earliestMixOutSec, mixOut < earliest {
-                late = true
-                otherSkipped = true
+                if !guardTier {
+                    late = true
+                    otherSkipped = true
+                }
                 continue
             }
             // The incoming song advances `rate` item seconds per outgoing second.
             let consumed = overlap * tempo.rate
             guard bEnd - (mixIn + consumed) >= minIncomingRemainingSec,
                   mixIn + consumed <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else {
-                otherSkipped = true
+                if !guardTier { otherSkipped = true }
                 continue
             }
             var collision: Double?

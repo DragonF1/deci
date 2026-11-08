@@ -135,16 +135,33 @@ enum MusicTransitionPlanner {
     /// at all leaves the plan untouched (that is every song until 3b is on); any other refusal keeps the smart plan and
     /// records `fallbackReason`.
     static func plan(_ inputs: MusicTransitionInputs) -> TransitionPlan {
-        let base = vocalGuarded(smartPlan(inputs), inputs)
-        guard inputs.beatMixEnabled, base.mode == .smart else { return base }
-        var beat = MusicBeatPlanner.plan(inputs, smart: base)
+        let smart = smartPlan(inputs)
+        return plan(inputs, smart: smart)
+    }
+
+    /// `plan` with the tier 2 plan given (a test seam: a real `smartPlan` never collides for more than the budget).
+    /// The beat planner gets the UNGUARDED smart plan so a beat plan never inherits the guard's shortening; the guard
+    /// applies only to the smart plan that comes back on a refusal.
+    static func plan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
+        let base = vocalGuarded(smart, inputs)
+        guard inputs.beatMixEnabled, smart.mode == .smart else { return base }
+        let beat = MusicBeatPlanner.plan(inputs, smart: smart)
+        if beat.mode == .beat { return beat }
+        /// A refusal: the guarded smart plan plus the reason (and, for a clash, what the beat planner measured).
+        func refused() -> TransitionPlan {
+            var out = base
+            out.fallbackReason = beat.fallbackReason
+            return out
+        }
         if beat.fallbackReason == MusicBeatPlanner.Fallback.vocalClash.rawValue {
             // Every beat length collided: the (guarded) smart plan takes over.
-            beat.vocalAction = "beatToSmart"
-            beat.vocalCollisionSec = smartCollision(beat, inputs)
-            return beat
+            var out = refused()
+            out.vocalAction = "beatToSmart"
+            out.vocalCollisionSec = smartCollision(out, inputs)
+            out.vocalBeforeSec = beat.vocalBeforeSec
+            return out
         }
-        if beat.mode == .beat || beat.fallbackReason != MusicBeatPlanner.Fallback.gridMissing.rawValue { return beat }
+        if beat.fallbackReason != MusicBeatPlanner.Fallback.gridMissing.rawValue { return refused() }
         // No grid: stay silent for v1 rows and for pairs where no song has a grid (every song before 3b is on). Say so
         // when a version 2 row's grid is unusable while the other song has one, or its stored grid is corrupt.
         func grid(_ side: MusicTransitionSide) -> MusicBeatGrid? { side.grid ?? side.analysis?.usableGrid }
@@ -157,7 +174,7 @@ enum MusicTransitionPlanner {
             guard let row = $0.analysis else { return false }
             return row.version >= MusicAnalysis.gridVersion && grid($0) == nil
         }
-        if brokenV2(inputs.outgoing) || brokenV2(inputs.incoming) || (anyGrid && v2WithoutGrid) { return beat }
+        if brokenV2(inputs.outgoing) || brokenV2(inputs.incoming) || (anyGrid && v2WithoutGrid) { return refused() }
         return base
     }
 

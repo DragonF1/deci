@@ -224,7 +224,7 @@ final class MusicService {
     @ObservationIgnored private let liveBeatMix: (@MainActor () -> Bool)?
     @ObservationIgnored private var startingBeatMix: Bool
     @ObservationIgnored private let liveVocalGuard: (@MainActor () -> Bool)?
-    @ObservationIgnored private var startingVocalGuard: Bool
+    @ObservationIgnored private let startingVocalGuard: Bool
     /// The incoming song a beat mix was given up for (it was not parked in time): its transition is planned the smart
     /// way from then on. Forgotten when the track changes.
     @ObservationIgnored private var beatFallbackFor: String?

@@ -605,3 +605,51 @@ extension MusicBeatPlannerTests {
         #expect(plan.mode != .beat || plan.overlapBars != 4)
     }
 }
+
+// MARK: - Tier 3c review fixes
+
+extension MusicBeatPlannerTests {
+    /// A hand-made smart plan whose fade [135, 147] collides with the guard on (A sings to `outro`, B from its intro end).
+    /// A plan built by `smartPlan` never collides for more than the budget, so the seam takes it as an argument.
+    static func collidingSmart(for i: MusicTransitionInputs) -> TransitionPlan {
+        var smart = MusicTransitionPlanner.smartPlan(i)
+        smart.fadeSeconds = 12
+        smart.fadeStartSec = 135
+        smart.outgoingGainDb = -3
+        smart.outgoingRampSeconds = 2
+        return smart
+    }
+
+    @Test("a clean beat plan never inherits the guard's smart-fade shortening")
+    func cleanBeatPlanIgnoresTheSmartGuard() {
+        let on = Self.guardedInputs(outro: 150, swap: true)
+        let off = Self.guardedInputs(outro: 150, swap: true, guardOn: false)
+        let smart = Self.collidingSmart(for: on)
+        #expect(MusicTransitionPlanner.vocalGuarded(smart, on) != smart, "fixture: the smart fade must collide")
+        let planOn = MusicTransitionPlanner.plan(on, smart: smart)
+        let planOff = MusicTransitionPlanner.plan(off, smart: smart)
+        #expect(planOn.mode == .beat && planOn.overlapBars == 16)
+        #expect(planOn.vocalAction == nil && planOn.vocalCollisionSec == nil && planOn.vocalBeforeSec == nil)
+        #expect(planOn.outgoingRampSeconds == smart.outgoingRampSeconds)
+        #expect(planOn == planOff)
+    }
+
+    @Test("a refusal still carries the guarded smart plan")
+    func refusalCarriesTheGuardedSmart() {
+        let i = Self.guardedInputs(outro: 224, bIntroEnd: 2, aEnd: 228, swap: false)
+        let smart = Self.collidingSmart(for: i)
+        let guarded = MusicTransitionPlanner.vocalGuarded(smart, i)
+        #expect(guarded.fadeSeconds < smart.fadeSeconds)
+        let plan = MusicTransitionPlanner.plan(i, smart: smart)
+        #expect(plan.mode == .smart && plan.fallbackReason == "vocalClash" && plan.vocalAction == "beatToSmart")
+        #expect(plan.fadeSeconds == guarded.fadeSeconds && plan.fadeStartSec == guarded.fadeStartSec)
+        #expect(plan.outgoingRampSeconds == guarded.outgoingRampSeconds)
+        #expect((plan.vocalBeforeSec ?? 0) > MusicVocalGuard.budgetSec)
+        // Any other refusal: guarded smart plus the reason.
+        var late = i
+        late.earliestMixOutSec = 1000
+        let tooLate = MusicTransitionPlanner.plan(late, smart: smart)
+        #expect(tooLate.fallbackReason == "tooLate" && tooLate.fadeSeconds == guarded.fadeSeconds)
+        #expect(tooLate.vocalAction == guarded.vocalAction)
+    }
+}
