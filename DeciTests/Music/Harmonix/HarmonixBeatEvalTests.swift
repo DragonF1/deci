@@ -17,8 +17,8 @@ import Foundation
 import Testing
 @testable import Deci
 
-private nonisolated let harmonixDir = ProcessInfo.processInfo.environment["DECI_HARMONIX_DIR"] ?? "/Volumes/Storage/_build/scratch/deci-harmonix"
-private nonisolated let harmonixGate: Bool = {
+nonisolated let harmonixDir = ProcessInfo.processInfo.environment["DECI_HARMONIX_DIR"] ?? "/Volumes/Storage/_build/scratch/deci-harmonix"
+nonisolated let harmonixGate: Bool = {
     let fm = FileManager.default
     guard fm.fileExists(atPath: harmonixDir + "/manifest.json") else { return false }
     return ProcessInfo.processInfo.environment["DECI_HARMONIX_EVAL"] == "1" || fm.fileExists(atPath: harmonixDir + "/RUN_EVAL")
@@ -29,7 +29,7 @@ struct HarmonixBeatEvalTests {
     nonisolated struct Song {
         var id: String, title: String, artist: String, genre: String
         var songPath: String, truthPath: String
-        var offset: Double, bpm: Double?
+        var offset: Double, bpm: Double?, alias: Bool = false
     }
 
     nonisolated struct Row {
@@ -54,7 +54,7 @@ struct HarmonixBeatEvalTests {
 
     // MARK: Reading the dataset
 
-    private nonisolated static func loadSongs() throws -> [Song] {
+    nonisolated static func loadSongs() throws -> [Song] {
         let data = try Data(contentsOf: URL(fileURLWithPath: harmonixDir + "/manifest.json"))
         let json = try JSONSerialization.jsonObject(with: data)
         let items: [[String: Any]] = (json as? [[String: Any]]) ?? ((json as? [String: Any])?["songs"] as? [[String: Any]]) ?? []
@@ -69,13 +69,13 @@ struct HarmonixBeatEvalTests {
                 genre: (d["genre"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown",
                 songPath: path(d["song"], harmonixDir + "/songs/\(id).m4a"),
                 truthPath: path(d["truth"], harmonixDir + "/truth/\(id).beats.txt"),
-                offset: offset, bpm: (d["bpm"] as? NSNumber)?.doubleValue
+                offset: offset, bpm: (d["bpm"] as? NSNumber)?.doubleValue, alias: d["alias_flag"] is String
             )
         }
     }
 
     /// (all beat times, downbeat times) in the audio's timeline (the truth files already hold annotation time + offset_sec, written by run_align.py, so it is NOT added again).
-    private nonisolated static func loadTruth(_ song: Song) throws -> (beats: [Double], downbeats: [Double]) {
+    nonisolated static func loadTruth(_ song: Song) throws -> (beats: [Double], downbeats: [Double]) {
         let text = try String(contentsOfFile: song.truthPath, encoding: .utf8)
         var beats: [Double] = [], downbeats: [Double] = []
         for line in text.split(whereSeparator: \.isNewline) {
@@ -87,16 +87,16 @@ struct HarmonixBeatEvalTests {
         return (beats, downbeats)
     }
 
-    private nonisolated static func trusted(_ g: MusicBeatGrid) -> Bool {
+    nonisolated static func trusted(_ g: MusicBeatGrid) -> Bool {
         MusicBeatGrid.periodRange.contains(g.periodSec) && g.beatConfidence >= MusicBeatPlanner.minConfidence
             && g.intervalSpread <= MusicBeatPlanner.maxIntervalSpread && abs(g.driftSec) <= MusicBeatPlanner.maxDriftSec
     }
 
-    private nonisolated static func median(_ v: [Double]) -> Double { v.isEmpty ? .nan : v.sorted()[v.count / 2] }
+    nonisolated static func median(_ v: [Double]) -> Double { v.isEmpty ? .nan : v.sorted()[v.count / 2] }
     private nonisolated static func mean(_ v: [Double]) -> Double { v.isEmpty ? .nan : v.reduce(0, +) / Double(v.count) }
 
     /// Grid beat times (optionally only every 4th from `phase`) inside [from, to].
-    private nonisolated static func gridTimes(_ g: MusicBeatGrid, from: Double, to: Double, phase: Int? = nil) -> [Double] {
+    nonisolated static func gridTimes(_ g: MusicBeatGrid, from: Double, to: Double, phase: Int? = nil) -> [Double] {
         guard to > from else { return [] }
         let first = Int(ceil((from - g.anchorSec) / g.periodSec)), last = Int(floor((to - g.anchorSec) / g.periodSec))
         guard first <= last else { return [] }
@@ -106,7 +106,7 @@ struct HarmonixBeatEvalTests {
         }
     }
 
-    private nonisolated static func within(_ v: [Double], _ a: Double, _ b: Double) -> [Double] { v.filter { $0 >= a && $0 <= b } }
+    nonisolated static func within(_ v: [Double], _ a: Double, _ b: Double) -> [Double] { v.filter { $0 >= a && $0 <= b } }
 
     private nonisolated static func tempoClass(_ ours: Double, truth: Double) -> String {
         let r = ours / truth
@@ -295,7 +295,7 @@ struct HarmonixBeatEvalTests {
         return d
     }
 
-    private nonisolated static func gitSha() -> String {
+    nonisolated static func gitSha() -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         p.arguments = ["-C", "/Volumes/Storage/Coding/deci", "rev-parse", "--short", "HEAD"]
