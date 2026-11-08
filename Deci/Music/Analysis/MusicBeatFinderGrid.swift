@@ -18,9 +18,6 @@ nonisolated extension MusicBeatFinder {
     static let onsetFloorFraction = 0.15
     /// Below this finder confidence there is no grid at all.
     static let minGridFinderConfidence = 0.3
-    /// Below this downbeat confidence the downbeat is reported unknown.
-    static let minDownbeatConfidence = 0.25
-    static let minDownbeatBeats = 16
     /// Where the bass attack detector lands relative to the true attack on a synthetic kick, subtracted from every onset.
     static let bassOnsetBiasSec = 0.001
     static let onsetPeakSeparationSec = 0.04
@@ -100,9 +97,11 @@ nonisolated extension MusicBeatFinder {
             spanEndSec: min(duration, anchor + Double(last) * period)
         )
         guard grid.spanEndSec > grid.spanStartSec, grid.bpm.isFinite else { return nil }
-        if refined != nil, let downbeat = estimateGridDownbeat(band: band, grid: grid, beats: first...last) {
+        // The downbeat is only looked for on a grid the planner would trust (the bass refinement passed the chance check).
+        if refined != nil,
+           let downbeat = estimateDownbeat(decimated: decimated, rate: rate, grid: grid, beats: first...last, band: band) {
             grid.downbeatConfidence = Float(downbeat.confidence)
-            grid.downbeatPhase = downbeat.confidence >= minDownbeatConfidence ? downbeat.phase : nil
+            grid.downbeatPhase = downbeat.accepted ? downbeat.phase : nil
         }
         return grid
     }
@@ -425,41 +424,5 @@ nonisolated extension MusicBeatFinder {
         guard sxx > 1e-9 else { return nil }
         let slope = sxy / sxx
         return (meanY - slope * meanX, slope)
-    }
-
-    // MARK: Downbeat
-
-    /// Which of four beat phases (index mod 4 from the anchor) carries the accent: per beat the bass level and the bass
-    /// attack, each scaled by its mean, summed, then averaged per phase. Confidence is the best phase's margin over the
-    /// second best. nil with too few beats.
-    static func estimateGridDownbeat(
-        band: Band, grid: MusicBeatGrid, beats: ClosedRange<Int>
-    ) -> (phase: Int, confidence: Double)? {
-        var level: [(k: Int, bass: Double, attack: Double)] = []
-        let count = band.env.count
-        for k in beats {
-            let t = grid.beatTime(k)
-            let lo = Int(((t - 0.01) * band.rate).rounded()), hi = Int(((t + 0.05) * band.rate).rounded())
-            guard lo >= 0, hi < count else { continue }
-            var bass: Float = 0
-            for index in lo...hi { bass = max(bass, band.env[index]) }
-            var attack: Float = 0
-            for index in max(0, lo - Int(0.02 * band.rate))...min(count - 1, hi) { attack = max(attack, band.flux[index]) }
-            level.append((k, Double(bass), Double(attack)))
-        }
-        guard level.count >= minDownbeatBeats else { return nil }
-        let meanBass = level.reduce(0) { $0 + $1.bass } / Double(level.count)
-        let meanAttack = level.reduce(0) { $0 + $1.attack } / Double(level.count)
-        guard meanBass > 1e-9, meanAttack > 1e-9 else { return nil }
-        var sums = [Double](repeating: 0, count: 4), counts = [Double](repeating: 0, count: 4)
-        for item in level {
-            let phase = ((item.k % 4) + 4) % 4
-            sums[phase] += item.bass / meanBass + item.attack / meanAttack
-            counts[phase] += 1
-        }
-        let means = (0..<4).map { counts[$0] > 0 ? sums[$0] / counts[$0] : 0 }
-        let order = means.indices.sorted { means[$0] > means[$1] }
-        guard means[order[0]] > 0 else { return nil }
-        return (order[0], max(0, min(1, (means[order[0]] - means[order[1]]) / means[order[0]])))
     }
 }
