@@ -249,7 +249,7 @@ struct MusicAnalysisCoordinatorTests {
         var old = try #require(await rig.store.entry(for: id))
         old.version = 3
         old.beatGrid = MusicBeatGrid(
-            periodSec: 0.5, anchorSec: 1, downbeatPhase: nil, beatConfidence: 0.9, downbeatConfidence: 0,
+            periodSec: 0.5, anchorSec: 1, downbeatPhase: 2, beatConfidence: 0.9, downbeatConfidence: 0.6,
             intervalSpread: 0.01, driftSec: 0, spanStartSec: 1, spanEndSec: 100
         ).encode()
         try await rig.store.put(old)
@@ -262,7 +262,9 @@ struct MusicAnalysisCoordinatorTests {
         let row = try #require(await rig.store.entry(for: id))
         #expect(row.version == MusicAnalysis.currentVersion)
         #expect(row.usableGrid?.beatConfidence == 0.9)
+        // The old bass-only downbeat guess is cleared, not re-stamped as a version 4 one.
         #expect(row.usableGrid?.downbeatPhase == nil)
+        #expect(row.usableGrid?.downbeatConfidence == 0)
     }
 
     @Test("two ensure calls for one song at once share one fetch and one analysis")

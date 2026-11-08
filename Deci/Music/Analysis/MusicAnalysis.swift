@@ -10,7 +10,7 @@ struct MusicAnalysis: Sendable, Equatable {
     /// from kick, back-beat, harmony and section cues with a held-out check (3b accuracy P2).
     static let currentVersion = 4
     /// First version whose rows may carry a beat grid; older rows keep their fade fields but have no grid. A version 2
-    /// or 3 grid stays usable (without a downbeat it is simply less phrased) until the background sweep replaces it with a version 4 one.
+    /// or 3 grid stays usable (an unreadable file drops its old bass-only downbeat guess, a re-analysis replaces it) until the background sweep replaces it with a version 4 one.
     static let gridVersion = 2
     /// One UInt8 step of the energy curve, in dB.
     static let energyStepDb: Float = 0.5

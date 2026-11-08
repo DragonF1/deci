@@ -283,6 +283,12 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
         guard var old = await store.entry(for: videoId), old.version < MusicAnalysis.currentVersion else { return }
         // A version 2 row keeps the grid it has (still usable); only a version 1 row never had one.
         if old.version < MusicAnalysis.gridVersion { old.beatGrid = nil }
+        // A grid older than version 4 carries the old bass-only downbeat guess: drop it (the grid itself stays usable).
+        if old.version < 4, let bytes = old.beatGrid, var grid = MusicBeatGrid.decode(bytes) {
+            grid.downbeatPhase = nil
+            grid.downbeatConfidence = 0
+            old.beatGrid = grid.encode()
+        }
         old.version = MusicAnalysis.currentVersion
         try? await store.put(old)
     }
