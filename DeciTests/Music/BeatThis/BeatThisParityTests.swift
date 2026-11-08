@@ -92,8 +92,31 @@ import Testing
             Issue.record("no grid: \(outcome)")
             return
         }
-        #expect(grid.bpm > 60 && grid.bpm < 200)
-        #expect(grid.beatConfidence > 0.5)
+        // The loop's tempo drifts from 118 to 123 bpm (4 percent), so one straight line fits only part of it: the grid
+        // exists, sits inside the range, and the drift is large enough for the planner's gate (0.003) to refuse it.
+        #expect(grid.bpm > 115 && grid.bpm < 126)
+        #expect(grid.beatConfidence > 0.2)
+        #expect(abs(grid.driftSec) > 0.003)
+    }
+
+    @Test func engineGridAloneOnFourMinutesIsFast() throws {
+        // The model and the mel on 4 minutes of audio (the loop 7.5 times), best of two, after a warm-up. The analyzer's
+        // own 4 minute test also carries the decode.
+        let loop = try Self.samples()
+        var long: [Float] = []
+        for _ in 0..<8 { long += loop }
+        long.removeLast(long.count - 240 * 22_050)
+        _ = BeatThisEngine.grid(samples: loop, duration: 32)
+        var best = Double.infinity
+        for _ in 0..<2 {
+            let clock = ContinuousClock()
+            let start = clock.now
+            let outcome = BeatThisEngine.grid(samples: long, duration: 240)
+            let d = start.duration(to: clock.now)
+            best = min(best, Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18)
+            guard case .grid = outcome else { Issue.record("no grid: \(outcome)"); return }
+        }
+        #expect(best < 8, "BeatThisEngine.grid took \(best) s for 4 minutes")
     }
 
     @Test func engineAnswersCancelledOrShortAudioWithoutCrashing() throws {

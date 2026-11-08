@@ -8,7 +8,9 @@ struct MusicAnalysis: Sendable, Equatable {
     /// Bump to have older entries redone quietly in the background. 3: the beat finder measures bass onsets without
     /// depending on its own prediction and locks the phase over the whole period (3b accuracy P1). 4: the downbeat comes
     /// from kick, back-beat, harmony and section cues with a held-out check (3b accuracy P2). 5: the row carries a musical
-    /// key and an energy rating (tier 4); an older row has neither until the sweep redoes it.
+    /// key and an energy rating (tier 4); an older row has neither until the sweep redoes it. Version 5 is also the
+    /// first with beat_this grids (3d); it is unreleased and the installed build writes 4, so every installed row is
+    /// re-analysed into one anyway and no further bump is needed.
     static let currentVersion = 5
     /// First version whose rows may carry a beat grid; older rows keep their fade fields but have no grid. A version 2
     /// or 3 grid stays usable (an unreadable file drops its old bass-only downbeat guess, a re-analysis replaces it) until the background sweep replaces it with a version 4 one.

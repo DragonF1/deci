@@ -536,8 +536,8 @@ nonisolated enum MusicFileAnalyzer {
     private static func beatGrid(
         from decimator: MusicBeatDecimator, resampler: BeatThisResampler, duration: Double
     ) -> (MusicBeatGrid?, String) {
-        guard resampler.isUsable else {
-            logger.notice("analysis_beatthis_skip why=sample_rate")
+        guard resampler.isUsable, duration.isFinite, duration > 0, duration <= BeatThisResampler.maxSongSeconds else {
+            logger.notice("analysis_beatthis_skip why=input")
             return (finderGrid(from: decimator), "finder")
         }
         let clock = ContinuousClock()

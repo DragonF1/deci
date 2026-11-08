@@ -23,25 +23,34 @@ nonisolated final class BeatThisModel: @unchecked Sendable {
     func predict(chunk: [Float]) throws -> BeatThisChunker.Logits {
         let frames = BeatThisChunker.chunkFrames, bands = BeatThisChunker.bands
         precondition(chunk.count == frames * bands)
-        let input = try MLMultiArray(shape: [1, NSNumber(value: frames), NSNumber(value: bands)], dataType: .float32)
-        chunk.withUnsafeBufferPointer { source in
-            input.dataPointer.copyMemory(from: source.baseAddress!, byteCount: chunk.count * MemoryLayout<Float>.size)
-        }
-        let output = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["spect": MLFeatureValue(multiArray: input)]))
-        guard let logits = output.featureValue(for: "logits")?.multiArrayValue,
-              logits.shape.map(\.intValue) == [1, 2, frames] else { throw Failure.badOutput }
-        func row(_ r: Int) -> [Float] {
-            let strides = logits.strides.map(\.intValue)
-            return (0..<frames).map { t in
-                let offset = r * strides[1] + t * strides[2]
-                switch logits.dataType {
-                case .float16: return Float(logits.dataPointer.assumingMemoryBound(to: Float16.self)[offset])
-                case .double: return Float(logits.dataPointer.assumingMemoryBound(to: Double.self)[offset])
-                default: return logits.dataPointer.assumingMemoryBound(to: Float.self)[offset]
+        return try autoreleasepool {
+            let input = try MLMultiArray(shape: [1, NSNumber(value: frames), NSNumber(value: bands)], dataType: .float32)
+            chunk.withUnsafeBufferPointer { source in
+                input.dataPointer.copyMemory(from: source.baseAddress!, byteCount: chunk.count * MemoryLayout<Float>.size)
+            }
+            let output = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["spect": MLFeatureValue(multiArray: input)]))
+            guard let logits = output.featureValue(for: "logits")?.multiArrayValue,
+                  logits.shape.map(\.intValue) == [1, 2, frames] else { throw Failure.badOutput }
+            func row(_ r: Int) throws -> [Float] {
+                let strides = logits.strides.map(\.intValue)
+                return try (0..<frames).map { t in
+                    let offset = r * strides[1] + t * strides[2]
+                    switch logits.dataType {
+                    case .float16:
+                        // Float16 does not exist on Intel Macs; the model's declared output is float32 so this is a
+                        // fallback that only arm64 needs.
+                        #if arch(arm64)
+                        return Float(logits.dataPointer.assumingMemoryBound(to: Float16.self)[offset])
+                        #else
+                        throw Failure.badOutput
+                        #endif
+                    case .double: return Float(logits.dataPointer.assumingMemoryBound(to: Double.self)[offset])
+                    default: return logits.dataPointer.assumingMemoryBound(to: Float.self)[offset]
+                    }
                 }
             }
+            return BeatThisChunker.Logits(beat: try row(0), downbeat: try row(1))
         }
-        return BeatThisChunker.Logits(beat: row(0), downbeat: row(1))
     }
 }
 

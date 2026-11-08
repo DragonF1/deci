@@ -13,12 +13,16 @@ nonisolated final class BeatThisResampler {
     static let taps = 128
     static let cutoffHz = 10_600.0
     static let kaiserBeta = 8.0
+    /// Songs longer than this go to the own finder only: beat_this would hold a quarter of a gigabyte of mel.
+    static let maxSongSeconds = 1_200.0
+    static let maxReserveSeconds = maxSongSeconds
 
     private let up: Int      // output rate / gcd
     private let down: Int    // input rate / gcd
     private let table: [Float]   // up phases of `taps` coefficients each
     private let passthrough: Bool
     private let usable: Bool
+    private var overflowed = false
 
     private(set) var samples: [Float] = []
     private var mono: [Float] = []
@@ -47,10 +51,13 @@ nonisolated final class BeatThisResampler {
         passthrough = fi == fo
         usable = true
         table = passthrough ? [] : Self.makeTable(up: up, inputRate: Double(fi))
-        if reserveSeconds > 0 { samples.reserveCapacity(Int(reserveSeconds * Self.outputRate)) }
+        // The reserve is a hint from the file's own duration: clamped, and ignored when it is not a finite number.
+        if reserveSeconds.isFinite, reserveSeconds > 0 {
+            samples.reserveCapacity(Int(min(reserveSeconds, Self.maxReserveSeconds) * Self.outputRate))
+        }
     }
 
-    var isUsable: Bool { usable }
+    var isUsable: Bool { usable && !overflowed }
 
     /// Coefficients for output phase p: tap j weights input sample (i0 - taps/2 + 1 + j), i0 = floor(n * down / up).
     private static func makeTable(up: Int, inputRate: Double) -> [Float] {
@@ -80,7 +87,7 @@ nonisolated final class BeatThisResampler {
     }
 
     func consume(interleaved: UnsafePointer<Float>, frames: Int, channels: Int) {
-        guard usable, frames > 0, channels > 0 else { return }
+        guard usable, !overflowed, frames > 0, channels > 0 else { return }
         if mono.count < frames { mono = [Float](repeating: 0, count: frames) }
         mono.withUnsafeMutableBufferPointer { out in
             if channels == 1 {
@@ -97,16 +104,25 @@ nonisolated final class BeatThisResampler {
         if passthrough {
             samples.append(contentsOf: mono[0..<frames])
             inputCount += frames
+            dropIfTooLong()
             return
         }
         pending.append(contentsOf: mono[0..<frames])
         inputCount += frames
         produce(finalCount: nil)
+        dropIfTooLong()
+    }
+
+    private func dropIfTooLong() {
+        guard samples.count > Int(Self.maxSongSeconds * Self.outputRate) else { return }
+        overflowed = true
+        samples = []
+        pending = []
     }
 
     /// Drains the filter and returns every sample.
     func finish() -> [Float] {
-        guard usable, !passthrough else { return samples }
+        guard isUsable, !passthrough else { return samples }
         pending.append(contentsOf: [Float](repeating: 0, count: Self.taps / 2))
         // Output n sits at input time n * down / up; the song ends at inputCount.
         let total = (inputCount * up + down - 1) / down
@@ -116,8 +132,6 @@ nonisolated final class BeatThisResampler {
 
     private func produce(finalCount: Int?) {
         let half = Self.taps / 2
-        var produced = 0
-        let start = next
         pending.withUnsafeBufferPointer { buffer in
             table.withUnsafeBufferPointer { coefficients in
                 while true {
@@ -132,11 +146,9 @@ nonisolated final class BeatThisResampler {
                     vDSP_dotpr(coefficients.baseAddress! + phase * Self.taps, 1, buffer.baseAddress! + (i0 - half + 1 - base), 1, &sum, vDSP_Length(Self.taps))
                     samples.append(sum)
                     next += 1
-                    produced += 1
                 }
             }
         }
-        _ = (start, produced)
         // Drop input no later output needs: the next one starts at floor(next * down / up) - half + 1.
         let keepFrom = (next * down) / up - half + 1
         if keepFrom - base > 65_536 {

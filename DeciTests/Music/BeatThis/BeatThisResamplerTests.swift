@@ -57,3 +57,23 @@ import Testing
         #expect(a == b)
     }
 }
+
+@Suite struct BeatThisResamplerLimitTests {
+    @Test func unreasonableReserveHintsAreIgnored() {
+        for hint in [Double.infinity, .nan, -5, 1e12] {
+            let resampler = BeatThisResampler(inputRate: 44_100, reserveSeconds: hint)
+            #expect(resampler.isUsable)
+            #expect(resampler.finish().isEmpty)
+        }
+    }
+
+    @Test func audioBeyondTwentyMinutesMakesTheResamplerUnusable() {
+        let resampler = BeatThisResampler(inputRate: 22_050)
+        let block = [Float](repeating: 0.1, count: 22_050 * 100)
+        for _ in 0..<12 { block.withUnsafeBufferPointer { resampler.consume(interleaved: $0.baseAddress!, frames: block.count, channels: 1) } }
+        #expect(resampler.isUsable)   // exactly 1200 s
+        block.withUnsafeBufferPointer { resampler.consume(interleaved: $0.baseAddress!, frames: block.count, channels: 1) }
+        #expect(!resampler.isUsable)
+        #expect(resampler.finish().isEmpty)
+    }
+}
