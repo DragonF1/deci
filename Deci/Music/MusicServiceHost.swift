@@ -112,7 +112,8 @@ final class MusicServiceHost {
                 analysis: coordinator,
                 analysisReader: coordinator,
                 mixFlags: MusicMixFlagStore.live(),
-                listening: MusicListeningStore(url: MusicListeningStore.liveURL())
+                listening: MusicListeningStore(url: MusicListeningStore.liveURL()),
+                vocalLookahead: .live()
             )
             // The Song data panel asks the online services and measures what they lack.
             let facts = MusicSongFactsRepository.live()

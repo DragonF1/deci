@@ -225,6 +225,7 @@ final class MusicService {
     @ObservationIgnored private var startingBeatMix: Bool
     @ObservationIgnored private let liveVocalGuard: (@MainActor () -> Bool)?
     @ObservationIgnored private let startingVocalGuard: Bool
+    @ObservationIgnored private let vocalLookahead: MusicVocalLookahead?
     /// The incoming song a beat mix was given up for (it was not parked in time): its transition is planned the smart
     /// way from then on. Forgotten when the track changes.
     @ObservationIgnored private var beatFallbackFor: String?
@@ -399,8 +400,11 @@ final class MusicService {
         analysisReader: (any MusicAnalysisReading)? = nil,
         // The listener's "do not mix" flags; nil (a test's default) means nothing is flagged.
         mixFlags: MusicMixFlagStore? = nil,
-        listening: (any MusicListeningRecording)? = nil
+        listening: (any MusicListeningRecording)? = nil,
+        // 3d-4: sung intervals from synced lyrics for the vocal guard; nil (a test's default) keeps the structural proxy.
+        vocalLookahead: MusicVocalLookahead? = nil
     ) {
+        self.vocalLookahead = vocalLookahead
         self.mixFlags = mixFlags
         self.listening = listening
         self.analysis = analysis
@@ -2545,6 +2549,7 @@ final class MusicService {
     /// the next song's analysis while its job runs, until `analysisDeadline` seconds are left to the trimmed end.
     private func offerPreload(position: TimeInterval) {
         syncCrossfade()
+        if let stream = prefetched { startVocalLookahead(next: stream) }
         guard let stream = prefetched, let target = preloadTarget, stream.videoId == target.videoId,
               preloadOffered != target.videoId, player.isPlaying, !player.hasEnded,
               isInPreloadWindow(position: position) else { return }
@@ -2557,12 +2562,32 @@ final class MusicService {
         offeredPlan = plan.offered
         log(MusicTransitionLog.planLine(
             from: plan.offered.inputs.outgoing.videoId, to: stream.videoId, plan: plan.plan,
-            outgoingDuration: plan.offered.inputs.outgoing.durationSeconds
+            outgoingDuration: plan.offered.inputs.outgoing.durationSeconds,
+            vocal: (plan.offered.inputs.outgoing.vocalIntervals != nil, plan.offered.inputs.incoming.vocalIntervals != nil)
         ))
         if let line = MusicTransitionLog.vocalGuardLine(
             from: plan.offered.inputs.outgoing.videoId, to: stream.videoId, plan: plan.plan
         ) { log(line) }
         logBeat(plan.offered)
+    }
+
+    /// Starts the lyrics lookup for the playing song and the next one (once each). Only with beat mix, the vocal guard and
+    /// the crossfade on. The network part (YouTube Music only) is skipped offline. Never awaited by the plan.
+    private func startVocalLookahead(next: ResolvedStream) {
+        guard let lookahead = vocalLookahead, isVocalGuardOn, isBeatMixOn, isCrossfadeOn,
+              let current = player.currentStream else { return }
+        let network = !isOffline
+        let sides: [(id: String, duration: Double?, track: MusicTrack?)] = [
+            (current.videoId, current.durationSeconds, player.nowPlaying),
+            (next.videoId, next.durationSeconds, preloadTarget),
+        ]
+        for side in sides where !lookahead.hasRequested(side.id) {
+            guard let track = side.track, track.videoId == side.id, let duration = side.duration else { continue }
+            let query = LyricsQuery(
+                videoId: track.videoId, title: track.title, artist: track.artist, album: track.album, duration: duration
+            )
+            Task { await lookahead.prepare(query, duration: duration, allowNetwork: network) }
+        }
     }
 
     /// The beat line of an offered plan: the beat plan, or why a pair that could have beat-mixed did not.
@@ -2609,11 +2634,11 @@ final class MusicService {
         var inputs = MusicTransitionInputs(
             outgoing: MusicTransitionSide(
                 videoId: current.videoId, durationSeconds: current.durationSeconds, analysis: outgoing,
-                youtubeLoudnessDb: current.loudnessDb
+                youtubeLoudnessDb: current.loudnessDb, vocalIntervals: vocalLookahead?.intervals(for: current.videoId)
             ),
             incoming: MusicTransitionSide(
                 videoId: next.videoId, durationSeconds: next.durationSeconds, analysis: incoming,
-                youtubeLoudnessDb: next.loudnessDb
+                youtubeLoudnessDb: next.loudnessDb, vocalIntervals: vocalLookahead?.intervals(for: next.videoId)
             ),
             crossfadeOn: isCrossfadeOn, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,

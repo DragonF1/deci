@@ -43,15 +43,34 @@ enum MusicVocalGuard {
         return max(0, aEnd - bStart)
     }
 
-    /// The collision of an overlap between two analysed songs; nil when the guard is a no-op for the pair.
+    /// The collision of an overlap between two songs; nil when the guard is a no-op for the pair. A side with lyric
+    /// `intervals` (3d-4) is measured by them; a side without uses the structural proxy from its analysis. Both
+    /// intervals nil is exactly the proxy.
     static func collisionSec(
         outgoing: MusicAnalysis?, incoming: MusicAnalysis?, outStart: Double, inStart: Double, rate: Double = 1,
-        length: Double
+        length: Double, outgoingIntervals: [ClosedRange<Double>]? = nil, incomingIntervals: [ClosedRange<Double>]? = nil
     ) -> Double? {
-        guard let p = proxy(outgoing: outgoing, incoming: incoming) else { return nil }
-        return collisionSec(
-            outroStartA: p.outroStartA, introEndB: p.introEndB, outStart: outStart, inStart: inStart, rate: rate,
-            length: length
+        if outgoingIntervals == nil, incomingIntervals == nil {
+            guard let p = proxy(outgoing: outgoing, incoming: incoming) else { return nil }
+            return collisionSec(
+                outroStartA: p.outroStartA, introEndB: p.introEndB, outStart: outStart, inStart: inStart, rate: rate,
+                length: length
+            )
+        }
+        var outro = 0.0, intro = 0.0
+        if outgoingIntervals == nil {
+            guard let a = outgoing, a.introEnd.isFinite, a.outroStart.isFinite, a.outroStart > 0,
+                  a.introEnd < a.outroStart else { return nil }
+            outro = a.outroStart
+        }
+        if incomingIntervals == nil {
+            guard let b = incoming, b.introEnd.isFinite, b.outroStart.isFinite, b.outroStart > 0,
+                  b.introEnd < b.outroStart else { return nil }
+            intro = b.introEnd
+        }
+        return MusicVocalGuardIntervals.collisionSec(
+            a: outgoingIntervals, b: incomingIntervals, outroStartA: outro, introEndB: intro, outStart: outStart,
+            inStart: inStart, rate: rate, length: length
         )
     }
 }

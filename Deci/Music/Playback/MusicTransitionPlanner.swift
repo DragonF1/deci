@@ -75,6 +75,9 @@ struct MusicTransitionSide: Equatable, Sendable {
     var youtubeLoudnessDb: Double?
     /// The beat grid, when known. Without it the planner reads `analysis.usableGrid` (version 2 rows only).
     var grid: MusicBeatGrid? = nil
+    /// Tier 3d-4: where the song is sung, in song seconds, from synced lyrics. nil = unknown (the structural proxy is
+    /// used); empty = known instrumental.
+    var vocalIntervals: [ClosedRange<Double>]? = nil
 }
 
 struct MusicTransitionInputs: Equatable, Sendable {
@@ -185,7 +188,8 @@ enum MusicTransitionPlanner {
         guard plan.mode == .smart, let start = plan.fadeStartSec else { return nil }
         return MusicVocalGuard.collisionSec(
             outgoing: inputs.outgoing.analysis, incoming: inputs.incoming.analysis, outStart: start,
-            inStart: plan.incomingStartSec, length: plan.fadeSeconds
+            inStart: plan.incomingStartSec, length: plan.fadeSeconds,
+            outgoingIntervals: inputs.outgoing.vocalIntervals, incomingIntervals: inputs.incoming.vocalIntervals
         )
     }
 
@@ -201,7 +205,8 @@ enum MusicTransitionPlanner {
         for fade in MusicVocalGuard.shortenFades where fade < plan.fadeSeconds {
             let collision = MusicVocalGuard.collisionSec(
                 outgoing: inputs.outgoing.analysis, incoming: inputs.incoming.analysis, outStart: end - fade,
-                inStart: plan.incomingStartSec, length: fade
+                inStart: plan.incomingStartSec, length: fade,
+                outgoingIntervals: inputs.outgoing.vocalIntervals, incomingIntervals: inputs.incoming.vocalIntervals
             ) ?? 0
             if collision <= MusicVocalGuard.budgetSec {
                 best = (fade, collision)

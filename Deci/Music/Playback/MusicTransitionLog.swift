@@ -9,7 +9,10 @@ enum MusicTransitionLog {
 
     /// transition_plan from=<id> to=<id> mode=smart fade=6.40 start=211.30 trimIn=0.42 trimOut=1.80
     /// gain=in:-3.1/glide:8/out:0.0 reason=ok
-    static func planLine(from: String, to: String, plan: TransitionPlan, outgoingDuration: Double?) -> String {
+    static func planLine(
+        from: String, to: String, plan: TransitionPlan, outgoingDuration: Double?,
+        vocal: (outgoing: Bool, incoming: Bool)? = nil
+    ) -> String {
         let start = plan.fadeStartSec.map { fixed($0, 2) } ?? "end"
         var trimOut = 0.0
         if let end = plan.outgoingEndSec, let duration = outgoingDuration, duration.isFinite {
@@ -18,7 +21,13 @@ enum MusicTransitionLog {
         let gain = "in:\(fixed(plan.incomingGainDb, 1))/glide:\(fixed(plan.incomingGlideSeconds, 0))/out:\(fixed(plan.outgoingGainDb, 1))"
         return "transition_plan from=\(from) to=\(to) mode=\(plan.mode.rawValue) fade=\(fixed(plan.fadeSeconds, 2))"
             + " start=\(start) trimIn=\(fixed(plan.incomingStartSec, 2)) trimOut=\(fixed(trimOut, 2))"
-            + " gain=\(gain) reason=\(plan.reason.rawValue)"
+            + " gain=\(gain) reason=\(plan.reason.rawValue)" + vocalSuffix(vocal)
+    }
+
+    /// " vocal=lyrics/proxy": per side (outgoing/incoming), whether the guard measures singing from lyrics or the proxy.
+    private static func vocalSuffix(_ vocal: (outgoing: Bool, incoming: Bool)?) -> String {
+        guard let vocal else { return "" }
+        return " vocal=\(vocal.outgoing ? "lyrics" : "proxy")/\(vocal.incoming ? "lyrics" : "proxy")"
     }
 
     /// transition_applied from=<id> to=<id> mode=smart fade=6.40 lead=13.30 skipped=4.00

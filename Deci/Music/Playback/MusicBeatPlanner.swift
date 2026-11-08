@@ -122,7 +122,8 @@ enum MusicBeatPlanner {
             var collision: Double?
             if inputs.vocalGuardEnabled {
                 collision = MusicVocalGuard.collisionSec(
-                    outgoing: a, incoming: b, outStart: mixOut, inStart: mixIn, rate: tempo.rate, length: overlap
+                    outgoing: a, incoming: b, outStart: mixOut, inStart: mixIn, rate: tempo.rate, length: overlap,
+                    outgoingIntervals: inputs.outgoing.vocalIntervals, incomingIntervals: inputs.incoming.vocalIntervals
                 )
                 if let c = collision, c > MusicVocalGuard.budgetSec {
                     vocalSkipped += 1
