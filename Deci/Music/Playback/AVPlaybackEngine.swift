@@ -1622,6 +1622,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         glideTask = nil
         guard rate.isFinite, abs(rate - 1) > 0.0005, seconds > 0 else {
             glide = nil
+            // A beat entry a hair off 1 (0.99998) needs no glide, but the deck is left at that rate and the next mix is
+            // only scheduled at exactly 1: put it back at once (inaudible) or that mix falls to a gapless switch.
+            if rate.isFinite, rate != 1, abs(rate - 1) <= 0.0005, active.player.rate != 0 { active.player.rate = 1 }
             return
         }
         glide = Glide(from: rate, total: seconds)

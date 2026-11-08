@@ -267,6 +267,21 @@ struct AVPlaybackEngineBeatTests {
         engine.unload()
     }
 
+    @Test("a beat entry a hair off 1 (0.99998) is put back to exactly 1, or the next mix is never scheduled")
+    func nearOneRateIsSnapped() async throws {
+        let first = try await writeTone("h1", seconds: 20)
+        let engine = makeEngine()
+        engine.load(stream("h1", duration: 20, url: first), startAt: 0, autoplay: true)
+        let playing = await waitUntil(timeout: .seconds(30)) { engine.position > 0.5 && engine.avPlayer.rate != 0 }
+        #expect(playing)
+        // What a beat start at plan rate 0.99998 leaves on the deck: the glide is skipped (within 0.0005 of 1).
+        engine.avPlayer.rate = 0.99998
+        engine.debugStartGlide(from: 0.99998, over: 10)
+        #expect(engine.debugGlide == nil)
+        #expect(engine.avPlayer.rate == 1, "the deck must run at exactly 1: evaluateSchedule requires it, was \(engine.avPlayer.rate)")
+        engine.unload()
+    }
+
     @Test("a plan that is not a beat plan (a manual skip's) is accepted on a beat preload, at the same park offset")
     func skipPlanIsAccepted() async throws {
         let first = try await writeTone("k1", seconds: 30)
