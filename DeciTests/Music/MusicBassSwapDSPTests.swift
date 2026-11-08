@@ -180,6 +180,68 @@ struct MusicBassSwapDSPTests {
         #expect(MusicTestSignal.peak(silence) < 1e-3, "no ringing after a restart: \(MusicTestSignal.peak(silence))")
     }
 
+    @Test("the same 8e-5 tail shows on a lease that never began a bass channel: it is the chain EQ and compensator, not the split")
+    func residualIsTheChainTail() {
+        let loud = sine(60, amplitude: 0.9, frames: 9_600)
+        let never = lease(MusicDSPChain(sampleRate: rate))
+        _ = renderChunked(never, loud)
+        let silence = renderChunked(never, [Float](repeating: 0, count: 4_800))
+        let tail = MusicTestSignal.peak(silence)
+        print("BASSSWAP chain tail without any bass channel \(tail)")
+        #expect(tail < 1e-3, "the bound is kept: \(tail)")
+    }
+
+    @Test("a NaN or an infinity in the input does not poison the split: it recovers on finite input with no beginBass")
+    func nonFiniteInputRecovers() {
+        var split = MusicBassSplit(sampleRate: rate)
+        var reference = MusicBassSplit(sampleRate: rate)
+        let input = sine(60, amplitude: 0.5, frames: 4_000)
+        for sample in input.prefix(1_000) { _ = split.lowpass(sample, channel: 0); _ = reference.lowpass(sample, channel: 0) }
+        for bad in [Float.nan, Float.infinity, -Float.infinity] {
+            _ = split.lowpass(bad, channel: 0)
+        }
+        var worst: Float = 0
+        for sample in input.dropFirst(1_000) {
+            let out = split.lowpass(sample, channel: 0)
+            #expect(out.isFinite)
+            worst = max(worst, abs(out))
+        }
+        #expect(worst > 0.1 && worst < 1, "the low band is back: peak \(worst)")
+        // The other channel was never touched.
+        #expect(split.lowpass(0.3, channel: 1).isFinite)
+    }
+
+    @Test("ending the channel while the incoming fade is still below 1 does not step the lows: output matches a channel that never ended")
+    func endBassKeepsBandsUntilFadeSettles() {
+        let frames = Int(2.0 * rate)
+        let signal = sine(60, amplitude: 0.4, frames: frames)
+        func run(endAt: Int?) -> [Float] {
+            let incoming = lease(MusicDSPChain(sampleRate: rate))
+            incoming.setFade(to: 0, fromSilence: true)
+            _ = render(incoming, [Float](repeating: 0.01, count: 16))
+            incoming.setFade(to: 1, over: 1.5, curve: .equalPower, fromSilence: true)
+            incoming.beginBass(gain: 1)
+            var out: [Float] = []
+            for start in stride(from: 0, to: frames, by: 480) {
+                if start == endAt { incoming.endBass() }
+                out += render(incoming, Array(signal[start..<min(frames, start + 480)]))
+            }
+            return out
+        }
+        let held = run(endAt: nil)
+        let ended = run(endAt: 480 * 50)
+        var worst: Float = 0
+        for (a, b) in zip(held, ended) { worst = max(worst, abs(a - b)) }
+        #expect(worst < 1e-6, "output after endBass differs from the held channel by \(worst)")
+        // And no step at the exit sample: the neighbours differ by no more than the signal's own slope allows.
+        var largestStep: Float = 0
+        for index in (480 * 50 - 2)..<(480 * 50 + 3) { largestStep = max(largestStep, abs(ended[index + 1] - ended[index])) }
+        #expect(largestStep < 0.02, "step at the exit \(largestStep)")
+        // Once the fade is done the channel really is off (the plain path, bit-exact with a lease that never had one).
+        let tail = ended.suffix(2_000)
+        #expect(tail.allSatisfy { $0.isFinite })
+    }
+
     // MARK: - Two leases in a mix
 
     @Test("identical kick trains on the beat: the mixed peak stays within 2 percent of one deck's")

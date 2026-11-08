@@ -377,7 +377,11 @@ struct AVPlaybackEngineBeatTests {
         #expect(incoming.initial == 0 && incoming.target == 1)
         let rate = engine.debugActiveTap?.debugLeaseRate ?? 0
         #expect(rate > 0)
-        #expect(outgoing.delayFrames == Int((4 * rate).rounded()) && incoming.delayFrames == outgoing.delayFrames)
+        // The incoming deck swaps 4 s after its first frame; the outgoing one has counted since the flip, a start gap
+        // (fadeLead, up to 0.25 s) earlier, so it waits that much longer and both swap at the same wall time.
+        #expect(incoming.delayFrames == Int((4 * rate).rounded()))
+        let extra = Double(outgoing.delayFrames - incoming.delayFrames) / rate
+        #expect(extra >= 0 && extra <= 0.25, "outgoing waits \(extra) s longer")
         #expect(outgoing.rampFrames == Int((1 * rate).rounded()) && incoming.rampFrames == outgoing.rampFrames)
         engine.unload()
     }
@@ -426,5 +430,37 @@ struct AVPlaybackEngineBeatTests {
         #expect(!engine.debugBassSwapActive)
         #expect(engine.debugActiveTap?.debugBass?.active != true)
         engine.unload()
+    }
+
+    // MARK: - Tap ordering (3b P4 review)
+
+    @Test("at rate 0.95 the incoming lease still renders SR frames per wall second: the tap sits downstream of time-pitch, so no rate scaling")
+    func tapCountsOutputFrames() async throws {
+        let engine = try await overlapEngine()
+        let tap = try #require(engine.debugActiveTap)
+        let sampleRate = try #require(tap.debugLeaseRate)
+        let start = try #require(tap.debugRenderedFrames)
+        let began = ContinuousClock.now
+        try await Task.sleep(for: .seconds(3))
+        let end = try #require(tap.debugRenderedFrames)
+        let wall = (ContinuousClock.now - began) / .seconds(1)
+        let perSecond = Double(end - start) / wall / sampleRate
+        print("TAPORDER frames per wall second / SR at rate 0.95 = \(perSecond)")
+        #expect(abs(engine.avPlayer.rate - 0.95) < 0.001, "set up: the incoming deck runs at 0.95")
+        #expect(abs(perSecond - 1) < 0.02, "measured \(perSecond): 0.95 would mean source frames, 1.0 means output frames")
+        engine.unload()
+    }
+
+    @Test("the start gap is the scheduled host less now, fadeLead without a schedule, clamped to [0, 0.25]")
+    func startGapMaths() {
+        let now = CMTime(seconds: 100, preferredTimescale: 1_000_000_000)
+        func gap(_ host: Double?) -> Double {
+            AVPlaybackEngine.startGap(scheduledHost: host.map { CMTime(seconds: $0, preferredTimescale: 1_000_000_000) }, now: now)
+        }
+        #expect(abs(gap(100.04) - 0.04) < 1e-6)
+        #expect(gap(nil) == 0.05)
+        #expect(gap(99) == 0)
+        #expect(gap(110) == 0.25)
+        #expect(AVPlaybackEngine.startGap(scheduledHost: .invalid, now: now) == 0.05)
     }
 }

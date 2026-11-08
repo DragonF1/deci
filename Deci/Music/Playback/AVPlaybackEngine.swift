@@ -1357,11 +1357,14 @@ final class AVPlaybackEngine: PlaybackEngine {
                 rate: Float(plan.incomingRate), mixIn: mixIn, mixOut: mixOut, glideSeconds: max(0, plan.glideBackSec)
             )
         }
+        // The flip fires `fadeLead` before the standby's scheduled start: the outgoing lease counts that gap before the
+        // incoming one renders its first frame. The real gap is the scheduled host time less now, `fadeLead` without one.
+        let startGap = Self.startGap(scheduledHost: scheduledHost, now: CMClockGetTime(CMClockGetHostTimeClock()))
         // The outgoing lease drains before the incoming one claims the chain, so it is never silenced in between.
         outgoing.tap?.drain(over: fade)
         // A beat mix with a bass swap: the lows stay with the outgoing deck and hand over in one step on a bar boundary.
         // A start that was late has lost the grid, so the highs just fade as they would for any plan.
-        if scheduled, !startStandby, let plan { beginBassSwap(outgoing: outgoing, incoming: incoming, plan: plan, fade: fade) }
+        if scheduled, !startStandby, let plan { beginBassSwap(outgoing: outgoing, incoming: incoming, plan: plan, fade: fade, gap: startGap) }
         pendingGlide = 0
         beatOverlap = nil
         if let plan {
@@ -1424,12 +1427,21 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// 1`, so kicks that line up never add to more than one kick. Offsets are in rendered audio, which is wall time for
     /// both decks (the plan's overlap is outgoing seconds, and the incoming deck's rate only changes what it plays, not how
     /// many frames it renders), counted by each lease from its own first frame of the fade, so a pause holds them both.
-    private func beginBassSwap(outgoing: Deck, incoming: Deck, plan: TransitionPlan, fade: TimeInterval) {
+    /// Seconds from the flip to the standby's first frame, clamped to [0, 0.25].
+    static func startGap(scheduledHost: CMTime?, now: CMTime) -> TimeInterval {
+        guard let host = scheduledHost, host.isValid, host.isNumeric else { return fadeLead }
+        let gap = CMTimeSubtract(host, now).seconds
+        return gap.isFinite ? min(max(gap, 0), 0.25) : fadeLead
+    }
+
+    private func beginBassSwap(outgoing: Deck, incoming: Deck, plan: TransitionPlan, fade: TimeInterval, gap: TimeInterval) {
         guard plan.mode == .beat, let swap = plan.bassSwapAtSec, swap.isFinite, swap > 0, swap < fade else { return }
         let handover = min(max(plan.bassHandoverSec, 0.05), max(0.05, fade - swap))
         outgoing.tap?.beginBass(gain: 1)
         incoming.tap?.beginBass(gain: 0)
-        outgoing.tap?.setBass(to: 0, over: handover, after: swap)
+        // Both decks render the same frames per wall second (the tap is downstream of time-pitch, measured), but the
+        // outgoing one started counting `gap` earlier.
+        outgoing.tap?.setBass(to: 0, over: handover, after: swap + gap)
         incoming.tap?.setBass(to: 1, over: handover, after: swap)
         bassSwapActive = true
     }

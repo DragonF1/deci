@@ -335,6 +335,7 @@ final class MusicDSPChain: @unchecked Sendable {
 
     fileprivate func render(_ list: UnsafeMutableAudioBufferListPointer, frames: Int, lease: MusicRenderLease) {
         guard frames > 0, list.count > 0 else { return }
+        lease.noteRendered(frames)
 
         // The owner plays. A standby that has not claimed the chain renders too, on its own filters: its item may be primed
         // with frames while paused and they get the EQ like any others. Anything else (released, or superseded by the lease
@@ -424,7 +425,7 @@ final class MusicDSPChain: @unchecked Sendable {
         let sampleCount = frames * 2
         frameCount.wrappingAdd(frames, ordering: .relaxed)
         // Tier 3b P4: the bass channel of a beat mix (nil when idle, which is free).
-        let bass = lease.beginBassRender()
+        let bass = lease.beginBassRender(fade: fade)
         defer {
             lease.endFade(fade.advanced(by: frames))
             lease.endOffset(offset.advanced(by: frames))
@@ -693,8 +694,14 @@ struct MusicBassSplit {
     /// The low band of one sample of `channel` (0 or 1).
     mutating func lowpass(_ x: Float, channel: Int) -> Float {
         let offset = (channel & 1) * 4
-        let mid = Self.step(Double(x), first, &state, offset)
+        // One NaN or infinity must not live on in the IIR state (the flush below is false for NaN): a bad input counts as
+        // silence, and a state that went bad anyway is cleared.
+        let mid = Self.step(x.isFinite ? Double(x) : 0, first, &state, offset)
         let out = Self.step(mid, second, &state, offset + 2)
+        guard out.isFinite else {
+            for index in offset..<(offset + 4) { state[index] = 0 }
+            return 0
+        }
         return Float(out)
     }
 
@@ -951,6 +958,13 @@ final class MusicRenderLease: @unchecked Sendable {
     private let bassRequest = Atomic<UInt64>(UInt64(Float(1).bitPattern) << 32)
     private let bassDelayRequest = Atomic<Int>(0)
     private let bassGeneration = Atomic<Int>(0)
+    /// Renderer only: the channel was ended but is still rendering until the fade settles (see `beginBassRender`).
+    private var bassLinger = false
+    /// Every frame the tap has handed this lease (counted on the render thread). Tests read it to see how many frames a
+    /// lease renders per wall second at a nudged rate.
+    private let renderedFrameCount = Atomic<Int>(0)
+    var renderedFrames: Int { renderedFrameCount.load(ordering: .relaxed) }
+    fileprivate func noteRendered(_ frames: Int) { renderedFrameCount.wrappingAdd(frames, ordering: .relaxed) }
     private let bassEpoch = Atomic<Int>(0)
     private nonisolated(unsafe) var bassGain = MusicBassGain(value: 1)
     private nonisolated(unsafe) var seenBassGeneration = 0
@@ -1195,8 +1209,17 @@ final class MusicRenderLease: @unchecked Sendable {
     #endif
 
     /// The renderer's bass state for this block, nil while the channel is off.
-    fileprivate func beginBassRender() -> MusicBassGain? {
-        guard bassActiveFlag.load(ordering: .acquiring) else { return nil }
+    ///
+    /// After `endBass` the two-band path stays until the fade has nothing left to ramp and the bass gain is steady (the
+    /// same condition as the bypass): leaving while the fade is still below the bass gain would step the lows from
+    /// `b * low` to `f * low`, an audible click.
+    fileprivate func beginBassRender(fade: MusicFade) -> MusicBassGain? {
+        guard bassActiveFlag.load(ordering: .acquiring) else {
+            if bassLinger, fade.remaining > 0 || !bassGain.isSteady { return bassGain }
+            bassLinger = false
+            return nil
+        }
+        bassLinger = true
         // Generation first, then the epoch: a begin stores its epoch before any later ramp bumps the generation.
         let generation = bassGeneration.load(ordering: .acquiring)
         let epoch = bassEpoch.load(ordering: .acquiring)

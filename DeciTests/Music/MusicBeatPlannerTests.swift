@@ -242,6 +242,9 @@ struct MusicBeatPlannerTests {
         let shorter = Self.plan(swap)
         #expect(shorter.mode == .beat && shorter.overlapBars == 8)
         #expect(try #require(shorter.mixOutSec) >= swap.earliestMixOutSec!)
+        // The 8-bar fallback still hands the bass over: at its own half way, across two beats.
+        #expect(shorter.bassSwapAtSec == shorter.overlapSec / 2, "swapAt \(String(describing: shorter.bassSwapAtSec))")
+        #expect(shorter.bassHandoverSec > 0)
     }
 
     @Test("a missing grid is only reported when a grid was expected")

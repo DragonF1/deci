@@ -216,6 +216,7 @@ final class MusicTapDeck: @unchecked Sendable {
 
     #if DEBUG
     var debugBass: MusicRenderLease.DebugBass? { state.withLock { $0.lease?.debugBass } }
+    var debugRenderedFrames: Int? { state.withLock { $0.lease?.renderedFrames } }
     var debugLeaseRate: Double? { state.withLock { $0.lease?.processorSampleRate } }
     #endif
 
