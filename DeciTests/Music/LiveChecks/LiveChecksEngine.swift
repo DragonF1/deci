@@ -237,19 +237,29 @@ extension LiveChecks {
         let pass7 = measured >= 1 && planMedian <= 40 && downShare >= 0.6 && enginePass
         let alignment = LiveAlignment.load()
         var db: [LiveDownbeatResult] = []
+        var aliasFreeSongs = Set<Int>()
         var skippedAmbiguous = 0, skipped68 = 0, noPhase = 0, noOverlap = 0
         for song in world.songs {
             guard let a = alignment[song.key] else { continue }
             if !a.unambiguous { skippedAmbiguous += 1; continue }
             if a.timeSignature != "4|4" { skipped68 += 1; continue }
             guard let grid = world.rows[song.videoId]?.usableGrid, grid.downbeatPhase != nil else { noPhase += 1; continue }
-            if let r = LiveDownbeats.compare(song: song, grid: grid) { db.append(r) } else { noOverlap += 1 }
+            if let r = LiveDownbeats.compare(song: song, grid: grid) {
+                db.append(r)
+                if a.aliasFree { aliasFreeSongs.insert(song.index) }
+            } else { noOverlap += 1 }
         }
         let dbCompared = db.reduce(0) { $0 + $1.compared }
         let dbMatched = db.reduce(0) { $0 + $1.matched }
         let shifts = (0..<4).map { k in db.reduce(0) { $0 + $1.shiftCounts[k] } }
         let songMatches = db.filter { Double($0.matched) / Double($0.compared) >= 0.5 }.count
         let dbErrors = db.flatMap(\.timeErrorsMs).map(abs)
+        func share(_ group: [LiveDownbeatResult]) -> String {
+            let compared = group.reduce(0) { $0 + $1.compared }, matched = group.reduce(0) { $0 + $1.matched }
+            return "\(matched) of \(compared) truth downbeats (\(liveF(compared == 0 ? 0 : Double(matched) / Double(compared) * 100, 1)) %), \(group.filter { Double($0.matched) / Double($0.compared) >= 0.5 }.count) of \(group.count) songs at least half"
+        }
+        let aliasFreeResults = db.filter { aliasFreeSongs.contains($0.songIndex) }
+        let aliasChosenResults = db.filter { !aliasFreeSongs.contains($0.songIndex) }
         let perSong = db.map { r -> String in
             let best = r.shiftCounts.enumerated().max { $0.element < $1.element }!
             return "song \(r.songIndex): \(r.matched) of \(r.compared) truth downbeats match, dominant shift \(best.offset) beat(s) (\(best.element) of \(r.compared)), downbeat vote share \(liveF(Double(r.downbeatConfidence), 2))"
@@ -257,6 +267,7 @@ extension LiveChecks {
         let triage7 = [
             "TRIAGE (truth artifacts removed): songs with an unambiguous alignment and a beat_this downbeat phase: \(db.count) (left out: \(skippedAmbiguous) ambiguous alias, \(skipped68) 6/8, \(noPhase) without a usable grid or phase, \(noOverlap) with no truth downbeat on a grid beat)",
             "beat_this downbeat vs truth downbeat, only inside the annotated range: \(dbMatched) of \(dbCompared) truth downbeats are grid downbeats (\(liveF(dbCompared == 0 ? 0 : Double(dbMatched) / Double(dbCompared) * 100, 1)) %); \(songMatches) of \(db.count) songs match at least half; time error median \(liveF(LiveScan.median(dbErrors), 1)) ms, max \(liveF(dbErrors.max() ?? .nan, 1)) ms",
+            "alias free songs (offset under half a beat, truth bar positions need no alignment choice): \(share(aliasFreeResults)); songs whose offset is a beat or more (truth bar position depends on the alias choice): \(share(aliasChosenResults))",
             "grid downbeat sits N beats off the truth downbeat (mod 4), counted per truth downbeat: N=0 \(shifts[0]), N=1 \(shifts[1]), N=2 \(shifts[2]), N=3 \(shifts[3])",
             "planner beat plans with both mix points inside the annotated range (nothing extrapolated): \(inRangeCount) of \(beat); incoming on a truth downbeat \(inRangeIn), outgoing on a truth downbeat \(inRangeOut)",
         ] + inRange + perSong

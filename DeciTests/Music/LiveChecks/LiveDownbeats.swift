@@ -1,7 +1,9 @@
 // DeciTests/Music/LiveChecks/LiveDownbeats.swift
 // Check 7 triage: beat_this downbeats against the Harmonix truth downbeats, without the two truth artifacts. Songs whose
 // truth alignment is ambiguous by a beat (alias flag with margin under 0.5) and 6/8 songs are left out, and only truth
-// downbeats inside the annotated range count, so nothing is extrapolated.
+// downbeats inside the annotated range count, so nothing is extrapolated. The truth bar positions of a song whose offset
+// is a whole beat or more depend on an alias choice made by heuristics (see LiveAlignment.aliasFree), so the triage also
+// reports the alias free songs alone.
 
 import Foundation
 @testable import Deci
@@ -10,8 +12,15 @@ nonisolated struct LiveAlignment: Sendable {
     var flag: String?
     var margin: Double
     var timeSignature: String
+    var offsetSec: Double
+    var bpm: Double
 
     var unambiguous: Bool { flag == nil || margin >= 0.5 }
+
+    /// The truth was moved onto the YouTube audio by an offset found by correlation, and any whole number of beats
+    /// aliases to the same beat score. Only an offset under half a beat needs no alias choice, so the truth bar
+    /// positions of those songs are the only ones that do not depend on the alignment heuristics.
+    var aliasFree: Bool { bpm > 0 && abs(offsetSec) < 0.5 * 60 / bpm }
 
     static func load() -> [String: LiveAlignment] {
         guard let data = try? Data(contentsOf: LiveDirs.manifest),
@@ -21,7 +30,9 @@ nonisolated struct LiveAlignment: Sendable {
             guard let key = item["id"] as? String else { continue }
             out[key] = LiveAlignment(
                 flag: item["alias_flag"] as? String, margin: (item["alias_margin"] as? NSNumber)?.doubleValue ?? 0,
-                timeSignature: (item["ts"] as? String) ?? "4|4"
+                timeSignature: (item["ts"] as? String) ?? "4|4",
+                offsetSec: (item["offset_sec"] as? NSNumber)?.doubleValue ?? 0,
+                bpm: (item["bpm"] as? NSNumber)?.doubleValue ?? 0
             )
         }
         return out
