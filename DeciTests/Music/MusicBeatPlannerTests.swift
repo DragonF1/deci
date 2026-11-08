@@ -145,8 +145,11 @@ struct MusicBeatPlannerTests {
 
     @Test("16 bars once the bass swap exists and both songs have room")
     func sixteenWithSwap() throws {
-        let plan = Self.plan(Self.inputs(aOutro: 40, swap: true))
+        let inputs = Self.inputs(aOutro: 40, swap: true)
+        let plan = Self.plan(inputs)
         #expect(plan.mode == .beat && plan.overlapBars == 16 && plan.overlapSec == 32)
+        // The plan carries the smart start for an engine that has to give the beat plan up.
+        #expect(plan.fallbackIncomingStartSec == MusicTransitionPlanner.smartPlan(inputs).incomingStartSec)
         #expect(plan.bassSwapAtSec == 16)
         #expect(plan.bassHandoverSec == 1)
         let mixOut = try #require(plan.mixOutSec)

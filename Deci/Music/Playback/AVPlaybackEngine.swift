@@ -233,6 +233,12 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var pendingGlide: TimeInterval = 0
     /// The fall-back reason of this preload was logged already.
     private var loggedFallback = false
+    /// A beat plan the engine gave up (late, no lease): it runs as a plain start for the rest of this preload, never on the
+    /// grid, even if what stopped it clears.
+    private var beatGivenUp = false
+    /// The standby is being re-parked on the smart start after a beat fallback; `reparkMixIn` is where it was.
+    private var reparkPending = false
+    private var reparkMixIn: TimeInterval = 0
     /// The rate the scheduled standby start was planned at: the beat plan's nudge, 1 for every other transition.
     private var plannedRate: Float = 1
     /// A beat mix's overlap, from its flip until the outgoing deck has drained: what a resume needs to realign the decks.
@@ -319,6 +325,12 @@ final class AVPlaybackEngine: PlaybackEngine {
     #if DEBUG
     /// Makes the next seek to a planned incoming offset count as failed. A test seam.
     var debugFailNextParkSeek = false
+    /// The next re-park seek after a beat fallback counts as failed, or its completion is held for ever. Test seams.
+    var debugFailNextReseek = false
+    var debugHoldReseek = false
+    var debugReparkPending: Bool { reparkPending }
+    var debugBeatGivenUp: Bool { beatGivenUp }
+    var debugStandbyStartOffset: TimeInterval { standby.startOffset }
     var debugActiveTap: MusicTapDeck? { active.tap }
     /// Marks the preload ready without any media, so the aligned-start paths can be tested. A test seam.
     func debugMarkPreloadReady() { if preloadStream != nil { preloadReady = true } }
@@ -753,6 +765,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         preloadReady = false
         prerollRetried = false
         loggedFallback = false
+        beatGivenUp = false
+        reparkPending = false
         transitionPlan = plan
         standby.player.audioOutputDeviceUniqueID = outputDeviceUID
         standby.player.automaticallyWaitsToMinimizeStalling = false
@@ -846,6 +860,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         plannedLead = 0
         plannedRate = 1
         plannedPlan = nil
+        beatGivenUp = false
+        reparkPending = false
         restoreOutgoingEnd()
         endRestoredBySeek = false
         transitionPlan = nil
@@ -955,7 +971,73 @@ final class AVPlaybackEngine: PlaybackEngine {
                 reason: "engine" + reason.prefix(1).uppercased() + reason.dropFirst(), bpmA: nil, bpmB: nil
             )
             Self.logger.notice("\(beat, privacy: .public)")
+            beatGivenUp = true
+            reparkStandbyOnSmartStart(plan)
         }
+    }
+
+    /// A beat plan that falls back parks its standby on the mix-in (the first bar line), which would skip the song's intro
+    /// in a plain start. The standby goes back to the smart plan's start the plan carries, with the schedule held until the
+    /// seek and the preroll are done. A start that comes first (the item ended) goes ahead from the mix-in.
+    private func reparkStandbyOnSmartStart(_ plan: TransitionPlan) {
+        guard let smart = plan.fallbackIncomingStartSec, smart.isFinite, smart >= 0,
+              abs(smart - standby.startOffset) > 0.01 else { return }
+        let deck = standby
+        if let end = deck.naturalEnd, smart >= end - 1 { return }
+        let token = deck.token
+        reparkMixIn = deck.startOffset
+        reparkPending = true
+        deck.startOffset = smart
+        transitionPlan?.incomingStartSec = smart
+        deck.player.pause()
+        deck.player.seek(to: CMTime(seconds: smart, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) {
+            [weak self, weak deck] finished in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil,
+                      self.reparkPending else { return }
+                var landed = finished
+                #if DEBUG
+                if self.debugHoldReseek { return }
+                if self.debugFailNextReseek {
+                    self.debugFailNextReseek = false
+                    landed = false
+                }
+                #endif
+                guard landed else {
+                    self.revertRepark(deck, token: token)
+                    return
+                }
+                deck.player.preroll(atRate: 1) { [weak self, weak deck] _ in
+                    Task { @MainActor [weak self, weak deck] in
+                        guard let self, let deck, deck === self.standby, deck.token == token, self.reparkPending else { return }
+                        self.reparkPending = false
+                        self.evaluateSchedule()
+                    }
+                }
+            }
+        }
+    }
+
+    /// The re-park did not land: the standby goes back on the mix-in, as before this fix, and the log says so.
+    private func revertRepark(_ deck: Deck, token: Int) {
+        reparkPending = false
+        deck.startOffset = reparkMixIn
+        transitionPlan?.incomingStartSec = reparkMixIn
+        logNoReseek()
+        deck.player.seek(to: CMTime(seconds: reparkMixIn, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) {
+            [weak self, weak deck] _ in
+            Task { @MainActor [weak self, weak deck] in
+                guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
+                self.evaluateSchedule()
+            }
+        }
+    }
+
+    private func logNoReseek() {
+        let line = MusicTransitionLog.beatFallbackLine(
+            from: active.videoId ?? "-", to: preloadStream?.videoId ?? "-", reason: "engineLateNoReseek", bpmA: nil, bpmB: nil
+        )
+        Self.logger.notice("\(line, privacy: .public)")
     }
 
     // MARK: - Hand-over
@@ -1001,6 +1083,10 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         guard plan.mode == .smart || plan.mode == .fixed || plan.mode == .beat,
               plan.fadeSeconds >= Self.minimumFade else { return (0, 0, 1) }
+        if beatGivenUp, plan.mode == .beat {
+            let fixed = fadeLength(remaining: remaining, end: end)
+            return (fixed, fixed, 1)
+        }
         guard chain != nil, active.itemIsTapped, standby.itemIsTapped,
               active.tap?.hasLease == true, standby.tap?.hasLease == true else {
             logFallback(reason: "noLease")
@@ -1049,6 +1135,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         let numbers = scheduledHost != nil
             ? (fade: plannedFade, lead: plannedLead, rate: plannedRate)
             : transitionNumbers(remaining: remaining, end: end)
+        // The standby is being put back on the smart start after a beat fallback: the schedule follows when it has landed.
+        guard !reparkPending else { return }
         let fade = numbers.fade
         let lead = numbers.lead
         // The window is counted from the start of the overlap, not from the end.
@@ -1222,6 +1310,14 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         let incoming = standby
         let outgoing = active
+        if reparkPending {
+            // The item ended before the seek to the smart start landed: start from the mix-in as before, and say so.
+            reparkPending = false
+            standby.startOffset = reparkMixIn
+            transitionPlan?.incomingStartSec = reparkMixIn
+            logNoReseek()
+            standby.player.seek(to: CMTime(seconds: reparkMixIn, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
         outgoingPositionAtCrossfade = nil
         let hostClock = CMClockGetHostTimeClock()
         let wasAligned = alignedStart

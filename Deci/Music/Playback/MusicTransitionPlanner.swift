@@ -46,6 +46,9 @@ struct TransitionPlan: Equatable, Sendable {
     var glideBackSec: Double = 0
     /// Why beat mode was refused, when it was (a `MusicBeatPlanner.Fallback` raw value).
     var fallbackReason: String? = nil
+    /// Beat mode: the smart plan's incoming start. When the engine cannot honour the beat plan it re-parks the standby here, so
+    /// the song starts at its smart start and not on the first bar line (`incomingStartSec` is the mix-in of the beat plan).
+    var fallbackIncomingStartSec: Double? = nil
 
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(

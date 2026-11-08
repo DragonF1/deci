@@ -106,6 +106,7 @@ enum MusicBeatPlanner {
             plan.incomingRate = tempo.rate
             plan.mixOutSec = mixOut
             plan.mixInSec = mixIn
+            plan.fallbackIncomingStartSec = smart.incomingStartSec
             plan.incomingStartSec = mixIn
             plan.fadeStartSec = mixOut
             plan.fadeSeconds = overlap

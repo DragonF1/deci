@@ -35,7 +35,7 @@ struct AVPlaybackEngineBeatTests {
         )
     }
 
-    private func beatPlan(rate: Double = 0.95, mixIn: Double = 2, mixOut: Double = 6, overlap: Double = 2, swapAt: Double? = nil, handover: Double = 0) -> TransitionPlan {
+    private func beatPlan(rate: Double = 0.95, mixIn: Double = 2, mixOut: Double = 6, overlap: Double = 2, swapAt: Double? = nil, handover: Double = 0, smartStart: Double? = nil) -> TransitionPlan {
         var plan = TransitionPlan(
             mode: .beat, incomingStartSec: mixIn, outgoingEndSec: mixOut + overlap, fadeStartSec: mixOut,
             fadeSeconds: overlap, incomingGainDb: 0, incomingGlideSeconds: 0, outgoingGainDb: 0,
@@ -50,6 +50,7 @@ struct AVPlaybackEngineBeatTests {
         plan.glideBackSec = 10
         plan.bassSwapAtSec = swapAt
         plan.bassHandoverSec = handover
+        plan.fallbackIncomingStartSec = smartStart
         return plan
     }
 
@@ -462,5 +463,103 @@ struct AVPlaybackEngineBeatTests {
         #expect(gap(99) == 0)
         #expect(gap(110) == 0.25)
         #expect(AVPlaybackEngine.startGap(scheduledHost: .invalid, now: now) == 0.05)
+    }
+
+    // MARK: - Beat fallback starts at the smart start
+
+    private func standbyTime(_ engine: AVPlaybackEngine) -> Double { engine.standbyAvPlayer.currentTime().seconds }
+
+    /// A late beat plan (the fade does not fit what is left of a 4 s song) with the smart start at 0.5 s.
+    private func lateEngine(chain: Bool = true, name: String = "f") async throws -> AVPlaybackEngine {
+        let first = try await writeTone(name + "1", seconds: 4)
+        let second = try await writeTone(name + "2", seconds: 12)
+        let engine = chain ? makeEngine() : AVPlaybackEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream(name + "1", duration: 4, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream(name + "2", duration: 12, url: second), plan: beatPlan(mixIn: 2, mixOut: 3, overlap: 4, smartStart: 0.5))
+        return engine
+    }
+
+    @Test("a late beat plan re-parks the standby on the smart start, not the mix-in")
+    func lateFallbackStartsAtSmartStart() async throws {
+        let engine = try await lateEngine()
+        let moved = await waitUntil(timeout: .seconds(30)) { engine.debugBeatGivenUp && !engine.debugReparkPending && abs(self.standbyTime(engine) - 0.5) < 0.05 }
+        #expect(moved, "standby at \(standbyTime(engine)), given up \(engine.debugBeatGivenUp)")
+        #expect(engine.transitionPlan?.incomingStartSec == 0.5)
+        #expect(engine.debugStandbyStartOffset == 0.5)
+        engine.unload()
+    }
+
+    @Test("a beat plan with no lease on a deck re-parks the standby on the smart start")
+    func noLeaseFallbackStartsAtSmartStart() async throws {
+        let engine = try await lateEngine(chain: false, name: "n")
+        let moved = await waitUntil(timeout: .seconds(30)) { engine.debugBeatGivenUp && !engine.debugReparkPending && abs(self.standbyTime(engine) - 0.5) < 0.05 }
+        #expect(moved, "standby at \(standbyTime(engine)), given up \(engine.debugBeatGivenUp)")
+        #expect(engine.transitionPlan?.incomingStartSec == 0.5)
+        engine.unload()
+    }
+
+    @Test("a play that starts right on the lead (too close to move) re-parks the standby on the smart start")
+    func tooCloseFallbackStartsAtSmartStart() async throws {
+        let first = try await writeTone("t1", seconds: 8)
+        let second = try await writeTone("t2", seconds: 12)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("t1", duration: 8, url: first), startAt: 4.97, autoplay: false)
+        engine.preload(stream("t2", duration: 12, url: second), plan: beatPlan(mixIn: 2, mixOut: 5, overlap: 2, smartStart: 0.5))
+        let ready = await waitUntil(timeout: .seconds(30)) { engine.preloadIsReady }
+        #expect(ready)
+        engine.play()
+        let moved = await waitUntil(timeout: .seconds(30)) { engine.debugBeatGivenUp && !engine.debugReparkPending && abs(self.standbyTime(engine) - 0.5) < 0.05 }
+        #expect(moved, "standby at \(standbyTime(engine)), given up \(engine.debugBeatGivenUp)")
+        engine.unload()
+    }
+
+    @Test("a re-park seek that fails puts the standby back on the mix-in, and the start goes ahead from there")
+    func failedReseekKeepsMixIn() async throws {
+        let first = try await writeTone("r1", seconds: 4)
+        let second = try await writeTone("r2", seconds: 12)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.debugFailNextReseek = true
+        engine.load(stream("r1", duration: 4, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("r2", duration: 12, url: second), plan: beatPlan(mixIn: 2, mixOut: 3, overlap: 4, smartStart: 0.5))
+        let reverted = await waitUntil(timeout: .seconds(30)) { engine.debugBeatGivenUp && !engine.debugReparkPending && engine.debugStandbyStartOffset == 2 }
+        #expect(reverted, "offset \(engine.debugStandbyStartOffset)")
+        #expect(engine.transitionPlan?.incomingStartSec == 2)
+        engine.unload()
+    }
+
+    @Test("the item ending before the re-park lands starts the next song from the mix-in")
+    func endBeforeReseekStartsAtMixIn() async throws {
+        let engine = try await lateEngineHeld()
+        let held = await waitUntil(timeout: .seconds(30)) { engine.debugBeatGivenUp && engine.debugReparkPending && engine.preloadIsReady }
+        #expect(held)
+        engine.debugActiveItemEnded()
+        #expect(!engine.debugReparkPending)
+        let there = await waitUntil(timeout: .seconds(10)) { engine.avPlayer.currentTime().seconds >= 1.9 }
+        #expect(there, "next song at \(engine.avPlayer.currentTime().seconds)")
+        #expect(engine.avPlayer.currentTime().seconds < 3)
+        engine.unload()
+    }
+
+    private func lateEngineHeld() async throws -> AVPlaybackEngine {
+        let first = try await writeTone("h1", seconds: 4)
+        let second = try await writeTone("h2", seconds: 12)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.debugHoldReseek = true
+        engine.load(stream("h1", duration: 4, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("h2", duration: 12, url: second), plan: beatPlan(mixIn: 2, mixOut: 3, overlap: 4, smartStart: 0.5))
+        return engine
+    }
+
+    @Test("a beat plan that runs normally keeps its mix-in park and never gives the grid up")
+    func normalBeatPlanUnchanged() async throws {
+        let engine = try await overlapEngine()
+        #expect(!engine.debugBeatGivenUp)
+        #expect(!engine.debugReparkPending)
+        #expect(engine.debugBeatOverlap != nil)
+        engine.unload()
     }
 }
