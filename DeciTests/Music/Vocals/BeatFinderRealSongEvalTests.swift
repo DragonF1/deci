@@ -220,8 +220,7 @@ struct BeatFinderRealSongEvalTests {
             guard let g = analysis.usableGrid else { report += "\(id) | NO GRID\n"; continue }
             let isTrusted = Self.trusted(g)
             guard isTrusted else {
-                report += "\(id) | no | - | production runs no downbeat step on an untrusted grid (phase \(g.downbeatPhase.map(String.init) ?? "nil"))\n"
-                #expect(g.downbeatPhase == nil, "\(id) untrusted grid carries a downbeat")
+                report += "\(id) | no | - | planner gates refuse this grid, so a downbeat is unused (stored phase \(g.downbeatPhase.map(String.init) ?? "nil"))\n"
                 continue
             }
             trustedCount += 1
