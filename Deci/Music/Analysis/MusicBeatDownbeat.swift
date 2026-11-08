@@ -79,8 +79,8 @@ nonisolated extension MusicBeatFinder {
         while k + 3 <= beats.upperBound {
             defer { k += 4 }
             let slots = (0..<4).map { features[k - beats.lowerBound + $0] }
-            guard slots.allSatisfy({ $0 != nil }) else { continue }
-            let f = slots.map { $0! }
+            let f = slots.compactMap { $0 }
+            guard f.count == 4 else { continue }
             let kickMean = f.reduce(0) { $0 + $1.kick } / 4
             let harmonyMean = f.reduce(0) { $0 + $1.harmony } / 4
             let sectionMean = f.reduce(0) { $0 + $1.section } / 4
@@ -140,8 +140,7 @@ nonisolated extension MusicBeatFinder {
         var harmony = [Double?](repeating: nil, count: total)
         var loudness = [Double?](repeating: nil, count: total)
 
-        let chromaSpectrum = Spectrum(size: chromaWindow)
-        let snareSpectrum = Spectrum(size: snareWindow)
+        guard let chromaSpectrum = Spectrum(size: chromaWindow), let snareSpectrum = Spectrum(size: snareWindow) else { return [] }
         defer {
             chromaSpectrum.destroy()
             snareSpectrum.destroy()
@@ -209,8 +208,10 @@ nonisolated extension MusicBeatFinder {
         let nk = normalised(kick), ns = normalised(snare)
         let nh = normalised(harmony, floor: harmonyFloor), nsec = normalised(section, floor: sectionFloor)
         return (0..<total).map { index in
-            guard let a = nk[index], let b = ns[index], let c = nh[index] else { return nil }
-            return BeatFeature(kick: a, snare: b, harmony: c, section: nsec[index] ?? 1)
+            // A beat within `sectionBeats` of either end has no section value: it has no feature, so its block is dropped
+            // (a default would spike the blocks that straddle the edge).
+            guard let a = nk[index], let b = ns[index], let c = nh[index], let e = nsec[index] else { return nil }
+            return BeatFeature(kick: a, snare: b, harmony: c, section: e)
         }
     }
 
@@ -270,10 +271,11 @@ nonisolated extension MusicBeatFinder {
         private let log2n: vDSP_Length
         private let window: [Float]
 
-        init(size: Int) {
+        init?(size: Int) {
             self.size = size
             log2n = vDSP_Length(log2(Double(size)).rounded())
-            setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
+            guard let made = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else { return nil }
+            setup = made
             var w = [Float](repeating: 0, count: size)
             vDSP_hann_window(&w, vDSP_Length(size), Int32(vDSP_HANN_NORM))
             window = w

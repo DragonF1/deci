@@ -42,7 +42,7 @@ nonisolated extension MusicBeatFinder {
         var confidence: Float
         var drift: Float
         /// Hit rate of the final grid, and the best hit rate of the same grid shifted to `chanceOffsets`, both on the
-        /// held-out (odd) beats. The grid is believed only when the first beats the second by `chanceMargin`.
+        /// held-out beats. The grid is believed only when the first beats the second by `chanceMargin`.
         var onRate: Float = 0
         var offRate: Float = 0
         var beatsChance: Bool { onRate - offRate >= Float(MusicBeatFinder.chanceMargin) }
@@ -282,25 +282,27 @@ nonisolated extension MusicBeatFinder {
         // A least squares line follows a lopsided cloud of attacks (a bass note trailing its kick) away from the dense
         // core, so the anchor takes the shift of up to one tolerance that puts the most beats on an attack. The shift is
         // chosen on the beats outside the held-out fold and the confidence is scored on the held-out beats (k mod 5 is 1
-        // or 3), so the score is not fitted on the beats it is measured on. A fold by beat parity aliases with the meter
-        // (a kick on beats 1 and 3 only leaves every odd beat empty); 5 shares no factor with 2, 3 or 4, so each fold
-        // holds every slot of a 4/4 or 3/4 bar and an interleaved sample of the whole song.
-        func isOdd(_ k: Int) -> Bool { let r = ((k % 5) + 5) % 5; return r == 1 || r == 3 }
-        func hitCount(_ anchor: Double, odd: Bool) -> Int {
+        // or 3). Only this shift respects the fold: the phase mode and both line fits above use every onset, so the score
+        // is partly fitted on the beats it is measured on, and the chance check against the off-beat offsets is what
+        // keeps it honest. A fold by beat parity aliases with the meter (a kick on beats 1 and 3 only leaves every odd
+        // beat empty); 5 shares no factor with 2, 3 or 4, so each fold holds every slot of a 4/4 or 3/4 bar and an
+        // interleaved sample of the whole song.
+        func isHeldOut(_ k: Int) -> Bool { let r = ((k % 5) + 5) % 5; return r == 1 || r == 3 }
+        func hitCount(_ anchor: Double, heldOut: Bool) -> Int {
             var count = 0, cursor = 0
-            for k in beats where isOdd(k) == odd {
+            for k in beats where isHeldOut(k) == heldOut {
                 let predicted = anchor + Double(k) * line.period
                 while cursor < onsets.count, onsets[cursor].time < predicted - hitToleranceSec { cursor += 1 }
                 if cursor < onsets.count, onsets[cursor].time <= predicted + hitToleranceSec { count += 1 }
             }
             return count
         }
-        let shiftCounts = (-10...10).map { hitCount(line.anchor + Double($0) * 0.001, odd: false) }
+        let shiftCounts = (-10...10).map { hitCount(line.anchor + Double($0) * 0.001, heldOut: false) }
         line.anchor += Double(bestShiftIndex(counts: shiftCounts) - 10) * 0.001
 
         // The strongest attack within the old search window of each beat; a hit when it sits within tolerance.
         var after: [(Int, Double)] = []
-        var oddHits = 0
+        var heldOutHits = 0
         var cursor = 0
         for k in beats {
             let predicted = line.anchor + Double(k) * line.period
@@ -322,7 +324,7 @@ nonisolated extension MusicBeatFinder {
             }
             let hit = abs(nearest.time - predicted) <= hitToleranceSec ? nearest : best
             after.append((k, hit.time - predicted))
-            if isOdd(k), abs(hit.time - predicted) <= hitToleranceSec { oddHits += 1 }
+            if isHeldOut(k), abs(hit.time - predicted) <= hitToleranceSec { heldOutHits += 1 }
         }
         guard after.count >= 4 else { return nil }
         let middle = Double(beats.lowerBound + beats.upperBound) / 2
@@ -332,12 +334,12 @@ nonisolated extension MusicBeatFinder {
             drift = Float((median(late) - median(early)) / max(1, Double(total) / 2))
         }
         // Chance level: the same onsets scored against the grid moved off the beat, held-out beats only.
-        let oddTotal = max(1, beats.filter(isOdd).count)
+        let heldOutTotal = max(1, beats.filter(isHeldOut).count)
         var offRate = 0.0
         for fraction in chanceOffsets {
-            offRate = max(offRate, Double(hitCount(line.anchor + fraction * line.period, odd: true)) / Double(oddTotal))
+            offRate = max(offRate, Double(hitCount(line.anchor + fraction * line.period, heldOut: true)) / Double(heldOutTotal))
         }
-        let onRate = min(1, Float(oddHits) / Float(oddTotal))
+        let onRate = min(1, Float(heldOutHits) / Float(heldOutTotal))
         return BassRefinement(
             anchor: line.anchor, period: line.period, confidence: onRate, drift: drift,
             onRate: onRate, offRate: Float(offRate)
