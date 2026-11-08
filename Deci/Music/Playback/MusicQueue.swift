@@ -407,13 +407,23 @@ struct MusicQueue: Equatable, Codable {
 
     /// The staged radio joins the end of the queue and the queue carries on as that radio. Shuffle never mixes it into
     /// the page. False when nothing is staged.
+    ///
+    /// `place` is Mix's say in the order of the radio songs (given the songs and the playing one, it returns the songs in
+    /// the order to append them). They join behind every song already queued either way, so a placement can never fall
+    /// before the current song or inside what the listener queued; an answer that is not a permutation of the songs is
+    /// ignored. Nil appends them as the radio gave them.
     @discardableResult
-    mutating func takeAutoplay() -> Bool {
+    mutating func takeAutoplay(placing place: (([MusicTrack], MusicTrack?) -> [MusicTrack])? = nil) -> Bool {
         guard case .page = source, !autoplay.isEmpty, let seed = autoplaySeed else { return false }
         var seen = Set(tracks.map(\.videoId))
-        let fresh = autoplay.filter { seen.insert($0.videoId).inserted }
+        let natural = autoplay.filter { seen.insert($0.videoId).inserted }
+        var fresh = natural
+        if let place, !natural.isEmpty {
+            let placed = place(natural, current)
+            if placed.count == natural.count, Set(placed.map(\.videoId)) == Set(natural.map(\.videoId)) { fresh = placed }
+        }
         if isShuffled {
-            for track in fresh {
+            for track in natural {
                 naturalRank[track.videoId] = nextRank
                 nextRank += 1
             }

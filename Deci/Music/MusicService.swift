@@ -1592,6 +1592,17 @@ final class MusicService {
     /// The first pick of a placed radio is analysed in the foreground once it plays, so the songs after it can be scored.
     @ObservationIgnored private var mixAnalyseCurrent = false
 
+    /// Reads the stored rows of the staged radio's first songs, so their placement can use what is already known. Nothing
+    /// is analysed for them: only the first pick is, once it plays.
+    private func readStagedRadioRows() {
+        let staged = Array(queue.autoplay.prefix(MusicMixWindow.size))
+        let previous = mixTask
+        mixTask = Task { [weak self] in
+            await previous?.value
+            await self?.readMixRows(for: staged)
+        }
+    }
+
     /// The order a staged radio joins the queue in under Mix: the song that mixes best out of the playing one goes
     /// first (a seeded random one when nothing is known), and each of the next songs of the window takes the slot that
     /// costs its neighbours least; songs past the window keep the radio's order. Rows are those Mix has read so far.
@@ -2477,6 +2488,7 @@ final class MusicService {
         if case .radio(let seed) = source, continuation == nil, queue.isPage, mixId == nil {
             // The radio that follows a page waits beside it until the page runs out.
             added = queue.stageAutoplay(page.tracks, continuation: page.continuation, seed: seed)
+            if added > 0, isMixOn { readStagedRadioRows() }
         } else {
             // The radio has answered: from here the queue is the radio's, even if it had nothing new to add. A mix's
             // answer joins the queue itself and the queue stays the mix's; a plain radio asked once the mix has run dry
