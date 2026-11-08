@@ -99,6 +99,7 @@ private final class Rig {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 // Each step is reported twice, once as the animator set it and once snapped to a whole point: one step.
+                self.origins.append(self.originY)
                 let whole = self.originY.rounded()
                 guard self.steps.last != whole else { return }
                 self.steps.append(whole)
@@ -107,6 +108,9 @@ private final class Rig {
     }
 
     private(set) var steps: [CGFloat] = []
+    /// Every origin the clip view reported, as AppKit left it: snapped to the backing pixel grid mid-glide, the exact
+    /// target at the end.
+    private(set) var origins: [CGFloat] = []
     private var stepObserver: NSObjectProtocol?
 
     isolated deinit {
@@ -280,7 +284,10 @@ struct LyricsScrollDriverTests {
             await rig.waitForGlideToEnd()
             let target = rig.expectedOffset(row: 20)
             let steps = rig.steps
-            for (earlier, later) in zip(steps, steps.dropFirst()) { #expect(later >= earlier) }
+            // Backwards means by more than the backing pixel grid: mid-glide AppKit snaps the origin to half points (2x
+            // screen), and the last step lands on the exact target, which can be a fraction below the last snap (569.5
+            // then 569.33). That is under a pixel and invisible. Comparing whole points made it look like a point back.
+            for (earlier, later) in zip(rig.origins, rig.origins.dropFirst()) { #expect(later >= earlier - 0.5) }
             #expect(abs(rig.originY - target) < 0.5)
             guard rig.longestStall < 0.1 else { continue }
             measured = true
