@@ -241,6 +241,30 @@ struct MusicAnalysisCoordinatorTests {
         #expect(row.usableGrid?.beatConfidence == 0.9)
     }
 
+    @Test("a version 3 row with a grid is stale but its grid survives an unreadable file (downbeat step is new in 4)")
+    func versionThreeGridSurvivesUnreadable() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+        var old = try #require(await rig.store.entry(for: id))
+        old.version = 3
+        old.beatGrid = MusicBeatGrid(
+            periodSec: 0.5, anchorSec: 1, downbeatPhase: nil, beatConfidence: 0.9, downbeatConfidence: 0,
+            intervalSpread: 0.01, driftSec: 0, spanStartSec: 1, spanEndSec: 100
+        ).encode()
+        try await rig.store.put(old)
+        #expect(await rig.store.freshness(of: id, matching: nil) == .staleVersion)
+        #expect(MusicAnalysis.currentVersion == 4)
+
+        rig.spy.fails = true
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+
+        let row = try #require(await rig.store.entry(for: id))
+        #expect(row.version == MusicAnalysis.currentVersion)
+        #expect(row.usableGrid?.beatConfidence == 0.9)
+        #expect(row.usableGrid?.downbeatPhase == nil)
+    }
+
     @Test("two ensure calls for one song at once share one fetch and one analysis")
     func coalesces() async throws {
         let rig = Rig(payload: payload)
