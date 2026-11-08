@@ -106,7 +106,7 @@ struct BeatFinderRealSongEvalTests {
         let cal = await Self.calibration()
         var report = "BEAT FINDER REAL SONGS (before = 6575e52 diagnosis, after = production analyzer now)\n"
         report += "calibration on a synthetic kick with known start: 40-100 Hz measure reads \(Self.f(cal * 1000))ms\n"
-        report += "id | bpm before>after | conf before>after | median residual ms before>after | jitter ms before>after | trusted before>after | xcheck 40-100 Hz ms (calibrated)\n"
+        report += "id | bpm before>after | conf before>after | median residual ms before>after | jitter ms before>after | on-phase/best off-phase rate | trusted before>after | xcheck 40-100 Hz ms (calibrated)\n"
         var trustedBefore = 0, trustedAfter = 0
         for id in ids {
             guard let old = Self.before[id],
@@ -135,12 +135,21 @@ struct BeatFinderRealSongEvalTests {
             let med = Self.median(residuals)
             let jitter = 1.4826 * Self.median(residuals.map { abs($0 - med) })
             let isTrusted = Self.trusted(g)
+            // The raw refinement of the same song: hit rate on-phase and the best off-phase rate (held-out beats).
+            let found = MusicBeatFinder.analyze(decimated: audio, rate: rate)
+            var rates = "n/a"
+            if let fit = MusicBeatFinder.fitGrid(found.beats), let firstBeat = found.beats.first, let lastBeat = found.beats.last {
+                let a = Int(((firstBeat - fit.start) / fit.period).rounded()), b = Int(((lastBeat - fit.start) / fit.period).rounded())
+                if a < b, let r = MusicBeatFinder.refine(band: band, period: fit.period, anchor: fit.start, beats: a...b) {
+                    rates = "\(Self.f(Double(r.onRate), 3))/\(Self.f(Double(r.offRate), 3))"
+                }
+            }
             let x40 = Self.bassOffset(audio, rate, g) - cal
             if old.trusted { trustedBefore += 1 }
             if isTrusted { trustedAfter += 1 }
             report += "\(id) | \(Self.f(old.bpm, 2))>\(Self.f(g.bpm, 2)) | \(Self.f(old.conf, 3))>\(Self.f(Double(g.beatConfidence), 3))"
                 + " | \(Self.f(old.resMs))>\(Self.f(med * 1000)) | \(Self.f(old.jitterMs))>\(Self.f(jitter * 1000))"
-                + " | \(old.trusted ? "yes" : "no")>\(isTrusted ? "yes" : "no")"
+                + " | \(rates) | \(old.trusted ? "yes" : "no")>\(isTrusted ? "yes" : "no")"
                 + " | \(Self.f(x40 * 1000))\(isTrusted && !old.trusted ? " | NEW" : "")\n"
             #expect(!(old.trusted && !isTrusted), "\(id) was trusted and no longer is")
             if isTrusted {
