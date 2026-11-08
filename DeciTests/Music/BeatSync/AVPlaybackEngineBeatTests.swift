@@ -143,6 +143,23 @@ struct AVPlaybackEngineBeatTests {
         #expect(delta > 0 && delta < 8)
     }
 
+    @Test("a beat plan at 0.99998 starts the standby at exactly 1: a rate change opens a gap in the output")
+    func nearOnePlanRateStartsAtExactlyOne() async throws {
+        let first = try await writeTone("n1", seconds: 10)
+        let second = try await writeTone("n2", seconds: 12)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("n1", duration: 10, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("n2", duration: 12, url: second), plan: beatPlan(rate: 0.99998))
+        let ready = await waitUntil(timeout: .seconds(30)) { engine.preloadIsReady }
+        #expect(ready)
+        let scheduled = await waitUntil(timeout: .seconds(30)) { engine.scheduledStartHost != nil }
+        #expect(scheduled)
+        #expect(engine.debugPlannedRate == 1, "planned rate was \(engine.debugPlannedRate)")
+        #expect(engine.standbyAvPlayer.rate == 1, "the standby was started at \(engine.standbyAvPlayer.rate)")
+        engine.unload()
+    }
+
     @Test("a beat plan whose fade is too short for the remaining item gives up the rate: a plain fade at 1")
     func lateBeatPlanRunsAtRateOne() async throws {
         let first = try await writeTone("l1", seconds: 4)

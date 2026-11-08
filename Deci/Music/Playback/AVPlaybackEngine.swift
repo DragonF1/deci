@@ -241,6 +241,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var reparkMixIn: TimeInterval = 0
     /// The rate the scheduled standby start was planned at: the beat plan's nudge, 1 for every other transition.
     private var plannedRate: Float = 1
+    private static let unityRateTolerance = 0.0005
     /// A beat mix's overlap, from its flip until the outgoing deck has drained: what a resume needs to realign the decks.
     private var beatOverlap: BeatOverlap?
     /// True while the decks' bass channels are on (from the flip of a beat mix with a swap until the drain is over).
@@ -1114,7 +1115,9 @@ final class AVPlaybackEngine: PlaybackEngine {
             return (fixed, fixed, 1)
         }
         lead = latest
-        return (fade, lead, isBeat ? Float(plan.incomingRate) : 1)
+        // A rate within 0.0005 of 1 (equal tempos) is 1: leaving or entering rate 1 reconfigures the player's audio path and
+        // opens a gap of about 125 ms in the output, which a drift of under 5 ms over a 10 s overlap does not justify.
+        return (fade, lead, isBeat && abs(plan.incomingRate - 1) > Self.unityRateTolerance ? Float(plan.incomingRate) : 1)
     }
 
     /// Starts the standby on the host time of the active item's end, once that is near, and keeps it there. With a
@@ -1447,7 +1450,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         snapRate(why: "skip")
         // The incoming deck's rate: a scheduled beat mix keeps its nudge, a manual skip never does.
         var beat: BeatOverlap?
-        if scheduled, let plan, plan.mode == .beat, plan.incomingRate != 1, plan.incomingRate.isFinite,
+        if scheduled, let plan, plan.mode == .beat, abs(plan.incomingRate - 1) > Self.unityRateTolerance, plan.incomingRate.isFinite,
            let mixIn = plan.mixInSec, let mixOut = plan.mixOutSec {
             beat = BeatOverlap(
                 rate: Float(plan.incomingRate), mixIn: mixIn, mixOut: mixOut, glideSeconds: max(0, plan.glideBackSec)
@@ -1622,8 +1625,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         glideTask = nil
         guard rate.isFinite, abs(rate - 1) > 0.0005, seconds > 0 else {
             glide = nil
-            // A beat entry a hair off 1 (0.99998) needs no glide, but the deck is left at that rate and the next mix is
-            // only scheduled at exactly 1: put it back at once (inaudible) or that mix falls to a gapless switch.
+            // A deck left a hair off 1 would never schedule the next mix (it needs exactly 1), so it is put back. Setting
+            // the rate leaves a gap of about 125 ms in the output, so a beat start at such a rate is made at exactly 1
+            // in the first place (see transitionNumbers) and this is only the last resort.
             if rate.isFinite, rate != 1, abs(rate - 1) <= 0.0005, active.player.rate != 0 { active.player.rate = 1 }
             return
         }
