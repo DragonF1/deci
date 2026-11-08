@@ -142,13 +142,13 @@ nonisolated enum MusicMixScore {
     @_optimize(speed)
     static func tempoTerm(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Double {
         guard a.bpm > 0, b.bpm > 0 else { return unknownTempo }
-        let ratio = a.bpm / b.bpm
-        var error = abs(ratio - 1)
+        // Always the faster over the slower, so the score is the same in both directions.
+        let ratio = max(a.bpm, b.bpm) / min(a.bpm, b.bpm)
+        var error = ratio - 1
         var factor = 1.0
-        // Half and double time, spelled out because this runs in the orderer's hot loop.
-        let doubled = abs(ratio * 2 - 1), halved = abs(ratio * 0.5 - 1)
-        if doubled < error - 1e-12 { error = doubled; factor = tempoMultipleFactor }
-        if halved < error - 1e-12 { error = halved; factor = tempoMultipleFactor }
+        // Half or double time: the faster song is twice the slower one.
+        let folded = abs(ratio / 2 - 1)
+        if folded < error - 1e-12 { error = folded; factor = tempoMultipleFactor }
         var value: Double
         if error <= tempoSweetSpot {
             value = 1

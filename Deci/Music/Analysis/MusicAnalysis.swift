@@ -89,7 +89,7 @@ struct MusicAnalysis: Sendable, Equatable {
         return MusicKeyInfo.decode(keyInfo)
     }
 
-    /// Camelot code when the detector was sure enough (confidence 0.2 or more), else nil (unknown key).
+    /// Camelot code when the detector was sure enough (confidence 0.10 or more), else nil (unknown key).
     nonisolated var trustedCamelot: String? { keyInfoValue?.trustedCamelot }
 
     /// RMS level of block `block` in dBFS; -infinity when out of range.

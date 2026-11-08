@@ -58,7 +58,8 @@ nonisolated struct MusicMixOrderer: Sendable {
     /// front, otherwise it is only the anchor the first pick mixes out of and is not returned.
     mutating func order(_ songs: [MusicMixProfile], first: MusicMixProfile?) -> [String] {
         let firstIndex = first.flatMap { f in songs.firstIndex { $0.videoId == f.videoId } }
-        let picked = run(songs: songs, anchor: first, firstIndex: firstIndex, arc: true, avoid: [])
+        // A first that is in the set is placed as slot 0, so it is not also the anchor (it would enter the spacing history twice).
+        let picked = run(songs: songs, anchor: firstIndex == nil ? first : nil, firstIndex: firstIndex, arc: true, avoid: [])
         return picked.map { songs[$0].videoId }
     }
 
@@ -86,7 +87,8 @@ nonisolated struct MusicMixOrderer: Sendable {
         let compact = window.map(MusicMixCompact.init)
         let anchorCompact = anchor.map(MusicMixCompact.init)
         func score(_ a: MusicMixCompact?, _ b: MusicMixCompact?) -> Double {
-            guard let a, let b else { return 0.5 }
+            // A missing neighbour contributes nothing, so a slot is judged by its net change to the path.
+            guard let a, let b else { return 0 }
             return MusicMixScore.score(from: a, to: b, allowLift: false)
         }
         var best = low, bestGain = -Double.infinity
@@ -104,15 +106,15 @@ nonisolated struct MusicMixOrderer: Sendable {
     /// a seeded random one, because a score of pure unknowns would always pick the first.
     mutating func pickBest(from candidates: [MusicMixProfile], after anchor: MusicMixProfile?) -> MusicMixProfile? {
         guard !candidates.isEmpty else { return nil }
+        let anchorKnown = anchor.map { $0.bpm != nil || $0.camelot != nil || $0.energy != nil } ?? false
         let known = candidates.contains { $0.bpm != nil || $0.camelot != nil || $0.energy != nil }
-        guard known, let anchor else { return candidates.randomElement(using: &generator) }
+        guard known, anchorKnown, let anchor else { return candidates.randomElement(using: &generator) }
         let from = MusicMixCompact(anchor)
-        var best = 0, bestScore = -Double.infinity
-        for (index, candidate) in candidates.enumerated() {
-            let value = MusicMixScore.score(from: from, to: MusicMixCompact(candidate), allowLift: false)
-            if value > bestScore + 1e-12 { best = index; bestScore = value }
-        }
-        return candidates[best]
+        let values = candidates.map { MusicMixScore.score(from: from, to: MusicMixCompact($0), allowLift: false) }
+        let top = values.max() ?? 0
+        // Ties are common (identical tempo and key), so the seed decides among them.
+        let tied = values.indices.filter { values[$0] >= top - 1e-9 }
+        return candidates[tied.randomElement(using: &generator) ?? 0]
     }
 
     // MARK: Helpers the tests and the arc check use
@@ -149,7 +151,7 @@ nonisolated struct MusicMixOrderer: Sendable {
 
         /// nil when the hard artist rule forbids the candidate.
         @_optimize(speed)
-        func evaluate(_ index: Int, allowLift: Bool, target: Float, strict: Bool) -> Double? {
+        func evaluate(_ index: Int, allowLift: Bool, target: Float, strict: Bool) -> (value: Double, raw: Double)? {
             let meta = metas[index]
             let lastArtist = recent.isEmpty ? -1 : recent[recent.count - 1].artist
             if strict, meta.artist >= 0, meta.artist == lastArtist { return nil }
@@ -164,9 +166,10 @@ nonisolated struct MusicMixOrderer: Sendable {
             }
             let count = recent.count
             var distance = 1
+            // The relaxed pass has no good choice on artists, the penalty would hit every candidate alike.
             while distance <= count {
                 let past = recent[count - distance]
-                if distance <= MusicMixOrderer.artistWindow, meta.artist >= 0, past.artist == meta.artist {
+                if strict, distance <= MusicMixOrderer.artistWindow, meta.artist >= 0, past.artist == meta.artist {
                     value -= distance == 1 ? MusicMixOrderer.backToBackPenalty : MusicMixOrderer.artistPenalty
                 }
                 if meta.keyId >= 0, meta.bucket >= 0, past.keyId == meta.keyId, past.bucket == meta.bucket {
@@ -175,7 +178,7 @@ nonisolated struct MusicMixOrderer: Sendable {
                 distance += 1
             }
             if meta.avoided { value -= MusicMixOrderer.avoidPenalty }
-            return value
+            return (value, pair)
         }
     }
 
@@ -268,7 +271,7 @@ nonisolated struct MusicMixOrderer: Sendable {
                     remaining.swapAt(position, position + generator.below(remaining.count - position))
                 }
             }
-            var scored: [(position: Int, value: Double)] = []
+            var scored: [(position: Int, value: Double, raw: Double)] = []
             var strictUsed = true
             for strict in [true, false] {
                 strictUsed = strict
@@ -276,13 +279,14 @@ nonisolated struct MusicMixOrderer: Sendable {
                 for position in 0..<looked {
                     let index = remaining[position]
                     if strict, let crowded, metas[index].artist != crowded { continue }
-                    guard let value = scorer.evaluate(index, allowLift: allowLift, target: t, strict: strict) else { continue }
-                    Self.insertTop(&scored, (position, value), limit: max(Self.candidateCount, Self.beamWidth))
+                    guard let result = scorer.evaluate(index, allowLift: allowLift, target: t, strict: strict) else { continue }
+                    Self.insertTop(&scored, (position, result.value, result.raw), limit: max(Self.candidateCount, Self.beamWidth))
                 }
                 // Relax the hard rule only when it leaves nothing (one artist left).
                 if !scored.isEmpty { break }
             }
-            let best = scored[0].value
+            // Thresholds read the raw pair score of the top pick; penalties only rank (they would make a one-artist set look stuck).
+            let best = scored[0].raw
             var chosen: Int
             if scorer.hasCurrent, best < Self.randomFallbackScore {
                 // Any song, but still one the hard artist rules allow.
@@ -292,7 +296,9 @@ nonisolated struct MusicMixOrderer: Sendable {
                     if artist >= 0, artist == lastArtist { return false }
                     return crowded == nil || artist == crowded
                 }
-                chosen = allowed.randomElement(using: &generator) ?? scored[0].position
+                // An avoided song only when nothing else is left.
+                let fresh = allowed.filter { !metas[remaining[$0]].avoided }
+                chosen = (fresh.isEmpty ? allowed : fresh).randomElement(using: &generator) ?? scored[0].position
             } else if scorer.hasCurrent, best < Self.deadEndScore {
                 chosen = beam(scored, from: scorer.current!, remaining: remaining, looked: looked, compact: compact)
             } else {
@@ -314,7 +320,7 @@ nonisolated struct MusicMixOrderer: Sendable {
 
     /// Keeps `list` sorted best first and at most `limit` long.
     @_optimize(speed)
-    private static func insertTop(_ list: inout [(position: Int, value: Double)], _ item: (position: Int, value: Double), limit: Int) {
+    private static func insertTop(_ list: inout [(position: Int, value: Double, raw: Double)], _ item: (position: Int, value: Double, raw: Double), limit: Int) {
         var at = list.count
         while at > 0, list[at - 1].value < item.value { at -= 1 }
         guard at < limit else { return }
@@ -324,7 +330,7 @@ nonisolated struct MusicMixOrderer: Sendable {
 
     /// Top candidates weighted by score squared, so a good fit is likelier but never certain.
     @_optimize(speed)
-    private mutating func weightedPick(_ scored: [(position: Int, value: Double)]) -> Int {
+    private mutating func weightedPick(_ scored: [(position: Int, value: Double, raw: Double)]) -> Int {
         let pool = scored.prefix(Self.candidateCount)
         let weights = pool.map { max($0.value, 0.001) * max($0.value, 0.001) }
         var roll = Double.random(in: 0..<weights.reduce(0, +), using: &generator)
@@ -338,7 +344,7 @@ nonisolated struct MusicMixOrderer: Sendable {
     /// Of the top few, the one whose best follow-up is best, so a dead end is not walked into.
     @_optimize(speed)
     private func beam(
-        _ scored: [(position: Int, value: Double)], from: MusicMixCompact, remaining: [Int], looked: Int,
+        _ scored: [(position: Int, value: Double, raw: Double)], from: MusicMixCompact, remaining: [Int], looked: Int,
         compact: [MusicMixCompact]
     ) -> Int {
         var bestPosition = scored[0].position, bestTotal = -Double.infinity

@@ -110,6 +110,14 @@ import Testing
         #expect(tempo(107) - tempo(110) > 0.2)
     }
 
+    @Test func tempoTermIsSymmetric() {
+        for (x, y) in [(100.0, 108.5), (100, 107), (70, 140), (120, 90), (100, 100)] {
+            let forward = MusicMixScore.tempoTerm(MusicMixCompact(Self.song("a", bpm: x)), MusicMixCompact(Self.song("b", bpm: y)))
+            let back = MusicMixScore.tempoTerm(MusicMixCompact(Self.song("b", bpm: y)), MusicMixCompact(Self.song("a", bpm: x)))
+            #expect(abs(forward - back) < 1e-9, "\(x) vs \(y)")
+        }
+    }
+
     @Test func halfAndDoubleTimeCountAsAMatch() {
         func tempo(_ b: Double) -> Double {
             MusicMixScore.tempoTerm(MusicMixCompact(Self.song("a", bpm: 70)), MusicMixCompact(Self.song("b", bpm: b)))
