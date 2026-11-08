@@ -156,11 +156,46 @@ struct MusicBeatPlannerTests {
         #expect(mixOut + 32 <= 236 + 1e-9)
     }
 
+    /// Outgoing mixOut for an 8 bar overlap: grid period 0.5 (a bar is 2 s, a phrase 16 s), first bar at 0.2, the latest
+    /// start `end - 16`, the earliest start `outro - 16`.
+    static func mixOut(end: Double, outro: Double) -> Double? {
+        let a = T.analysis("aaaaaaaaaaa", duration: 240, silenceEnd: end, outroStart: outro)
+        return B.mixOutTime(grid: grid(), analysis: a, bars: 8, barSec: 2, end: end)
+    }
+
+    @Test("a phrase boundary that fits is still the one chosen")
+    func phraseWinsWhenItFits() throws {
+        // Window [60, 76]: the phrase boundary 64.2 fits and wins although the 4 bar boundary 72.2 is later.
+        let time = try #require(Self.mixOut(end: 92, outro: 76))
+        #expect(abs(time - 64.2) < 1e-9)
+    }
+
+    @Test("when the phrase boundary misses the window, a 4 bar boundary that fits is used")
+    func fourBarFallback() throws {
+        // Window [70, 76]: the latest phrase boundary 64.2 is too early, the latest 4 bar boundary 72.2 fits.
+        let time = try #require(Self.mixOut(end: 92, outro: 86))
+        #expect(abs(time - 72.2) < 1e-9)
+    }
+
+    @Test("when only a 1 bar boundary fits, that one is used")
+    func oneBarFallback() throws {
+        // Window [74.5, 77]: phrase 64.2 and 4 bar 72.2 are too early, bars fall at 74.2 and 76.2.
+        let time = try #require(Self.mixOut(end: 93, outro: 90.5))
+        #expect(abs(time - 76.2) < 1e-9)
+    }
+
+    @Test("a window with no bar boundary at all is no room")
+    func noBoundary() {
+        // Window [76.5, 77]: bars at 76.2 and 78.2 both miss.
+        #expect(Self.mixOut(end: 93, outro: 92.5) == nil)
+    }
+
     @Test("it falls to 8 bars when only 8 fit, and refuses when neither fits")
     func fallsToEight() {
         let tight = Self.inputs(aDuration: 100, aEnd: 100, aOutro: 90, swap: true)
         #expect(Self.plan(tight).overlapBars == 8)
-        let none = Self.inputs(aDuration: 30, aEnd: 30, aOutro: 28, swap: true)
+        // Window [13, 14] for the mix out: no bar boundary (12.2, 14.2) lands in it.
+        let none = Self.inputs(aDuration: 30, aEnd: 30, aOutro: 29, swap: true)
         let plan = Self.plan(none)
         #expect(plan.mode == .smart && plan.fallbackReason == "noPhraseRoom")
     }

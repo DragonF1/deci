@@ -185,7 +185,7 @@ enum MusicBeatPlanner {
         return value
     }
 
-    /// The latest outgoing boundary (a phrase boundary when the downbeat is known, else a bar's worth of beats from the
+    /// The latest outgoing boundary (a phrase boundary when the downbeat is known, falling back to 4 bar and 1 bar boundaries, else a bar's worth of beats from the
     /// grid anchor) where `bars` bars fit before `end`, inside the validated span and not before the outro start minus
     /// `outroSlackBars` bars.
     static func mixOutTime(grid: MusicBeatGrid, analysis: MusicAnalysis, bars: Int, barSec: Double, end: Double) -> Double? {
@@ -197,9 +197,15 @@ enum MusicBeatPlanner {
         guard latest >= earliest else { return nil }
         var candidate: Double?
         if let first = grid.barTime(0) {
-            let phrase = Double(phraseBars) * barSec
-            let count = Int(((latest - first) / phrase + 1e-9).rounded(.down))
-            if count >= 0 { candidate = first + Double(count) * phrase }
+            // The latest 8 bar phrase boundary that fits wins; when none lands in the window, the latest 4 bar one, then
+            // the latest bar. A known downbeat must never leave less room than the no-downbeat branch below.
+            for stepBars in [phraseBars, 4, 1] {
+                let step = Double(stepBars) * barSec
+                let count = Int(((latest - first) / step + 1e-9).rounded(.down))
+                guard count >= 0 else { continue }
+                let time = first + Double(count) * step
+                if time >= earliest - 1e-9, time <= latest + 1e-9 { candidate = time; break }
+            }
         } else {
             let index = Int(((latest - grid.anchorSec) / barSec + 1e-9).rounded(.down))
             candidate = grid.beatTime(4 * index)
