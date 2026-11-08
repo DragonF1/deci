@@ -113,3 +113,5 @@ Guides: [AutoEQ](guide/autoeq.md), [URL schemes](guide/url-schemes.md), [Trouble
 ## Credits and license
 
 Deci is a fork of [FineTune](https://github.com/ronitsingh10/FineTune) by Ronit Singh. It is licensed under GPL-3.0. See [LICENSE](LICENSE).
+
+The beat tracker uses [beat_this](https://github.com/CPJKU/beat_this) (code and small0 weights, MIT, Copyright (c) 2024 Institute of Computational Perception, JKU Linz, Austria), ported to Swift and Core ML. See [LICENSE-beat_this.txt](Deci/Music/Analysis/BeatThis/LICENSE-beat_this.txt).

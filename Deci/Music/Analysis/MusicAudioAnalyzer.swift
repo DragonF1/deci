@@ -457,6 +457,8 @@ nonisolated enum MusicFileAnalyzer {
         var hitLimit = false
         let decimator = MusicBeatDecimator(inputRate: sampleRate)
         let keyDetector = MusicKeyDetector(sampleRate: sampleRate)
+        // beat_this wants the whole song as mono 22050 Hz; the resampler keeps it while the decode runs.
+        let resampler = BeatThisResampler(inputRate: sampleRate, reserveSeconds: exactDuration ?? 0)
         while let buffer = output.copyNextSampleBuffer() {
             if Task.isCancelled {
                 reader.cancelReading()
@@ -480,6 +482,7 @@ nonisolated enum MusicFileAnalyzer {
                 if let base = $0.baseAddress {
                     decimator.consume(interleaved: base, frames: take, channels: channels)
                     keyDetector.consume(interleaved: base, frames: take, channels: channels)
+                    if resampler.isUsable { resampler.consume(interleaved: base, frames: take, channels: channels) }
                 }
             }
             decoded += take
@@ -495,7 +498,8 @@ nonisolated enum MusicFileAnalyzer {
         var measurement = analyzer.finish(exactDuration: exactDuration)
         guard !measurement.isSilent else { throw Failure.empty }
         // A grid failure never fails the analysis.
-        measurement.beatGrid = beatGrid(from: decimator)
+        let (grid, gridSource) = beatGrid(from: decimator, resampler: resampler, duration: measurement.duration)
+        measurement.beatGrid = grid
         // A cancelled run must not hand back a row without its grid: the caller would store it as fresh.
         if Task.isCancelled {
             reader.cancelReading()
@@ -508,9 +512,9 @@ nonisolated enum MusicFileAnalyzer {
         let elapsed = started.duration(to: .now)
         let ms = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
         let lufs = measurement.integratedLUFS.map { String(format: "%.2f", $0) } ?? "nil"
-        let grid = measurement.beatGrid.map { String(format: "%.1f@%.2f", $0.bpm, $0.beatConfidence) } ?? "nil"
+        let gridText = measurement.beatGrid.map { String(format: "%.1f@%.2f", $0.bpm, $0.beatConfidence) } ?? "nil"
         let key = measurement.keyInfo.map { String(format: "%@@%.2f e=%.2f", $0.camelot, $0.confidence, $0.energy) } ?? "nil"
-        logger.notice("analysis_done id=\(file.deletingPathExtension().lastPathComponent, privacy: .public) ms=\(ms) lufs=\(lufs, privacy: .public) grid=\(grid, privacy: .public) key=\(key, privacy: .public)")
+        logger.notice("analysis_done id=\(file.deletingPathExtension().lastPathComponent, privacy: .public) ms=\(ms) lufs=\(lufs, privacy: .public) grid=\(gridText, privacy: .public) src=\(gridSource, privacy: .public) key=\(key, privacy: .public)")
         return Result(measurement: measurement, format: format, decodedSeconds: Double(decoded) / sampleRate)
     }
 
@@ -527,8 +531,37 @@ nonisolated enum MusicFileAnalyzer {
         return MusicKeyInfo(tonic: key.tonic, isMinor: key.isMinor, confidence: key.confidence, energy: energy)
     }
 
+    /// The beat grid after the decode loop: beat_this on the 22050 Hz copy, and when it is unavailable or finds no grid
+    /// the own finder on the audio the decimator kept. The second value names the source.
+    private static func beatGrid(
+        from decimator: MusicBeatDecimator, resampler: BeatThisResampler, duration: Double
+    ) -> (MusicBeatGrid?, String) {
+        guard resampler.isUsable else {
+            logger.notice("analysis_beatthis_skip why=sample_rate")
+            return (finderGrid(from: decimator), "finder")
+        }
+        let clock = ContinuousClock()
+        let start = clock.now
+        let samples = resampler.finish()
+        let drained = clock.now
+        let outcome = BeatThisEngine.grid(samples: samples, duration: duration)
+        func ms(_ d: Duration) -> Int { Int(d.components.seconds * 1000 + d.components.attoseconds / 1_000_000_000_000_000) }
+        logger.notice("analysis_grid_ms beatthis_drain=\(ms(start.duration(to: drained))) beatthis_model=\(ms(drained.duration(to: clock.now)))")
+        switch outcome {
+        case .grid(let grid):
+            return (grid, "beatthis")
+        case .cancelled:
+            return (nil, "beatthis")
+        case .noGrid:
+            logger.notice("analysis_beatthis_skip why=no_grid")
+        case .unavailable(let why):
+            logger.error("analysis_beatthis_skip why=\(why, privacy: .public)")
+        }
+        return (finderGrid(from: decimator), "finder")
+    }
+
     /// Beat finding after the decode loop, on the audio the decimator kept.
-    private static func beatGrid(from decimator: MusicBeatDecimator) -> MusicBeatGrid? {
+    private static func finderGrid(from decimator: MusicBeatDecimator) -> MusicBeatGrid? {
         let clock = ContinuousClock()
         let (audio, rate) = decimator.finish()
         guard !audio.isEmpty else { return nil }
