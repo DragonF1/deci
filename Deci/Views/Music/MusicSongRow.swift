@@ -130,6 +130,8 @@ struct MusicSongRow: View {
     /// The row's place among the songs of its list (`musicSelectionScope`), which tells it from another copy of the same
     /// song. Nil for a row that cannot be picked.
     var selectionIndex: Int?
+    /// Up next in Mix: the song's tempo and key as a small grey line ("128 \u{00B7} 8A"); nil everywhere else.
+    var mixText: String?
     let action: () -> Void
 
     /// Set while Full Keyboard Access has put keyboard focus on the row, so it shows the hover surface.
@@ -266,6 +268,13 @@ struct MusicSongRow: View {
                 subtitle
             }
             Spacer(minLength: 0)
+            if let mixText {
+                Text(mixText)
+                    .font(.system(size: 10, weight: .regular).monospacedDigit())
+                    .foregroundStyle(Color.white.opacity(0.35))
+                    .lineLimit(1)
+                    .accessibilityHidden(true)
+            }
             trailing(actions: actions, showsMore: showsMore, selectionMenu: selectionMenu)
         }
         .frame(height: layout.height)

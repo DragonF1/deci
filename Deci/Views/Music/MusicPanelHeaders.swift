@@ -180,8 +180,8 @@ struct MusicPlaybackToggles: View {
         HStack(spacing: 2) {
             ForEach(MusicPlaybackToggle.allCases, id: \.self) { toggle in
                 MusicPlaybackToggleButton(
-                    title: toggle.title(loop: service.loopMode),
-                    symbol: toggle.symbol(loop: service.loopMode),
+                    title: toggle.title(loop: service.loopMode, shuffleMode: service.shuffleMode),
+                    symbol: toggle.symbol(loop: service.loopMode, shuffleMode: service.shuffleMode),
                     isOn: toggle.isOn(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn, crossfade: service.isCrossfadeOn)
                 ) { service.perform(toggle) }
             }

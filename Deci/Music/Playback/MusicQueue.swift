@@ -104,6 +104,9 @@ struct MusicQueue: Equatable, Codable {
     }
 
     var upcomingCount: Int { upcoming.count }
+
+    /// The songs after the current one that the listener did not queue (Play next, Add to queue), in play order.
+    var unqueuedUpcoming: [MusicTrack] { upcoming.filter { !queuedIds.contains($0.videoId) } }
     var hasNext: Bool { upcomingCount > 0 }
     var hasPrevious: Bool { (currentIndex ?? 0) > 0 }
     var needsMore: Bool {
@@ -464,6 +467,51 @@ struct MusicQueue: Equatable, Codable {
             .map(\.element)
         currentIndex = currentId.flatMap { id in tracks.firstIndex { $0.videoId == id } }
         forgetShuffle()
+    }
+
+    // MARK: - Mix
+
+    /// Enters the shuffled state for Mix without moving a song, so the natural order is kept for `unshuffle()` and later
+    /// radio pages are placed the way a shuffled queue places them. With `mixingEarlier` (a page started from a row in
+    /// the middle) the current song moves to the front, the songs the listener queued follow it, and the rest comes after
+    /// them in its natural order, wrapping round to the rows above the tapped one. Does nothing when already shuffled.
+    mutating func beginMix(mixingEarlier: Bool = false) {
+        guard !isShuffled else { return }
+        markShuffled()
+        guard mixingEarlier, let currentIndex else { return }
+        let current = tracks.remove(at: currentIndex)
+        let later = tracks[currentIndex...]
+        let earlier = tracks[..<currentIndex]
+        let ahead = later.filter { queuedIds.contains($0.videoId) }
+        let rest = later.filter { !queuedIds.contains($0.videoId) } + earlier
+        tracks = [current] + ahead + rest
+        self.currentIndex = 0
+    }
+
+    /// Lines the songs the listener has not queued up in `order` (video ids), in the slots those songs hold after the
+    /// current one. A song of `order` that is not an unqueued upcoming song is ignored; an unqueued upcoming song that
+    /// `order` does not name keeps its slot. The current song, the previous songs and the queued ones stay where they are.
+    mutating func mixOrder(_ order: [String]) {
+        guard let currentIndex else { return }
+        markShuffled()
+        let start = currentIndex + 1
+        let named = Set(order)
+        let slots = tracks[start...].indices.filter { !queuedIds.contains(tracks[$0].videoId) && named.contains(tracks[$0].videoId) }
+        var byId: [String: MusicTrack] = [:]
+        for slot in slots { byId[tracks[slot].videoId] = tracks[slot] }
+        var seen = Set<String>()
+        let sequence = order.filter { byId[$0] != nil && seen.insert($0).inserted }
+        // A slot whose song `order` names twice or not at all keeps what it had, so the slots never lose a song.
+        let leftover = slots.map { tracks[$0].videoId }.filter { !seen.contains($0) }
+        for (slot, id) in zip(slots, sequence + leftover) { tracks[slot] = byId[id] ?? tracks[slot] }
+    }
+
+    /// Records the natural order the first time the queue is shuffled, so `unshuffle()` can bring it back.
+    private mutating func markShuffled() {
+        guard !isShuffled else { return }
+        isShuffled = true
+        naturalRank = Dictionary(tracks.enumerated().map { ($0.element.videoId, $0.offset) }) { first, _ in first }
+        nextRank = tracks.count
     }
 
     // MARK: - Edits

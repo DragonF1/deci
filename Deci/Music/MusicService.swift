@@ -102,6 +102,14 @@ final class MusicService {
     private(set) var isShuffleOn: Bool {
         didSet { reconcilePreload() }
     }
+    /// The shuffle is Mix: the songs after the playing one are ordered to blend into each other. `isShuffleOn` is true
+    /// then too. Remembered across launches.
+    private(set) var isMixOn = false
+    /// What the shuffle button is set to.
+    var shuffleMode: MusicShuffleMode { isMixOn ? .mix : MusicShuffleMode(shuffle: isShuffleOn) }
+    /// How each song in Up next is reached in Mix, by `MusicMixPairInfo.key(from:to:)`. Only pairs whose two songs have a
+    /// stored analysis row are here; empty outside Mix.
+    private(set) var mixPairs: [String: MusicMixPairInfo] = [:]
     /// What happens when a track or the queue ends. Remembered across launches.
     private(set) var loopMode: MusicLoopMode {
         didSet { reconcilePreload() }
@@ -433,6 +441,7 @@ final class MusicService {
         self.sessionStore = sessionStore
         self.listenerLevel = listenerLevel
         self.isShuffleOn = preferences.shuffle
+        self.isMixOn = preferences.shuffle && preferences.mixShuffle
         self.loopMode = preferences.loop
         self.isAutoplayOn = preferences.autoplay
         self.isCrossfadeOn = preferences.crossfade
@@ -1232,7 +1241,7 @@ final class MusicService {
         noteActivity()
         queue.start(with: track)
         // The radio's pages are mixed in as they land.
-        if isShuffleOn { queue.shuffle(using: &shuffleGenerator) }
+        shuffleFreshQueue(mixingEarlier: false)
         direction = .forward
         failureStreak = 0
         queueRetryAttempts = 0
@@ -1268,11 +1277,23 @@ final class MusicService {
             mixPlaylistId: offline ? nil : page.mixPlaylistId
         )
         // The row that was tapped plays first; every other row, the ones above it too, is mixed in after it.
-        if isShuffleOn { queue.shuffle(mixingEarlier: true, using: &shuffleGenerator) }
+        shuffleFreshQueue(mixingEarlier: true)
         direction = .forward
         failureStreak = 0
         queueRetryAttempts = 0
         begin(track)
+    }
+
+    /// A queue that just started is put in the shuffled order: random in Shuffle, the page's own order in Mix until the
+    /// rows are read and the songs are ordered (`orderMix`).
+    private func shuffleFreshQueue(mixingEarlier: Bool) {
+        guard isShuffleOn else { return }
+        if isMixOn {
+            queue.beginMix(mixingEarlier: mixingEarlier)
+            startMixOrdering()
+        } else {
+            queue.shuffle(mixingEarlier: mixingEarlier, using: &shuffleGenerator)
+        }
     }
 
     /// "Play" on a playlist or album page: starts from its first song that can play. That is its first song, except offline
@@ -1295,6 +1316,7 @@ final class MusicService {
     func playShuffled(_ page: MusicBrowsePage) {
         guard let track = playableTracks(of: page).randomElement(using: &shuffleGenerator) else { return }
         if !isShuffleOn {
+            // Turned on as plain Shuffle; Mix, when on, stays on.
             isShuffleOn = true
             savePlaybackPreferences()
         }
@@ -1412,18 +1434,117 @@ final class MusicService {
     /// `topUpQueue`).
     func setShuffle(_ on: Bool) {
         guard on != isShuffleOn else { return }
+        setShuffleMode(on ? .shuffle : .off)
+    }
+
+    /// The shuffle button's three states. Mix keeps the queue in the order Shuffle would have it (the natural order is
+    /// remembered the same way, so Off puts it back) and then orders the songs after the playing one by tempo, key and
+    /// energy as soon as their analysis rows are read (`orderMix`). Going from Mix to Shuffle leaves the order as it is.
+    func setShuffleMode(_ mode: MusicShuffleMode) {
+        guard mode != shuffleMode else { return }
         touchSession()
-        isShuffleOn = on
+        let wasShuffled = isShuffleOn
+        isShuffleOn = mode.isOn
+        isMixOn = mode == .mix
+        if !isMixOn {
+            mixTask?.cancel()
+            mixTask = nil
+            mixPairs = [:]
+        }
         if !queue.isEmpty {
-            if on {
-                queue.shuffle(mixingEarlier: queue.isPage, using: &shuffleGenerator)
-            } else {
+            switch mode {
+            case .off:
                 queue.unshuffle()
+            case .shuffle:
+                if !wasShuffled { queue.shuffle(mixingEarlier: queue.isPage, using: &shuffleGenerator) }
+            case .mix:
+                if !wasShuffled { queue.beginMix(mixingEarlier: queue.isPage) }
+                startMixOrdering()
             }
         }
         savePlaybackPreferences()
         topUpQueue()
         saveSession()
+    }
+
+    /// The shuffle button: Off, Shuffle, Mix, Off.
+    func cycleShuffleMode() {
+        setShuffleMode(shuffleMode.next)
+    }
+
+    // MARK: - Mix
+
+    @ObservationIgnored private(set) var mixTask: Task<Void, Never>?
+    /// The analysis rows Mix has read, for the songs it ordered or shows.
+    @ObservationIgnored private var mixRows: [String: MusicAnalysis] = [:]
+
+    /// How many songs after the playing one Up next shows tempo and key for.
+    private static let mixShownCount = 40
+
+    private func startMixOrdering() {
+        mixTask?.cancel()
+        mixTask = Task { [weak self] in await self?.orderMix() }
+    }
+
+    /// Reads the rows of the playing song and the unqueued songs after it, orders those songs and lays them into the
+    /// queue's slots, then works out what Up next shows. A song with no row scores neutral and is never blocked.
+    private func orderMix() async {
+        let songs = queue.unqueuedUpcoming
+        let anchor = queue.current
+        await readMixRows(for: songs + (anchor.map { [$0] } ?? []))
+        guard !Task.isCancelled, isMixOn else { return }
+        let profiles = songs.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
+        let first = anchor.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
+        var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
+        queue.mixOrder(orderer.order(profiles, first: first))
+        saveSession()
+        await refreshMixPairs()
+    }
+
+    /// Reads the stored row of every song in `tracks` that Mix has not read yet.
+    private func readMixRows(for tracks: [MusicTrack]) async {
+        guard let reader = analysisReader else { return }
+        for track in tracks where mixRows[track.videoId] == nil {
+            if Task.isCancelled { return }
+            if let row = await reader.analysis(for: track.videoId) { mixRows[track.videoId] = row }
+        }
+    }
+
+    /// Works out how each of the next songs is reached, from the rows read so far.
+    private func refreshMixPairs() async {
+        guard isMixOn, let current = queue.current else { return }
+        let chain = [current] + Array(queue.upcoming.prefix(Self.mixShownCount))
+        await readMixRows(for: chain)
+        guard !Task.isCancelled, isMixOn else { return }
+        var pairs: [String: MusicMixPairInfo] = [:]
+        for (outgoing, incoming) in zip(chain, chain.dropFirst()) {
+            guard let outRow = mixRows[outgoing.videoId], let inRow = mixRows[incoming.videoId] else { continue }
+            pairs[MusicMixPairInfo.key(from: outgoing.videoId, to: incoming.videoId)] = MusicMixPairInfo.make(
+                outgoing: mixSide(outgoing, row: outRow), incoming: mixSide(incoming, row: inRow),
+                settingSeconds: crossfadeSeconds, beatMixEnabled: isBeatMixOn
+            )
+        }
+        if pairs != mixPairs { mixPairs = pairs }
+    }
+
+    private func mixSide(_ track: MusicTrack, row: MusicAnalysis) -> MusicTransitionSide {
+        MusicTransitionSide(
+            videoId: track.videoId,
+            durationSeconds: track.durationSeconds.map(Double.init) ?? Double(row.format.durationMs) / 1000,
+            analysis: row, youtubeLoudnessDb: row.youtubeLoudnessDb
+        )
+    }
+
+    /// The song that came after `previousId` in Up next, as Mix reaches it: nil outside Mix.
+    func mixInfo(from previousId: String, to id: String) -> MusicMixPairInfo? {
+        isMixOn ? mixPairs[MusicMixPairInfo.key(from: previousId, to: id)] : nil
+    }
+
+    /// The playing song changed: in Mix, what Up next shows is worked out again for the songs after it.
+    private func mixTrackChanged() {
+        guard isMixOn else { return }
+        mixTask?.cancel()
+        mixTask = Task { [weak self] in await self?.refreshMixPairs() }
     }
 
     func setLoopMode(_ mode: MusicLoopMode) {
@@ -1516,7 +1637,7 @@ final class MusicService {
         savePreferences(MusicPlaybackPreferences(
             shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn,
             crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds, beatMix: isBeatMixOn,
-            vocalGuard: isVocalGuardOn
+            vocalGuard: isVocalGuardOn, mixShuffle: isMixOn
         ))
     }
 
@@ -1527,7 +1648,7 @@ final class MusicService {
         let defaults = MusicPlaybackPreferences()
         holdsPreferences = true
         defer { holdsPreferences = false }
-        setShuffle(defaults.shuffle)
+        setShuffleMode(defaults.shuffleMode)
         setLoopMode(defaults.loop)
         setAutoplay(defaults.autoplay)
         setCrossfade(defaults.crossfade)
@@ -1622,6 +1743,7 @@ final class MusicService {
         let generation = playGeneration
         cancelPrefetch()
         trackChangedForAnalysis(to: track.videoId)
+        mixTrackChanged()
         trackingTask?.cancel()
         trackingTask = nil
         pendingAdvance = nil
@@ -1892,6 +2014,7 @@ final class MusicService {
         prefetchAttempt = nil
         if prefetched?.videoId == track { prefetched = nil }
         trackChangedForAnalysis(to: track)
+        mixTrackChanged()
         trackingTask?.cancel()
         trackingTask = nil
         pendingAdvance = nil

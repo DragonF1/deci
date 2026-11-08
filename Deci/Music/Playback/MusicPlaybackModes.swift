@@ -32,6 +32,9 @@ struct MusicPlaybackPreferences: Equatable, Sendable {
     }
 
     var shuffle = false
+    /// Shuffle plays as Mix: songs ordered to blend into each other. Mix always carries `shuffle` too, so a build that
+    /// does not know Mix still shuffles.
+    var mixShuffle = false
     var loop = MusicLoopMode.off
     /// Keep playing recommended songs after a playlist or an album has finished.
     var autoplay = true
@@ -42,6 +45,15 @@ struct MusicPlaybackPreferences: Equatable, Sendable {
         didSet { crossfadeSeconds = Self.clampedCrossfade(crossfadeSeconds) }
     }
 
+    /// What the shuffle button is set to.
+    var shuffleMode: MusicShuffleMode {
+        get { mixShuffle ? .mix : (shuffle ? .shuffle : .off) }
+        set {
+            shuffle = newValue.isOn
+            mixShuffle = newValue == .mix
+        }
+    }
+
     /// Line songs of matching tempo up on the beat while they crossfade (only with Crossfade on).
     var beatMix = true
 
@@ -50,11 +62,13 @@ struct MusicPlaybackPreferences: Equatable, Sendable {
 
     init(
         shuffle: Bool = false, loop: MusicLoopMode = .off, autoplay: Bool = true, crossfade: Bool = false,
-        crossfadeSeconds: Double = defaultCrossfadeSeconds, beatMix: Bool = true, vocalGuard: Bool = true
+        crossfadeSeconds: Double = defaultCrossfadeSeconds, beatMix: Bool = true, vocalGuard: Bool = true,
+        mixShuffle: Bool = false
     ) {
+        self.mixShuffle = mixShuffle
         self.beatMix = beatMix
         self.vocalGuard = vocalGuard
-        self.shuffle = shuffle
+        self.shuffle = shuffle || mixShuffle
         self.loop = loop
         self.autoplay = autoplay
         self.crossfade = crossfade

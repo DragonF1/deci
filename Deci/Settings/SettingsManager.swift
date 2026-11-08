@@ -66,6 +66,7 @@ nonisolated struct AppSettings: Codable, Equatable {
 
     // Music playback
     var musicShuffle: Bool = false                 // Shuffle the Music tab's queue
+    var musicMixShuffle: Bool = false              // Shuffle as Mix (musicShuffle is on too, so an older build still shuffles)
     var musicLoopMode: MusicLoopMode = .off        // Off, loop the playlist or loop the song
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
     var musicCrossfadeEnabled: Bool = false        // Fade the next song in over the end of the playing one (off is gapless)
@@ -112,6 +113,7 @@ nonisolated struct AppSettings: Codable, Equatable {
         chromeIncognitoEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeIncognitoEnabled) ?? false
         chromeYTMusicAutoSwitch = try c.decodeIfPresent(Bool.self, forKey: .chromeYTMusicAutoSwitch) ?? true
         musicShuffle = try c.decodeIfPresent(Bool.self, forKey: .musicShuffle) ?? false
+        musicMixShuffle = (try? c.decodeIfPresent(Bool.self, forKey: .musicMixShuffle)) ?? false
         // A loop mode this build does not know must not cost the listener the rest of their settings.
         musicLoopMode = (try? c.decodeIfPresent(MusicLoopMode.self, forKey: .musicLoopMode)) ?? .off
         musicAutoplay = try c.decodeIfPresent(Bool.self, forKey: .musicAutoplay) ?? true
@@ -216,11 +218,12 @@ extension AppSettings {
             MusicPlaybackPreferences(
                 shuffle: musicShuffle, loop: musicLoopMode, autoplay: musicAutoplay,
                 crossfade: musicCrossfadeEnabled, crossfadeSeconds: musicCrossfadeSeconds, beatMix: musicBeatMix,
-                vocalGuard: musicVocalGuard
+                vocalGuard: musicVocalGuard, mixShuffle: musicMixShuffle
             )
         }
         set {
             musicShuffle = newValue.shuffle
+            musicMixShuffle = newValue.mixShuffle
             musicLoopMode = newValue.loop
             musicAutoplay = newValue.autoplay
             musicCrossfadeEnabled = newValue.crossfade

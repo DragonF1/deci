@@ -39,7 +39,10 @@ struct MusicQueueView: View {
                         ? MusicQueueListing.nextKicker(count: listing.queuedCount)
                         : MusicQueueListing.nextKicker(matched: matches.count, total: listing.upcoming.count)
                 )
-                upcoming(listing.upcoming, matches: matches, terms: terms, autoplayStart: listing.autoplayStart)
+                upcoming(
+                    listing.upcoming, matches: matches, terms: terms, autoplayStart: listing.autoplayStart,
+                    currentId: listing.current?.videoId
+                )
             }
         }
         .padding(.top, 10)
@@ -48,7 +51,9 @@ struct MusicQueueView: View {
     // MARK: - The list
 
     @ViewBuilder
-    private func upcoming(_ tracks: [MusicTrack], matches: [Int], terms: [String], autoplayStart: Int?) -> some View {
+    private func upcoming(
+        _ tracks: [MusicTrack], matches: [Int], terms: [String], autoplayStart: Int?, currentId: String?
+    ) -> some View {
         if tracks.isEmpty, service.isFillingQueue {
             // The radio or the rest of the playlist is on its way.
             VStack(spacing: 0) {
@@ -68,7 +73,12 @@ struct MusicQueueView: View {
                         noMatches
                     }
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, track in
-                        upcomingRow(track, shownIndex: index, matches: matches, autoplayStart: autoplayStart)
+                        // Mix tells how a song is reached from the one before it; a filtered list has gaps, so it does not.
+                        let previousId = terms.isEmpty ? (index == 0 ? currentId : shown[index - 1].videoId) : nil
+                        upcomingRow(
+                            track, shownIndex: index, matches: matches, autoplayStart: autoplayStart,
+                            mixInfo: previousId.flatMap { service.mixInfo(from: $0, to: track.videoId) }
+                        )
                     }
                     if !terms.isEmpty {
                         clearHint(total: tracks.count)
@@ -94,7 +104,9 @@ struct MusicQueueView: View {
     /// A song of the list. The first shown song from the staged radio carries the "AUTOPLAY" label, and the label takes
     /// the place of the hairline above it.
     @ViewBuilder
-    private func upcomingRow(_ track: MusicTrack, shownIndex: Int, matches: [Int], autoplayStart: Int?) -> some View {
+    private func upcomingRow(
+        _ track: MusicTrack, shownIndex: Int, matches: [Int], autoplayStart: Int?, mixInfo: MusicMixPairInfo? = nil
+    ) -> some View {
         let opensAutoplay = MusicQueueListing.opensAutoplay(
             shownIndex: shownIndex, matches: matches, autoplayStart: autoplayStart
         )
@@ -104,10 +116,23 @@ struct MusicQueueView: View {
                     .padding(.top, shownIndex == 0 ? 0 : Self.autoplayLabelTopGap)
                     .padding(.bottom, Self.autoplayLabelBottomGap)
             }
-            MusicSongRow(track: track, isCurrent: false, isPlaying: false, layout: .playlist, selectionIndex: shownIndex) {
+            MusicSongRow(
+                track: track, isCurrent: false, isPlaying: false, layout: .playlist, selectionIndex: shownIndex,
+                mixText: mixInfo?.rowText
+            ) {
                 service.jump(to: track)
             }
             .musicRowHairline(shownIndex > 0 && !opensAutoplay)
+            .overlay(alignment: .top) {
+                if let mixInfo, !opensAutoplay {
+                    Image(systemName: mixInfo.symbol)
+                        .font(.system(size: 8, weight: .regular))
+                        .foregroundStyle(Color.white.opacity(0.35))
+                        .offset(y: -5)
+                        .accessibilityLabel(mixInfo.modeLabel)
+                        .help(mixInfo.modeLabel)
+                }
+            }
         }
     }
 

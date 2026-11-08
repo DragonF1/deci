@@ -102,18 +102,18 @@ nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
     case crossfade
 
     /// What the toggle is called for VoiceOver and the tooltip; the loop's own wording says its mode.
-    func title(loop: MusicLoopMode) -> String {
+    func title(loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .shuffle) -> String {
         switch self {
-        case .shuffle: "Shuffle"
+        case .shuffle: shuffleMode.title
         case .loop: loop.label
         case .autoplay: "Autoplay"
         case .crossfade: "Crossfade"
         }
     }
 
-    func symbol(loop: MusicLoopMode) -> String {
+    func symbol(loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .shuffle) -> String {
         switch self {
-        case .shuffle: "shuffle"
+        case .shuffle: shuffleMode.symbol
         case .loop: loop.systemImage
         case .autoplay: "infinity"
         case .crossfade: "arrow.triangle.merge"
@@ -134,7 +134,7 @@ extension MusicService {
     /// What a click on a playback toggle does: the one entry point for the Up next header and the favorite slots.
     func perform(_ toggle: MusicPlaybackToggle) {
         switch toggle {
-        case .shuffle: setShuffle(!isShuffleOn)
+        case .shuffle: cycleShuffleMode()
         case .loop: cycleLoopMode()
         case .autoplay: setAutoplay(!isAutoplayOn)
         case .crossfade: setCrossfade(!isCrossfadeOn)

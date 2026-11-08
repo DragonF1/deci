@@ -59,17 +59,18 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
     }
 
     /// The name in a slot, for VoiceOver: the control's name, except Loop, which says its mode.
-    func title(loop: MusicLoopMode = .off) -> String {
+    func title(loop: MusicLoopMode = .off, shuffleMode: MusicShuffleMode = .shuffle) -> String {
         switch self {
         case .loop: loop.label
-        case .shuffle, .autoplay, .crossfade, .like: menuTitle
+        case .shuffle: shuffleMode.title
+        case .autoplay, .crossfade, .like: menuTitle
         }
     }
 
     /// The glyph: the Up next header's for the four toggles, the strip's thumbs up (filled once liked) for Like.
-    func symbol(loop: MusicLoopMode, isLiked: Bool) -> String {
+    func symbol(loop: MusicLoopMode, isLiked: Bool, shuffleMode: MusicShuffleMode = .shuffle) -> String {
         switch kind {
-        case .toggle(let toggle): toggle.symbol(loop: loop)
+        case .toggle(let toggle): toggle.symbol(loop: loop, shuffleMode: shuffleMode)
         case .like: MusicRateButtonLook(kind: .like, status: isLiked ? .like : nil).symbolName
         }
     }
@@ -165,8 +166,10 @@ extension AppSettings {
 /// checked. The row turns each entry into a native menu item.
 nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
     enum Entry: Equatable, Sendable {
-        /// Shuffle, Autoplay or Crossfade.
+        /// Autoplay or Crossfade.
         case toggle(MusicFavoriteControl, isOn: Bool)
+        /// Shuffle: Off, Shuffle, Mix.
+        case shuffle(selected: MusicShuffleMode)
         /// Loop: Off, All, One.
         case loop(selected: MusicLoopMode)
         /// 1 to 12 s, the Settings range.
@@ -178,6 +181,7 @@ nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
         var title: String? {
             switch self {
             case .toggle(let control, _): control.menuTitle
+            case .shuffle: "Shuffle"
             case .loop: "Loop"
             case .fadeLength: "Fade length"
             case .divider: nil
@@ -197,13 +201,19 @@ nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
 
     let entries: [Entry]
 
-    init(shuffle: Bool, loop: MusicLoopMode, autoplay: Bool, crossfade: Bool, fadeSeconds: Double, slotControl: MusicFavoriteControl) {
+    /// The choices of the Shuffle picker, in the order the button cycles through them.
+    static let shuffleChoices: [(mode: MusicShuffleMode, title: String)] = [(.off, "Off"), (.shuffle, "Shuffle"), (.mix, "Mix")]
+
+    init(
+        shuffle: Bool, mix: Bool = false, loop: MusicLoopMode, autoplay: Bool, crossfade: Bool, fadeSeconds: Double,
+        slotControl: MusicFavoriteControl
+    ) {
         // Settings' stepper stays live with Crossfade off, so Fade length is never greyed out here either.
         let seconds = Int(MusicPlaybackPreferences.clampedCrossfade(fadeSeconds).rounded())
         // One entry per playback toggle, in toggle order, so a new toggle cannot be left out of the menu.
         let toggles: [Entry] = MusicPlaybackToggle.allCases.map { toggle in
             switch toggle {
-            case .shuffle: .toggle(.shuffle, isOn: shuffle)
+            case .shuffle: .shuffle(selected: mix ? .mix : MusicShuffleMode(shuffle: shuffle))
             case .loop: .loop(selected: loop)
             case .autoplay: .toggle(.autoplay, isOn: autoplay)
             case .crossfade: .toggle(.crossfade, isOn: crossfade)

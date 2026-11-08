@@ -4,6 +4,8 @@ import SwiftUI
 /// What the favorite slots show of the player: the state of each control a slot can hold.
 struct MusicFavoriteSnapshot: Equatable {
     var shuffle = false
+    /// Shuffle plays as Mix (`shuffle` is on then too).
+    var mix = false
     var loop = MusicLoopMode.off
     var autoplay = true
     var crossfade = false
@@ -13,6 +15,8 @@ struct MusicFavoriteSnapshot: Equatable {
     var canLike = false
     /// The crossfade length in seconds, as Settings has it.
     var fadeSeconds = MusicPlaybackPreferences.defaultCrossfadeSeconds
+
+    var shuffleMode: MusicShuffleMode { mix ? .mix : MusicShuffleMode(shuffle: shuffle) }
 
     func isOn(_ control: MusicFavoriteControl) -> Bool {
         switch control.kind {
@@ -38,6 +42,7 @@ struct MusicTransportActions {
     /// The slot's own click: toggles Shuffle, Autoplay and Crossfade, cycles Loop, likes or unlikes the song.
     var perform: (MusicFavoriteControl) -> Void = { _ in }
     var setLoop: (MusicLoopMode) -> Void = { _ in }
+    var setShuffleMode: (MusicShuffleMode) -> Void = { _ in }
     var setFadeSeconds: (Int) -> Void = { _ in }
     var show: (MusicFavoriteControl, MusicFavoriteSide) -> Void = { _, _ in }
     /// Fade length and Show here need Settings; a row without it (a preview) leaves them out of the menu.
@@ -136,8 +141,8 @@ struct MusicTransportRow: View, Equatable {
         let unavailable = !snapshot.isAvailable(control)
         let rest = MusicTransportMetrics.restingGlyphOpacity
         return MusicColumnGlyphButton(
-            title: control.title(loop: snapshot.loop),
-            systemImage: control.symbol(loop: snapshot.loop, isLiked: snapshot.isLiked),
+            title: control.title(loop: snapshot.loop, shuffleMode: snapshot.shuffleMode),
+            systemImage: control.symbol(loop: snapshot.loop, isLiked: snapshot.isLiked, shuffleMode: snapshot.shuffleMode),
             fontSize: 12,
             box: MusicTransportMetrics.box(side == .left ? .shuffle : .loop),
             color: isOn ? accent.solid : Color.white.opacity(unavailable ? 0.30 : rest),
@@ -155,7 +160,7 @@ struct MusicTransportRow: View, Equatable {
         guard !actions.hasSettings else { return true }
         switch entry {
         case .fadeLength, .showHere, .divider: return false
-        case .toggle, .loop: return true
+        case .toggle, .loop, .shuffle: return true
         }
     }
 
@@ -165,13 +170,19 @@ struct MusicTransportRow: View, Equatable {
         let _ = debugOnMenuBuild()
         #endif
         let model = MusicFavoriteMenuModel(
-            shuffle: snapshot.shuffle, loop: snapshot.loop, autoplay: snapshot.autoplay, crossfade: snapshot.crossfade,
+            shuffle: snapshot.shuffle, mix: snapshot.mix, loop: snapshot.loop, autoplay: snapshot.autoplay, crossfade: snapshot.crossfade,
             fadeSeconds: snapshot.fadeSeconds, slotControl: slots[side]
         )
         ForEach(Array(model.entries.filter(isShown).enumerated()), id: \.offset) { _, entry in
             switch entry {
             case .toggle(let control, let isOn):
                 Toggle(control.menuTitle, isOn: Binding(get: { isOn }, set: { _ in actions.perform(control) }))
+            case .shuffle(let selected):
+                Picker("Shuffle", selection: Binding(get: { selected }, set: { actions.setShuffleMode($0) })) {
+                    ForEach(Array(MusicFavoriteMenuModel.shuffleChoices.enumerated()), id: \.offset) { _, choice in
+                        Text(choice.title).tag(choice.mode)
+                    }
+                }
             case .loop(let selected):
                 Picker("Loop", selection: Binding(get: { selected }, set: { actions.setLoop($0) })) {
                     ForEach(Array(MusicFavoriteMenuModel.loopChoices.enumerated()), id: \.offset) { _, choice in
