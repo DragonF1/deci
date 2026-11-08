@@ -87,6 +87,38 @@ struct HarmonixWindowTrustEvalTests {
         return (mean(shift: 0), MusicBeatFinder.chanceOffsets.map { mean(shift: $0 * g.periodSec) }.max() ?? 0)
     }
 
+    /// beat_this's predicted downbeats for a song (audio seconds), when its per-song file exists.
+    nonisolated static func beatThisDownbeats(_ id: String) -> [Double]? {
+        let path = "/Volumes/Storage/_build/scratch/beat-this/results/harmonix-times/\(id).json"
+        guard let data = FileManager.default.contents(atPath: path),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let d = obj["downbeats"] as? [Double] else { return nil }
+        return d.sorted()
+    }
+
+    /// The truth downbeats moved by `k` whole beats (each downbeat becomes the beat k places after it in the truth's beat list).
+    nonisolated static func shiftedDownbeats(beats: [Double], downbeats: [Double], k: Int) -> [Double] {
+        guard !beats.isEmpty else { return [] }
+        return downbeats.compactMap { d in
+            let i = beats.indices.min { abs(beats[$0] - d) < abs(beats[$1] - d) } ?? 0
+            return i + k < beats.count ? beats[i + k] : nil
+        }
+    }
+
+    /// The whole-beat shift of the truth downbeats that beat_this agrees with, or nil when it does not agree strongly with
+    /// one shift (best F >= 0.8 and the next best under 0.3).
+    nonisolated static func truthShift(beats: [Double], downbeats: [Double], reference: [Double]) -> (k: Int, best: Double, next: Double)? {
+        let fs = (0..<4).map { k in
+            BeatScoring.fMeasure(reference: shiftedDownbeats(beats: beats, downbeats: downbeats, k: k), estimated: reference).f
+        }
+        let order = fs.indices.sorted { fs[$0] > fs[$1] }
+        guard fs[order[0]] >= 0.8, fs[order[1]] < 0.3 else { return nil }
+        return (order[0], fs[order[0]], fs[order[1]])
+    }
+
+    /// Songs whose truth beats sit half a beat off the audio (lead's note): excluded from beat metrics.
+    nonisolated static let badAlignments: Set<String> = ["0241_satellite", "0219_pondereplay"]
+
     @Test("Harmonix: window trust features against local beat F, and downbeat signals")
     func evaluate() async throws {
         let songs = try HarmonixBeatEvalTests.loadSongs()
@@ -135,21 +167,41 @@ struct HarmonixWindowTrustEvalTests {
                     "id": song.id, "genre": song.genre, "side": side, "from": from, "to": to, "beats": f.beats,
                     "on": f.on, "off": f.off, "median_ms": num(f.medianMs), "jitter_ms": num(f.jitterMs),
                     "drift_ms_per_beat": num(f.driftMsPerBeat), "local_f": local.f, "span_f": spanF,
-                    "whole_span_trusted": wholeSpanTrusted, "alias": song.alias,
+                    "whole_span_trusted": wholeSpanTrusted, "alias": song.alias, "bad_align": Self.badAlignments.contains(song.id),
                 ])
             }
             // Downbeat signals on every grid with a span (not only the trusted ones).
             let first = Int(ceil((g.spanStartSec - g.anchorSec) / g.periodSec)), last = Int(floor((g.spanEndSec - g.anchorSec) / g.periodSec))
             if first < last, let e = MusicBeatFinder.estimateDownbeat(decimated: audio, rate: rate, grid: g, beats: first...last, band: band) {
-                let byPhase = (0..<4).map { p in
-                    BeatScoring.fMeasure(
-                        reference: HarmonixBeatEvalTests.within(truth.downbeats, g.spanStartSec, g.spanEndSec),
-                        estimated: HarmonixBeatEvalTests.gridTimes(g, from: g.spanStartSec, to: g.spanEndSec, phase: p)).f
+                let rawTruth = HarmonixBeatEvalTests.within(truth.downbeats, g.spanStartSec, g.spanEndSec)
+                func scored(_ ref: [Double]) -> [Double] {
+                    (0..<4).map { p in
+                        BeatScoring.fMeasure(
+                            reference: ref,
+                            estimated: HarmonixBeatEvalTests.gridTimes(g, from: g.spanStartSec, to: g.spanEndSec, phase: p)).f
+                    }
+                }
+                let rawByPhase = scored(rawTruth)
+                // Truth downbeat phase corrected by beat_this: a whole-beat shift k when it agrees strongly with one.
+                var status = "no_beat_this", k = 0, byPhase = rawByPhase, usable = false
+                if let bt = Self.beatThisDownbeats(song.id) {
+                    if let s = Self.truthShift(beats: truth.beats, downbeats: truth.downbeats, reference: bt) {
+                        k = s.k
+                        status = s.k == 0 ? "unchanged" : "corrected"
+                        byPhase = scored(HarmonixBeatEvalTests.within(
+                            Self.shiftedDownbeats(beats: truth.beats, downbeats: truth.downbeats, k: s.k), g.spanStartSec, g.spanEndSec))
+                        usable = true
+                    } else {
+                        status = "unusable"
+                    }
                 }
                 downs.append([
                     "id": song.id, "span_f": spanF, "trusted": wholeSpanTrusted, "alias": song.alias, "phase": e.phase,
                     "margin": e.margin, "effect": e.effect, "agrees": e.agrees, "blocks": e.blocks,
-                    "splits": e.splitPhases, "f_by_phase": byPhase, "correct": byPhase[e.phase] >= 0.5,
+                    "splits": e.splitPhases, "f_by_phase": byPhase, "correct": usable && byPhase[e.phase] >= 0.5,
+                    "f_by_phase_raw": rawByPhase, "correct_raw": rawByPhase[e.phase] >= 0.5,
+                    "truth_shift": k, "truth_status": status, "truth_usable": usable,
+                    "bad_align": Self.badAlignments.contains(song.id),
                     "stored_phase": g.downbeatPhase.map { $0 as Any } ?? NSNull(),
                 ])
             }
