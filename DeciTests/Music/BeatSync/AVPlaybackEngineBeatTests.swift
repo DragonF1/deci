@@ -284,18 +284,19 @@ struct AVPlaybackEngineBeatTests {
         engine.unload()
     }
 
-    @Test("a beat entry a hair off 1 (0.99998) is put back to exactly 1, or the next mix is never scheduled")
-    func nearOneRateIsSnapped() async throws {
+    @Test("a deck that reaches the glide a hair off 1 glides from there: no lone rate set, no snap")
+    func nearOneGlideIsNotSnapped() async throws {
         let first = try await writeTone("h1", seconds: 20)
         let engine = makeEngine()
         engine.load(stream("h1", duration: 20, url: first), startAt: 0, autoplay: true)
         let playing = await waitUntil(timeout: .seconds(30)) { engine.position > 0.5 && engine.avPlayer.rate != 0 }
         #expect(playing)
-        // What a beat start at plan rate 0.99998 leaves on the deck: the glide is skipped (within 0.0005 of 1).
-        engine.avPlayer.rate = 0.99998
-        engine.debugStartGlide(from: 0.99998, over: 10)
+        engine.avPlayer.rate = 0.9996
+        engine.debugStartGlide(from: 0.9996, over: 10)
+        #expect(engine.debugGlide != nil, "any finite rate other than 1 glides back")
+        #expect(abs(engine.avPlayer.rate - 0.9996) < 0.00001, "startGlide sets nothing itself, was \(engine.avPlayer.rate)")
+        engine.debugStartGlide(from: 1, over: 10)
         #expect(engine.debugGlide == nil)
-        #expect(engine.avPlayer.rate == 1, "the deck must run at exactly 1: evaluateSchedule requires it, was \(engine.avPlayer.rate)")
         engine.unload()
     }
 
@@ -592,6 +593,149 @@ struct AVPlaybackEngineBeatTests {
         #expect(!engine.debugBeatGivenUp)
         #expect(!engine.debugReparkPending)
         #expect(engine.debugBeatOverlap != nil)
+        engine.unload()
+    }
+
+    // MARK: - What the flip builds follows what was scheduled (review fixes)
+
+    @Test("beatStartRate is 1 only when the drift over the overlap is at most 2 ms, decided on the Float rate")
+    func beatStartRateMaths() {
+        // 0.99998 over 8 s drifts 0.16 ms: exactly 1.
+        #expect(AVPlaybackEngine.beatStartRate(0.99998, overlap: 8) == 1)
+        // The same rate over the 40 s limit drifts 0.8 ms: still 1.
+        #expect(AVPlaybackEngine.beatStartRate(0.99998, overlap: 40) == 1)
+        // 0.9996 drifts 3.2 ms over 8 s, and 16 ms over 40 s: it keeps its rate and glides back.
+        #expect(AVPlaybackEngine.beatStartRate(0.9996, overlap: 8) == Float(0.9996))
+        #expect(AVPlaybackEngine.beatStartRate(0.9996, overlap: 40) == Float(0.9996))
+        // A rate that is within the budget on a short overlap is not on a long one.
+        #expect(AVPlaybackEngine.beatStartRate(0.9998, overlap: 10) == 1)
+        #expect(AVPlaybackEngine.beatStartRate(0.9998, overlap: 40) == Float(0.9998))
+        // 1.0006 as a Double is above the old 0.0005 window and so is its Float: it keeps its rate.
+        #expect(AVPlaybackEngine.beatStartRate(1.0006, overlap: 8) == Float(1.0006))
+        #expect(AVPlaybackEngine.beatStartRate(.nan, overlap: 8) == 1)
+        #expect(AVPlaybackEngine.beatStartRate(0.95, overlap: 8) == Float(0.95))
+        #expect(AVPlaybackEngine.isUnityRate(1))
+        #expect(!AVPlaybackEngine.isUnityRate(0.9999))
+    }
+
+    @Test("a rate of 0.9996 is scheduled at 0.9996, not snapped to 1, on an 8 s overlap (3.2 ms of drift)")
+    func smallNudgeKeepsItsRate() async throws {
+        let first = try await writeTone("sn1", seconds: 16)
+        let second = try await writeTone("sn2", seconds: 20)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("sn1", duration: 16, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("sn2", duration: 20, url: second), plan: beatPlan(rate: 0.9996, mixIn: 2, mixOut: 5, overlap: 8))
+        let scheduled = await waitUntil(timeout: .seconds(40)) { engine.scheduledStartHost != nil }
+        #expect(scheduled)
+        #expect(engine.debugPlannedRate == Float(0.9996), "planned \(engine.debugPlannedRate)")
+        #expect(engine.debugPlannedBeat)
+        engine.unload()
+    }
+
+    /// Waits for the flip of a prepared engine, then returns what it built (the overlap) at that moment.
+    private func awaitFlip(_ engine: AVPlaybackEngine) async -> Bool {
+        await waitUntil(timeout: .seconds(40)) { engine.isCrossfading }
+    }
+
+    /// The overlap is over: the deck runs at exactly 1 or is in the glide (no lone rate set), with the outcome reported.
+    private func awaitDrain(_ engine: AVPlaybackEngine) async -> Bool {
+        await waitUntil(timeout: .seconds(40)) { !engine.isCrossfading }
+    }
+
+    private func preparedEngine(
+        plan: TransitionPlan, firstSeconds: Double = 16, name: String
+    ) async throws -> AVPlaybackEngine {
+        let first = try await writeTone(name + "a", seconds: firstSeconds)
+        let second = try await writeTone(name + "b", seconds: 20)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream(name + "a", duration: firstSeconds, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream(name + "b", duration: 20, url: second), plan: plan)
+        let ready = await waitUntil(timeout: .seconds(30)) { engine.preloadIsReady }
+        #expect(ready)
+        return engine
+    }
+
+    @Test("a normal nudged beat plan: the flip keeps the overlap at the plan's rate, the swap runs, the drain glides from it")
+    func flipKeepsNudgedBeat() async throws {
+        let engine = try await preparedEngine(plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 8, swapAt: 4, handover: 1), name: "fn")
+        #expect(await awaitFlip(engine))
+        #expect(engine.debugBeatOverlap?.rate == 0.95)
+        #expect(engine.debugBassSwapActive)
+        #expect(abs(engine.avPlayer.rate - 0.95) < 0.001)
+        #expect(await awaitDrain(engine))
+        #expect(engine.debugGlide?.from == 0.95, "the glide starts from the nudge")
+        #expect(engine.debugBeatOverlap == nil)
+        engine.unload()
+    }
+
+    @Test("a near-1 plan (0.99998) keeps its overlap at rate 1: a shared-host resume, the swap, and no glide and no rate set after the drain")
+    func flipKeepsNearOneBeatAtRateOne() async throws {
+        let engine = try await preparedEngine(plan: beatPlan(rate: 0.99998, mixIn: 2, mixOut: 5, overlap: 8, swapAt: 4, handover: 1), name: "f1")
+        #expect(engine.debugPlannedBeat)
+        #expect(engine.debugPlannedRate == 1)
+        #expect(await awaitFlip(engine))
+        let overlap = try #require(engine.debugBeatOverlap, "a beat overlap at rate 1 is still an overlap")
+        #expect(overlap.rate == 1)
+        #expect(engine.debugBassSwapActive)
+        // A pause and a resume in the middle: both decks restart at rate 1 on one host time.
+        try await Task.sleep(for: .milliseconds(600))
+        engine.pause()
+        #expect(engine.avPlayer.rate == 0)
+        engine.play()
+        let restarted = await waitUntil(timeout: .seconds(5)) { engine.avPlayer.rate == 1 && engine.debugDrainingPlayer?.rate == 1 }
+        #expect(restarted, "incoming \(engine.avPlayer.rate), outgoing \(engine.debugDrainingPlayer?.rate ?? -1)")
+        #expect(!engine.avPlayer.automaticallyWaitsToMinimizeStalling, "the synced resume ran")
+        #expect(await awaitDrain(engine))
+        #expect(engine.debugGlide == nil, "nothing to glide at rate 1")
+        #expect(engine.avPlayer.rate == 1)
+        engine.unload()
+    }
+
+    @Test("a plan given up by a seek into its end is a plain fade at rate 1: no overlap, no swap, no glide after the drain")
+    func flipAfterSeekIntoEndIsPlain() async throws {
+        let engine = try await preparedEngine(plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 8, swapAt: 4, handover: 1), name: "fs")
+        engine.seek(to: 11.5)
+        #expect(await awaitFlip(engine))
+        #expect(engine.debugBeatOverlap == nil, "the flip must not build an overlap from the plan, \(String(describing: engine.debugBeatOverlap))")
+        #expect(!engine.debugBassSwapActive)
+        #expect(await awaitDrain(engine))
+        #expect(engine.debugGlide == nil)
+        #expect(engine.avPlayer.rate == 1, "rate after the drain \(engine.avPlayer.rate)")
+        engine.unload()
+    }
+
+    @Test("a late plan (the fade does not fit what is left) is a plain fade at rate 1: no overlap and no glide")
+    func flipOfLatePlanIsPlain() async throws {
+        let engine = try await lateEngine(name: "fl")
+        let flipped = await waitUntil(timeout: .seconds(40)) { engine.isCrossfading || engine.fallbackAdvanceCount + engine.scheduledAdvanceCount > 0 }
+        #expect(flipped)
+        #expect(engine.debugBeatOverlap == nil)
+        #expect(!engine.debugBassSwapActive)
+        _ = await awaitDrain(engine)
+        #expect(engine.debugGlide == nil)
+        #expect(engine.avPlayer.rate == 1, "rate after the hand-over \(engine.avPlayer.rate)")
+        engine.unload()
+    }
+
+    @Test("a beat plan given up after it was scheduled is rescheduled as a plain fade at rate 1: no overlap, no glide")
+    func flipOfGivenUpPlanIsPlain() async throws {
+        let engine = try await preparedEngine(plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 8, swapAt: 4, handover: 1), name: "fg")
+        #expect(engine.debugPlannedBeat)
+        engine.debugGiveUpBeat()
+        // A changed setting makes the engine plan the start again, and it now sees the plan was given up.
+        engine.crossfadeSeconds = 3
+        engine.debugEvaluateSchedule()
+        let replanned = await waitUntil(timeout: .seconds(30)) { engine.scheduledStartHost != nil && !engine.debugPlannedBeat }
+        #expect(replanned)
+        #expect(engine.debugPlannedRate == 1)
+        #expect(await awaitFlip(engine))
+        #expect(engine.debugBeatOverlap == nil)
+        #expect(!engine.debugBassSwapActive)
+        #expect(await awaitDrain(engine))
+        #expect(engine.debugGlide == nil)
+        #expect(engine.avPlayer.rate == 1, "rate after the drain \(engine.avPlayer.rate)")
         engine.unload()
     }
 }
