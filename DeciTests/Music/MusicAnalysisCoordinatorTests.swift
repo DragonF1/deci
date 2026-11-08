@@ -254,7 +254,7 @@ struct MusicAnalysisCoordinatorTests {
         ).encode()
         try await rig.store.put(old)
         #expect(await rig.store.freshness(of: id, matching: nil) == .staleVersion)
-        #expect(MusicAnalysis.currentVersion == 4)
+        #expect(MusicAnalysis.currentVersion >= 4)
 
         rig.spy.fails = true
         _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
@@ -265,6 +265,26 @@ struct MusicAnalysisCoordinatorTests {
         // The old bass-only downbeat guess is cleared, not re-stamped as a version 4 one.
         #expect(row.usableGrid?.downbeatPhase == nil)
         #expect(row.usableGrid?.downbeatConfidence == 0)
+    }
+
+    @Test("a version 4 row whose file can never be re-analysed is stamped current with no key")
+    func versionFourUnreadableHasNoKey() async throws {
+        let rig = Rig(payload: payload)
+        defer { rig.cleanUp() }
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+        var old = try #require(await rig.store.entry(for: id))
+        old.version = 4
+        old.keyInfo = nil
+        try await rig.store.put(old)
+        #expect(await rig.store.freshness(of: id, matching: nil) == .staleVersion)
+
+        rig.spy.fails = true
+        _ = await rig.coordinator.ensure(stream: rig.stream(id), wantsFile: false)
+
+        let row = try #require(await rig.store.entry(for: id))
+        #expect(row.version == MusicAnalysis.currentVersion)
+        #expect(row.keyInfo == nil && row.keyInfoValue == nil)
+        #expect(await rig.store.staleVideoIds(limit: 10).contains(id) == false)
     }
 
     @Test("two ensure calls for one song at once share one fetch and one analysis")

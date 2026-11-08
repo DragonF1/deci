@@ -66,6 +66,23 @@ struct MusicFileAnalyzerTests {
         #expect(entry.energy == m.energy)
     }
 
+    @Test("A chord file gets a key and an energy in the measurement, and the entry stores them")
+    func keyAndEnergyFromFile() async throws {
+        let url = try await Self.file("p1-key-cmajor.m4a", rebuild: true) {
+            let chord = [261.63, 329.63, 392.0].map {
+                MusicTestSignal.sine(frequency: $0, amplitude: 0.1, sampleRate: 44_100, frames: 44_100 * 10, channels: 1)[0]
+            }
+            let mixed = (0..<chord[0].count).map { chord[0][$0] + chord[1][$0] + chord[2][$0] }
+            return [mixed, mixed]
+        }
+        let result = try await MusicFileAnalyzer.analyze(file: url, exactDuration: 10)
+        let info = try #require(result.measurement.keyInfo)
+        #expect(info.tonic == 0 && !info.isMinor, "tonic \(info.tonic) minor \(info.isMinor)")
+        #expect((0...1).contains(info.energy))
+        let entry = MusicAnalysis(videoId: "abcDEF12345", result: result, source: .download)
+        #expect(entry.keyInfoValue == info)
+    }
+
     @Test("Doubled duration: what the reader decodes for a fragmented mp4 versus the true 12 s")
     func doubledDuration() async throws {
         let url = try await Self.twelveSeconds()

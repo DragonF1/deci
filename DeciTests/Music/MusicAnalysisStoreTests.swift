@@ -61,6 +61,24 @@ struct MusicAnalysisStoreTests {
         #expect(await store.count() == 1)
     }
 
+    @Test("A v5 key payload survives the store and decodes; a v4 row with the same bytes reads as no key")
+    func keyInfoBlob() async throws {
+        let store = MusicAnalysisStore(url: nil)
+        let info = MusicKeyInfo(tonic: 9, isMinor: true, confidence: 0.5, energy: 0.6)
+        var row = Self.sample()
+        row.keyInfo = info.encode()
+        try await store.put(row)
+        let back = try #require(await store.entry(for: Self.id))
+        #expect(back.keyInfoValue == info)
+        var old = back
+        old.version = 4
+        #expect(old.keyInfoValue == nil)
+        var none = back
+        none.keyInfo = nil
+        #expect(none.keyInfoValue == nil)
+        #expect(Self.sample().keyInfoValue == nil, "garbage bytes decode to nil")
+    }
+
     @Test("A real beat grid survives the BLOB, and a v1 row without one still loads and reports staleVersion")
     func beatGridBlob() async throws {
         let store = MusicAnalysisStore(url: nil)
