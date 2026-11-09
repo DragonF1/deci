@@ -286,6 +286,30 @@ struct MusicServiceMixShuffleTests {
         #expect(MixShuffleHarness.tempoJumps(h.order) < MixShuffleHarness.tempoJumps(MixShuffleHarness.ids))
     }
 
+    @Test("with Mix on, a song picked from the middle of a list is what plays, and it stays current and first after the ordering")
+    func pickedSongStaysCurrentInMix() async {
+        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(mixShuffle: true))
+        await h.storeRows()
+        for id in MixShuffleHarness.ids { await h.backend.setStream(MusicSamples.stream(videoId: id, duration: 240)) }
+        let page = MusicSamples.page(
+            "VLmixpick",
+            tracks: MixShuffleHarness.ids.map { MusicSamples.track($0, title: "Song \($0)") },
+            continuation: nil,
+            audioPlaylistId: nil
+        )
+        h.service.play(MusicSamples.track("c", title: "Song c"), in: page)
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        await h.settle()
+
+        #expect(h.service.shuffleMode == .mix)
+        #expect(h.player.nowPlaying?.videoId == "c")
+        #expect(h.order.first == "c")
+        #expect(h.service.queue.current?.videoId == "c")
+        #expect(Set(h.order) == Set(MixShuffleHarness.ids))
+        #expect(h.engine.loads.first?.stream.videoId == "c")
+    }
+
     @Test("resetting settings puts the button back to Off, Mix included")
     func reset() {
         let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(mixShuffle: true))
