@@ -2225,12 +2225,23 @@ final class MusicService {
         return track
     }
 
+    /// A drop swap whose mix-in is more than a bar from where the song would normally start.
+    nonisolated static func parksDeepForDropSwap(_ plan: TransitionPlan) -> Bool {
+        guard plan.style == .dropSwap, let mixIn = plan.mixInSec else { return false }
+        let normal = plan.fallbackIncomingStartSec ?? 0
+        return mixIn - normal > max(plan.barSec, 0.5)
+    }
+
     private func crossfadeSkip(to track: MusicTrack) -> Bool {
         guard mixesTransitions, !isOffline, player.isPlaying, !player.hasEnded, pendingAdvance == nil,
               player.preloadedTrack?.videoId == track.videoId, player.preloadIsReady,
               let stream = player.preloadedStream, stream.videoId == track.videoId else { return false }
         // The engine may still refuse (decks without a lease, a fade already running): ask before anything is sent.
         guard player.canCrossfadeToPreloaded else { return false }
+        // A drop swap's standby is parked deep in the song (its drop less the lead). A skip would start the song there, so it
+        // takes the ordinary load, which starts the song at its normal start.
+        if let offered = offeredPlan, offered.inputs.incoming.videoId == track.videoId,
+           Self.parksDeepForDropSwap(offered.plan) { return false }
         // The old track's final ping reads the player's position, so it goes before the engine moves on.
         sendFinalPing()
         // The skip is a quick fade with the incoming loudness match only; the park offset is the plan's own.

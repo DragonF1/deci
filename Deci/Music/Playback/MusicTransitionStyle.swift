@@ -11,11 +11,19 @@ nonisolated enum MusicTransitionStyle: String, Sendable, CaseIterable {
     case quickCut
     /// A delay tail on the outgoing song's last beat, then the next song comes in.
     case echoOut
-    // Not pickable yet (phase 2).
-    case filterSweep, dropSwap, loopExtend
+    /// A beat blend with a high-pass sweep on the outgoing song: it thins out to hats and air while the new song takes over.
+    case filterSweep
+    /// The incoming song's drop lands where the outgoing song's phrase ends.
+    case dropSwap
+    // Not pickable yet.
+    case loopExtend
 
     /// What the picker may return today.
-    static let pickable: [MusicTransitionStyle] = [.longBlend, .quickCut, .echoOut]
+    static let pickable: [MusicTransitionStyle] = [.longBlend, .quickCut, .echoOut, .filterSweep, .dropSwap]
+
+    /// A cut or an echo: no overlap to speak of, the outgoing song is held at full level until the incoming one starts.
+    /// Every other style is made of a long overlap like the plain blend.
+    var isCutLike: Bool { self == .quickCut || self == .echoOut }
 
     /// Owner-facing name.
     var label: String {
@@ -45,11 +53,14 @@ nonisolated struct MusicTransitionStyleInputs: Equatable, Sendable {
     var gridTrusted = false
     /// Genre tags of both songs, any case. Often empty; only ever a tie-break.
     var genres: [String] = []
+    /// Confidence (0...1) of the incoming song's first usable drop; nil when it has none or a grid is not trusted.
+    var dropConfidence: Float?
 
     init(
         tempoError: Double? = nil, energyJump: Float? = nil, outroEnergy: Float? = nil, introEnergy: Float? = nil,
-        keyDistance: Int? = nil, gridTrusted: Bool = false, genres: [String] = []
+        keyDistance: Int? = nil, gridTrusted: Bool = false, genres: [String] = [], dropConfidence: Float? = nil
     ) {
+        self.dropConfidence = dropConfidence
         self.tempoError = tempoError
         self.energyJump = energyJump
         self.outroEnergy = outroEnergy
@@ -65,6 +76,8 @@ nonisolated enum MusicTransitionStylePicker {
     static let bigJump: Float = 0.2
     static let hugeJump: Float = 0.35
     static let farKey = 3
+    /// An incoming song this much quieter or less still counts as similar in energy for a sweep.
+    static let similarEnergy: Float = 0.1
     /// The log reason for a transition that repeats the previous style because no other style could be built.
     static let noAlternative = "noAlternative"
 
@@ -80,22 +93,50 @@ nonisolated enum MusicTransitionStylePicker {
         // above it, and the cut only comes up when the echo cannot be built.
         let echoScore = (score(.echoOut, inputs) * 1000).rounded() / 1000
         let scored = MusicTransitionStyle.pickable.enumerated().compactMap { index, style -> (MusicTransitionStyle, Double, Double, Int)? in
-            guard style != previous else { return nil }
+            guard style != previous, isCandidate(style, inputs) else { return nil }
             var main = (score(style, inputs) * 1000).rounded() / 1000
             if style == .quickCut, !inputs.gridTrusted { main = min(main, echoScore - 0.002) }
             return (style, main, genreHint(style, inputs.genres), index)
         }
-        return scored.sorted {
+        let order = scored.sorted {
             if $0.1 != $1.1 { return $0.1 > $1.1 }
             if $0.2 != $1.2 { return $0.2 > $1.2 }
             return $0.3 < $1.3
         }.map(\.0)
+        #if DEBUG
+        // Live checks only: a style that is a candidate is put first. Never set outside the test target.
+        if let forced = debugForcedStyle, let at = order.firstIndex(of: forced) {
+            return [forced] + order.enumerated().filter { $0.offset != at }.map(\.element)
+        }
+        #endif
+        return order
     }
+
+    #if DEBUG
+    nonisolated(unsafe) static var debugForcedStyle: MusicTransitionStyle?
+    #endif
 
     /// True when the tempos are further apart than a beat mix can bridge (half and double time folded in).
     static func isClash(_ inputs: MusicTransitionStyleInputs) -> Bool {
         guard let error = inputs.tempoError, error.isFinite else { return false }
         return !MusicMixScore.withinTolerance(error)
+    }
+
+    /// Whether a style can be picked for these numbers at all. The three older styles always can; a sweep needs a beat blend
+    /// (tempos that meet, trusted grids), keys that agree and an incoming song that is no quieter; a drop swap needs a
+    /// beat blend and a confident drop.
+    private static func isCandidate(_ style: MusicTransitionStyle, _ i: MusicTransitionStyleInputs) -> Bool {
+        switch style {
+        case .filterSweep:
+            guard i.gridTrusted, !isClash(i), let jump = i.energyJump, jump.isFinite, jump >= -similarEnergy else { return false }
+            return (i.keyDistance ?? 0) < farKey
+        case .dropSwap:
+            guard i.gridTrusted, !isClash(i), let confidence = i.dropConfidence, confidence.isFinite else { return false }
+            // Overlapping 4 to 8 bars needs keys that agree, like the sweep.
+            return confidence >= MusicDropDetector.confidenceFloor && (i.keyDistance ?? 0) < farKey
+        default:
+            return true
+        }
     }
 
     private static func score(_ style: MusicTransitionStyle, _ i: MusicTransitionStyleInputs) -> Double {
@@ -129,6 +170,16 @@ nonisolated enum MusicTransitionStylePicker {
             if let out = i.outroEnergy, out.isFinite, out < 0.4 { value += 0.1 }
             if i.gridTrusted { value += 0.02 }
             return value
+        case .filterSweep:
+            // Below the plain blend, above a cut: the sweep is the blend with a twist, so it comes up when the blend would
+            // repeat. A rising song is what it is for.
+            var value = 0.6
+            if let jump, jump >= similarEnergy { value += 0.2 }
+            if let jump, jump >= bigJump { value += 0.05 }
+            return value
+        case .dropSwap:
+            // A confident drop outranks the sweep; only a pristine blend beats it.
+            return 0.6 + 0.35 * Double(min(1, max(0, i.dropConfidence ?? 0)))
         default:
             // Not pickable yet.
             return -2
@@ -165,6 +216,9 @@ nonisolated enum MusicTransitionStylePicker {
         if let x = a.camelot, let y = b.camelot { out.keyDistance = x.distance(to: y) }
         out.gridTrusted = a.gridTrusted && b.gridTrusted
         out.genres = inputs.outgoing.genres + inputs.incoming.genres
+        if out.gridTrusted, let row = inputs.incoming.analysis {
+            out.dropConfidence = MusicDropDetector.best(in: row, grid: inputs.incoming.grid)?.confidence
+        }
         return out
     }
 

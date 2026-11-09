@@ -195,4 +195,117 @@ struct AVPlaybackEngineStyleFlipTests {
         #expect(landed, "cleared again when the seek landed")
         engine.unload()
     }
+
+    // MARK: Tier 4b P2
+
+    private func overlapPlan(_ style: MusicTransitionStyle, mixOut: Double = 3, mixIn: Double = 5, overlap: Double = 2) -> TransitionPlan {
+        var plan = TransitionPlan(
+            mode: .beat, incomingStartSec: mixIn, outgoingEndSec: mixOut + overlap, fadeStartSec: mixOut,
+            fadeSeconds: overlap, incomingGainDb: 0, incomingGlideSeconds: 0, outgoingGainDb: 0,
+            outgoingRampSeconds: 0, reason: .ok
+        )
+        plan.style = style
+        plan.incomingRate = 1
+        plan.mixOutSec = mixOut
+        plan.mixInSec = mixIn
+        plan.overlapBars = 1
+        plan.overlapSec = overlap
+        plan.barSec = overlap
+        plan.glideBackSec = 0
+        if style == .filterSweep {
+            plan.sweepFromHz = 30
+            plan.sweepToHz = 1_500
+        }
+        return plan
+    }
+
+    @Test("a filter sweep asks the outgoing lease for a 30 Hz to 1.5 kHz high-pass across the overlap, and ends it with the deck")
+    func sweepReachesTheOutgoingLease() async throws {
+        let engine = try await flipped(overlapPlan(.filterSweep), first: 10)
+        #expect(engine.lastTransitionStyle == .filterSweep)
+        let lease = try #require(engine.debugDrainingTap?.debugLease)
+        let asked = lease.debugSweep
+        #expect(asked.active && asked.generation >= 1)
+        #expect(asked.settings.fromHz == 30 && asked.settings.toHz == 1_500 && asked.settings.highpass)
+        #expect(asked.settings.durationFrames > 48_000 && asked.settings.durationFrames <= 2 * 48_000 + 4_800, "ramp was \(asked.settings.durationFrames) frames")
+        #expect(asked.settings.startFrame >= 0)
+        let over = await waitUntil(timeout: .seconds(10)) { !engine.isCrossfading }
+        #expect(over)
+        #expect(!lease.isSweepActive, "the sweep is ended with the deck")
+        engine.unload()
+    }
+
+    @Test("a filter sweep on a lease with no stereo path flips as a plain long blend, and asks for no sweep")
+    func monoSweepFallsBack() async throws {
+        let engine = try await flipped(overlapPlan(.filterSweep), first: 10, markMono: true)
+        #expect(engine.lastTransitionStyle == .longBlend)
+        let lease = try #require(engine.debugDrainingTap?.debugLease)
+        #expect(!lease.isSweepActive)
+        engine.unload()
+    }
+
+    @Test("a drop swap starts the incoming song at its planned offset and asks for no sweep")
+    func dropSwapStartsAtTheOffset() async throws {
+        let engine = try await flipped(overlapPlan(.dropSwap, mixOut: 3, mixIn: 5, overlap: 2), first: 10)
+        #expect(engine.lastTransitionStyle == .dropSwap)
+        let incoming = engine.avPlayer.currentTime().seconds
+        #expect(incoming >= 5 - 0.05 && incoming <= 5 + 2, "incoming item time was \(incoming) s")
+        let lease = try #require(engine.debugDrainingTap?.debugLease)
+        #expect(!lease.isSweepActive && !lease.isEchoActive)
+        let over = await waitUntil(timeout: .seconds(10)) { !engine.isCrossfading }
+        #expect(over, "the outgoing song is gone after the overlap")
+        engine.unload()
+    }
+
+    // MARK: - A drop swap never leaks its deep mix-in into a plain fade
+
+    /// A drop swap whose standby is parked deep (`mixIn`) while the song's normal start is `smart`.
+    private func deepDropSwap(mixOut: Double = 8, mixIn: Double = 6, smart: Double = 0.5, overlap: Double = 2) -> TransitionPlan {
+        var plan = overlapPlan(.dropSwap, mixOut: mixOut, mixIn: mixIn, overlap: overlap)
+        plan.fallbackIncomingStartSec = smart
+        return plan
+    }
+
+    @Test("a seek into a drop swap's overlap parks the standby on the song's normal start, not the deep mix-in")
+    func seekIntoDropSwapOverlapUsesNormalStart() async throws {
+        let a = try await writeTone("sa", seconds: 12)
+        let b = try await writeTone("sb", seconds: 20)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("sa", duration: 12, url: a), startAt: 0, autoplay: false)
+        engine.preload(stream("sb", duration: 20, url: b), plan: deepDropSwap())
+        let ready = await waitUntil(timeout: .seconds(30)) { engine.preloadIsReady }
+        #expect(ready)
+        #expect(engine.debugStandbyStartOffset == 6, "parked on the mix-in first")
+        engine.seek(to: 9)
+        let moved = await waitUntil(timeout: .seconds(30)) { !engine.debugReparkPending && engine.debugStandbyStartOffset == 0.5 }
+        #expect(moved, "standby offset \(engine.debugStandbyStartOffset)")
+        #expect(engine.transitionPlan?.incomingStartSec == 0.5)
+        engine.play()
+        let didFlip = await waitUntil(timeout: .seconds(40)) { engine.isCrossfading }
+        #expect(didFlip)
+        let incoming = engine.avPlayer.currentTime().seconds
+        #expect(incoming < 3, "the incoming song started at \(incoming) s, not deep in the song")
+        engine.unload()
+    }
+
+    @Test("an end that comes before the re-park landed still starts a drop swap's song at its normal start")
+    func endBeforeReparkKeepsNormalStart() async throws {
+        let a = try await writeTone("ea", seconds: 4)
+        let b = try await writeTone("eb", seconds: 20)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.debugHoldReseek = true
+        var advanced = false
+        engine.onEvent = { event in if case .advanced = event { advanced = true } }
+        engine.load(stream("ea", duration: 4, url: a), startAt: 0, autoplay: true)
+        engine.preload(stream("eb", duration: 20, url: b), plan: deepDropSwap(mixOut: 3, mixIn: 6, overlap: 4))
+        let started = await waitUntil(timeout: .seconds(40)) { advanced || engine.crossfadeCount > 0 }
+        #expect(started)
+        try await Task.sleep(for: .milliseconds(600))
+        let incoming = engine.avPlayer.currentTime().seconds
+        #expect(incoming < 3, "the incoming song was at \(incoming) s, not deep in the song")
+        #expect(engine.transitionPlan?.incomingStartSec != 6)
+        engine.unload()
+    }
 }

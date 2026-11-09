@@ -261,6 +261,26 @@ final class MusicTapDeck: @unchecked Sendable {
         state.withLock { $0.lease?.endEcho() }
     }
 
+    /// Tier 4b P2: starts the high-pass sweep on this deck's lease. The cutoff starts to move `after` seconds of rendered
+    /// audio from now and takes `over` seconds to get from `fromHz` to `toHz`.
+    func beginSweep(fromHz: Double, toHz: Double, after: Double, over: Double) {
+        state.withLock { state in
+            guard !state.retired, let lease = state.lease else { return }
+            lease.beginSweep(MusicSweepSettings(
+                startFrame: lease.frames(forSeconds: after), durationFrames: max(1, lease.frames(forSeconds: over)),
+                fromHz: Float(fromHz), toHz: Float(toHz), highpass: true
+            ))
+        }
+    }
+
+    /// False when this deck's lease renders through the gain-only path (no sweep possible). True with no lease yet.
+    var supportsSweep: Bool { state.withLock { $0.lease?.supportsEcho ?? true } }
+
+    /// The sweep is over (the lease is about to be released).
+    func endSweep() {
+        state.withLock { $0.lease?.endSweep() }
+    }
+
     /// Marks this deck as the incoming side of a crossfade until `endOverlap()`.
     func beginFadeIn() {
         state.withLock { $0.fadingIn = true }

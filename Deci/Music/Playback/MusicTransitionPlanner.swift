@@ -66,6 +66,9 @@ struct TransitionPlan: Equatable, Sendable {
     var echoTailSec: Double = 0
     /// Echo out: the delay time, one beat with a trusted grid, else `MusicEchoSettings.untrustedDelaySeconds`.
     var echoDelaySec: Double = 0
+    /// Filter sweep: the high-pass on the outgoing song runs from `sweepFromHz` to `sweepToHz` across the overlap. 0 = none.
+    var sweepFromHz: Double = 0
+    var sweepToHz: Double = 0
 
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(
@@ -183,7 +186,14 @@ enum MusicTransitionPlanner {
                 // blend is ranked below the cut and the echo and is only reached when neither can be built.
                 return legacyPlan(inputs, smart: smart, beat: beat)
             }
-            if var plan = MusicBeatPlanner.styledPlan(inputs, smart: smart, style: style) {
+            // The sweep is the beat blend with a high-pass on the outgoing song; the drop swap is planned on its own.
+            let built: TransitionPlan?
+            switch style {
+            case .filterSweep: built = beat.mode == .beat ? MusicBeatPlanner.filterSweepPlan(from: beat) : nil
+            case .dropSwap: built = MusicBeatPlanner.dropSwapPlan(inputs, smart: smart)
+            default: built = MusicBeatPlanner.styledPlan(inputs, smart: smart, style: style)
+            }
+            if var plan = built {
                 plan.fallbackReason = beat.mode == .beat ? nil : beat.fallbackReason
                 return plan
             }

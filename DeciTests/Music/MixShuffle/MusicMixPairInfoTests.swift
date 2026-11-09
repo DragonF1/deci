@@ -105,6 +105,14 @@ struct MusicMixPairInfoTests {
         }
     }
 
+    @Test("the filter sweep and the drop swap have their own glyph and plain label")
+    func p2Glyphs() {
+        let sweep = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat, style: .filterSweep)
+        let drop = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat, style: .dropSwap)
+        #expect(sweep.symbol == "line.3.horizontal.decrease" && sweep.modeLabel == "Filter sweep")
+        #expect(drop.symbol == "arrow.down.to.line" && drop.modeLabel == "Drop swap")
+    }
+
     @Test("a tempo clash pair shows a cut or an echo, not the fade arrows")
     func clashShowsStyle() {
         let a = MixRows.row("aaaaaaaaaaa", bpm: 120)

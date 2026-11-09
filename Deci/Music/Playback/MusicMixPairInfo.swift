@@ -23,6 +23,8 @@ nonisolated struct MusicMixPairInfo: Equatable, Sendable {
         switch style {
         case .quickCut: return "scissors"
         case .echoOut: return "waveform.path"
+        case .filterSweep: return "line.3.horizontal.decrease"
+        case .dropSwap: return "arrow.down.to.line"
         default: return mode == .beat ? "metronome" : "arrow.triangle.merge"
         }
     }
@@ -30,7 +32,7 @@ nonisolated struct MusicMixPairInfo: Equatable, Sendable {
     /// The glyph's name for VoiceOver.
     var modeLabel: String {
         switch style {
-        case .quickCut, .echoOut: return style.label
+        case .quickCut, .echoOut, .filterSweep, .dropSwap: return style.label
         default: return mode == .beat ? "Beat mix" : "Fade"
         }
     }

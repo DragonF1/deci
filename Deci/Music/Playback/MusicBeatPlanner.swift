@@ -287,7 +287,7 @@ enum MusicBeatPlanner {
             && abs(grid.driftSec) <= maxDriftSec
     }
 
-    private static func valid(_ value: Double?) -> Double? {
+    static func valid(_ value: Double?) -> Double? {
         guard let value, value.isFinite, value > 0 else { return nil }
         return value
     }

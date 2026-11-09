@@ -28,6 +28,15 @@ struct MusicStyleNoRepeatTests {
         return i
     }
 
+    /// A matched pair whose incoming song has a drop and whose energy rises, so every style is a candidate.
+    static func everything(previous: MusicTransitionStyle?) -> MusicTransitionInputs {
+        var i = matched(previous: previous)
+        i.incoming.analysis?.energy = DropFixtures.envelope(steps: [40])
+        i.outgoing.analysis?.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.4).encode()
+        i.incoming.analysis?.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.7).encode()
+        return i
+    }
+
     @Test("a beat-matched pair is a long blend with no previous style, and something else right after a long blend")
     func blendThenSomethingElse() {
         #expect(MusicTransitionPlanner.plan(Self.matched(previous: nil)).style == .longBlend)
@@ -53,14 +62,28 @@ struct MusicStyleNoRepeatTests {
 
     @Test("whatever came before, no pair gets the same style twice in a row, grids or not")
     func neverRepeats() {
-        let makers: [(MusicTransitionStyle?) -> MusicTransitionInputs] = [Self.matched, Self.gridless, Self.clash]
+        let makers: [(MusicTransitionStyle?) -> MusicTransitionInputs] = [Self.matched, Self.gridless, Self.clash, Self.everything]
         for make in makers {
-            for previous in MusicTransitionStyle.pickable {
+            for previous in MusicTransitionStyle.allCases {
                 let plan = MusicTransitionPlanner.plan(make(previous))
                 let ran = plan.mode == .beat ? plan.style : .longBlend
                 #expect(ran != previous, "previous \(previous.rawValue) then \(ran.rawValue)")
             }
         }
+    }
+
+    @Test("a run over a pair with a drop and rising energy never repeats and uses the new styles")
+    func everythingRun() {
+        var previous: MusicTransitionStyle?
+        var ran: [MusicTransitionStyle] = []
+        for _ in 0..<10 {
+            let plan = MusicTransitionPlanner.plan(Self.everything(previous: previous))
+            let style: MusicTransitionStyle = plan.mode == .beat ? plan.style : .longBlend
+            #expect(style != previous)
+            ran.append(style)
+            previous = style
+        }
+        #expect(ran.contains(.dropSwap) || ran.contains(.filterSweep))
     }
 
     @Test("when nothing else can be built the blend stays and is logged as noAlternative")

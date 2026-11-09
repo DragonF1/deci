@@ -232,6 +232,14 @@ final class LiveRunner {
     /// Songs that were the current one when each loop started, in play order.
     private(set) var played: [String] = []
     private(set) var glitchLines = 0
+    /// Style live checks: what the recorder heard during one transition, with which token was which deck.
+    struct Capture {
+        var heard: (records: [MusicRenderRecorder.Record], samples: [Float])
+        var roles: [Int: String]
+        var fadeStart: UInt64
+        var fadeEnd: UInt64
+    }
+    var captureHook: ((Capture) -> Void)?
 
     init(world: LiveWorld, rig: LiveWorld.Rig, engine: AVPlaybackEngine, chain: MusicDSPChain, audio: LiveAudio) {
         self.world = world
@@ -377,6 +385,7 @@ final class LiveRunner {
             let heard = recorder.snapshot()
             var detail: [String] = []
             let scan = LiveScan.chainDropouts(heard, fadeStart: fadeStart, fadeEnd: fadeEnd, glideEnd: glideEnd, rateEvents: rateEvents, roles: roles, leases: leaseRefs, samples: record.samples, detail: &detail)
+            captureHook?(Capture(heard: heard, roles: roles, fadeStart: fadeStart, fadeEnd: fadeEnd))
             record.capturePeak = scan.peak
             record.nonFinite = scan.nonFinite
             record.dropouts = scan.count

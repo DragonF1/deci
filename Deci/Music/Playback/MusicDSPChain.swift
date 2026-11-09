@@ -449,6 +449,8 @@ final class MusicDSPChain: @unchecked Sendable {
         dsp.processEqualizer(input: input, output: samples, frames: frames)
         dsp.compensator.process(input: input, output: samples, frameCount: frames)
 
+        // Tier 4b P2: the outgoing deck of a filter sweep is high-passed before the fade (a no-op when idle).
+        if lease.beginSweepRender() { lease.sweep.process(samples, frames: frames) }
         // Tier 4b: an echo takes a copy of the signal before the fade, so cutting the dry never cuts the tail.
         let echoing = lease.beginEchoRender() && lease.echo.capture(input, frames: frames)
         if !lease.isEchoActive { lease.applyHistoryClear() }
@@ -985,6 +987,18 @@ final class MusicRenderLease: @unchecked Sendable {
     private let gainOnlySeen = Atomic<Bool>(false)
     fileprivate let echo: MusicEchoDelay
 
+    // Tier 4b P2: the filter sweep. Settings first, then the generation; the renderer reads them in that order.
+    private let sweepActiveFlag = Atomic<Bool>(false)
+    private let sweepStartFrames = Atomic<Int>(0)
+    private let sweepDurationFrames = Atomic<Int>(1)
+    private let sweepHz = Atomic<UInt64>(0)
+    private let sweepHighpass = Atomic<Bool>(true)
+    private let sweepGeneration = Atomic<Int>(0)
+    private nonisolated(unsafe) var seenSweepGeneration = 0
+    /// Renderer only: the sweep ran in an earlier block, so its state is reset when it is turned off.
+    private nonisolated(unsafe) var sweepRan = false
+    fileprivate let sweep: MusicFilterSweep
+
     // Tier 3b P4: the bass channel. `bassActiveFlag` is off outside a beat mix (every render then takes the old path).
     private let bassActiveFlag = Atomic<Bool>(false)
     private let bassInitialBits = Atomic<UInt32>(Float(1).bitPattern)
@@ -1087,6 +1101,7 @@ final class MusicRenderLease: @unchecked Sendable {
         dsp = chain.makeDSP(rate: rate, token: token)
         split = MusicBassSplit(sampleRate: rate)
         echo = MusicEchoDelay(sampleRate: rate, maxBlockFrames: max(4_096, maxFrames))
+        sweep = MusicFilterSweep(sampleRate: rate)
         currentGain = chain.targetGain
         seenSnapGeneration = chain.snapGeneration.load(ordering: .acquiring)
     }
@@ -1222,8 +1237,9 @@ final class MusicRenderLease: @unchecked Sendable {
         echoCutFrames.store(settings.cutAfterFrames, ordering: .relaxed)
         echoParams.store(UInt64(settings.feedback.bitPattern) << 32 | UInt64(settings.wetGain.bitPattern), ordering: .relaxed)
         echoLowpass.store(settings.lowpassHz.bitPattern, ordering: .relaxed)
-        echoActiveFlag.store(true, ordering: .relaxed)
+        // Generation first, flag second (both releasing), so a renderer that sees the flag sees the new request.
         echoGeneration.wrappingAdd(1, ordering: .releasing)
+        echoActiveFlag.store(true, ordering: .releasing)
     }
 
     /// Seconds to frames at this lease's rate, for callers that think in seconds.
@@ -1266,6 +1282,9 @@ final class MusicRenderLease: @unchecked Sendable {
         guard generation != seenHistoryClearGeneration else { return }
         seenHistoryClearGeneration = generation
         echo.clearHistory()
+        // A seek or a load also forgets an idle sweep's state (a running sweep belongs to the draining deck, which is not
+        // seeked).
+        if !sweepActiveFlag.load(ordering: .relaxed) { sweep.reset() }
     }
 
     #if DEBUG
@@ -1298,6 +1317,72 @@ final class MusicRenderLease: @unchecked Sendable {
         }
         return true
     }
+
+    // MARK: - Filter sweep (Tier 4b P2)
+
+    /// Starts a sweep on this lease: from the next render the signal is high-passed, the cutoff holding `fromHz` for
+    /// `startFrame` frames and then rising in log frequency to `toHz` across `durationFrames`. Any thread.
+    func beginSweep(_ settings: MusicSweepSettings) {
+        sweepStartFrames.store(settings.startFrame, ordering: .relaxed)
+        sweepDurationFrames.store(settings.durationFrames, ordering: .relaxed)
+        sweepHz.store(UInt64(settings.fromHz.bitPattern) << 32 | UInt64(settings.toHz.bitPattern), ordering: .relaxed)
+        sweepHighpass.store(settings.highpass, ordering: .relaxed)
+        // Generation first, flag second (both releasing): a renderer that sees the flag also sees the new generation, so
+        // it never runs the filter on the previous or default settings.
+        sweepGeneration.wrappingAdd(1, ordering: .releasing)
+        sweepActiveFlag.store(true, ordering: .releasing)
+    }
+
+    /// The sweep is over: the renderer resets the filter and goes back to the plain path. Any thread.
+    func endSweep() { sweepActiveFlag.store(false, ordering: .releasing) }
+
+    var isSweepActive: Bool { sweepActiveFlag.load(ordering: .acquiring) }
+
+    /// Renderer: picks up a new sweep request. True while a sweep is on. The filter state is reset by a new request and
+    /// when the sweep is turned off, so no sweep ever starts from the tail of an old one.
+    fileprivate func beginSweepRender() -> Bool {
+        guard sweepActiveFlag.load(ordering: .acquiring) else {
+            if sweepRan {
+                sweepRan = false
+                sweep.reset()
+            }
+            return false
+        }
+        let generation = sweepGeneration.load(ordering: .acquiring)
+        if generation != seenSweepGeneration {
+            seenSweepGeneration = generation
+            let hz = sweepHz.load(ordering: .relaxed)
+            sweep.start(MusicSweepSettings(
+                startFrame: sweepStartFrames.load(ordering: .relaxed),
+                durationFrames: sweepDurationFrames.load(ordering: .relaxed),
+                fromHz: Float(bitPattern: UInt32(hz >> 32)), toHz: Float(bitPattern: UInt32(hz & 0xFFFF_FFFF)),
+                highpass: sweepHighpass.load(ordering: .relaxed)
+            ))
+        }
+        sweepRan = true
+        return true
+    }
+
+    #if DEBUG
+    /// What the last `beginSweep` asked for, for the tests (the request, not the renderer's state).
+    struct DebugSweep: Equatable, Sendable {
+        var active: Bool
+        var generation: Int
+        var settings: MusicSweepSettings
+    }
+
+    var debugSweep: DebugSweep {
+        let hz = sweepHz.load(ordering: .relaxed)
+        return DebugSweep(
+            active: isSweepActive, generation: sweepGeneration.load(ordering: .relaxed),
+            settings: MusicSweepSettings(
+                startFrame: sweepStartFrames.load(ordering: .relaxed), durationFrames: sweepDurationFrames.load(ordering: .relaxed),
+                fromHz: Float(bitPattern: UInt32(hz >> 32)), toHz: Float(bitPattern: UInt32(hz & 0xFFFF_FFFF)),
+                highpass: sweepHighpass.load(ordering: .relaxed)
+            )
+        )
+    }
+    #endif
 
     // MARK: - Bass (Tier 3b P4)
 

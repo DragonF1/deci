@@ -8,7 +8,7 @@ import Testing
 @testable import Deci
 
 @MainActor
-private struct BeatHarness {
+struct BeatHarness {
     let backend = FakeMusicBackend()
     let engine = FakePlaybackEngine()
     let surface = FakeNowPlayingSurface()
@@ -281,6 +281,57 @@ struct MusicServiceBeatMixTests {
         #expect(updated.incomingRate == 1)
         #expect(updated.incomingStartSec == beat.incomingStartSec)
         #expect(h.engine.transitionPlan?.mode == .fixed)
+    }
+}
+
+@MainActor
+@Suite("MusicService drop swap skip", .serialized)
+struct MusicServiceDropSwapSkipTests {
+    /// A drop swap offered for a to b: b has a loud step at 40 s on a bar line, so its standby parks deep in the song.
+    private func offered(_ h: BeatHarness) async -> TransitionPlan? {
+        var a = BeatHarness.row("a", period: 0.5)
+        a.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.4).encode()
+        var b = BeatHarness.row("b", period: 0.48)
+        b.energy = DropFixtures.envelope(seconds: 240, steps: [40])
+        b.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.7).encode()
+        await h.reader.set(a)
+        await h.reader.set(b)
+        await h.startQueue(["a", "b", "c"])
+        MusicTransitionStylePicker.debugForcedStyle = .dropSwap
+        await h.tick(126)
+        await h.tick(170)
+        MusicTransitionStylePicker.debugForcedStyle = nil
+        return h.lastPlan
+    }
+
+    @Test("Next on a pending drop swap takes the ordinary load: no crossfade into a song parked deep at its drop lead")
+    func nextOnDropSwapDoesNotCrossfade() async throws {
+        defer { MusicTransitionStylePicker.debugForcedStyle = nil }
+        let h = BeatHarness()
+        let plan = try #require(await offered(h))
+        #expect(plan.style == .dropSwap, "plan: \(plan) lines: \(h.service.transitionLines)")
+        #expect((plan.mixInSec ?? 0) > 10, "the standby is parked deep: \(plan.mixInSec ?? -1)")
+        #expect(MusicService.parksDeepForDropSwap(plan))
+        h.service.next()
+        #expect(h.engine.manualCrossfades.isEmpty, "a skip must not start the song at its drop lead")
+    }
+
+    @Test("only a drop swap parked more than a bar from the normal start counts as deep")
+    func deepRule() {
+        var plan = TransitionPlan(
+            mode: .beat, incomingStartSec: 30, outgoingEndSec: nil, fadeStartSec: 100,
+            fadeSeconds: 8, incomingGainDb: 0, incomingGlideSeconds: 0, outgoingGainDb: 0, outgoingRampSeconds: 0, reason: .ok
+        )
+        plan.mixInSec = 30
+        plan.barSec = 2
+        plan.fallbackIncomingStartSec = 1
+        plan.style = .dropSwap
+        #expect(MusicService.parksDeepForDropSwap(plan))
+        plan.mixInSec = 2.5
+        #expect(!MusicService.parksDeepForDropSwap(plan))
+        plan.mixInSec = 30
+        plan.style = .longBlend
+        #expect(!MusicService.parksDeepForDropSwap(plan))
     }
 }
 
