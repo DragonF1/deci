@@ -1,9 +1,9 @@
 // Deci/Views/Music/MusicPanelHeaders.swift
 import SwiftUI
 
-// The headers of the three panels that take the right column in place of browse: Lyrics, Related and Up next. Each is
-// 32 pt tall like the browse header and has no tabs and no avatar. The player's Lyrics, Related and Up next buttons,
-// Escape and the tabs give the column back.
+// The headers of the panels that take the right column in place of browse: Lyrics, Related, Song data and Up next. Each
+// is 32 pt tall like the browse header and has no tabs and no avatar. The player's Lyrics, Related and Up next buttons
+// and Escape give the column back. Song data has no player button, so its header leads with a Back button.
 
 /// The wash behind Lyrics, Related and Up next: the song's accent at 0.10 at the top of the column, gone by 90% of its
 /// height.
@@ -119,12 +119,16 @@ struct MusicRelatedHeader: View {
 
 // MARK: - Song data
 
-/// "Song data" and, quietly beside it, the title of the song the panel is for. No magnifier: Song data has no search.
+/// A Back chevron, "Song data" and, quietly beside it, the title of the song the panel is for. No magnifier: Song data
+/// has no search. Back gives the column back to the screen under the panel, `backLabel`.
 struct MusicSongDataHeader: View {
     let store: MusicSongDataStore
+    let backLabel: String
+    let onBack: () -> Void
 
     var body: some View {
         MusicPanelHeaderBar(sidePadding: MusicPopupMetrics.rightPaddingSide) {
+            MusicPanelBackButton(label: backLabel, action: onBack)
             Text("Song data")
                 .musicText(MusicStyle.Typeface.heading)
                 .foregroundStyle(MusicStyle.Palette.textHeading)
@@ -140,6 +144,32 @@ struct MusicSongDataHeader: View {
             }
             Spacer(minLength: 0)
         }
+    }
+}
+
+/// The chevron that leads a panel header without a player button: quiet until the pointer is on it, like a page's Back
+/// row.
+private struct MusicPanelBackButton: View {
+    let label: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(isHovered ? MusicStyle.Opacity.row : MusicStyle.Opacity.idleControl))
+                .frame(width: 20, height: MusicPopupMetrics.headerHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(DesignTokens.Animation.hover, value: isHovered)
+        .padding(.leading, -4)
+        .accessibilityLabel("Back")
+        .accessibilityHint(label)
+        .help("Back to \(label)")
     }
 }
 

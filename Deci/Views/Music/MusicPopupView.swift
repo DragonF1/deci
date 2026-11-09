@@ -147,8 +147,8 @@ struct MusicPopupView: View {
             MusicLyricsHeader(store: service.lyrics)
         } else if let service = signedInService, musicHost.navigation != nil, column.header == .related {
             MusicRelatedHeader(store: service.related)
-        } else if let service = signedInService, musicHost.navigation != nil, column.header == .songData {
-            MusicSongDataHeader(store: service.songData)
+        } else if let service = signedInService, let navigation = musicHost.navigation, column.header == .songData {
+            MusicSongDataHeader(store: service.songData, backLabel: navigation.panelBackLabel) { navigation.closePanel() }
         } else if let service = signedInService, let navigation = musicHost.navigation, column.header == .queue {
             MusicQueueHeader(service: service, navigation: navigation)
         } else {

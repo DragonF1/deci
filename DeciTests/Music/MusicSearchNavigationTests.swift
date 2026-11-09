@@ -887,6 +887,26 @@ struct MusicSearchNavigationShellTests {
         #expect(h.nav.queueForced == false)
     }
 
+    @Test("Song data's Back names the screen under the panel and gives the column back to it")
+    func songDataBack() {
+        let h = NavHarness()
+        h.nav.openSongData(for: MusicSamples.track("s1"))
+        #expect(h.nav.rightColumn == .songData)
+        #expect(h.nav.panelBackLabel == "Home")
+
+        h.nav.closePanel()
+        #expect(h.nav.rightColumn == .browse)
+        #expect(h.service.browse.tab == .home)
+        #expect(h.service.songData.isOpen == false)
+
+        h.service.browse.open(MusicSamples.collection("VLp", title: "Road trip"))
+        h.nav.openSongData(for: MusicSamples.track("s1"))
+        #expect(h.nav.panelBackLabel == "Road trip")
+        h.nav.closePanel()
+        #expect(h.nav.rightColumn == .browse)
+        #expect(h.path == ["VLp"])
+    }
+
     @Test("the right column shows Lyrics or Up next in place of browse, and the same button closes it")
     func panelsFillTheRightColumn() {
         let h = NavHarness()

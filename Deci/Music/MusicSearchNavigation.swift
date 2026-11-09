@@ -200,6 +200,12 @@ final class MusicSearchNavigation {
         service.songData.isOpen
     }
 
+    /// What the Back button of the Song data header is called: the screen under the panel, the page on top of the path,
+    /// else the tab. Song data has no player button to close it, so its header carries Back.
+    var panelBackLabel: String {
+        MusicPageBackLabel.resolve(previousTitle: service.browse.path.last?.title, tab: service.browse.tab)
+    }
+
     /// The save to playlist menu is open. The store owns it; it floats over the popup and leaves the column as it was.
     var showsPicker: Bool {
         service.trackActions.picker != nil
