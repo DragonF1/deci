@@ -35,6 +35,16 @@ struct MusicAuthHeadersTests {
         #expect(value == "SAPISIDHASH 1700000000_\(hashABC) SAPISID1PHASH 1700000000_\(hashDEF) SAPISID3PHASH 1700000000_\(hashGHI)")
     }
 
+    @Test("A named origin changes the hash; the default stays the music origin")
+    func originParameter() {
+        let www = MusicAuthHeaders.authorization(
+            sapisid: "abc", secure1PAPISID: nil, secure3PAPISID: nil, timestamp: timestamp, origin: "https://www.youtube.com"
+        )
+        #expect(www == "SAPISIDHASH 1700000000_27b236f59d4ec583d7530f2c7055d2f9c6aecf92")
+        let music = MusicAuthHeaders.authorization(sapisid: "abc", secure1PAPISID: nil, secure3PAPISID: nil, timestamp: timestamp)
+        #expect(music == "SAPISIDHASH 1700000000_\(hashABC)")
+    }
+
     @Test("Only the schemes whose cookie exists are included")
     func partialAuthorization() {
         let value = MusicAuthHeaders.authorization(

@@ -644,6 +644,53 @@ actor InnerTubeClient {
         return try InnerTubeParser.playerResponse(from: data)
     }
 
+    /// The player call of a stream client other than WEB_REMIX, for its formats only. TV goes out signed in (cookies and
+    /// a SAPISIDHASH over the www origin); ANDROID_VR goes out with neither.
+    func streamPlayer(client kind: StreamClient, videoId: String, signatureTimestamp: Int) async throws -> PlayerResponse {
+        // Only the TV call acts as the account. Both send the page's visitor id: without it ANDROID_VR can answer
+        // LOGIN_REQUIRED ("confirm you're not a bot") for some songs.
+        if kind.sendsAccount, !currentJar().hasSignInCookies { throw MusicError.signedOut }
+        let visitorData = try await sessionOrFallback().visitorData
+        let epoch = epoch
+        let url = StreamClient.playerURL
+        guard let contextClient = kind.contextClient(visitorData: visitorData) else {
+            throw MusicError.parse("no stream context for this client")
+        }
+        var headers = kind.baseHeaders(visitorData: visitorData)
+        if kind.sendsAccount {
+            let jar = currentJar()
+            guard let authorization = MusicAuthHeaders.authorization(jar: jar, url: url, now: now(), origin: StreamClient.wwwOrigin) else {
+                throw MusicError.signedOut
+            }
+            headers["Authorization"] = authorization
+            if let cookie = jar.cookieHeader(for: url, now: now()) { headers["Cookie"] = cookie }
+        }
+        var content: [String: Any] = ["signatureTimestamp": signatureTimestamp]
+        if kind == .tv { content["html5Preference"] = "HTML5_PREF_WANTS" }
+        let body: [String: Any] = [
+            "context": ["client": contextClient],
+            "videoId": videoId,
+            "playbackContext": ["contentPlaybackContext": content],
+            "contentCheckOk": true,
+            "racyCheckOk": true,
+        ]
+        let response = try await transport.send(HTTPRequest(
+            url: url, method: "POST", headers: headers, body: try JSONSerialization.data(withJSONObject: body)
+        ))
+        if kind.sendsAccount { absorbCookies(from: response, url: url, epoch: epoch) }
+        guard (200..<300).contains(response.statusCode) else { throw MusicError.http(response.statusCode) }
+        return try InnerTubeParser.playerResponse(from: response.data)
+    }
+
+    /// One ranged GET of a stream URL (`range` is a Range header value such as "bytes=0-0", one byte), to see whether
+    /// googlevideo will serve it. Only the client's User-Agent goes out: never cookies or authorization. The HTTP status,
+    /// or nil when the request failed. The one-byte range keeps the body tiny; the transport's byte cap would throw away
+    /// the status, so none is set.
+    func probeStream(url: URL, userAgent: String, range: String = "bytes=0-0") async -> Int? {
+        let request = HTTPRequest(url: url, method: "GET", headers: ["User-Agent": userAgent, "Range": range])
+        return try? await transport.send(request).statusCode
+    }
+
     /// The player JS is public: no cookies, no Authorization.
     func playerJS(at url: URL) async throws -> String {
         guard Self.isTrusted(url) else { throw MusicError.parse("player url is not an https YouTube url") }

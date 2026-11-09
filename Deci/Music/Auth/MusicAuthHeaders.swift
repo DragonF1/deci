@@ -18,7 +18,8 @@ enum MusicAuthHeaders {
         sapisid: String?,
         secure1PAPISID: String?,
         secure3PAPISID: String?,
-        timestamp: Int
+        timestamp: Int,
+        origin: String = MusicAuthHeaders.origin
     ) -> String? {
         let primary = nonEmpty(sapisid) ?? nonEmpty(secure3PAPISID)
         guard primary != nil else { return nil }
@@ -28,21 +29,23 @@ enum MusicAuthHeaders {
             ("SAPISID3PHASH", nonEmpty(secure3PAPISID)),
         ]
         return schemes
-            .compactMap { scheme, sid in sid.map { "\(scheme) \(timestamp)_\(hash(timestamp: timestamp, sid: $0))" } }
+            .compactMap { scheme, sid in sid.map { "\(scheme) \(timestamp)_\(hash(timestamp: timestamp, sid: $0, origin: origin))" } }
             .joined(separator: " ")
     }
 
-    /// Reads the three cookies for `url` from the jar. The hash always uses the music origin.
-    static func authorization(jar: MusicCookieJar, url: URL, now: Date) -> String? {
+    /// Reads the three cookies for `url` from the jar. The hash uses the music origin unless another is named
+    /// (the TV player call hashes with https://www.youtube.com).
+    static func authorization(jar: MusicCookieJar, url: URL, now: Date, origin: String = MusicAuthHeaders.origin) -> String? {
         authorization(
             sapisid: jar.value(named: "SAPISID", for: url, now: now),
             secure1PAPISID: jar.value(named: "__Secure-1PAPISID", for: url, now: now),
             secure3PAPISID: jar.value(named: "__Secure-3PAPISID", for: url, now: now),
-            timestamp: Int(now.timeIntervalSince1970.rounded(.down))
+            timestamp: Int(now.timeIntervalSince1970.rounded(.down)),
+            origin: origin
         )
     }
 
-    private static func hash(timestamp: Int, sid: String) -> String {
+    private static func hash(timestamp: Int, sid: String, origin: String) -> String {
         let digest = Insecure.SHA1.hash(data: Data("\(timestamp) \(sid) \(origin)".utf8))
         return digest.map { String(format: "%02x", $0) }.joined()
     }

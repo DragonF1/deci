@@ -365,6 +365,24 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var playerBody = (try? MusicFixtures.data("player-ok.json")) ?? Data()
         var playerStatus = 200
         var playerHeaders: [String: String] = [:]
+        /// The www.youtube.com player calls of the stream clients, by the context's clientName. A client with no body
+        /// answers 404 unless a status is set.
+        var tvPlayerBody: Data?
+        var tvPlayerStatus = 404
+        var vrPlayerBody: Data?
+        var vrPlayerStatus = 404
+        var tvPlayerHeaders: [String: String] = [:]
+        var vrPlayerHeaders: [String: String] = [:]
+        /// Holds the TV player call this long (honouring cancellation), to test a slow or cancelled call.
+        var tvPlayerDelay: Duration?
+        var probeHeaders: [String: String] = [:]
+        /// Hosts whose probe fails with a transport error instead of an answer.
+        var throwingHosts: Set<String> = []
+        /// What the probe past the first byte answers, by host; a host with no entry answers like its first-byte probe.
+        var tailProbeStatuses: [String: Int] = [:]
+        /// What a ranged GET to a googlevideo host answers, by host; a host with no entry gets `probeStatus`.
+        var probeStatuses: [String: Int] = [:]
+        var probeStatus = 206
         var playerJS = "var g={};foo({referer:document.location.toString(),signatureTimestamp:20739},r);"
         var playerJSStatus = 200
         var statsStatus = 204
@@ -397,6 +415,10 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
 
     func requests(path: String) -> [HTTPRequest] {
         requests.filter { $0.url.path == path }
+    }
+
+    func requests(host: String, path: String) -> [HTTPRequest] {
+        requests.filter { $0.url.host == host && $0.url.path == path }
     }
 
     func send(_ request: HTTPRequest) async throws -> HTTPResponse {
@@ -446,6 +468,20 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
             return HTTPResponse(statusCode: config.rateStatus, headers: config.rateHeaders, data: config.rateBody)
         case ("music.youtube.com", "/youtubei/v1/player"):
             return HTTPResponse(statusCode: config.playerStatus, headers: config.playerHeaders, data: config.playerBody)
+        case ("www.youtube.com", "/youtubei/v1/player"):
+            let name = ((Self.jsonBody(request)["context"] as? [String: Any])?["client"] as? [String: Any])?["clientName"] as? String
+            switch name {
+            case "TVHTML5":
+                if let hold = config.tvPlayerDelay { try await Task.sleep(for: hold) }
+                return HTTPResponse(statusCode: config.tvPlayerStatus, headers: config.tvPlayerHeaders, data: config.tvPlayerBody ?? Data("{}".utf8))
+            case "ANDROID_VR": return HTTPResponse(statusCode: config.vrPlayerStatus, headers: config.vrPlayerHeaders, data: config.vrPlayerBody ?? Data("{}".utf8))
+            default: return HTTPResponse(statusCode: 404, headers: [:], data: Data())
+            }
+        case (let host?, _) where host.hasSuffix(".googlevideo.com"):
+            if config.throwingHosts.contains(host) { throw URLError(.networkConnectionLost) }
+            let isTail = request.headers["Range"] != "bytes=0-0"
+            let status = (isTail ? config.tailProbeStatuses[host] : nil) ?? config.probeStatuses[host] ?? config.probeStatus
+            return HTTPResponse(statusCode: status, headers: config.probeHeaders, data: Data())
         case ("music.youtube.com", _) where url.path.hasSuffix("/base.js"):
             return HTTPResponse(statusCode: config.playerJSStatus, headers: [:], data: Data(config.playerJS.utf8))
         case ("music.youtube.com", _) where url.path.hasPrefix("/api/stats/"):

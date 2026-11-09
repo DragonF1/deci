@@ -78,7 +78,7 @@ struct StreamResolverTests {
         let harness = makeHarness()
         defer { finish(harness) }
         _ = try await harness.resolver.resolve(videoId: Self.videoId)
-        let request = try #require(harness.youtube.requests(path: "/youtubei/v1/player").first)
+        let request = try #require(harness.youtube.requests(host: "music.youtube.com", path: "/youtubei/v1/player").first)
         let playback = (FakeYouTube.jsonBody(request)["playbackContext"] as? [String: Any])?["contentPlaybackContext"] as? [String: Any]
         #expect(playback?["signatureTimestamp"] as? Int == 20739)
         #expect(harness.cache.sts(forHash: "0229cd64") == 20739)
@@ -103,7 +103,7 @@ struct StreamResolverTests {
         _ = try await harness.resolver.resolve(videoId: Self.videoId)
         let downloads = harness.youtube.requests.filter { $0.url.path.hasSuffix("/base.js") }
         #expect(downloads.count == 1)
-        let players = harness.youtube.requests(path: "/youtubei/v1/player")
+        let players = harness.youtube.requests(host: "music.youtube.com", path: "/youtubei/v1/player")
         #expect(players.count == 2)
     }
 
@@ -116,7 +116,7 @@ struct StreamResolverTests {
         let second = makeHarness(solver: FakeChallengeSolver(needsRawPlayer: false), directory: first.directory)
         _ = try await second.resolver.resolve(videoId: Self.videoId)
         #expect(second.youtube.requests.filter { $0.url.path.hasSuffix("/base.js") }.isEmpty)
-        let request = try #require(second.youtube.requests(path: "/youtubei/v1/player").first)
+        let request = try #require(second.youtube.requests(host: "music.youtube.com", path: "/youtubei/v1/player").first)
         let playback = (FakeYouTube.jsonBody(request)["playbackContext"] as? [String: Any])?["contentPlaybackContext"] as? [String: Any]
         #expect(playback?["signatureTimestamp"] as? Int == 20739)
     }
@@ -281,7 +281,7 @@ struct StreamResolverTests {
         let harness = makeHarness(youtube: FakeYouTube { $0.playerJS = "var nothing = 1;" })
         defer { finish(harness) }
         await #expect(throws: MusicError.self) { try await harness.resolver.resolve(videoId: Self.videoId) }
-        #expect(harness.youtube.requests(path: "/youtubei/v1/player").isEmpty)
+        #expect(harness.youtube.requests(host: "music.youtube.com", path: "/youtubei/v1/player").isEmpty)
     }
 
     @Test("A failed player JS download with nothing cached fails with its status")
@@ -303,7 +303,7 @@ struct StreamResolverTests {
         let harness = makeHarness(youtube: FakeYouTube { $0.playerJSStatus = 500 }, solver: FakeChallengeSolver(needsRawPlayer: false), directory: directory)
         let stream = try await harness.resolver.resolve(videoId: Self.videoId)
         #expect(stream.itag == 140)
-        let request = try #require(harness.youtube.requests(path: "/youtubei/v1/player").first)
+        let request = try #require(harness.youtube.requests(host: "music.youtube.com", path: "/youtubei/v1/player").first)
         let playback = (FakeYouTube.jsonBody(request)["playbackContext"] as? [String: Any])?["contentPlaybackContext"] as? [String: Any]
         #expect(playback?["signatureTimestamp"] as? Int == 20111)
         #expect(harness.solver.requests.first?.playerHash == "oldhash1")
