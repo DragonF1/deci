@@ -138,6 +138,10 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var runEnergy: Float? = nil
     /// Set by the planner for the beat planners (never by a caller): the outgoing mix-out to use instead of the usual one.
     var djMixOutSec: Double? = nil
+    /// Crossfade without Mix: a plain equal-power fade of the Settings length at the song's real end (or its trailing digital
+    /// silence). No beat plan, style, smart fade start, DJ length or vocal guard; the loudness match stays. Off keeps every
+    /// plan exactly as it was.
+    var plainFade: Bool = false
     static let skipFadeSeconds = 0.3
 
     init(
@@ -180,6 +184,7 @@ enum MusicTransitionPlanner {
     /// at all leaves the plan untouched (that is every song until 3b is on); any other refusal keeps the smart plan and
     /// records `fallbackReason`.
     static func plan(_ inputs: MusicTransitionInputs) -> TransitionPlan {
+        let inputs = plainFaded(inputs)
         let smart = smartPlan(inputs)
         return plan(inputs, smart: smart)
     }
@@ -188,6 +193,7 @@ enum MusicTransitionPlanner {
     /// The beat planner gets the UNGUARDED smart plan so a beat plan never inherits the guard's shortening; the guard
     /// applies only to the smart plan that comes back on a refusal.
     static func plan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
+        let inputs = plainFaded(inputs)
         // Tier 4b P3: DJ-length songs. The pair is planned with the mix-out moved to the second chorus end; the result counts
         // only when it really mixes out there, anything else is the plan the pair would have had.
         let normal = basePlan(inputs, smart: smart)
@@ -204,6 +210,16 @@ enum MusicTransitionPlanner {
             }
         }
         return normal
+    }
+
+    /// A plain fade takes no part in anything that reshapes a mix.
+    private static func plainFaded(_ inputs: MusicTransitionInputs) -> MusicTransitionInputs {
+        guard inputs.plainFade else { return inputs }
+        var out = inputs
+        out.beatMixEnabled = false
+        out.djLength = false
+        out.vocalGuardEnabled = false
+        return out
     }
 
     private static func basePlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
@@ -388,6 +404,26 @@ enum MusicTransitionPlanner {
             plan.fadeSeconds = 0
             plan.fadeStartSec = nil
             plan.reason = .tooShort
+            return plan
+        }
+
+        if inputs.plainFade {
+            // The setting's length, ending at the real end (or the trailing silence trim): no early start from the outro.
+            let fade = min(inputs.settingSeconds, aEnd / 2, bSpan / 2)
+            guard fade >= 1 else { return tooShort() }
+            plan.mode = .fixed
+            plan.fadeSeconds = fade
+            plan.fadeStartSec = nil
+            plan.reason = .ok
+            if let d = offsetDb(outgoing: inputs.outgoing, incoming: inputs.incoming) {
+                if d > 0 {
+                    plan.incomingGainDb = -d
+                    plan.incomingGlideSeconds = glideSeconds
+                } else if d < 0 {
+                    plan.outgoingGainDb = d
+                    plan.outgoingRampSeconds = min(2, fade / 3)
+                }
+            }
             return plan
         }
 

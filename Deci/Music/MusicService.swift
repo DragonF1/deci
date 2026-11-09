@@ -1512,6 +1512,8 @@ final class MusicService {
             }
         }
         savePlaybackPreferences()
+        // A parked beat plan or style is Mix's: leaving Mix (or entering it) plans the pair again.
+        replanOffered()
         topUpQueue()
         saveSession()
     }
@@ -1932,8 +1934,11 @@ final class MusicService {
         MusicPlaybackPreferences.clampedCrossfade(liveCrossfadeSeconds?() ?? startingCrossfadeSeconds)
     }
 
-    /// Beat-matched transitions are on (they also need Crossfade on, which the planner checks).
-    var isBeatMixOn: Bool { liveBeatMix?() ?? startingBeatMix }
+    /// Beat-matched transitions and the style picker are on. They apply only in Mix (a plain Crossfade is a plain fade), and
+    /// also need Crossfade or Mix to mix at all, which the planner checks.
+    var isBeatMixOn: Bool { isMixOn && beatMixSetting }
+    /// The Settings switch itself, whatever the shuffle mode is (what is saved).
+    private var beatMixSetting: Bool { liveBeatMix?() ?? startingBeatMix }
     var isVocalGuardOn: Bool { liveVocalGuard?() ?? startingVocalGuard }
     /// DJ-length songs is on (it only acts in Mix with Crossfade and Beat mix on, which the planner checks).
     var isDJLengthOn: Bool { isMixOn && (liveDJLength?() ?? startingDJLength) }
@@ -2010,7 +2015,7 @@ final class MusicService {
         guard !holdsPreferences else { return }
         savePreferences(MusicPlaybackPreferences(
             shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn,
-            crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds, beatMix: isBeatMixOn,
+            crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds, beatMix: beatMixSetting,
             vocalGuard: isVocalGuardOn, mixShuffle: isMixOn, djLength: liveDJLength?() ?? startingDJLength
         ))
     }
@@ -3169,7 +3174,7 @@ final class MusicService {
            freshRow(for: next)?.usableGrid != nil || isAwaitingRow(for: next), duration > Self.beatLead * 2 {
             return (Self.beatLead, end - djShift(toward: next.videoId))
         }
-        guard mixesTransitions, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
+        guard mixesTransitions, isMixOn, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
             return (leadTime, end)
         }
         return (smart, end)
@@ -3317,6 +3322,7 @@ final class MusicService {
             incomingLocal: MusicLoopExtend.isLocal(preloadStream(for: next).origin),
             djLength: isDJLengthOn, runEnergy: runEnergy
         )
+        inputs.plainFade = !isMixOn
         // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
         inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
         let plan = MusicTransitionPlanner.plan(inputs)
@@ -3376,6 +3382,7 @@ final class MusicService {
         inputs.beatMixEnabled = isBeatMixOn && beatFallbackFor != inputs.incoming.videoId
         inputs.vocalGuardEnabled = isVocalGuardOn
         inputs.djLength = isDJLengthOn
+        inputs.plainFade = !isMixOn
         // earliestMixOutSec stays what it was at the offer: moving it with the playhead would turn a ready beat plan
         // into a smart one inside the last seconds.
         let flags = transitionFlags(from: inputs.outgoing.videoId, to: inputs.incoming.videoId)

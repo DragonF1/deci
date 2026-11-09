@@ -61,7 +61,7 @@ struct AVPlaybackEngineTransitionTests {
     private func hostNow() -> Double { CMClockGetTime(CMClockGetHostTimeClock()).seconds }
 
     private func itemEnd(_ engine: AVPlaybackEngine) -> Double? {
-        engine.currentItem.map { $0.forwardPlaybackEndTime.seconds }
+        engine.debugEffectiveEnd
     }
 
     // MARK: - Incoming start offset
@@ -122,7 +122,7 @@ struct AVPlaybackEngineTransitionTests {
 
     // MARK: - Trimmed end
 
-    @Test("forwardPlaybackEndTime moves to the trimmed end and cancelPreload restores the natural end")
+    @Test("the trimmed end is the engine's own, the item keeps its natural end, and cancelPreload drops the trim")
     func trimmedEndIsRestored() async throws {
         let first = try await writeTone("t1", seconds: 8)
         let second = try await writeTone("t2", seconds: 8)
@@ -132,6 +132,7 @@ struct AVPlaybackEngineTransitionTests {
         engine.preload(stream("t2", duration: 8, url: second), plan: plan(.gapless, end: 5))
         let trimmed = await waitUntil(timeout: .seconds(30)) { itemEnd(engine).map { abs($0 - 5) < 0.01 } ?? false }
         #expect(trimmed, "end \(String(describing: itemEnd(engine)))")
+        #expect(abs((engine.debugItemEnd ?? 0) - 8) < 0.01, "a playing item's end time is never written")
         engine.cancelPreload()
         #expect(abs((itemEnd(engine) ?? 0) - 8) < 0.01, "restored to the stream's own end")
         #expect(engine.transitionPlan == nil)

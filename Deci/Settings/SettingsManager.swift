@@ -73,7 +73,7 @@ nonisolated struct AppSettings: Codable, Equatable {
     var musicCrossfadeSeconds: Double = 6          // How long that fade lasts, 1 to 12 seconds
     var musicDJLength: Bool = false                // In Mix, energetic runs move on after the second chorus (off by default)
     var musicVocalGuard: Bool = true               // Keep two singers from overlapping in a crossfade (needs crossfade on)
-    var musicBeatMix: Bool = true                  // Line matching-tempo songs up on the beat during a crossfade (needs crossfade on)
+    var musicBeatMix: Bool = true                  // Line matching-tempo songs up on the beat during a crossfade (applies in Mix shuffle only)
     var musicFavoriteLeft: String = MusicFavoriteControl.shuffle.rawValue  // What the player's left favorite slot holds (a MusicFavoriteControl raw value)
     var musicFavoriteRight: String = MusicFavoriteControl.loop.rawValue    // Same for the right slot
     var musicAnalyzeInBackground: Bool = true      // Analyse liked songs and playlists one at a time while Music is idle

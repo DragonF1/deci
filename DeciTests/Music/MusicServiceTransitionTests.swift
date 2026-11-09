@@ -32,7 +32,9 @@ private struct TransitionHarness {
     let player: MusicPlayer
     let service: MusicService
 
-    init(crossfade: Bool = true, seconds: Double = 6) {
+    /// Crossfade on means Mix on here: the smart plans these tests check belong to Mix. `mix` false is Crossfade alone.
+    init(crossfade: Bool = true, seconds: Double = 6, mix: Bool? = nil) {
+        let mix = mix ?? crossfade
         let engine = self.engine
         let clock = self.clock
         let player = MusicPlayer(engine: engine)
@@ -46,7 +48,8 @@ private struct TransitionHarness {
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
-            preferences: MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: seconds),
+            preferences: MusicPlaybackPreferences(shuffle: mix, crossfade: crossfade, crossfadeSeconds: seconds, mixShuffle: mix),
+            shuffleSeed: 1,
             queueRetryDelay: .seconds(60),
             connectivity: connectivity,
             refreshOnCreate: false,
@@ -263,7 +266,7 @@ struct MusicServiceTransitionTests {
         #expect(h.engine.preloads.isEmpty)
         await h.tick(100)
         #expect(h.engine.preloads.count == 1)
-        #expect(await h.provider.ensuredIDs == ["a", "b"], "the next song is analysed from the start, not only for long songs")
+        #expect(Set(await h.provider.ensuredIDs) == ["a", "b"], "the next song is analysed from the start, not only for long songs")
         #expect(h.lastPlan?.mode == .fixed)
     }
 
@@ -292,6 +295,7 @@ struct MusicServiceTransitionTests {
         #expect(h.service.transitionLines.last?.contains("reason=late") == true)
         // A toggle after that still re-plans from the frozen inputs: b stays unanalysed for this transition.
         h.service.setCrossfade(false)
+        h.service.setShuffleMode(.off)
         #expect(h.engine.updatedPlans.last??.incomingStartSec == 0)
     }
 
@@ -308,6 +312,7 @@ struct MusicServiceTransitionTests {
         let cancelsBefore = h.engine.cancelPreloadCount
 
         h.service.setCrossfade(false)
+        h.service.setShuffleMode(.off)
         let off = try #require(h.engine.updatedPlans.last ?? nil)
         #expect(off.mode == .gapless)
         #expect(off.incomingStartSec == 0.5)
@@ -315,8 +320,8 @@ struct MusicServiceTransitionTests {
 
         h.service.setCrossfade(true)
         let on = try #require(h.engine.updatedPlans.last ?? nil)
-        #expect(on.mode == .smart)
-        #expect(on.fadeStartSec == 185)
+        #expect(on.mode == .fixed, "Crossfade alone, outside Mix, is a plain fade")
+        #expect(on.fadeStartSec == nil)
         #expect(h.engine.updatedPlans.count == 2)
         #expect(h.engine.preloads.count == 1, "the standby is not rebuilt")
         #expect(h.engine.cancelPreloadCount == cancelsBefore)
@@ -389,7 +394,7 @@ struct MusicServiceTransitionTests {
 
     @Test("an album played in order is untrimmed and gapless, and its window is the tier-1 one")
     func albumInOrder() async throws {
-        let h = TransitionHarness()
+        let h = TransitionHarness(crossfade: true, mix: false)
         await h.standardRows()
         await h.startPage("MPREb_album", ["a", "b", "c"])
         await h.tick(126)
@@ -599,6 +604,7 @@ struct MusicServiceTransitionTests {
         await h.tick(126)
         await h.tick(160)
         h.service.setCrossfade(false)
+        h.service.setShuffleMode(.off)
         #expect(h.engine.updatedPlans.count == 1)
         for position in stride(from: 165.0, to: 185, by: 5) { await h.tick(position) }
         #expect(h.engine.updatedPlans.count == 1)

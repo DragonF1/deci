@@ -20,7 +20,7 @@ struct BeatHarness {
     let service: MusicService
 
     init(
-        crossfade: Bool = true, beatMix: Bool = true, preferences: MusicPlaybackPreferences? = nil,
+        crossfade: Bool = true, beatMix: Bool = true, mix: Bool = true, preferences: MusicPlaybackPreferences? = nil,
         djLength: (@MainActor () -> Bool)? = nil
     ) {
         let engine = self.engine
@@ -36,7 +36,9 @@ struct BeatHarness {
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
-            preferences: preferences ?? MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: 6, beatMix: beatMix),
+            preferences: preferences ?? MusicPlaybackPreferences(
+                shuffle: mix, crossfade: crossfade, crossfadeSeconds: 6, beatMix: beatMix, mixShuffle: mix
+            ),
             djLength: djLength,
             queueRetryDelay: .seconds(60),
             connectivity: connectivity,
@@ -113,7 +115,7 @@ struct MusicServiceBeatMixTests {
     private func start(_ h: BeatHarness, bGrid: Bool = true) async {
         await h.reader.set(BeatHarness.row("a", period: 0.5))
         await h.reader.set(BeatHarness.row("b", period: 0.48, grid: bGrid))
-        await h.startQueue(["a", "b", "c"])
+        await h.startQueue(["a", "b"])
     }
 
     @Test("both grids present and the setting on: the engine gets a beat plan, and the log says so")
@@ -241,7 +243,7 @@ struct MusicServiceBeatMixTests {
         }
     }
 
-    @Test("toggling Crossfade off under a beat plan whose preload is still loading withdraws it")
+    @Test("leaving Mix under a beat plan whose preload is still loading withdraws it")
     func toggleUnderBeatPlanNotReadyRepreloads() async throws {
         let h = BeatHarness()
         await start(h)
@@ -250,7 +252,8 @@ struct MusicServiceBeatMixTests {
         #expect(h.lastPlan?.mode == .beat)
         h.engine.preloadReady = false
         let cancels = h.engine.cancelPreloadCount
-        h.service.setCrossfade(false)
+        // Leaving Mix takes the beat plan away (Crossfade stays on: the pair is a plain fade now).
+        h.service.setShuffleMode(.off)
         #expect(h.engine.cancelPreloadCount == cancels + 1)
         #expect(h.engine.updatedPlans.isEmpty)
     }
@@ -266,7 +269,7 @@ struct MusicServiceBeatMixTests {
         let mixOut = try #require(beat.mixOutSec)
         await h.tick(mixOut - 7.5)
         let cancels = h.engine.cancelPreloadCount
-        h.service.setCrossfade(false)
+        h.service.setShuffleMode(.off)
         #expect(h.engine.cancelPreloadCount == cancels, "the ready preload stays")
         let updated = try #require(h.engine.updatedPlans.last ?? nil)
         #expect(updated.mode != .beat)
@@ -303,7 +306,7 @@ struct MusicServiceDropSwapSkipTests {
         b.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.7).encode()
         await h.reader.set(a)
         await h.reader.set(b)
-        await h.startQueue(["a", "b", "c"])
+        await h.startQueue(["a", "b"])
         // Scoped to this task: a plan test running beside this one never sees the forced style.
         await MusicTransitionStylePicker.$debugScopedStyle.withValue(.dropSwap) {
             await h.tick(126)

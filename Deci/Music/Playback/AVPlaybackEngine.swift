@@ -253,8 +253,17 @@ final class AVPlaybackEngine: PlaybackEngine {
     private(set) var transitionPlan: TransitionPlan?
     /// The offset the plan asked the standby to be parked at, as asked (the deck's own may fall back to 0).
     private var requestedStartOffset: TimeInterval = 0
-    /// The active item's forwardPlaybackEndTime was moved to the plan's trimmed end.
-    private var endTrimmed = false
+    /// The plan's trimmed end of the active item, as an item time. It is only the engine's own idea of where the song ends:
+    /// the item's forwardPlaybackEndTime is never written while the item plays (CoreMedia answers an end time change with a
+    /// teardown, a reprepare and a preroll, heard as a pause and a jump back). The tap fade is at 0 by then, and the engine
+    /// lets the deck go itself (the drain timer for a fade, `trimEndTask` for a gapless switch).
+    private var trimmedEndItemTime: CMTime?
+    private var endTrimmed: Bool {
+        get { trimmedEndItemTime != nil }
+        set { if !newValue { trimmedEndItemTime = nil } }
+    }
+    /// Hands over at the trimmed end when the standby starts there without a fade. Moves with the schedule.
+    private var trimEndTask: Task<Void, Never>?
     /// A listener's seek landed at or near the trimmed end: the item's natural end is back and the transition is Tier 1
     /// style from there (the setting's fade, ending at the natural end). Reset with the plan.
     private var endRestoredBySeek = false
@@ -275,6 +284,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var plannedBeat = false
     /// The most a beat mix's rate may drift the incoming deck over its overlap and still be run at exactly 1 (seconds).
     nonisolated static let unityDriftBudget: TimeInterval = 0.002
+    /// How long after the trimmed end's host time the gapless hand-over runs: the standby has started by then.
+    nonisolated static let trimHandoverDelay: TimeInterval = 0.05
     /// A beat mix's overlap, from its flip until the outgoing deck has drained: what a resume needs to realign the decks.
     private var beatOverlap: BeatOverlap?
     /// True while the decks' bass channels are on (from the flip of a beat mix with a swap until the drain is over).
@@ -334,6 +345,11 @@ final class AVPlaybackEngine: PlaybackEngine {
     var isCrossfading: Bool { draining != nil }
     #if DEBUG
     var debugDrainingTap: MusicTapDeck? { draining?.tap }
+    /// Where the engine treats the active song as ending (the trimmed end when there is one), as an item time. A test seam.
+    var debugEffectiveEnd: Double? { active.player.currentItem.flatMap { endTime(of: $0)?.seconds } }
+    /// The active item's own forwardPlaybackEndTime: the engine never moves it while the item plays. A test seam.
+    var debugItemEnd: Double? { active.player.currentItem?.forwardPlaybackEndTime.seconds }
+    var debugTrimEndScheduled: Bool { trimEndTask != nil }
     var debugDrainingPlayer: AVPlayer? { draining?.player }
     #endif
     /// The active player, for tests to read what the engine really set on it.
@@ -954,17 +970,16 @@ final class AVPlaybackEngine: PlaybackEngine {
         evaluateSchedule()
     }
 
-    /// Moves the active item's end to the plan's trimmed end (from the stream's own duration, so never past its natural
-    /// end), or back to the natural end when the plan has none. Not when the new end is within a second of now.
+    /// Notes the plan's trimmed end as the active song's end (from the stream's own duration, so never past its natural
+    /// end), or drops it when the plan has none. Not when the new end is within a second of now. Never writes the item.
     private func applyOutgoingEnd() {
-        guard !endRestoredBySeek, let item = active.player.currentItem, let natural = active.naturalEnd else { return }
+        guard !endRestoredBySeek, active.player.currentItem != nil, let natural = active.naturalEnd else { return }
         if let end = transitionPlan?.outgoingEndSec, end.isFinite {
             let trimmed = min(end, natural)
             let now = active.player.currentTime().seconds
             let floor = (now.isFinite ? active.songTime(now) : 0) + 1
             if natural > trimmed && trimmed > floor {
-                item.forwardPlaybackEndTime = CMTime(seconds: active.itemTime(trimmed), preferredTimescale: 1000)
-                endTrimmed = true
+                trimmedEndItemTime = CMTime(seconds: active.itemTime(trimmed), preferredTimescale: 1000)
                 return
             }
         }
@@ -990,10 +1005,9 @@ final class AVPlaybackEngine: PlaybackEngine {
     }
 
     private func restoreOutgoingEnd() {
-        guard endTrimmed else { return }
         endTrimmed = false
-        guard let item = active.player.currentItem, let natural = active.naturalEnd else { return }
-        item.forwardPlaybackEndTime = CMTime(seconds: active.itemTime(natural), preferredTimescale: 1000)
+        trimEndTask?.cancel()
+        trimEndTask = nil
     }
 
     func cancelPreload() {
@@ -1210,6 +1224,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private func endTime(of item: AVPlayerItem) -> CMTime? {
         let end = item.forwardPlaybackEndTime
         guard end.isValid, end.isNumeric, end.seconds.isFinite, end.seconds > 0 else { return nil }
+        // The active song's trimmed end is the engine's own: the item keeps its natural end.
+        if let trimmed = trimmedEndItemTime, item === active.player.currentItem, trimmed < end { return trimmed }
         return end
     }
 
@@ -1365,6 +1381,23 @@ final class AVPlaybackEngine: PlaybackEngine {
         scheduledHost = host
         armStandbyTap(before: host)
         scheduleCrossfadeStart(at: host)
+        scheduleTrimEnd(at: host)
+    }
+
+    /// A gapless switch at a trimmed end: the item plays on to its natural end, so the hand-over is made here, at the trim
+    /// (the standby starts on the same host time). Without a trim, or with a fade, the item's own end or the flip does it.
+    private func scheduleTrimEnd(at host: CMTime) {
+        trimEndTask?.cancel()
+        trimEndTask = nil
+        guard plannedFade == 0, endTrimmed else { return }
+        let wait = CMTimeSubtract(host, CMClockGetTime(CMClockGetHostTimeClock())).seconds + Self.trimHandoverDelay
+        trimEndTask = Task { @MainActor [weak self] in
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+            guard !Task.isCancelled, let self, let scheduled = self.scheduledHost, scheduled == host,
+                  self.preloadStream != nil, self.preloadReady, self.draining == nil else { return }
+            self.trimEndTask = nil
+            self.activeItemEnded()
+        }
     }
 
     // MARK: - Aligned start (the tier 3b seam)
@@ -1448,6 +1481,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         armTask = nil
         fadeStartTask?.cancel()
         fadeStartTask = nil
+        trimEndTask?.cancel()
+        trimEndTask = nil
         if plannedFade > 0 { standby.tap?.fade(to: 1) }
         plannedFade = 0
         plannedLead = 0
@@ -1523,6 +1558,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         plannedPlan = nil
         fadeStartTask?.cancel()
         fadeStartTask = nil
+        trimEndTask?.cancel()
+        trimEndTask = nil
         if let plan = transitionPlan {
             let line = MusicTransitionLog.appliedLine(
                 from: outgoing.videoId ?? "-", to: stream.videoId,
@@ -1631,6 +1668,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         let outgoing = active
         fadeStartTask?.cancel()
         fadeStartTask = nil
+        trimEndTask?.cancel()
+        trimEndTask = nil
         armTask?.cancel()
         armTask = nil
         alignedStart = false

@@ -297,12 +297,12 @@ struct MusicLoopExtendTests {
         await h.reader.set(a)
         await h.reader.set(BeatHarness.row("b", period: 0.5, introEnd: 10))
         let file = URL(fileURLWithPath: "/Volumes/Storage/_test/deci/loop-extend/service-b.m4a")
-        for id in ["a", "b", "c"] {
+        for id in ["a", "b"] {
             var stream = MusicSamples.stream(videoId: id, duration: 240)
             if id == "b" { stream = stream.playingFrom(file: file) }
             await h.backend.setStream(stream)
         }
-        let tracks = ["a", "b", "c"].map { MusicSamples.track($0, title: "Song \($0)") }
+        let tracks = ["a", "b"].map { MusicSamples.track($0, title: "Song \($0)") }
         await h.backend.setRadio(seed: "a", tracks: tracks, continuation: nil)
         h.service.play(tracks[0])
         await h.settle()
@@ -321,7 +321,7 @@ struct MusicLoopExtendTests {
         await h.tick(mixOut - 20)
         #expect(h.engine.preloadIsReady)
         let cancels = h.engine.cancelPreloadCount
-        h.service.setCrossfade(false)
+        h.service.setShuffleMode(.off)
         #expect(h.engine.cancelPreloadCount == cancels + 1, "ready, with the mix-out still ahead: it is withdrawn all the same")
     }
 }

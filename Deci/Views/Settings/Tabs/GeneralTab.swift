@@ -211,7 +211,7 @@ struct GeneralTab: View {
             SettingsRowDivider()
             SettingsRow(
                 "Beat-matched transitions",
-                description: "When Crossfade is on, songs of matching tempo are lined up on the beat over eight bars. The next song speeds up or slows down a little (up to 8%) and relaxes back to normal after the fade. Other songs keep the usual fade."
+                description: "In Mix shuffle, songs of matching tempo are lined up on the beat over eight bars. The next song speeds up or slows down a little (up to 8%) and relaxes back to normal after the fade. Other songs keep the usual fade."
             ) {
                 Toggle("", isOn: $settings.appSettings.musicBeatMix)
                     .toggleStyle(.switch)
