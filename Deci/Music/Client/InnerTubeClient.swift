@@ -645,9 +645,9 @@ actor InnerTubeClient {
     }
 
     /// The player call of a stream client other than WEB_REMIX, for its formats only. TV goes out signed in (cookies and
-    /// a SAPISIDHASH over the www origin); ANDROID_VR goes out with neither.
+    /// a SAPISIDHASH over the www origin); VISIONOS goes out with neither.
     func streamPlayer(client kind: StreamClient, videoId: String, signatureTimestamp: Int) async throws -> PlayerResponse {
-        // Only the TV call acts as the account. Both send the page's visitor id: without it ANDROID_VR can answer
+        // Only the TV call acts as the account. Both send the page's visitor id: without it VISIONOS answers
         // LOGIN_REQUIRED ("confirm you're not a bot") for some songs.
         if kind.sendsAccount, !currentJar().hasSignInCookies { throw MusicError.signedOut }
         let visitorData = try await sessionOrFallback().visitorData
@@ -665,15 +665,17 @@ actor InnerTubeClient {
             headers["Authorization"] = authorization
             if let cookie = jar.cookieHeader(for: url, now: now()) { headers["Cookie"] = cookie }
         }
-        var content: [String: Any] = ["signatureTimestamp": signatureTimestamp]
-        if kind == .tv { content["html5Preference"] = "HTML5_PREF_WANTS" }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "context": ["client": contextClient],
             "videoId": videoId,
-            "playbackContext": ["contentPlaybackContext": content],
             "contentCheckOk": true,
             "racyCheckOk": true,
         ]
+        if kind == .tv {
+            body["playbackContext"] = [
+                "contentPlaybackContext": ["signatureTimestamp": signatureTimestamp, "html5Preference": "HTML5_PREF_WANTS"],
+            ]
+        }
         let response = try await transport.send(HTTPRequest(
             url: url, method: "POST", headers: headers, body: try JSONSerialization.data(withJSONObject: body)
         ))

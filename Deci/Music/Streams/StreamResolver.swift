@@ -191,7 +191,7 @@ actor StreamResolver {
 
     // MARK: - Client chain
 
-    /// TV then ANDROID_VR, with the client that last passed first and any client in its skip window left out.
+    /// VISIONOS then TV, with the client that last passed first and any client in its skip window left out.
     private func candidateOrder() -> [StreamClient] {
         let at = now()
         var order = StreamClient.preferredOrder.filter { (skippedUntil[$0] ?? .distantPast) <= at }
@@ -273,7 +273,9 @@ actor StreamResolver {
 
     /// Picks the format, solves what its plan needs and builds the URL.
     private func build(_ kind: StreamClient, response: PlayerResponse, source: PlayerSource) async throws -> Built {
-        guard let format = FormatPicker.pick(from: response.formats) else {
+        // VISIONOS plays from the direct url alone: a format with only a signatureCipher is no format.
+        let formats = kind.needsDirectURL ? response.formats.filter { $0.url?.isEmpty == false } : response.formats
+        guard let format = FormatPicker.pick(from: formats) else {
             throw kind == .webRemix ? MusicError.noAudioFormat : Failure.noFormat
         }
         do {
@@ -300,13 +302,16 @@ actor StreamResolver {
         }
     }
 
-    /// Two ranged GETs: the first byte, and one byte past 1 MiB (or the last byte of a smaller file), since a URL can serve
-    /// its first stretch and then be refused. Both must answer 206.
+    /// Two ranged GETs: the first byte and the last byte of the file, since a URL can serve its first stretch and refuse
+    /// the rest. Both must answer 206. A file of one byte or less, or of unknown size, gets the first byte only.
     private func probe(_ built: Built) async throws {
-        let later = min(1_048_576, max((built.format.contentLength ?? .max) - 1, 0))
+        let last = Self.contentLength(of: built).map { $0 - 1 }
         async let head = probeOnce(built, range: "bytes=0-0")
-        async let tail = probeOnce(built, range: "bytes=\(later)-\(later)")
-        let results = [await head, await tail]
+        async let tail: Result<Int, Failure>? = {
+            guard let last, last > 0 else { return nil }
+            return await probeOnce(built, range: "bytes=\(last)-\(last)")
+        }()
+        let results = [await head, await tail].compactMap { $0 }
         try Task.checkCancellation()
         let failures: [Failure] = results.compactMap { result in
             switch result {
@@ -316,6 +321,13 @@ actor StreamResolver {
             }
         }
         if let failure = failures.first(where: \.startsSkip) ?? failures.first { throw failure }
+    }
+
+    /// The file's size: the format's contentLength, else the `clen` on the address.
+    private static func contentLength(of built: Built) -> Int? {
+        if let length = built.format.contentLength { return length }
+        return URLComponents(url: built.url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "clen" }?.value.flatMap(Int.init)
     }
 
     private func probeOnce(_ built: Built, range: String) async -> Result<Int, Failure> {

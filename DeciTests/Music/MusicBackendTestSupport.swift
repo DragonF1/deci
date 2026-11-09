@@ -369,12 +369,13 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         /// answers 404 unless a status is set.
         var tvPlayerBody: Data?
         var tvPlayerStatus = 404
-        var vrPlayerBody: Data?
-        var vrPlayerStatus = 404
+        var visionPlayerBody: Data?
+        var visionPlayerStatus = 404
         var tvPlayerHeaders: [String: String] = [:]
-        var vrPlayerHeaders: [String: String] = [:]
+        var visionPlayerHeaders: [String: String] = [:]
         /// Holds the TV player call this long (honouring cancellation), to test a slow or cancelled call.
         var tvPlayerDelay: Duration?
+        var visionPlayerDelay: Duration?
         var probeHeaders: [String: String] = [:]
         /// Hosts whose probe fails with a transport error instead of an answer.
         var throwingHosts: Set<String> = []
@@ -474,7 +475,9 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
             case "TVHTML5":
                 if let hold = config.tvPlayerDelay { try await Task.sleep(for: hold) }
                 return HTTPResponse(statusCode: config.tvPlayerStatus, headers: config.tvPlayerHeaders, data: config.tvPlayerBody ?? Data("{}".utf8))
-            case "ANDROID_VR": return HTTPResponse(statusCode: config.vrPlayerStatus, headers: config.vrPlayerHeaders, data: config.vrPlayerBody ?? Data("{}".utf8))
+            case "VISIONOS":
+                if let hold = config.visionPlayerDelay { try await Task.sleep(for: hold) }
+                return HTTPResponse(statusCode: config.visionPlayerStatus, headers: config.visionPlayerHeaders, data: config.visionPlayerBody ?? Data("{}".utf8))
             default: return HTTPResponse(statusCode: 404, headers: [:], data: Data())
             }
         case (let host?, _) where host.hasSuffix(".googlevideo.com"):

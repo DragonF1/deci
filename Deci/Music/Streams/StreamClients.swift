@@ -4,29 +4,30 @@ import Foundation
 /// the formats come from a client that needs none; WEB_REMIX stays as the last resort and as the source of the
 /// playability status and the tracking URLs.
 enum StreamClient: String, Sendable, Equatable, CaseIterable {
-    /// Signed-in TVHTML5 (yt-dlp's tv_downgraded): cookies and SAPISIDHASH, no PO token.
+    /// Anonymous VISIONOS: no cookies, no auth, direct URLs, no solving.
+    case visionOS = "visionos"
+    /// Signed-in TVHTML5 as yt-dlp's tv_samsung: cookies and SAPISIDHASH, no PO token.
     case tv
-    /// Anonymous ANDROID_VR: no cookies, no auth, direct URLs.
-    case androidVR = "android_vr"
     case webRemix = "web_remix"
 
     /// The clients tried before WEB_REMIX, in order.
-    static let preferredOrder: [StreamClient] = [.tv, .androidVR]
+    static let preferredOrder: [StreamClient] = [.visionOS, .tv]
 
     static let playerURL = URL(string: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false")!
     static let wwwOrigin = "https://www.youtube.com"
 
-    static let tvVersion = "5.20260114"
-    static let tvUserAgent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
-    static let vrVersion = "1.65.10"
-    static let vrUserAgent =
-        "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+    static let tvVersion = "5.20260707"
+    static let tvUserAgent =
+        "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1"
+    static let visionVersion = "1.02"
+    static let visionUserAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 
     /// The User-Agent AVPlayer, the ranged fetch and the probe send to googlevideo for this client's URLs.
     var userAgent: String {
         switch self {
+        case .visionOS: Self.visionUserAgent
         case .tv: Self.tvUserAgent
-        case .androidVR: Self.vrUserAgent
         case .webRemix: MusicAuthHeaders.userAgent
         }
     }
@@ -34,44 +35,50 @@ enum StreamClient: String, Sendable, Equatable, CaseIterable {
     /// Whether the player call carries the account's cookies and SAPISIDHASH.
     var sendsAccount: Bool { self == .tv }
 
+    /// Whether the format must carry a direct `url` (no signatureCipher to solve).
+    var needsDirectURL: Bool { self == .visionOS }
+
     /// `context.client` of the player call; nil for WEB_REMIX, which InnerTubeClient builds itself.
     func contextClient(visitorData: String?) -> [String: Any]? {
+        var client: [String: Any]
         switch self {
         case .tv:
-            var client: [String: Any] = [
+            client = [
                 "clientName": "TVHTML5",
                 "clientVersion": Self.tvVersion,
+                "deviceMake": "Samsung",
+                "deviceModel": "UKS9800",
+                "osName": "Tizen",
+                "osVersion": "2.4.0",
                 "userAgent": Self.tvUserAgent,
                 "hl": "en",
                 "gl": "US",
             ]
-            if let visitorData, !visitorData.isEmpty { client["visitorData"] = visitorData }
-            return client
-        case .androidVR:
-            var client: [String: Any] = [
-                "clientName": "ANDROID_VR",
-                "clientVersion": Self.vrVersion,
-                "deviceMake": "Oculus",
-                "deviceModel": "Quest 3",
-                "androidSdkVersion": 32,
-                "userAgent": Self.vrUserAgent,
-                "osName": "Android",
-                "osVersion": "12L",
+        case .visionOS:
+            client = [
+                "clientName": "VISIONOS",
+                "clientVersion": Self.visionVersion,
+                "deviceMake": "Apple",
+                "deviceModel": "RealityDevice17,1",
+                "userAgent": Self.visionUserAgent,
+                "osName": "visionOS",
+                "osVersion": "26.5.23O471",
                 "hl": "en",
                 "gl": "US",
             ]
-            if let visitorData, !visitorData.isEmpty { client["visitorData"] = visitorData }
-            return client
         case .webRemix:
             return nil
         }
+        if let visitorData, !visitorData.isEmpty { client["visitorData"] = visitorData }
+        return client
     }
 
     /// The headers that do not depend on the account; the TV call adds Cookie and Authorization on top.
     func baseHeaders(visitorData: String?) -> [String: String] {
+        var headers: [String: String]
         switch self {
         case .tv:
-            var headers = [
+            headers = [
                 "X-YouTube-Client-Name": "7",
                 "X-YouTube-Client-Version": Self.tvVersion,
                 "User-Agent": Self.tvUserAgent,
@@ -80,19 +87,18 @@ enum StreamClient: String, Sendable, Equatable, CaseIterable {
                 "X-Origin": Self.wwwOrigin,
                 "X-Goog-AuthUser": "0",
             ]
-            if let visitorData, !visitorData.isEmpty { headers["X-Goog-Visitor-Id"] = visitorData }
-            return headers
-        case .androidVR:
-            var headers = [
-                "X-YouTube-Client-Name": "28",
-                "X-YouTube-Client-Version": Self.vrVersion,
-                "User-Agent": Self.vrUserAgent,
+        case .visionOS:
+            headers = [
+                "X-YouTube-Client-Name": "101",
+                "X-YouTube-Client-Version": Self.visionVersion,
+                "User-Agent": Self.visionUserAgent,
                 "Content-Type": "application/json",
+                "Origin": Self.wwwOrigin,
             ]
-            if let visitorData, !visitorData.isEmpty { headers["X-Goog-Visitor-Id"] = visitorData }
-            return headers
         case .webRemix:
             return [:]
         }
+        if let visitorData, !visitorData.isEmpty { headers["X-Goog-Visitor-Id"] = visitorData }
+        return headers
     }
 }
