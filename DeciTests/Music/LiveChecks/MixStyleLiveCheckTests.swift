@@ -68,6 +68,7 @@ struct MixStyleLiveCheckTests {
         sideB.grid = rowB.usableGrid
         var i = T.inputs(a: sideA, b: sideB)
         i.bassSwapAvailable = true
+        i.incomingLocal = MusicBeatPlanner.debugForceLoop
         return i
     }
 
@@ -276,5 +277,48 @@ struct MixStyleLiveCheckTests {
             if proved { break }
         }
         #expect(proved, "no real pair played a drop swap")
+    }
+
+    // MARK: Loop extend
+
+    @Test("loop extend through the real engine: no dropout, the incoming intro end lands after the overlap, position is song time")
+    func loopExtend() async throws {
+        let world = try await LiveWorld.shared()
+        guard let audio = await LiveAudio.shared(world: world) else { Issue.record("capture not proven: \(LiveAudio.failure ?? "?")"); return }
+        defer {
+            LiveAudio.end(); MusicTransitionStylePicker.debugForcedStyle = nil; MusicBeatPlanner.debugForceLoop = false
+        }
+        try? FileManager.default.createDirectory(at: LiveDirs.root, withIntermediateDirectories: true)
+        Self.note("== loop extend \(Date())")
+        MusicBeatPlanner.debugForceLoop = true
+        var proved = false
+        // The loop must sit inside the incoming intro (a real plan never loops past it), so only songs with a long intro.
+        let candidates = Self.pairs(world, style: .loopExtend, among: Self.allPairs(world)).filter {
+            (world.rows[$0.1.videoId]?.introEnd ?? 0) >= 20
+        }
+        Self.note("forced loop pairs by pure plan: \(candidates.count)")
+        for (a, b) in candidates.prefix(4) {
+            MusicBeatPlanner.debugForceLoop = true
+            guard let played = await Self.play(world, audio, style: .loopExtend, a, b) else { continue }
+            let t = played.transition
+            Self.note("  \(a.videoId) (\(a.index)) > \(b.videoId): style=\(played.style) dropouts=\(t.dropouts) nonFinite=\(t.nonFinite) stalls=\(t.stalls) \(t.dropoutDetail)")
+            guard played.style == MusicTransitionStyle.loopExtend.rawValue, let probe = t.loopProbe else {
+                Self.note("  style was \(played.style), no loop on the incoming deck"); continue
+            }
+            let overlapEndItem = t.samples.last(where: { $0.tB.isFinite })?.tB ?? .nan
+            let introEnd = world.rows[b.videoId]?.introEnd ?? .nan
+            guard introEnd >= probe.loopEnd else { Self.note("  loop end \(liveF(probe.loopEnd)) is past the intro end \(liveF(introEnd)), not a real loop case"); continue }
+            let introEndItem = introEnd < probe.loopEnd ? introEnd : introEnd + probe.extensionSec
+            let songTime = probe.item - probe.extensionSec
+            let errorMs = (probe.position - songTime) * 1000
+            Self.note("  loop extend \(a.videoId) > \(b.videoId): loop end \(liveF(probe.loopEnd)) s, extension \(liveF(probe.extensionSec)) s, overlap ends at item \(liveF(overlapEndItem)) s, intro end \(liveF(introEnd)) s (item \(liveF(introEndItem)) s); after the repeats item \(liveF(probe.item)) s, reported position \(liveF(probe.position)) s, song time \(liveF(songTime)) s, error \(liveF(errorMs, 1)) ms; peak \(liveF(Double(t.capturePeak), 3))")
+            #expect(t.dropouts == 0, "dropouts \(t.dropoutDetail)")
+            #expect(t.nonFinite == 0)
+            #expect(introEndItem > overlapEndItem, "intro end (item \(introEndItem)) is before the overlap end \(overlapEndItem)")
+            #expect(abs(errorMs) <= 20, "position \(probe.position) against song time \(songTime)")
+            proved = true
+            break
+        }
+        #expect(proved, "no real pair played a loop extend")
     }
 }

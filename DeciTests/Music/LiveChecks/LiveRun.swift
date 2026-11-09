@@ -58,6 +58,8 @@ nonisolated struct LiveTransition: Sendable {
     var failure: String?
     var crossfaded = false
     var beatApplied = false
+    /// Loop extend: the incoming deck's reported position and raw item time read together after the repeats, and its map.
+    var loopProbe: (position: Double, item: Double, loopEnd: Double, extensionSec: Double)?
 
     func line(_ name: String) -> LiveLine? {
         lines.compactMap(LiveLine.init).first { $0.name == name }
@@ -381,6 +383,15 @@ final class LiveRunner {
             }
             record.glideSeen = glideEnd != nil
             try? await Task.sleep(for: .seconds(1.5))
+            if let map = engine.debugActiveLoop {
+                // The repeats are over once the item time is past loopEnd + extension; then position must be item - extension.
+                let limit = ContinuousClock.now + .seconds(40)
+                while ContinuousClock.now < limit, engine.avPlayer.currentTime().seconds < map.loopEnd + map.extensionSec + 0.5 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                let item = engine.avPlayer.currentTime().seconds
+                record.loopProbe = (engine.position, item, map.loopEnd, map.extensionSec)
+            }
             MusicRenderRecorder.current = nil
             let heard = recorder.snapshot()
             var detail: [String] = []

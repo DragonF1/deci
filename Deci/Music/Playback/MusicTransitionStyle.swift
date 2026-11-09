@@ -15,11 +15,11 @@ nonisolated enum MusicTransitionStyle: String, Sendable, CaseIterable {
     case filterSweep
     /// The incoming song's drop lands where the outgoing song's phrase ends.
     case dropSwap
-    // Not pickable yet.
+    /// The incoming song's intro is looped 4 or 8 bars until the overlap fits inside it.
     case loopExtend
 
     /// What the picker may return today.
-    static let pickable: [MusicTransitionStyle] = [.longBlend, .quickCut, .echoOut, .filterSweep, .dropSwap]
+    static let pickable: [MusicTransitionStyle] = [.longBlend, .quickCut, .echoOut, .filterSweep, .dropSwap, .loopExtend]
 
     /// A cut or an echo: no overlap to speak of, the outgoing song is held at full level until the incoming one starts.
     /// Every other style is made of a long overlap like the plain blend.
@@ -55,11 +55,15 @@ nonisolated struct MusicTransitionStyleInputs: Equatable, Sendable {
     var genres: [String] = []
     /// Confidence (0...1) of the incoming song's first usable drop; nil when it has none or a grid is not trusted.
     var dropConfidence: Float?
+    /// Loop extend: the planner built a loop plan for this pair (the incoming intro is short, the file is local).
+    var loopFits = false
 
     init(
         tempoError: Double? = nil, energyJump: Float? = nil, outroEnergy: Float? = nil, introEnergy: Float? = nil,
-        keyDistance: Int? = nil, gridTrusted: Bool = false, genres: [String] = [], dropConfidence: Float? = nil
+        keyDistance: Int? = nil, gridTrusted: Bool = false, genres: [String] = [], dropConfidence: Float? = nil,
+        loopFits: Bool = false
     ) {
+        self.loopFits = loopFits
         self.dropConfidence = dropConfidence
         self.tempoError = tempoError
         self.energyJump = energyJump
@@ -134,6 +138,8 @@ nonisolated enum MusicTransitionStylePicker {
             guard i.gridTrusted, !isClash(i), let confidence = i.dropConfidence, confidence.isFinite else { return false }
             // Overlapping 4 to 8 bars needs keys that agree, like the sweep.
             return confidence >= MusicDropDetector.confidenceFloor && (i.keyDistance ?? 0) < farKey
+        case .loopExtend:
+            return i.loopFits
         default:
             return true
         }
@@ -180,9 +186,9 @@ nonisolated enum MusicTransitionStylePicker {
         case .dropSwap:
             // A confident drop outranks the sweep; only a pristine blend beats it.
             return 0.6 + 0.35 * Double(min(1, max(0, i.dropConfidence ?? 0)))
-        default:
-            // Not pickable yet.
-            return -2
+        case .loopExtend:
+            // The blend it replaces would be shortened or refused for two singers: a loop beats it, and only a repeat sends it away.
+            return 1.05
         }
     }
 

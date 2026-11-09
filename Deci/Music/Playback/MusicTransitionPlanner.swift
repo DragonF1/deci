@@ -69,6 +69,12 @@ struct TransitionPlan: Equatable, Sendable {
     /// Filter sweep: the high-pass on the outgoing song runs from `sweepFromHz` to `sweepToHz` across the overlap. 0 = none.
     var sweepFromHz: Double = 0
     var sweepToHz: Double = 0
+    /// Loop extend: the incoming song's loop, in song seconds. The first downbeat it starts on, the bars it spans (4 or 8), the
+    /// length of those bars in seconds and how many extra times it plays. 0 = none.
+    var loopStartSec: Double = 0
+    var loopBars: Int = 0
+    var loopLengthSec: Double = 0
+    var loopRepeats: Int = 0
 
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(
@@ -117,6 +123,8 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var vocalGuardEnabled: Bool = false
     /// Tier 4b: the style the last applied transition used (the picker never repeats it). nil = none yet.
     var previousStyle: MusicTransitionStyle? = nil
+    /// Tier 4b P2b: the incoming song plays from a file on this Mac (the track cache or a download), so its intro may be looped.
+    var incomingLocal: Bool = false
     static let skipFadeSeconds = 0.3
 
     init(
@@ -124,9 +132,10 @@ struct MusicTransitionInputs: Equatable, Sendable {
         settingSeconds: Double, albumInOrder: Bool = false, loopSong: Bool = false,
         cleanStartFlag: Bool = false, cleanPairFlag: Bool = false, manualSkip: Bool = false,
         beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false, vocalGuardEnabled: Bool = false,
-        previousStyle: MusicTransitionStyle? = nil
+        previousStyle: MusicTransitionStyle? = nil, incomingLocal: Bool = false
     ) {
         self.previousStyle = previousStyle
+        self.incomingLocal = incomingLocal
         self.outgoing = outgoing
         self.incoming = incoming
         self.crossfadeOn = crossfadeOn
@@ -172,13 +181,16 @@ enum MusicTransitionPlanner {
         // singers) only does when a blend would repeat the one before it.
         let always: [MusicBeatPlanner.Fallback] = [.tempoClash, .gridLowConf, .noPhraseRoom]
         let onRepeat: [MusicBeatPlanner.Fallback] = [.gridMissing, .tooLate, .vocalClash]
+        // Tier 4b P2b: an intro too short for the overlap can be looped; then loop extend is a candidate.
+        let loop = MusicBeatPlanner.loopExtendPlan(inputs, smart: smart)
         let eligible: Bool = {
-            if beat.mode == .beat { return true }
+            if beat.mode == .beat || loop != nil { return true }
             guard let reason else { return false }
             return always.contains(reason) || (previous == .longBlend && onRepeat.contains(reason))
         }()
         guard eligible else { return legacyPlan(inputs, smart: smart, beat: beat) }
-        let signals = MusicTransitionStylePicker.inputs(for: inputs)
+        var signals = MusicTransitionStylePicker.inputs(for: inputs)
+        signals.loopFits = loop != nil
         for style in MusicTransitionStylePicker.ranked(signals, previous: previous) {
             if style == .longBlend {
                 if beat.mode == .beat { return beat }
@@ -191,6 +203,7 @@ enum MusicTransitionPlanner {
             switch style {
             case .filterSweep: built = beat.mode == .beat ? MusicBeatPlanner.filterSweepPlan(from: beat) : nil
             case .dropSwap: built = MusicBeatPlanner.dropSwapPlan(inputs, smart: smart)
+            case .loopExtend: built = loop
             default: built = MusicBeatPlanner.styledPlan(inputs, smart: smart, style: style)
             }
             if var plan = built {

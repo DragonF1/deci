@@ -2242,6 +2242,9 @@ final class MusicService {
         // takes the ordinary load, which starts the song at its normal start.
         if let offered = offeredPlan, offered.inputs.incoming.videoId == track.videoId,
            Self.parksDeepForDropSwap(offered.plan) { return false }
+        // A loop extend's standby plays a composition of the song with its intro repeated: a skip takes the ordinary load.
+        if let offered = offeredPlan, offered.inputs.incoming.videoId == track.videoId,
+           offered.plan.style == .loopExtend { return false }
         // The old track's final ping reads the player's position, so it goes before the engine moves on.
         sendFinalPing()
         // The skip is a quick fade with the incoming loudness match only; the park offset is the plan's own.
@@ -3034,7 +3037,8 @@ final class MusicService {
             crossfadeOn: mixesTransitions, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
             manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId,
-            bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn, previousStyle: lastAppliedStyle
+            bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn, previousStyle: lastAppliedStyle,
+            incomingLocal: MusicLoopExtend.isLocal(preloadStream(for: next).origin)
         )
         // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
         inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
@@ -3100,6 +3104,13 @@ final class MusicService {
         inputs.cleanStartFlag = flags.startsClean
         inputs.cleanPairFlag = flags.pairIsClean
         var plan = MusicTransitionPlanner.plan(inputs)
+        // A loop extend's standby is a composition of the song: a replan that changes the loop (or adds or removes one) is the
+        // preload withdrawn and offered again on the next tick, ready or not: a setting that was turned off (Crossfade, Beat mix,
+        // Vocal guard) or a pair marked clean must not be held back by a loop that is already built.
+        if MusicLoopExtend.spec(from: plan) != MusicLoopExtend.spec(from: offered.plan) {
+            cancelPreload()
+            return
+        }
         // The standby is parked on a beat plan's mix-in and starts at its rate (and one parked for another plan cannot take
         // a beat mix): a replan that changes either is the preload withdrawn and offered again with the new plan.
         let wasBeat = offered.plan.mode == .beat

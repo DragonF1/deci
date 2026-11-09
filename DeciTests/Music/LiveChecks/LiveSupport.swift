@@ -67,7 +67,9 @@ nonisolated struct LiveSong: Sendable {
     var stream: ResolvedStream {
         ResolvedStream(
             videoId: videoId, url: url, itag: 140, durationSeconds: duration, expiresAt: .distantFuture,
-            playbackTrackingURL: nil, httpHeaders: [:], audioCodec: "mp4a.40.2"
+            playbackTrackingURL: nil, httpHeaders: [:],
+            // A loop is only ever composed from a file on this Mac, so the loop check plays them as the track cache.
+            origin: MusicBeatPlanner.debugForceLoop ? .trackCache : .network, audioCodec: "mp4a.40.2"
         )
     }
 }

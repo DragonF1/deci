@@ -48,8 +48,23 @@ enum MusicVocalGuard {
     /// intervals nil is exactly the proxy.
     static func collisionSec(
         outgoing: MusicAnalysis?, incoming: MusicAnalysis?, outStart: Double, inStart: Double, rate: Double = 1,
-        length: Double, outgoingIntervals: [ClosedRange<Double>]? = nil, incomingIntervals: [ClosedRange<Double>]? = nil
+        length: Double, outgoingIntervals: [ClosedRange<Double>]? = nil, incomingIntervals: [ClosedRange<Double>]? = nil,
+        incomingLoop: MusicLoopMap? = nil
     ) -> Double? {
+        // Loop extend: the incoming song is measured in item time, where everything after the loop's end sits `extension` later.
+        if let map = incomingLoop {
+            var shifted = incoming
+            if var row = shifted {
+                if row.introEnd.isFinite { row.introEnd = map.itemTime(row.introEnd) }
+                if row.outroStart.isFinite { row.outroStart = map.itemTime(row.outroStart) }
+                shifted = row
+            }
+            let moved = incomingIntervals?.map { ClosedRange(uncheckedBounds: (map.itemTime($0.lowerBound), map.itemTime($0.upperBound))) }
+            return collisionSec(
+                outgoing: outgoing, incoming: shifted, outStart: outStart, inStart: inStart, rate: rate, length: length,
+                outgoingIntervals: outgoingIntervals, incomingIntervals: moved
+            )
+        }
         if outgoingIntervals == nil, incomingIntervals == nil {
             guard let p = proxy(outgoing: outgoing, incoming: incoming) else { return nil }
             return collisionSec(
