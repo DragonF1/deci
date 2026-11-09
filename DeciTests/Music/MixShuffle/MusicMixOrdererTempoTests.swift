@@ -58,7 +58,7 @@ import Testing
 
     // MARK: Order
 
-    @Test func liveSetKeepsAtMostTwoClashes() {
+    @Test func liveSetReachesTheOneClashFloor() {
         let songs = Self.liveSet()
         var total = 0, worst = 0
         for seed in 1...100 {
@@ -71,8 +71,9 @@ import Testing
         }
         let mean = Double(total) / 100
         print("live set clashes: mean \(mean) max \(worst)")
-        #expect(worst <= 2)
-        #expect(mean <= 1.8)
+        // The set has a cluster ({95, 95, 102}) that cannot reach the rest, so one clash is the floor.
+        #expect(worst <= 1)
+        #expect(mean <= 1.0 + 1e-9)
     }
 
     @Test func bigGaussianSetHasAlmostNoClashes() {
@@ -105,6 +106,13 @@ import Testing
         var anchored = MusicMixOrderer(seed: 4)
         let after = anchored.order(songs, first: Self.song("far", 200))
         #expect(Set(after) == Set(songs.map(\.videoId)))
+        // Far from the anchor only an unknown tempo is eligible (140 clashes with 80): a gate that blocked unknowns
+        // would have to take the 140 instead.
+        let pair = [Self.song("s140", 140), Self.song("u", nil)]
+        for seed in 1...30 {
+            var orderer = MusicMixOrderer(seed: UInt64(seed))
+            #expect(orderer.order(pair, first: Self.song("far80", 80)).first == "u")
+        }
     }
 
     @Test func gateNeverBreaksTheArtistRule() {
@@ -115,6 +123,21 @@ import Testing
             var orderer = MusicMixOrderer(seed: UInt64(seed))
             let ids = orderer.order(songs, first: anchor)
             #expect(ids.first == "b1")
+        }
+    }
+
+    @Test func gateKeepsTheArtistRuleWhenTheFullScanRuns() {
+        // More than sampleLimit songs. Every tempo fit for the anchor is by the anchor's own artist, and those songs
+        // are mostly outside the sample, so the full scan finds only forbidden songs.
+        var songs = (0..<3).map { Self.song("L\($0)", 100 + Double($0), artist: "Last") }
+        songs += (0..<45).map { Self.song("o\($0)", 150 + Double($0) * 1.5, artist: "other-\($0)") }
+        for seed in 1...40 {
+            var orderer = MusicMixOrderer(seed: UInt64(seed))
+            let ids = orderer.order(songs, first: songs[0])
+            #expect(ids.first == "L0")
+            let artists = ids.map { id in songs.first { $0.videoId == id }!.artist }
+            #expect(Set(ids).count == songs.count)
+            for (a, b) in zip(artists, artists.dropFirst()) { #expect(a != b, "seed \(seed)") }
         }
     }
 
@@ -154,21 +177,90 @@ import Testing
         }
     }
 
+    @Test func avoidedOnlyTempoFitDoesNotLeadWhenAFreshSongExists() {
+        let avoided = Self.song("av", 101)
+        let upcoming = [avoided, Self.song("f1", 160), Self.song("f2", 175)]
+        for seed in 1...30 {
+            var orderer = MusicMixOrderer(seed: UInt64(seed))
+            let ids = orderer.reorderTail(anchor: Self.song("anchor", 100), upcoming: upcoming, avoid: [avoided])
+            #expect(ids.first != "av", "seed \(seed): \(ids)")
+            #expect(Set(ids) == Set(upcoming.map(\.videoId)))
+        }
+    }
+
+    @Test func beamLooksAheadAcrossTheWholeSample() {
+        // Pool is {93.5, 107.5}; 114 is in the sample but clashes with the anchor, so it is not a candidate. Only 107.5
+        // has a fitting follow-up (114). Keys and energy are set so the best pair score is in the beam band, and 93.5
+        // scores a little higher on tempo alone, so a look-ahead blind to 114 would pick 93.5.
+        func song(_ id: String, _ bpm: Double, key: String, energy: Float, intro: Float, outro: Float) -> MusicMixProfile {
+            MusicMixProfile(videoId: id, artist: "a-\(id)", bpm: bpm, gridTrusted: true, camelot: MusicCamelot(code: key),
+                            energy: energy, introEnergy: intro, outroEnergy: outro)
+        }
+        let anchor = song("anchor", 100, key: "1A", energy: 0.9, intro: 1, outro: 1)
+        let upcoming = [
+            song("low", 93.5, key: "6A", energy: 0, intro: 1, outro: 1),
+            song("high", 107.5, key: "6A", energy: 0, intro: 1, outro: 1),
+            song("far", 114, key: "6A", energy: 0, intro: 1, outro: 1),
+        ]
+        for seed in 1...30 {
+            var orderer = MusicMixOrderer(seed: UInt64(seed))
+            let ids = orderer.reorderTail(anchor: anchor, upcoming: upcoming, avoid: [])
+            #expect(ids.first == "high", "seed \(seed): \(ids)")
+        }
+    }
+
+    @Test func tempoFitAndTempoScoreShareTheBoundary() {
+        func c(_ bpm: Double) -> MusicMixCompact { MusicMixCompact(MusicMixProfile(videoId: "x", bpm: bpm, gridTrusted: true)) }
+        for (a, b) in [(100.0, 108.0), (75, 81), (125, 135), (150, 162)] {
+            #expect(MusicMixScore.tempoFits(c(a), c(b)), "\(a) \(b)")
+            let term = MusicMixScore.tempoTerm(c(a), c(b))
+            #expect(abs(term - 0.85) < 1e-6, "\(a) \(b) scored \(term)")
+        }
+    }
+
     // MARK: Autoplay insertion
 
     @Test func insertionAvoidsTheTempoClash() {
-        let window = [Self.song("w90", 90, trusted: true), Self.song("w92", 92, trusted: true),
-                      Self.song("w138", 138, trusted: true), Self.song("w141", 141, trusted: true)]
-        let candidate = Self.song("c140", 140, trusted: true)
+        // No clash inside the window. The candidate (118, key 3A) clashes with the 100 and 102 (key 3A) but fits the 110
+        // and 112 (key 9A). The key makes the front of the window look best, and gain alone picks the slot between 102
+        // and 110 (it replaces a good edge and mixes in key on one side), which adds a clash.
+        func s(_ id: String, _ bpm: Double, _ key: String) -> MusicMixProfile {
+            MusicMixProfile(videoId: id, artist: id, bpm: bpm, gridTrusted: true, camelot: MusicCamelot(code: key),
+                            energy: 0.5, introEnergy: 0.3, outroEnergy: 0.3)
+        }
+        let window = [s("w100", 100, "3A"), s("w102", 102, "3A"), s("w110", 110, "9A"), s("w112", 112, "9A")]
+        let candidate = s("c118", 118, "3A")
+        let compact = window.map(MusicMixCompact.init)
+        let cand = MusicMixCompact(candidate)
+        func clash(_ a: MusicMixCompact?, _ b: MusicMixCompact?) -> Int {
+            guard let a, let b else { return 0 }
+            return MusicMixScore.tempoFits(a, b) ? 0 : 1
+        }
+        func gain(_ slot: Int) -> Double {
+            let previous = slot == 0 ? nil : compact[slot - 1]
+            let next = slot < compact.count ? compact[slot] : nil
+            func sc(_ a: MusicMixCompact?, _ b: MusicMixCompact?) -> Double {
+                guard let a, let b else { return 0 }
+                return MusicMixScore.score(from: a, to: b, allowLift: false)
+            }
+            var g = sc(previous, cand) + sc(cand, next)
+            if let previous, let next { g -= sc(previous, next) }
+            return g
+        }
+        func netClashes(_ slot: Int) -> Int {
+            let previous = slot == 0 ? nil : compact[slot - 1]
+            let next = slot < compact.count ? compact[slot] : nil
+            var n = clash(previous, cand) + clash(cand, next)
+            if let previous, let next { n -= clash(previous, next) }
+            return n
+        }
+        // The case is only meaningful when gain alone would take a slot that adds a clash.
+        let gainOnly = (0...window.count).max { gain($0) < gain($1) - 1e-12 }!
+        #expect(netClashes(gainOnly) > 0)
         let orderer = MusicMixOrderer(seed: 1)
         let slot = orderer.bestInsertion(of: candidate, into: window, after: nil)
-        // Never between the 90s or at the front. Slot 2 (92 | 138) adds no clash over the one already there, so it ties
-        // with 3 and 4 on clashes; what matters is that the result has no more clashes than the window had.
-        #expect(slot >= 2)
-        var planned = window
-        planned.insert(candidate, at: slot)
-        let compact = planned.map(MusicMixCompact.init)
-        let clashEdges = zip(compact, compact.dropFirst()).filter { !MusicMixScore.tempoFits($0.0, $0.1) }.count
-        #expect(clashEdges == 1)
+        #expect(slot != gainOnly)
+        #expect(netClashes(slot) == 0)
+        #expect(slot >= 3)
     }
 }

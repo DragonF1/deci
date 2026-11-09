@@ -308,10 +308,8 @@ nonisolated struct MusicMixOrderer: Sendable {
             // The tempo gate only works when the song we mix out of has a known tempo.
             let gateOn = scorer.hasCurrent && scorer.current!.bpm > 0
             var scored: [(position: Int, value: Double, raw: Double)] = []
-            var strictUsed = true
             pool.removeAll(keepingCapacity: true)
             for strict in [true, false] {
-                strictUsed = strict
                 scored.removeAll(keepingCapacity: true)
                 pool.removeAll(keepingCapacity: true)
                 // Hard artist rules decide who is allowed; the tempo gate only narrows inside that.
@@ -346,7 +344,7 @@ nonisolated struct MusicMixOrderer: Sendable {
                 let fresh = pool.filter { !metas[remaining[$0]].avoided }
                 chosen = (fresh.isEmpty ? pool : fresh).randomElement(using: &generator) ?? scored[0].position
             } else if scorer.hasCurrent, best < Self.deadEndScore {
-                chosen = beam(scored, from: scorer.current!, remaining: remaining, pool: pool, compact: compact)
+                chosen = beam(scored, from: scorer.current!, remaining: remaining, pool: pool, looked: looked, compact: compact)
             } else {
                 chosen = weightedPick(scored)
             }
@@ -462,14 +460,15 @@ nonisolated struct MusicMixOrderer: Sendable {
     /// Of the top few, the one whose best follow-up is best, so a dead end is not walked into.
     @_optimize(speed)
     private func beam(
-        _ scored: [(position: Int, value: Double, raw: Double)], from: MusicMixCompact, remaining: [Int], pool: [Int],
+        _ scored: [(position: Int, value: Double, raw: Double)], from: MusicMixCompact, remaining: [Int], pool: [Int], looked: Int,
         compact: [MusicMixCompact]
     ) -> Int {
         var bestPosition = scored[0].position, bestTotal = -Double.infinity
         for candidate in scored.prefix(Self.beamWidth) {
             let via = compact[remaining[candidate.position]]
             var follow = 0.0
-            for position in pool where position != candidate.position {
+            // Follow-ups come from the whole sample, only the candidates are gated.
+            for position in 0..<looked where position != candidate.position {
                 follow = max(follow, MusicMixScore.score(from: via, to: compact[remaining[position]], allowLift: false))
             }
             let total = candidate.value + Self.pairShare * follow

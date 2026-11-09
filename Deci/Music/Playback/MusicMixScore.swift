@@ -149,9 +149,13 @@ nonisolated enum MusicMixScore {
     @_optimize(speed)
     static func tempoFits(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Bool {
         guard let error = tempoMeasure(a, b)?.error else { return true }
-        // The small slack keeps 100 to 108 a fit despite float rounding in the ratio.
-        return error <= tempoTolerance + 1e-9
+        return withinTolerance(error)
     }
+
+    /// Float rounding in the ratio must not push 100 to 108 over the line, so every boundary shares this slack.
+    static let boundarySlack = 1e-9
+    @inline(__always) static func withinSweetSpot(_ error: Double) -> Bool { error <= tempoSweetSpot + boundarySlack }
+    @inline(__always) static func withinTolerance(_ error: Double) -> Bool { error <= tempoTolerance + boundarySlack }
 
     /// The one copy of the tempo maths: the folded error and whether the fold (half or double time) was used.
     @_optimize(speed)
@@ -171,10 +175,10 @@ nonisolated enum MusicMixScore {
         let error = measure.error
         let factor = measure.folded ? tempoMultipleFactor : 1.0
         var value: Double
-        if error <= tempoSweetSpot {
+        if withinSweetSpot(error) {
             value = 1
-        } else if error <= tempoTolerance {
-            value = 1 - (error - tempoSweetSpot) / (tempoTolerance - tempoSweetSpot) * 0.15
+        } else if withinTolerance(error) {
+            value = 1 - max(0, error - tempoSweetSpot) / (tempoTolerance - tempoSweetSpot) * 0.15
         } else {
             value = tempoClashCeiling * max(0, 1 - (error - tempoTolerance) / tempoClashSpan)
         }
