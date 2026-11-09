@@ -153,6 +153,9 @@ final class MusicPlayer {
     /// The style the engine's last crossfade really ran, nil when the engine does not say.
     var lastTransitionStyle: MusicTransitionStyle? { engine.lastTransitionStyle }
 
+    /// Whether the engine's last crossfade ran on the beat grid, nil when the engine does not say.
+    var lastTransitionOnGrid: Bool? { engine.lastTransitionOnGrid }
+
     /// Where the playing song is cut short, as the engine's plan last said (nil: it plays to its natural end, also after a
     /// seek brought that end back). The engine clears its plan before `.advanced`, so the last value seen is kept.
     @ObservationIgnored private(set) var outgoingEndSnapshot: TimeInterval?

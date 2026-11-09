@@ -60,12 +60,16 @@ struct MusicPlaybackPreferences: Equatable, Sendable {
     /// Keep two singers from overlapping in a mix (only with Crossfade on).
     var vocalGuard = true
 
+    /// In Mix, an energetic run moves on after a song's second chorus (needs Crossfade on). Off by default.
+    var djLength = false
+
     init(
         shuffle: Bool = false, loop: MusicLoopMode = .off, autoplay: Bool = true, crossfade: Bool = false,
         crossfadeSeconds: Double = defaultCrossfadeSeconds, beatMix: Bool = true, vocalGuard: Bool = true,
-        mixShuffle: Bool = false
+        mixShuffle: Bool = false, djLength: Bool = false
     ) {
         self.mixShuffle = mixShuffle
+        self.djLength = djLength
         self.beatMix = beatMix
         self.vocalGuard = vocalGuard
         self.shuffle = shuffle || mixShuffle

@@ -4,6 +4,9 @@
 
 import Foundation
 
+/// The song section a DJ-length cut was made at.
+nonisolated enum DJSection: String, Sendable { case chorus2 }
+
 struct TransitionPlan: Equatable, Sendable {
     enum Mode: String, Sendable { case smart, fixed, gapless, clean, beat }
     enum Reason: String, Sendable {
@@ -76,6 +79,10 @@ struct TransitionPlan: Equatable, Sendable {
     var loopLengthSec: Double = 0
     var loopRepeats: Int = 0
 
+    // Tier 4b P3 (DJ-length songs). nil on every plan the rule did not shape.
+    /// "chorus2" when the mix-out was moved to the outgoing song's second chorus end (`mixOutSec` is that point).
+    var djSection: DJSection? = nil
+
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(
         mode: .gapless, incomingStartSec: 0, outgoingEndSec: nil, fadeStartSec: nil, fadeSeconds: 0,
@@ -125,6 +132,12 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var previousStyle: MusicTransitionStyle? = nil
     /// Tier 4b P2b: the incoming song plays from a file on this Mac (the track cache or a download), so its intro may be looped.
     var incomingLocal: Bool = false
+    /// Tier 4b P3: DJ-length songs is on. Off keeps every plan exactly as it was.
+    var djLength: Bool = false
+    /// Tier 4b P3: mean energy rating (0...1) of the playing song and the ones before it; nil = unknown.
+    var runEnergy: Float? = nil
+    /// Set by the planner for the beat planners (never by a caller): the outgoing mix-out to use instead of the usual one.
+    var djMixOutSec: Double? = nil
     static let skipFadeSeconds = 0.3
 
     init(
@@ -132,8 +145,11 @@ struct MusicTransitionInputs: Equatable, Sendable {
         settingSeconds: Double, albumInOrder: Bool = false, loopSong: Bool = false,
         cleanStartFlag: Bool = false, cleanPairFlag: Bool = false, manualSkip: Bool = false,
         beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false, vocalGuardEnabled: Bool = false,
-        previousStyle: MusicTransitionStyle? = nil, incomingLocal: Bool = false
+        previousStyle: MusicTransitionStyle? = nil, incomingLocal: Bool = false,
+        djLength: Bool = false, runEnergy: Float? = nil
     ) {
+        self.djLength = djLength
+        self.runEnergy = runEnergy
         self.previousStyle = previousStyle
         self.incomingLocal = incomingLocal
         self.outgoing = outgoing
@@ -172,6 +188,25 @@ enum MusicTransitionPlanner {
     /// The beat planner gets the UNGUARDED smart plan so a beat plan never inherits the guard's shortening; the guard
     /// applies only to the smart plan that comes back on a refusal.
     static func plan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
+        // Tier 4b P3: DJ-length songs. The pair is planned with the mix-out moved to the second chorus end; the result counts
+        // only when it really mixes out there, anything else is the plan the pair would have had.
+        let normal = basePlan(inputs, smart: smart)
+        // The cut must beat the mix-out the pair would really have (a beat plan's), not a guess at it.
+        if let point = MusicDJLength.mixOutSec(
+            inputs, smartEnd: smart.outgoingEndSec, normal: normal.mode == .beat ? normal.mixOutSec : nil
+        ) {
+            var dj = inputs
+            dj.djMixOutSec = point
+            var planned = basePlan(dj, smart: smart)
+            if planned.mode == .beat, let out = planned.mixOutSec, abs(out - point) < 1e-6 {
+                planned.djSection = .chorus2
+                return planned
+            }
+        }
+        return normal
+    }
+
+    private static func basePlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
         guard inputs.beatMixEnabled, smart.mode == .smart else { return vocalGuarded(smart, inputs) }
         let beat = MusicBeatPlanner.plan(inputs, smart: smart)
         let reason = beat.fallbackReason.flatMap { MusicBeatPlanner.Fallback(rawValue: $0) }

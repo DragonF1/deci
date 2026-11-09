@@ -232,6 +232,20 @@ struct GeneralTab: View {
             .disabled(!settings.appSettings.musicCrossfadeEnabled)
             SettingsRowDivider()
             SettingsRow(
+                "DJ-length songs",
+                description: "In Mix, energetic runs move on after the second chorus."
+            ) {
+                Toggle("", isOn: $settings.appSettings.musicDJLength)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .labelsHidden()
+            }
+            // It acts in Mix with Beat mix on (Mix mixes whatever Crossfade says), so Crossfade does not gate it. A switch that
+            // is already on is never locked, so it can always be turned off.
+            .disabled(!settings.appSettings.musicDJLength
+                && !(settings.appSettings.musicShuffle && settings.appSettings.musicMixShuffle && settings.appSettings.musicBeatMix))
+            SettingsRowDivider()
+            SettingsRow(
                 "Analyse songs in the background",
                 description: "Reads liked songs and playlists one at a time while Music is idle, finds quiet intros and outros, then deletes the audio. The song that is playing and the next one are analysed either way."
             ) {

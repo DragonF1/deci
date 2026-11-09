@@ -820,6 +820,8 @@ final class FakePlaybackEngine: PlaybackEngine {
     private(set) var updatedPlans: [TransitionPlan?] = []
     /// The plan of the current preload.
     private(set) var transitionPlan: TransitionPlan?
+    /// What the engine reports of the last crossfade: nil (does not say) unless a test sets it.
+    var lastTransitionOnGrid: Bool?
 
     /// What the real engine does when a seek brings the natural end back: the plan no longer has a trimmed end.
     func debugRestoreNaturalEnd() { transitionPlan?.outgoingEndSec = nil }

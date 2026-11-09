@@ -50,6 +50,8 @@ protocol PlaybackEngine: AnyObject {
     var transitionPlan: TransitionPlan? { get }
     /// Tier 4b: the style the last crossfade really ran, nil when the engine does not say (the plan's style is then used).
     var lastTransitionStyle: MusicTransitionStyle? { get }
+    /// Whether the last crossfade ran on the beat grid (a beat plan the engine kept), nil when the engine does not say.
+    var lastTransitionOnGrid: Bool? { get }
     /// Drops the preload, whether it is still loading, ready or already scheduled to start.
     func cancelPreload()
 
@@ -71,6 +73,7 @@ protocol PlaybackEngine: AnyObject {
 
 extension PlaybackEngine {
     var lastTransitionStyle: MusicTransitionStyle? { nil }
+    var lastTransitionOnGrid: Bool? { nil }
 }
 
 extension PlaybackEngine {
@@ -282,6 +285,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var sweepActive = false
     /// Tier 4b: the style the last crossfade really ran (a plan the engine downgraded reports a long blend). nil before any.
     private(set) var lastTransitionStyle: MusicTransitionStyle?
+    /// Whether the last crossfade ran on the beat grid. nil before any.
+    private(set) var lastTransitionOnGrid: Bool?
     /// The rate glide back to 1 that follows a beat mix, nil outside one.
     private var glide: Glide?
     private var glideTask: Task<Void, Never>?
@@ -1528,6 +1533,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         transitionPlan = nil
         lastTransitionStyle = .longBlend
+        lastTransitionOnGrid = false
         requestedStartOffset = 0
         endTrimmed = false
         endRestoredBySeek = false
@@ -1663,6 +1669,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             if !canSweep { style = .longBlend }
         }
         lastTransitionStyle = style
+        lastTransitionOnGrid = onGrid
         if !style.isCutLike {
             outgoing.tap?.drain(over: fade)
         } else {

@@ -105,7 +105,7 @@ enum MusicBeatPlanner {
             let guardTier = index >= lengths.count
             let overlap = Double(bars) * barSec
             guard overlap <= maxOverlapSec,
-                  let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd),
+                  let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
                   let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else {
                 continue
             }
@@ -237,7 +237,7 @@ enum MusicBeatPlanner {
         guard bothTrusted || (aGrid.downbeatPhase != nil && bGrid.downbeatPhase != nil) else { return nil }
         let aEnd = smart.outgoingEndSec ?? aDuration
         let barSec = 4 * aGrid.periodSec
-        guard let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: 1, barSec: barSec, end: aEnd),
+        guard let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: 1, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
               let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else { return nil }
         if let earliest = inputs.earliestMixOutSec, mixOut < earliest { return nil }
         let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration
@@ -295,7 +295,17 @@ enum MusicBeatPlanner {
     /// The latest outgoing boundary (a phrase boundary when the downbeat is known, falling back to 4 bar and 1 bar boundaries, else a bar's worth of beats from the
     /// grid anchor) where `bars` bars fit before `end`, inside the validated span and not before the outro start minus
     /// `outroSlackBars` bars.
-    static func mixOutTime(grid: MusicBeatGrid, analysis: MusicAnalysis, bars: Int, barSec: Double, end: Double) -> Double? {
+    ///
+    /// `preferred` (DJ-length songs) is a mix-out the caller wants instead: it is returned when `bars` bars still fit after it
+    /// inside the span (the outro limit does not apply to it), and nil when they do not.
+    static func mixOutTime(
+        grid: MusicBeatGrid, analysis: MusicAnalysis, bars: Int, barSec: Double, end: Double, preferred: Double? = nil
+    ) -> Double? {
+        if let preferred {
+            let room = min(end - Double(bars) * barSec, grid.spanEndSec + spanSlackBeats * grid.periodSec - Double(bars) * barSec)
+            guard preferred.isFinite, preferred >= max(0, grid.spanStartSec) - 1e-9, preferred <= room + 1e-9 else { return nil }
+            return preferred
+        }
         let limit = end - Double(bars) * barSec
         let earliest = max(0, grid.spanStartSec, analysis.outroStart - Double(outroSlackBars) * barSec)
         guard limit.isFinite, earliest.isFinite, limit >= earliest else { return nil }

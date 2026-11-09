@@ -19,7 +19,10 @@ struct BeatHarness {
     let player: MusicPlayer
     let service: MusicService
 
-    init(crossfade: Bool = true, beatMix: Bool = true) {
+    init(
+        crossfade: Bool = true, beatMix: Bool = true, preferences: MusicPlaybackPreferences? = nil,
+        djLength: (@MainActor () -> Bool)? = nil
+    ) {
         let engine = self.engine
         let clock = self.clock
         let player = MusicPlayer(engine: engine)
@@ -33,7 +36,8 @@ struct BeatHarness {
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
-            preferences: MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: 6, beatMix: beatMix),
+            preferences: preferences ?? MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: 6, beatMix: beatMix),
+            djLength: djLength,
             queueRetryDelay: .seconds(60),
             connectivity: connectivity,
             refreshOnCreate: false,
@@ -297,16 +301,16 @@ struct MusicServiceDropSwapSkipTests {
         await h.reader.set(a)
         await h.reader.set(b)
         await h.startQueue(["a", "b", "c"])
-        MusicTransitionStylePicker.debugForcedStyle = .dropSwap
-        await h.tick(126)
-        await h.tick(170)
-        MusicTransitionStylePicker.debugForcedStyle = nil
+        // Scoped to this task: a plan test running beside this one never sees the forced style.
+        await MusicTransitionStylePicker.$debugScopedStyle.withValue(.dropSwap) {
+            await h.tick(126)
+            await h.tick(170)
+        }
         return h.lastPlan
     }
 
     @Test("Next on a pending drop swap takes the ordinary load: no crossfade into a song parked deep at its drop lead")
     func nextOnDropSwapDoesNotCrossfade() async throws {
-        defer { MusicTransitionStylePicker.debugForcedStyle = nil }
         let h = BeatHarness()
         let plan = try #require(await offered(h))
         #expect(plan.style == .dropSwap, "plan: \(plan) lines: \(h.service.transitionLines)")

@@ -236,6 +236,14 @@ final class MusicService {
     @ObservationIgnored private var startingBeatMix: Bool
     @ObservationIgnored private let liveVocalGuard: (@MainActor () -> Bool)?
     @ObservationIgnored private let startingVocalGuard: Bool
+    /// Settings' DJ-length songs switch, read live when the service is wired to settings.
+    @ObservationIgnored private let liveDJLength: (@MainActor () -> Bool)?
+    @ObservationIgnored private let startingDJLength: Bool
+    /// The songs that really played before the current one (they passed the play-count point), newest last, at most
+    /// `MusicDJLength.runSongs - 1`: with the playing song they are the run whose energy the DJ-length rule reads.
+    @ObservationIgnored private var playedRun: [String] = []
+    /// The energy rating of the songs of the run, kept when their row arrives: the row mirror drops a song once it is left.
+    @ObservationIgnored private var songEnergy: [String: Float] = [:]
     @ObservationIgnored private let vocalLookahead: MusicVocalLookahead?
     /// The incoming song a beat mix was given up for (it was not parked in time): its transition is planned the smart
     /// way from then on. Forgotten when the track changes.
@@ -395,6 +403,7 @@ final class MusicService {
         crossfadeSeconds: (@MainActor () -> Double)? = nil,
         beatMix: (@MainActor () -> Bool)? = nil,
         vocalGuard: (@MainActor () -> Bool)? = nil,
+        djLength: (@MainActor () -> Bool)? = nil,
         pinnedItems: [MusicPinnedItem] = [],
         savePinnedItems: @escaping @MainActor ([MusicPinnedItem]) -> Void = { _ in },
         // A fixed seed makes every shuffle repeatable; without one each launch shuffles differently.
@@ -454,6 +463,8 @@ final class MusicService {
         self.liveBeatMix = beatMix
         self.startingVocalGuard = preferences.vocalGuard
         self.liveVocalGuard = vocalGuard
+        self.startingDJLength = preferences.djLength
+        self.liveDJLength = djLength
         self.savePreferences = savePreferences
         self.shuffleGenerator = MusicShuffleGenerator(seed: shuffleSeed ?? UInt64.random(in: .min ... .max))
         self.lastActivity = now()
@@ -1258,6 +1269,7 @@ final class MusicService {
             cancelRadio()
         }
         begin(track)
+        resetRun()
     }
 
     /// Plays `track` with the rest of `page`'s songs queued after it in page order. The rest of a long playlist is
@@ -1286,6 +1298,7 @@ final class MusicService {
         failureStreak = 0
         queueRetryAttempts = 0
         begin(track)
+        resetRun()
     }
 
     /// A queue that just started is put in the shuffled order: random in Shuffle, the page's own order in Mix until the
@@ -1815,6 +1828,34 @@ final class MusicService {
     /// Beat-matched transitions are on (they also need Crossfade on, which the planner checks).
     var isBeatMixOn: Bool { liveBeatMix?() ?? startingBeatMix }
     var isVocalGuardOn: Bool { liveVocalGuard?() ?? startingVocalGuard }
+    /// DJ-length songs is on (it only acts in Mix with Crossfade and Beat mix on, which the planner checks).
+    var isDJLengthOn: Bool { isMixOn && (liveDJLength?() ?? startingDJLength) }
+
+    /// A song that was heard long enough (the play-count point) joins the run; a skipped or failed one never does.
+    private func noteRunSong(_ videoId: String, heard: TimeInterval, duration: TimeInterval?) {
+        guard MusicListeningRules.countsAsPlay(heardSeconds: heard, durationSeconds: duration) else { return }
+        playedRun.removeAll { $0 == videoId }
+        playedRun.append(videoId)
+        if playedRun.count > MusicDJLength.runSongs - 1 { playedRun.removeFirst(playedRun.count - (MusicDJLength.runSongs - 1)) }
+    }
+
+    /// A new queue starts a new run. Called after the first song began, so the song that was left has been counted already.
+    private func resetRun() {
+        playedRun = []
+        songEnergy = songEnergy.filter { $0.key == analysisCurrentID }
+    }
+
+    /// The mean energy rating of the songs that played before this one and of this one once it has played long enough, nil
+    /// when none is known.
+    var runEnergy: Float? {
+        var ids = playedRun
+        if let current = player.currentStream, let session, session.videoId == current.videoId,
+           MusicListeningRules.countsAsPlay(heardSeconds: session.accumulator.playedSeconds, durationSeconds: session.durationSeconds) {
+            ids.removeAll { $0 == current.videoId }
+            ids.append(current.videoId)
+        }
+        return MusicDJLength.runEnergy(ids.map { songEnergy[$0] })
+    }
 
     /// An album page played in its own order: it stays gapless, whatever Crossfade says (an album is mixed to run on).
     private var playsAlbumInOrder: Bool {
@@ -1840,7 +1881,7 @@ final class MusicService {
         // nothing); a flag change re-plans through `performMix`.
         let settings = ReplanSettings(
             crossfadeOn: mixesTransitions, seconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
-            loopSong: loopMode == .song, beatMix: isBeatMixOn, vocalGuard: isVocalGuardOn
+            loopSong: loopMode == .song, beatMix: isBeatMixOn, vocalGuard: isVocalGuardOn, djLength: isDJLengthOn
         )
         guard settings != syncedSettings else { return }
         syncedSettings = settings
@@ -1855,6 +1896,7 @@ final class MusicService {
         var loopSong: Bool
         var beatMix: Bool
         var vocalGuard: Bool
+        var djLength: Bool
     }
 
     private func savePlaybackPreferences() {
@@ -1862,7 +1904,7 @@ final class MusicService {
         savePreferences(MusicPlaybackPreferences(
             shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn,
             crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds, beatMix: isBeatMixOn,
-            vocalGuard: isVocalGuardOn, mixShuffle: isMixOn
+            vocalGuard: isVocalGuardOn, mixShuffle: isMixOn, djLength: liveDJLength?() ?? startingDJLength
         ))
     }
 
@@ -1962,6 +2004,11 @@ final class MusicService {
         player.seek(to: seconds)
         // A seek out of the last stretch of the track: the preload would only sit there, and the window offers it again.
         if preloadOffered != nil, !isInPreloadWindow(position: player.currentTime) { cancelPreload() }
+        // A seek past a DJ-length cut: the parked plan mixes out where the playhead already is, so it is withdrawn and the next
+        // tick plans the song's usual end (or the next cut) from here.
+        if let dj = offeredPlan?.plan, dj.djSection != nil, let out = dj.mixOutSec, out < player.currentTime + Self.beatPrerollLead {
+            cancelPreload()
+        }
         // The jump is not listening time, however short: restart the count from where it landed.
         _ = session?.accumulator.record(position: player.currentTime, isPlaying: false, canFire: false)
         // The stretch heard before it and the one after are two stretches of the watchtime ping.
@@ -2023,8 +2070,10 @@ final class MusicService {
     /// A session ended: what it heard goes to the local listening history, as a play when it was enough. The heard
     /// seconds are the accumulator's, so paused time and seek jumps are not in them. Local only, nothing is sent.
     private func noteListening(of ended: Session) {
-        guard let listening, let id = ended.videoId else { return }
+        guard let id = ended.videoId else { return }
         let heard = ended.accumulator.playedSeconds
+        noteRunSong(id, heard: heard, duration: ended.durationSeconds)
+        guard let listening else { return }
         listening.note(
             videoId: id, seconds: heard,
             countsAsPlay: MusicListeningRules.countsAsPlay(heardSeconds: heard, durationSeconds: ended.durationSeconds),
@@ -2186,6 +2235,11 @@ final class MusicService {
         lastAppliedStyle = isBeatMixOn ? ran : nil
         if let applied = offeredPlan {
             let reason = ran == planned ? applied.plan.fallbackReason : "engineDowngrade"
+            if let section = applied.plan.djSection, ran == planned, player.lastTransitionOnGrid != false, let out = applied.plan.mixOutSec {
+                log(MusicTransitionLog.djLine(
+                    from: applied.inputs.outgoing.videoId, to: applied.inputs.incoming.videoId, section: section, outAt: out
+                ))
+            }
             if ran != .longBlend || planned != .longBlend || reason == MusicTransitionStylePicker.noAlternative {
                 log(MusicTransitionLog.styleLine(
                     from: applied.inputs.outgoing.videoId, to: applied.inputs.incoming.videoId, style: ran,
@@ -2731,7 +2785,9 @@ final class MusicService {
         let duration = player.duration
         let target = prefetchTarget
         let lead = leadTime
-        guard duration > lead * 2, duration - position <= resolveLead(forDuration: duration),
+        // DJ-length songs: the song is cut earlier than its end, so the next one is resolved and analysed that much earlier too.
+        let djEarly = target.map { djShift(toward: $0.videoId) } ?? 0
+        guard duration > lead * 2, duration - position <= resolveLead(forDuration: duration) + djEarly,
               let next = target, prefetchAttempt != next.videoId else { return }
         prefetchAttempt = next.videoId
         prefetchTask = Task { [weak self] in
@@ -2922,12 +2978,34 @@ final class MusicService {
         let smart = Self.prefetchLead + MusicTransitionPlanner.maxLead
         if isBeatMixOn, mixesTransitions, let next, beatFallbackFor != next.videoId, row.usableGrid != nil,
            freshRow(for: next)?.usableGrid != nil || isAwaitingRow(for: next), duration > Self.beatLead * 2 {
-            return (Self.beatLead, end)
+            return (Self.beatLead, end - djShift(toward: next.videoId))
         }
         guard mixesTransitions, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
             return (leadTime, end)
         }
         return (smart, end)
+    }
+
+    /// Tier 4b P3: how many seconds earlier than the usual mix-out the DJ-length cut falls for the playing song, 0 when the rule
+    /// does not apply to it. The preload window is measured from the song's end moved back by this much, so the next song is
+    /// parked in time for the early mix-out.
+    private func djShift(toward nextId: String) -> TimeInterval {
+        guard isDJLengthOn, let current = player.currentStream, let row = freshRow(for: current),
+              let end = MusicTransitionPlanner.trimmedEnd(of: row, duration: player.duration) else { return 0 }
+        let flags = transitionFlags(from: current.videoId, to: nextId)
+        let inputs = MusicTransitionInputs(
+            outgoing: MusicTransitionSide(
+                videoId: current.videoId, durationSeconds: current.durationSeconds, analysis: row,
+                vocalIntervals: vocalLookahead?.intervals(for: current.videoId)
+            ),
+            incoming: MusicTransitionSide(videoId: nextId, durationSeconds: nil, analysis: nil),
+            crossfadeOn: mixesTransitions, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
+            loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
+            beatMixEnabled: isBeatMixOn && beatFallbackFor != nextId, bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn,
+            djLength: true, runEnergy: runEnergy
+        )
+        guard let cut = MusicDJLength.cut(inputs, smartEnd: end), cut.point > player.currentTime else { return 0 }
+        return max(0, cut.normal - cut.point)
     }
 
     /// A job for the song is running and has not stored its row yet.
@@ -3038,7 +3116,8 @@ final class MusicService {
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
             manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId,
             bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn, previousStyle: lastAppliedStyle,
-            incomingLocal: MusicLoopExtend.isLocal(preloadStream(for: next).origin)
+            incomingLocal: MusicLoopExtend.isLocal(preloadStream(for: next).origin),
+            djLength: isDJLengthOn, runEnergy: runEnergy
         )
         // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
         inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
@@ -3098,6 +3177,7 @@ final class MusicService {
         inputs.loopSong = loopMode == .song
         inputs.beatMixEnabled = isBeatMixOn && beatFallbackFor != inputs.incoming.videoId
         inputs.vocalGuardEnabled = isVocalGuardOn
+        inputs.djLength = isDJLengthOn
         // earliestMixOutSec stays what it was at the offer: moving it with the playhead would turn a ready beat plan
         // into a smart one inside the last seconds.
         let flags = transitionFlags(from: inputs.outgoing.videoId, to: inputs.incoming.videoId)
@@ -3108,6 +3188,12 @@ final class MusicService {
         // preload withdrawn and offered again on the next tick, ready or not: a setting that was turned off (Crossfade, Beat mix,
         // Vocal guard) or a pair marked clean must not be held back by a loop that is already built.
         if MusicLoopExtend.spec(from: plan) != MusicLoopExtend.spec(from: offered.plan) {
+            cancelPreload()
+            return
+        }
+        // A DJ-length cut that appeared or went away (the switch, or the run) is the preload withdrawn and offered again: the
+        // standby is parked for the old mix-out and a ready one would otherwise keep it.
+        if plan.djSection != offered.plan.djSection {
             cancelPreload()
             return
         }
@@ -3142,6 +3228,11 @@ final class MusicService {
         guard let reader = analysisReader, let row = await reader.analysis(for: id),
               id == analysisCurrentID || id == analysisTarget else { return }
         transitionAnalyses[id] = row
+        if let energy = row.keyInfoValue?.energy, energy.isFinite {
+            songEnergy[id] = energy
+            let keep = Set(playedRun + [analysisCurrentID, analysisTarget].compactMap { $0 })
+            songEnergy = songEnergy.filter { keep.contains($0.key) }
+        }
         let stream = id == player.currentStream?.videoId ? player.currentStream : prefetched
         guard var offered = offeredPlan, !offered.late, !offered.plannedWithRows.contains(id),
               id == offered.inputs.outgoing.videoId || id == offered.inputs.incoming.videoId,

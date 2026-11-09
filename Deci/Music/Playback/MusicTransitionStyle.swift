@@ -109,7 +109,7 @@ nonisolated enum MusicTransitionStylePicker {
         }.map(\.0)
         #if DEBUG
         // Live checks only: a style that is a candidate is put first. Never set outside the test target.
-        if let forced = debugForcedStyle, let at = order.firstIndex(of: forced) {
+        if let forced = debugScopedStyle ?? debugForcedStyle, let at = order.firstIndex(of: forced) {
             return [forced] + order.enumerated().filter { $0.offset != at }.map(\.element)
         }
         #endif
@@ -118,6 +118,9 @@ nonisolated enum MusicTransitionStylePicker {
 
     #if DEBUG
     nonisolated(unsafe) static var debugForcedStyle: MusicTransitionStyle?
+    /// The same hook scoped to one task (and the tasks it starts): set with `$debugScopedStyle.withValue(_:operation:)`, so a
+    /// test that forces a style can never be seen by a test running beside it. Wins over `debugForcedStyle`.
+    @TaskLocal static var debugScopedStyle: MusicTransitionStyle?
     #endif
 
     /// True when the tempos are further apart than a beat mix can bridge (half and double time folded in).

@@ -120,4 +120,10 @@ enum MusicTransitionLog {
     static func styleLine(from: String, to: String, style: MusicTransitionStyle, reason: String?, previous: MusicTransitionStyle?) -> String {
         "transition_style from=\(from) to=\(to) style=\(style.rawValue) reason=\(reason ?? "none") prev=\(previous?.rawValue ?? "none")"
     }
+
+    /// Tier 4b P3: transition_dj from=<id> to=<id> section=chorus2 outAt=123.40. A DJ-length mix-out was planned at the
+    /// outgoing song's second chorus end. Ids and numbers only.
+    static func djLine(from: String, to: String, section: DJSection, outAt: Double) -> String {
+        "transition_dj from=\(from) to=\(to) section=\(section.rawValue) outAt=\(fixed(outAt, 2))"
+    }
 }
