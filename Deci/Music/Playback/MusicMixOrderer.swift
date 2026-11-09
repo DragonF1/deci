@@ -47,6 +47,8 @@ nonisolated struct MusicMixOrderer: Sendable {
     /// A step looks at this many random remaining songs at most, which bounds a 500 song set to a few tens of thousands
     /// of scores and adds variety. Smaller sets are scanned whole.
     static let sampleLimit = 32
+    /// When no song fits on tempo, every song this close (as a fraction) to the nearest one stays eligible.
+    static let nearestSlack = 0.02
 
     private var generator: MusicMixGenerator
 
@@ -91,13 +93,24 @@ nonisolated struct MusicMixOrderer: Sendable {
             guard let a, let b else { return 0 }
             return MusicMixScore.score(from: a, to: b, allowLift: false)
         }
-        var best = low, bestGain = -Double.infinity
+        func clash(_ a: MusicMixCompact?, _ b: MusicMixCompact?) -> Int {
+            guard let a, let b else { return 0 }
+            return MusicMixScore.tempoFits(a, b) ? 0 : 1
+        }
+        // Fewest tempo clashes after the insertion first, then the best gain.
+        var best = low, bestClashes = Int.max, bestGain = -Double.infinity
         for slot in low...window.count {
             let previous = slot == 0 ? anchorCompact : compact[slot - 1]
             let next = slot < window.count ? compact[slot] : nil
             var gain = score(previous, cand) + score(cand, next)
-            if let previous, let next { gain -= score(previous, next) }
-            if gain > bestGain + 1e-12 { best = slot; bestGain = gain }
+            var clashes = clash(previous, cand) + clash(cand, next)
+            if let previous, let next {
+                gain -= score(previous, next)
+                clashes -= clash(previous, next)
+            }
+            if clashes < bestClashes || (clashes == bestClashes && gain > bestGain + 1e-12) {
+                best = slot; bestClashes = clashes; bestGain = gain
+            }
         }
         return best
     }
@@ -249,9 +262,30 @@ nonisolated struct MusicMixOrderer: Sendable {
             if lifted { lastLiftSlot = slot }
         }
 
+        // Per song, how many other songs it still fits with on tempo (known tempos only). Placing a song takes one off
+        // each song it fitted with, so the count is always about what is left.
+        var degree = [Int](repeating: 0, count: songs.count)
+        for i in 0..<songs.count where compact[i].bpm > 0 {
+            for j in (i + 1)..<max(i + 1, songs.count) where compact[j].bpm > 0 && MusicMixScore.tempoFits(compact[i], compact[j]) {
+                degree[i] += 1
+                degree[j] += 1
+            }
+        }
+        var pool: [Int] = []
+        pool.reserveCapacity(Self.sampleLimit)
+
+        @_optimize(speed)
+        func retire(_ index: Int) {
+            guard compact[index].bpm > 0 else { return }
+            for other in remaining where compact[other].bpm > 0 && MusicMixScore.tempoFits(compact[index], compact[other]) {
+                degree[other] -= 1
+            }
+        }
+
         if let firstIndex {
             place(firstIndex, slot: 0, lifted: false)
             remaining.remove(at: firstIndex)
+            retire(firstIndex)
             if metas[firstIndex].artist >= 0 { artistLeft[metas[firstIndex].artist, default: 0] -= 1 }
         }
 
@@ -271,36 +305,48 @@ nonisolated struct MusicMixOrderer: Sendable {
                     remaining.swapAt(position, position + generator.below(remaining.count - position))
                 }
             }
+            // The tempo gate only works when the song we mix out of has a known tempo.
+            let gateOn = scorer.hasCurrent && scorer.current!.bpm > 0
             var scored: [(position: Int, value: Double, raw: Double)] = []
             var strictUsed = true
+            pool.removeAll(keepingCapacity: true)
             for strict in [true, false] {
                 strictUsed = strict
                 scored.removeAll(keepingCapacity: true)
+                pool.removeAll(keepingCapacity: true)
+                // Hard artist rules decide who is allowed; the tempo gate only narrows inside that.
                 for position in 0..<looked {
-                    let index = remaining[position]
-                    if strict, let crowded, metas[index].artist != crowded { continue }
-                    guard let result = scorer.evaluate(index, allowLift: allowLift, target: t, strict: strict) else { continue }
-                    Self.insertTop(&scored, (position, result.value, result.raw), limit: max(Self.candidateCount, Self.beamWidth))
+                    let artist = metas[remaining[position]].artist
+                    if strict {
+                        if artist >= 0, artist == lastArtist { continue }
+                        if let crowded, artist != crowded { continue }
+                    }
+                    pool.append(position)
                 }
                 // Relax the hard rule only when it leaves nothing (one artist left).
+                if pool.isEmpty { continue }
+                // With nothing playing yet there is no tempo to fit, but the start still goes to a hard-to-place song.
+                if gateOn || !scorer.hasCurrent {
+                    gate(
+                        &pool, current: gateOn ? scorer.current! : nil, looked: looked, remaining: remaining, compact: compact, metas: metas,
+                        degree: degree, strict: strict, lastArtist: lastArtist, crowded: crowded)
+                }
+                for position in pool {
+                    guard let result = scorer.evaluate(remaining[position], allowLift: allowLift, target: t, strict: strict) else { continue }
+                    Self.insertTop(&scored, (position, result.value, result.raw), limit: max(Self.candidateCount, Self.beamWidth))
+                }
                 if !scored.isEmpty { break }
             }
             // Thresholds read the raw pair score of the top pick; penalties only rank (they would make a one-artist set look stuck).
             let best = scored[0].raw
             var chosen: Int
             if scorer.hasCurrent, best < Self.randomFallbackScore {
-                // Any song, but still one the hard artist rules allow.
-                let allowed = (0..<looked).filter { position in
-                    let artist = metas[remaining[position]].artist
-                    guard strictUsed else { return true }
-                    if artist >= 0, artist == lastArtist { return false }
-                    return crowded == nil || artist == crowded
-                }
+                // Any song the hard artist rules and the tempo gate allow (the pool is exactly that).
                 // An avoided song only when nothing else is left.
-                let fresh = allowed.filter { !metas[remaining[$0]].avoided }
-                chosen = (fresh.isEmpty ? allowed : fresh).randomElement(using: &generator) ?? scored[0].position
+                let fresh = pool.filter { !metas[remaining[$0]].avoided }
+                chosen = (fresh.isEmpty ? pool : fresh).randomElement(using: &generator) ?? scored[0].position
             } else if scorer.hasCurrent, best < Self.deadEndScore {
-                chosen = beam(scored, from: scorer.current!, remaining: remaining, looked: looked, compact: compact)
+                chosen = beam(scored, from: scorer.current!, remaining: remaining, pool: pool, compact: compact)
             } else {
                 chosen = weightedPick(scored)
             }
@@ -312,10 +358,82 @@ nonisolated struct MusicMixOrderer: Sendable {
             }
             remaining.swapAt(chosen, remaining.count - 1)
             remaining.removeLast()
+            retire(index)
             place(index, slot: slot, lifted: lifted)
             slot += 1
         }
         return out
+    }
+
+    /// Narrows `pool` (positions in `remaining`, already allowed by the artist rules) to songs that keep the tempo step
+    /// inside the tolerance: the sample's fitting songs, else a scan of everything left, else the nearest tempo. Then
+    /// keeps the songs with the fewest tempo neighbours left (plus one), so outliers are placed before they are stranded.
+    @_optimize(speed)
+    private mutating func gate(
+        _ pool: inout [Int], current: MusicMixCompact?, looked: Int, remaining: [Int], compact: [MusicMixCompact],
+        metas: [Meta], degree: [Int], strict: Bool, lastArtist: Int, crowded: Int?
+    ) {
+        // A recently played song only competes when nothing else is allowed.
+        var preferFresh = false
+        if pool.contains(where: { metas[remaining[$0]].avoided }), pool.contains(where: { !metas[remaining[$0]].avoided }) {
+            pool = pool.filter { !metas[remaining[$0]].avoided }
+            preferFresh = true
+        }
+        var fitting = pool
+        if let current { fitting = pool.filter { MusicMixScore.tempoFits(current, compact[remaining[$0]]) } }
+        if let current, fitting.isEmpty, looked < remaining.count {
+            // Nothing in the sample fits: look at everything left that the artist rules allow.
+            for position in looked..<remaining.count {
+                let index = remaining[position]
+                let artist = metas[index].artist
+                if preferFresh, metas[index].avoided { continue }
+                if strict {
+                    if artist >= 0, artist == lastArtist { continue }
+                    if let crowded, artist != crowded { continue }
+                }
+                if MusicMixScore.tempoFits(current, compact[index]) { fitting.append(position) }
+            }
+            if fitting.count > Self.sampleLimit {
+                for i in 0..<Self.sampleLimit { fitting.swapAt(i, i + generator.below(fitting.count - i)) }
+                fitting.removeLast(fitting.count - Self.sampleLimit)
+            }
+        }
+        if let current, fitting.isEmpty {
+            // No song fits anywhere: the nearest tempo, with a little slack so a near tie keeps its choice.
+            var all = pool
+            if looked < remaining.count {
+                for position in looked..<remaining.count {
+                    let artist = metas[remaining[position]].artist
+                    if preferFresh, metas[remaining[position]].avoided { continue }
+                    if strict {
+                        if artist >= 0, artist == lastArtist { continue }
+                        if let crowded, artist != crowded { continue }
+                    }
+                    all.append(position)
+                }
+            }
+            var minError = Double.infinity
+            for position in all {
+                minError = min(minError, MusicMixScore.tempoError(current, compact[remaining[position]]) ?? 0)
+            }
+            fitting = all.filter { (MusicMixScore.tempoError(current, compact[remaining[$0]]) ?? 0) <= minError + Self.nearestSlack }
+            if fitting.count > Self.sampleLimit {
+                for i in 0..<Self.sampleLimit { fitting.swapAt(i, i + generator.below(fitting.count - i)) }
+                fitting.removeLast(fitting.count - Self.sampleLimit)
+            }
+        }
+        // Fewest neighbours first. Unknown tempo songs stay out of the minimum and are always kept.
+        var minDegree = Int.max
+        for position in fitting {
+            let index = remaining[position]
+            if compact[index].bpm > 0 { minDegree = min(minDegree, degree[index]) }
+        }
+        if minDegree != Int.max {
+            // The very start has no tempo to fit, so it takes only the hardest songs to place.
+            let slack = current == nil ? 0 : 1
+            fitting = fitting.filter { compact[remaining[$0]].bpm <= 0 || degree[remaining[$0]] <= minDegree + slack }
+        }
+        pool = fitting
     }
 
     /// Keeps `list` sorted best first and at most `limit` long.
@@ -344,14 +462,14 @@ nonisolated struct MusicMixOrderer: Sendable {
     /// Of the top few, the one whose best follow-up is best, so a dead end is not walked into.
     @_optimize(speed)
     private func beam(
-        _ scored: [(position: Int, value: Double, raw: Double)], from: MusicMixCompact, remaining: [Int], looked: Int,
+        _ scored: [(position: Int, value: Double, raw: Double)], from: MusicMixCompact, remaining: [Int], pool: [Int],
         compact: [MusicMixCompact]
     ) -> Int {
         var bestPosition = scored[0].position, bestTotal = -Double.infinity
         for candidate in scored.prefix(Self.beamWidth) {
             let via = compact[remaining[candidate.position]]
             var follow = 0.0
-            for position in 0..<looked where position != candidate.position {
+            for position in pool where position != candidate.position {
                 follow = max(follow, MusicMixScore.score(from: via, to: compact[remaining[position]], allowLift: false))
             }
             let total = candidate.value + Self.pairShare * follow

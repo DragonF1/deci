@@ -58,7 +58,12 @@ import Testing
     }
 
     @Test func sameSeedSameOrderDifferentSeedDiffers() {
-        let songs = Self.library(10, artists: 10)
+        // Tempos all within a few percent: the tempo gate leaves every order open, so only the seed makes the choice.
+        let songs = (0..<10).map { i in
+            MusicMixProfile(
+                videoId: "v\(i)", artist: "artist\(i)", bpm: 100 + Double(i % 4), gridTrusted: true,
+                camelot: MusicCamelot(code: Self.keys[i]), energy: Float(i) / 10, introEnergy: 0.3, outroEnergy: 0.3)
+        }
         var a = MusicMixOrderer(seed: 99), b = MusicMixOrderer(seed: 99)
         #expect(a.order(songs, first: nil) == b.order(songs, first: nil))
         var distinct = Set<[String]>()
@@ -161,7 +166,7 @@ import Testing
 
     @Test func allClashingSetUsesRandomFallbackAndStaysAPermutation() {
         let songs = (0..<12).map { i in
-            MusicMixProfile(videoId: "z\(i)", artist: "z\(i)", bpm: 70 + Double(i) * 13, gridTrusted: true,
+            MusicMixProfile(videoId: "z\(i)", artist: "z\(i)", bpm: nil, gridTrusted: true,
                             camelot: MusicCamelot(number: 1 + (i * 5) % 12, isMinor: i % 2 == 0), energy: i % 2 == 0 ? 0.05 : 0.95)
         }
         var distinct = Set<[String]>()

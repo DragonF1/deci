@@ -230,7 +230,8 @@ struct MusicServiceMixShuffleTests {
         }
         let first = try #require(h.service.mixInfo(from: chain[0], to: chain[1]))
         let sameTempo = MixShuffleHarness.tempos[chain[0]] == MixShuffleHarness.tempos[chain[1]]
-        #expect((first.mode == .beat) == sameTempo)
+        // A beat mix needs the same tempo; the tempo gate now puts equal tempos together, but the key can still rule beat out.
+        #expect(first.mode != .beat || sameTempo)
     }
 
     @Test("leaving Mix clears the pairs and the info reads nil")

@@ -139,16 +139,37 @@ nonisolated enum MusicMixScore {
         return max(0, min(1, value))
     }
 
+    /// How far apart two tempos are as a fraction, half or double time folded in. nil when either tempo is unknown.
     @_optimize(speed)
-    static func tempoTerm(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Double {
-        guard a.bpm > 0, b.bpm > 0 else { return unknownTempo }
+    static func tempoError(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Double? {
+        tempoMeasure(a, b)?.error
+    }
+
+    /// Within the tolerance, half or double time included. An unknown tempo never clashes.
+    @_optimize(speed)
+    static func tempoFits(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Bool {
+        guard let error = tempoMeasure(a, b)?.error else { return true }
+        // The small slack keeps 100 to 108 a fit despite float rounding in the ratio.
+        return error <= tempoTolerance + 1e-9
+    }
+
+    /// The one copy of the tempo maths: the folded error and whether the fold (half or double time) was used.
+    @_optimize(speed)
+    private static func tempoMeasure(_ a: MusicMixCompact, _ b: MusicMixCompact) -> (error: Double, folded: Bool)? {
+        guard a.bpm > 0, b.bpm > 0 else { return nil }
         // Always the faster over the slower, so the score is the same in both directions.
         let ratio = max(a.bpm, b.bpm) / min(a.bpm, b.bpm)
-        var error = ratio - 1
-        var factor = 1.0
+        let plain = ratio - 1
         // Half or double time: the faster song is twice the slower one.
         let folded = abs(ratio / 2 - 1)
-        if folded < error - 1e-12 { error = folded; factor = tempoMultipleFactor }
+        return folded < plain - 1e-12 ? (folded, true) : (plain, false)
+    }
+
+    @_optimize(speed)
+    static func tempoTerm(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Double {
+        guard let measure = tempoMeasure(a, b) else { return unknownTempo }
+        let error = measure.error
+        let factor = measure.folded ? tempoMultipleFactor : 1.0
         var value: Double
         if error <= tempoSweetSpot {
             value = 1
