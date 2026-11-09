@@ -80,9 +80,11 @@ enum MusicSongFactsMatcher {
     // MARK: - Matching
 
     /// The hit to use: titles equal, artists matching, the length within two seconds, and no live or remix version unless
-    /// the song's own title says so. The most popular (highest rank) of those that pass.
+    /// the song's own title says so. The most popular (highest rank) of those that pass. A song with no usable length is
+    /// matched on title and artist alone, and only when the hits that pass agree on the length (within two seconds of each
+    /// other), so two different recordings under one title are not mixed up.
     static func bestMatch(query: MusicSongFactsQuery, in candidates: [Candidate]) -> Candidate? {
-        guard let seconds = query.durationSeconds, seconds.isFinite else { return nil }
+        let seconds = query.durationSeconds.flatMap { $0.isFinite ? $0 : nil }
         let askedTitle = stripArtistPrefix(from: query.title, artist: query.artist)
         let wantsLive = mentions(query.title, "live")
         let wantsRemix = mentions(query.title, "remix")
@@ -92,11 +94,15 @@ enum MusicSongFactsMatcher {
                 // The YouTube title may carry the version ("Song (Live at the Forum)") that Deezer keeps apart.
                 || candidate.titleVersion.map { !$0.isEmpty && titlesMatch(askedTitle, "\(candidate.title) \($0)") } == true
             guard titleOK, artistsMatch(query.artist, candidate.artist) else { return false }
-            guard abs(Double(candidate.duration) - seconds) <= durationTolerance else { return false }
+            if let seconds, abs(Double(candidate.duration) - seconds) > durationTolerance { return false }
             let version = "\(candidate.titleVersion ?? "") \(candidate.title)"
             if mentions(version, "live"), !wantsLive { return false }
             if mentions(version, "remix"), !wantsRemix { return false }
             return true
+        }
+        if seconds == nil, let shortest = passing.map(\.duration).min(), let longest = passing.map(\.duration).max(),
+           Double(longest - shortest) > durationTolerance {
+            return nil
         }
         return passing.max { $0.rank < $1.rank }
     }

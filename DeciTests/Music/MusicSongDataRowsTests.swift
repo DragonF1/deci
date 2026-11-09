@@ -37,6 +37,14 @@ struct MusicSongDataRowsTests {
         )
     }
 
+    /// An analysis row that carries a detected key (rows from version 5 on do).
+    private func keyedAnalysis(tonic: Int, isMinor: Bool, confidence: Float) -> MusicAnalysis {
+        var row = analysis()
+        row.version = 5
+        row.keyInfo = MusicKeyInfo(tonic: tonic, isMinor: isMinor, confidence: confidence, energy: 0.5).encode()
+        return row
+    }
+
     private func sections(
         track: MusicTrack = MusicSamples.track("vid1", title: "Song", artist: "Artist", seconds: 215, album: "Album", plays: nil),
         like: MusicLikeStatus? = .like, isDownloaded: Bool = false,
@@ -307,5 +315,51 @@ struct MusicSongDataRowsTests {
     func missingNotNumeric() {
         let s = sections(track: MusicSamples.track("v", seconds: nil))
         #expect(s.flatMap(\.rows).first { $0.label == "Length" }?.isNumeric == false)
+    }
+
+    // MARK: - Key from the analysis
+
+    @Test("with no key from a service, a trusted key in the analysis fills the Key row as measured")
+    func keyFromAnalysis() {
+        var facts = MusicSongFacts(fetchedAt: now)
+        facts.bpm = 133
+        facts.claim(.bpm, .deci)
+        let music = MusicSongDataMusicState(facts: facts)
+        let s = sections(analysis: keyedAnalysis(tonic: 1, isMinor: true, confidence: 0.4), music: music)
+        #expect(value("Key", in: s) == "C# minor (measured)")
+        #expect(value("Data from", in: s) == "Deci (measured)")
+        let major = sections(analysis: keyedAnalysis(tonic: 9, isMinor: false, confidence: 0.4), music: music)
+        #expect(value("Key", in: major) == "A major (measured)")
+    }
+
+    @Test("the analysis key stands in even when the services found nothing at all")
+    func keyFromAnalysisNoFacts() {
+        let s = sections(analysis: keyedAnalysis(tonic: 0, isMinor: false, confidence: 0.4))
+        #expect(value("Key", in: s) == "C major (measured)")
+        #expect(value("Data from", in: s) == "Deci (measured)")
+    }
+
+    @Test("an untrusted analysis key stays Unknown, and a service key wins over the analysis")
+    func keyFallbackGuards() {
+        let weak = sections(analysis: keyedAnalysis(tonic: 1, isMinor: true, confidence: 0.05))
+        #expect(value("Key", in: weak) == "Unknown")
+        #expect(value("Data from", in: weak) == "Unknown")
+
+        var facts = MusicSongFacts(fetchedAt: now)
+        facts.key = 7
+        facts.mode = 1
+        facts.claim(.key, .reccobeats)
+        let s = sections(analysis: keyedAnalysis(tonic: 1, isMinor: true, confidence: 0.4), music: MusicSongDataMusicState(facts: facts))
+        #expect(value("Key", in: s) == "G major (approx.)")
+        #expect(value("Data from", in: s) == "ReccoBeats")
+    }
+
+    @Test("Deci is listed once when both the tempo and the key were measured")
+    func measuredListedOnce() {
+        var facts = MusicSongFacts(fetchedAt: now)
+        facts.bpm = 133
+        facts.claim(.bpm, .deci)
+        let s = sections(analysis: keyedAnalysis(tonic: 2, isMinor: false, confidence: 0.4), music: MusicSongDataMusicState(facts: facts))
+        #expect(value("Data from", in: s) == "Deci (measured)")
     }
 }

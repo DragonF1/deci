@@ -33,6 +33,7 @@ private final class FactsWorld {
     var signedOut = false
 
     var lookups: [String] = []
+    var lookedUpSeconds: [Int?] = []
     var measures: [(videoId: String, needAnalysis: Bool, needBPM: Bool)] = []
     var activeMeasures = 0
     var mostActiveMeasures = 0
@@ -65,6 +66,7 @@ private struct FactsHarness {
             sources.cachedFacts = { world.cached[$0] }
             sources.lookupFacts = { track in
                 world.lookups.append(track.videoId)
+                world.lookedUpSeconds.append(track.durationSeconds)
                 await world.lookupGate?.wait()
                 if let stored = world.afterLookup[track.videoId] { world.cached[track.videoId] = stored }
             }
@@ -159,6 +161,38 @@ struct MusicSongDataFactsStateTests {
         await h.letLateWorkLand()
         #expect(h.world.measures.isEmpty)
         #expect(h.store.music.measuringTempo == false)
+    }
+
+    @Test("a song with no length is looked up with the length of its stream")
+    func lookupUsesStreamLength() async {
+        let h = FactsHarness()
+        h.hold("a", file: true)
+        h.store.show(MusicSamples.track("a", seconds: nil))
+        #expect(await h.until { h.world.lookups == ["a"] })
+        #expect(h.world.lookedUpSeconds == [200])
+    }
+
+    @Test("a song with no length and no stream yet is looked up with the length of its analysis")
+    func lookupUsesAnalysisLength() async {
+        let h = FactsHarness()
+        h.world.analyses["a"] = h.row("a")
+        h.store.show(MusicSamples.track("a", seconds: nil))
+        #expect(await h.until { h.world.lookups == ["a"] })
+        #expect(h.world.lookedUpSeconds == [200])
+    }
+
+    @Test("a song with a length keeps it, and one with no length anywhere is looked up with none")
+    func lookupLengthKept() async {
+        let h = FactsHarness()
+        h.hold("a", file: true)
+        h.store.show(MusicSamples.track("a", seconds: 215))
+        #expect(await h.until { h.world.lookups == ["a"] })
+        #expect(h.world.lookedUpSeconds == [215])
+
+        let bare = FactsHarness()
+        bare.store.show(MusicSamples.track("b", seconds: nil))
+        #expect(await bare.until { bare.world.lookups == ["b"] })
+        #expect(bare.world.lookedUpSeconds == [nil])
     }
 
     @Test("a fresh cache answers with no lookup at all")

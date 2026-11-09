@@ -14,14 +14,14 @@ struct MusicSongFactsRecord: Sendable, Equatable {
         case hit
         /// Found, but a step could not be asked. Asked again after a day.
         case partial
-        /// The services know nothing of the song. Asked again after 30 days.
+        /// The services know nothing of the song. Asked again after 7 days.
         case miss
         /// The services were never asked (only a measurement is stored).
         case none
     }
 
     /// How long a miss is believed.
-    static let missTTL: TimeInterval = 30 * 86_400
+    static let missTTL: TimeInterval = 7 * 86_400
     static let partialTTL: TimeInterval = 86_400
     /// How long a failed measurement keeps the song from being fetched again for it.
     static let measureRetryTTL: TimeInterval = 86_400
@@ -52,7 +52,7 @@ struct MusicSongFactsRecord: Sendable, Equatable {
 
 actor MusicSongFactsStore {
     private static let log = Logger(subsystem: "com.abraham.Deci", category: "MusicSongFacts")
-    private static let schemaVersion: Int32 = 1
+    private static let schemaVersion: Int32 = 2
 
     /// `<Application Support>/Deci/Analysis/SongFacts.sqlite`
     static func liveURL() -> URL {
@@ -248,7 +248,21 @@ actor MusicSongFactsStore {
             return true
         }
         // A file from a newer build is left alone rather than misread.
-        return version <= schemaVersion
+        guard version <= schemaVersion else { return false }
+        if version < 2 {
+            // Version 1 cached misses for 30 days, some from lookups that had no length to match with. Forget them once.
+            let upgrade = """
+            BEGIN;
+            DELETE FROM facts WHERE outcome = 'miss';
+            PRAGMA user_version = \(schemaVersion);
+            COMMIT;
+            """
+            guard sqlite3_exec(db, upgrade, nil, nil, nil) == SQLITE_OK else {
+                sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+                return false
+            }
+        }
+        return true
     }
 }
 

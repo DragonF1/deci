@@ -99,9 +99,26 @@ struct MusicSongFactsMatcherTests {
         #expect(Matcher.bestMatch(query: query(), in: [candidate(duration: 197)]) == nil)
     }
 
-    @Test("a song with no known length is never matched")
+    @Test("a song with no known length is matched on title and artist, the most popular hit winning")
     func unknownLength() {
-        #expect(Matcher.bestMatch(query: query(seconds: nil), in: [candidate()]) == nil)
+        #expect(Matcher.bestMatch(query: query(seconds: nil), in: [candidate()])?.id == 1)
+        let hits = [candidate(duration: 200, rank: 10, id: 1), candidate(duration: 201, rank: 90, id: 2)]
+        #expect(Matcher.bestMatch(query: query(seconds: nil), in: hits)?.id == 2)
+        #expect(Matcher.bestMatch(query: query(seconds: .nan), in: hits)?.id == 2)
+    }
+
+    @Test("with no known length, hits whose lengths disagree by more than 2 s are ambiguous and match nothing")
+    func unknownLengthAmbiguous() {
+        let hits = [candidate(duration: 200, rank: 10, id: 1), candidate(duration: 260, rank: 90, id: 2)]
+        #expect(Matcher.bestMatch(query: query(seconds: nil), in: hits) == nil)
+    }
+
+    @Test("with no known length, the live, remix, title and artist rules still apply")
+    func unknownLengthKeepsRules() {
+        #expect(Matcher.bestMatch(query: query(seconds: nil), in: [candidate(version: "Live")]) == nil)
+        #expect(Matcher.bestMatch(query: query(seconds: nil), in: [candidate(version: "Chromatics Remix")]) == nil)
+        #expect(Matcher.bestMatch(query: query(seconds: nil), in: [candidate(title: "Other Song")]) == nil)
+        #expect(Matcher.bestMatch(query: query(seconds: nil), in: [candidate(artist: "Someone Else")]) == nil)
     }
 
     @Test("a different artist is rejected")

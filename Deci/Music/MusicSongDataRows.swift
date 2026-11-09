@@ -61,7 +61,7 @@ enum MusicSongDataRows {
     ) -> [MusicSongDataSection] {
         [
             basics(track: track, like: like, stream: stream),
-            musicSection(music),
+            musicSection(music, analysis: analysis),
             streamSection(isDownloaded: isDownloaded, stream: stream),
             analysisSection(analysis, now: now, music: music)
         ]
@@ -96,7 +96,7 @@ enum MusicSongDataRows {
 
     private static let keyNames = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
-    private static func musicSection(_ music: MusicSongDataMusicState) -> MusicSongDataSection {
+    private static func musicSection(_ music: MusicSongDataMusicState, analysis: MusicAnalysis?) -> MusicSongDataSection {
         // While the services are asked every row waits; after that a row that is missing is Unknown, but the tempo reads
         // Measuring while the beat finder is on it.
         func row(_ label: String, _ value: String?, numeric: Bool = true) -> MusicSongDataRow {
@@ -104,6 +104,7 @@ enum MusicSongDataRows {
             return numeric ? number(label, value) : text(label, value)
         }
         let facts = music.facts
+        let measuredKey = facts?.key == nil ? measuredKeyText(analysis) : nil
         var tempo = tempoText(facts)
         if tempo == nil, music.measuringTempo, !music.lookingUp { tempo = measuring }
         let tempoRow = music.lookingUp
@@ -111,7 +112,7 @@ enum MusicSongDataRows {
             : MusicSongDataRow(label: "BPM", value: tempo ?? unknown, isNumeric: false)
         return MusicSongDataSection(title: "Music", rows: [
             tempoRow,
-            row("Key", keyText(facts), numeric: false),
+            row("Key", keyText(facts) ?? measuredKey, numeric: false),
             row("Energy", percent(facts?.energy)),
             row("Danceability", percent(facts?.danceability)),
             row("Mood", percent(facts?.valence)),
@@ -124,7 +125,7 @@ enum MusicSongDataRows {
             row("Label", facts?.label.flatMap(nonBlank), numeric: false),
             row("Explicit", facts?.explicit.map { $0 ? "Yes" : "No" }, numeric: false),
             row("ISRC", facts?.isrc.flatMap(nonBlank)),
-            row("Data from", sourcesText(facts), numeric: false)
+            row("Data from", sourcesText(facts, measuredKey: measuredKey != nil), numeric: false)
         ])
     }
 
@@ -149,6 +150,12 @@ enum MusicSongDataRows {
         return text
     }
 
+    /// The key Deci's own analysis found, when it was sure enough: "C# minor (measured)".
+    private static func measuredKeyText(_ analysis: MusicAnalysis?) -> String? {
+        guard let info = analysis?.keyInfoValue, info.trustedCamelot != nil, keyNames.indices.contains(info.tonic) else { return nil }
+        return "\(keyNames[info.tonic]) \(info.isMinor ? "minor" : "major") (measured)"
+    }
+
     private static func percent(_ value: Double?) -> String? {
         guard let value, value.isFinite, value >= 0, value <= 1, let whole = safeInt((value * 100).rounded()) else { return nil }
         return "\(whole)%"
@@ -161,8 +168,10 @@ enum MusicSongDataRows {
         return names.isEmpty ? nil : names.joined(separator: ", ")
     }
 
-    private static func sourcesText(_ facts: MusicSongFacts?) -> String? {
-        let names = (facts?.usedSources ?? []).map { $0 == .deci ? "Deci (measured)" : $0.displayName }
+    private static func sourcesText(_ facts: MusicSongFacts?, measuredKey: Bool) -> String? {
+        var sources = facts?.usedSources ?? []
+        if measuredKey, !sources.contains(.deci) { sources.append(.deci) }
+        let names = sources.map { $0 == .deci ? "Deci (measured)" : $0.displayName }
         return names.isEmpty ? nil : names.joined(separator: ", ")
     }
 

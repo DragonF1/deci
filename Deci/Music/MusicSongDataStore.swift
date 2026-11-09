@@ -219,7 +219,7 @@ final class MusicSongDataStore {
                 if sources.isOffline() {
                     self.lookupSkippedOffline = true
                 } else {
-                    await lookup(track)
+                    await lookup(await self.withKnownLength(track, id: id))
                     guard self.isCurrent(run) else { return }
                     cached = await sources.cachedFacts(id)
                     guard self.isCurrent(run) else { return }
@@ -233,6 +233,20 @@ final class MusicSongDataStore {
             self.factsTask = nil
             self.advance(run: run)
         }
+    }
+
+    /// A song with no length of its own gets the one Deci already knows: the held stream's, else its analysis's. The
+    /// online match needs a length to tell recordings apart.
+    private func withKnownLength(_ track: MusicTrack, id: String) async -> MusicTrack {
+        guard track.durationSeconds == nil, let sources else { return track }
+        var seconds = sources.heldStream(id)?.durationSeconds
+        if seconds == nil || seconds?.isFinite != true || seconds ?? 0 <= 0 {
+            seconds = await sources.analysis(id).map { Double($0.format.durationMs) / 1000 }
+        }
+        guard let seconds, seconds.isFinite, seconds > 0, seconds < Double(Int.max / 2) else { return track }
+        var known = track
+        known.durationSeconds = Int(seconds.rounded())
+        return known
     }
 
     /// Starts the measuring once everything it depends on is settled, when something is still missing: no analysis row, or

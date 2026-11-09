@@ -3,6 +3,7 @@
 // answers a re-open without the network.
 
 import Foundation
+import SQLite3
 import Testing
 @testable import Deci
 
@@ -50,6 +51,34 @@ struct MusicSongFactsStoreTests {
         MusicSongFactsStore(url: try url ?? self.url(), now: { clock.now() })
     }
 
+    /// Sets the file's schema version the way an older or newer build would have left it.
+    private func setUserVersion(_ version: Int, of file: URL) {
+        var handle: OpaquePointer?
+        guard sqlite3_open(file.path, &handle) == SQLITE_OK else { return }
+        sqlite3_exec(handle, "PRAGMA user_version = \(version)", nil, nil, nil)
+        sqlite3_close(handle)
+    }
+
+    private func userVersion(of file: URL) -> Int32 {
+        var handle: OpaquePointer?
+        var statement: OpaquePointer?
+        guard sqlite3_open(file.path, &handle) == SQLITE_OK else { return -1 }
+        defer { sqlite3_close(handle) }
+        guard sqlite3_prepare_v2(handle, "PRAGMA user_version", -1, &statement, nil) == SQLITE_OK else { return -1 }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : -1
+    }
+
+    private func rawCount(of file: URL) -> Int32 {
+        var handle: OpaquePointer?
+        var statement: OpaquePointer?
+        guard sqlite3_open(file.path, &handle) == SQLITE_OK else { return -1 }
+        defer { sqlite3_close(handle) }
+        guard sqlite3_prepare_v2(handle, "SELECT COUNT(*) FROM facts", -1, &statement, nil) == SQLITE_OK else { return -1 }
+        defer { sqlite3_finalize(statement) }
+        return sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : -1
+    }
+
     @Test("a hit round-trips with every field and source, and is fresh for good")
     func hit() async throws {
         let clock = SongFactsClock()
@@ -62,7 +91,7 @@ struct MusicSongFactsStoreTests {
         #expect(record.isLookupFresh(at: clock.date.addingTimeInterval(400 * 86_400)))
     }
 
-    @Test("a miss is believed for 30 days and not after")
+    @Test("a miss is believed for 7 days and not after")
     func missTTL() async throws {
         let clock = SongFactsClock()
         let store = try store(clock)
@@ -70,8 +99,51 @@ struct MusicSongFactsStoreTests {
         let record = try #require(await store.record(for: "a"))
         #expect(record.outcome == .miss)
         #expect(record.facts.isEmpty)
-        #expect(record.isLookupFresh(at: clock.date.addingTimeInterval(29 * 86_400)))
-        #expect(!record.isLookupFresh(at: clock.date.addingTimeInterval(31 * 86_400)))
+        #expect(record.isLookupFresh(at: clock.date.addingTimeInterval(6 * 86_400)))
+        #expect(!record.isLookupFresh(at: clock.date.addingTimeInterval(8 * 86_400)))
+    }
+
+    @Test("opening a version 1 file deletes its misses once and keeps the rest")
+    func migratesMisses() async throws {
+        let clock = SongFactsClock()
+        let file = try url()
+        do {
+            let first = try store(clock, at: file)
+            await first.putLookup(videoId: "miss", .notFound)
+            await first.putLookup(videoId: "hit", .found(found(clock: clock)))
+            await first.putMeasured(videoId: "measured", bpm: 120, confidence: 0.9)
+            
+        }
+        setUserVersion(1, of: file)
+        let second = try store(clock, at: file)
+        #expect(await second.record(for: "miss") == nil)
+        #expect(await second.record(for: "hit")?.outcome == .hit)
+        #expect(await second.record(for: "measured")?.facts.bpm == 120)
+        #expect(userVersion(of: file) == 2)
+        // A miss stored after the migration stays: it runs once.
+        await second.putLookup(videoId: "miss", .notFound)
+        let third = try store(clock, at: file)
+        #expect(await third.record(for: "miss")?.outcome == .miss)
+    }
+
+    @Test("a file from a newer build is not migrated or misread")
+    func newerFileLeftAlone() async throws {
+        let clock = SongFactsClock()
+        let file = try url()
+        do {
+            let first = try store(clock, at: file)
+            await first.putLookup(videoId: "miss", .notFound)
+            
+        }
+        setUserVersion(99, of: file)
+        let second = try store(clock, at: file)
+        // It is not misread, and the migration never ran on it: the file is set aside as it was, row and version intact.
+        #expect(await second.record(for: "miss") == nil)
+        let names = try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path)
+        let aside = try #require(names.first { $0.hasPrefix(file.lastPathComponent + ".unreadable-") })
+        let asideURL = file.deletingLastPathComponent().appendingPathComponent(aside)
+        #expect(rawCount(of: asideURL) == 1)
+        #expect(userVersion(of: asideURL) == 99)
     }
 
     @Test("a partial answer is believed for a day")
@@ -221,7 +293,24 @@ struct MusicSongFactsStoreTests {
         #expect(client.queries.count == 1)
     }
 
-    @Test("a miss is cached for 30 days, then refreshed")
+    @Test("a lookup made with no length that finds nothing is not cached as a miss")
+    func noLengthMissNotCached() async throws {
+        let clock = SongFactsClock()
+        let client = FakeFactsClient([.notFound])
+        let store = try store(clock)
+        let repository = MusicSongFactsRepository(client: client, store: store, now: { clock.now() })
+        let query = MusicSongFactsQuery(artist: "Tate McRae", title: "Housewife", durationSeconds: nil)
+        let result = await repository.lookup(videoId: "a", query: query)
+        #expect(result == .notFound)
+        #expect(await store.record(for: "a") == nil)
+        // A found answer with no length is still stored.
+        let found = FakeFactsClient([.found(found(clock: clock))])
+        let other = MusicSongFactsRepository(client: found, store: store, now: { clock.now() })
+        _ = await other.lookup(videoId: "b", query: query)
+        #expect(await store.record(for: "b")?.outcome == .hit)
+    }
+
+    @Test("a miss is cached for 7 days, then refreshed")
     func missRefresh() async throws {
         let clock = SongFactsClock()
         let client = FakeFactsClient([.notFound, .found(found(clock: clock))])
@@ -232,7 +321,7 @@ struct MusicSongFactsStoreTests {
         #expect(cached.facts == nil)
         #expect(cached.lookupIsFresh)
 
-        clock.advance(days: 31)
+        clock.advance(days: 8)
         cached = try #require(await repository.cached(videoId: "a"))
         #expect(!cached.lookupIsFresh)
 

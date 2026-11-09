@@ -12,7 +12,7 @@ struct MusicSongFactsCached: Sendable, Equatable {
 }
 
 /// The online chain and its cache as one thing: reading the cache never touches the network, and a lookup always stores
-/// what it learned (a miss too, for 30 days) unless it could not be made.
+/// what it learned (a miss too, for 7 days) unless it could not be made.
 actor MusicSongFactsRepository {
     private let client: any MusicSongFactsLooking
     private let store: MusicSongFactsStore
@@ -41,11 +41,14 @@ actor MusicSongFactsRepository {
         )
     }
 
-    /// Asks the chain and stores the answer. Returns what was learned; a failed lookup stores nothing.
+    /// Asks the chain and stores the answer. Returns what was learned; a failed lookup stores nothing, and neither does a
+    /// miss for a song with no length.
     @discardableResult
     func lookup(videoId: String, query: MusicSongFactsQuery) async -> MusicSongFactsLookup {
         let result = await client.lookup(query)
         if Task.isCancelled { return .failed }
+        // Nothing found for a song with no length may only mean it could not be matched, so it is not remembered as a miss.
+        if result == .notFound, query.durationSeconds.map(\.isFinite) != true { return result }
         await store.putLookup(videoId: videoId, result)
         return result
     }
