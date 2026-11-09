@@ -144,11 +144,153 @@ struct AVPlaybackEngineEndTimeTests {
         var events: [PlaybackEngineEvent] = []
         engine.onEvent = { events.append($0) }
         engine.load(stream("n1", duration: 7, url: first), startAt: 0, autoplay: true)
+        let playing = await waitUntil(timeout: .seconds(30)) {
+            engine.avPlayer.timeControlStatus == .playing && engine.avPlayer.currentTime().seconds > 0.2
+        }
+        #expect(playing)
         // A preload whose file is missing fails: the preload is cancelled and the trim with it.
         let missing = stream("n2", duration: 7, url: URL(fileURLWithPath: "/Volumes/Storage/_test/deci/endtime/missing.m4a"))
         engine.preload(missing, plan: plan(.gapless, end: 3))
+        #expect(abs((engine.debugItemEnd ?? 0) - 7) < 0.01, "the commit leaves the item's own end alone")
         let ended = await waitUntil(timeout: .seconds(30)) { events.contains(.ended) }
         #expect(ended, "events: \(events)")
         #expect((engine.position) > 6, "it played to the real end, not the 3 s trim: \(engine.position)")
+        #expect(abs((engine.debugItemEnd ?? 7) - 7) < 0.01, "the item's end never moved")
+        #expect(!events.contains { if case .advanced = $0 { return true } else { return false } })
+    }
+
+    private func isAdvanced(_ event: PlaybackEngineEvent) -> Bool {
+        if case .advanced = event { return true }
+        return false
+    }
+
+    @Test("pause inside the trim window, then wait past the trimmed end: nothing advances and no trim task is left")
+    func pauseInTheWindowDropsTheTrimTask() async throws {
+        let first = try await writeTone("p1", seconds: 12)
+        let second = try await writeTone("p2", seconds: 14)
+        let engine = makeEngine()
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("p1", duration: 12, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("p2", duration: 14, url: second), plan: plan(.gapless, end: 6))
+        let scheduled = await waitUntil(timeout: .seconds(30)) { engine.debugTrimEndScheduled }
+        #expect(scheduled)
+        engine.pause()
+        #expect(!engine.debugTrimEndScheduled, "pausing cancels the hand-over")
+        try await Task.sleep(for: .seconds(8))
+        #expect(!events.contains(where: isAdvanced), "events: \(events)")
+        #expect(!engine.debugTrimEndScheduled)
+        #expect(abs((engine.debugItemEnd ?? 0) - 12) < 0.01)
+        engine.unload()
+    }
+
+    @Test("a seek past the trimmed end gives the real end back; a seek before it schedules the hand-over again")
+    func seekAroundTheTrim() async throws {
+        let first = try await writeTone("s1", seconds: 12)
+        let second = try await writeTone("s2", seconds: 14)
+        let engine = makeEngine()
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("s1", duration: 12, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("s2", duration: 14, url: second), plan: plan(.gapless, end: 8))
+        let playing = await waitUntil(timeout: .seconds(30)) {
+            engine.avPlayer.timeControlStatus == .playing && engine.avPlayer.currentTime().seconds > 0.3
+        }
+        #expect(playing)
+        // Past the trim: the real end, no early advance.
+        engine.seek(to: 7.6)
+        #expect(abs((engine.debugEffectiveEnd ?? 0) - 12) < 0.01, "the real end is back")
+        #expect(!engine.debugTrimEndScheduled)
+        try await Task.sleep(for: .seconds(1.5))
+        #expect(!events.contains(where: isAdvanced), "played past the old trim without a hand-over: \(events)")
+        // Before it: the standby is scheduled again at the real end (the trim is gone for this item), so still no early advance.
+        engine.seek(to: 1)
+        try await Task.sleep(for: .seconds(1))
+        #expect(!events.contains(where: isAdvanced))
+        engine.unload()
+    }
+
+    @Test("a seek well before the trim keeps the trim and the hand-over still comes at it")
+    func seekBeforeTheTrimReschedules() async throws {
+        let first = try await writeTone("r1", seconds: 12)
+        let second = try await writeTone("r2", seconds: 14)
+        let engine = makeEngine()
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("r1", duration: 12, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("r2", duration: 14, url: second), plan: plan(.gapless, end: 8))
+        let playing = await waitUntil(timeout: .seconds(30)) {
+            engine.avPlayer.timeControlStatus == .playing && engine.avPlayer.currentTime().seconds > 0.3
+        }
+        #expect(playing)
+        engine.seek(to: 4)
+        #expect(abs((engine.debugEffectiveEnd ?? 0) - 8) < 0.01, "the trim stays")
+        let scheduled = await waitUntil(timeout: .seconds(20)) { engine.debugTrimEndScheduled }
+        #expect(scheduled, "scheduled again after the seek")
+        let advanced = await waitUntil(timeout: .seconds(20)) { events.contains(where: isAdvanced) }
+        #expect(advanced)
+        #expect(engine.position < 6, "the new song is playing from its start: \(engine.position)")
+        engine.unload()
+    }
+
+    @Test("a replan that drops the trim leaves no stale task: the old trim passes without a hand-over")
+    func replanDropsTheStaleTask() async throws {
+        let first = try await writeTone("t1", seconds: 12)
+        let second = try await writeTone("t2", seconds: 14)
+        let engine = makeEngine()
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("t1", duration: 12, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("t2", duration: 14, url: second), plan: plan(.gapless, end: 6))
+        let scheduled = await waitUntil(timeout: .seconds(30)) { engine.debugTrimEndScheduled }
+        #expect(scheduled)
+        engine.updateTransitionPlan(plan(.gapless, end: nil))
+        #expect(!engine.debugTrimEndScheduled)
+        #expect(abs((engine.debugEffectiveEnd ?? 0) - 12) < 0.01)
+        try await Task.sleep(for: .seconds(4))
+        #expect(!events.contains(where: isAdvanced), "the old trim passed: \(events)")
+        engine.unload()
+    }
+
+    @Test("a stale trim task after a skip never advances the song that replaced the item")
+    func skipLeavesNoStaleTask() async throws {
+        let first = try await writeTone("k1", seconds: 12)
+        let second = try await writeTone("k2", seconds: 14)
+        let third = try await writeTone("k3", seconds: 14)
+        let engine = makeEngine()
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("k1", duration: 12, url: first), startAt: 0, autoplay: true)
+        engine.preload(stream("k2", duration: 14, url: second), plan: plan(.gapless, end: 6))
+        let scheduled = await waitUntil(timeout: .seconds(30)) { engine.debugTrimEndScheduled }
+        #expect(scheduled)
+        // A skip: the queue loads another song straight over the playing one.
+        engine.cancelPreload()
+        engine.load(stream("k3", duration: 14, url: third), startAt: 0, autoplay: true)
+        #expect(!engine.debugTrimEndScheduled)
+        try await Task.sleep(for: .seconds(8))
+        #expect(!events.contains(where: isAdvanced), "events: \(events)")
+        #expect(engine.position > 6, "the new song plays on undisturbed: \(engine.position)")
+        engine.unload()
+    }
+
+    @Test("a trim inside the last second is the real end: the song plays on and hands over gapless at its natural end")
+    func lateTrimPlaysToTheRealEndThenGapless() async throws {
+        let first = try await writeTone("l1", seconds: 7)
+        let second = try await writeTone("l2", seconds: 14)
+        let engine = makeEngine()
+        var events: [PlaybackEngineEvent] = []
+        engine.onEvent = { events.append($0) }
+        engine.load(stream("l1", duration: 7, url: first), startAt: 0, autoplay: true)
+        let playing = await waitUntil(timeout: .seconds(30)) {
+            engine.avPlayer.timeControlStatus == .playing && engine.avPlayer.currentTime().seconds > 3.6
+        }
+        #expect(playing)
+        engine.preload(stream("l2", duration: 14, url: second), plan: plan(.gapless, end: 4))
+        #expect(abs((engine.debugEffectiveEnd ?? 0) - 7) < 0.01, "too close to move: the real end")
+        let advanced = await waitUntil(timeout: .seconds(30)) { events.contains(where: isAdvanced) }
+        #expect(advanced, "events: \(events)")
+        #expect(engine.position < 3, "gapless into the next song: \(engine.position)")
+        engine.unload()
     }
 }

@@ -258,23 +258,22 @@ struct MusicServiceBeatMixTests {
         #expect(h.engine.updatedPlans.isEmpty)
     }
 
-    @Test("a replan inside the last seconds keeps a ready preload: the plan goes non-beat at the same park offset")
-    func lateReplanKeepsReadyPreload() async throws {
+    @Test("leaving Mix under a ready beat preload parked at its mix-in withdraws it: the plain fade must not start mid-intro")
+    func leavingMixWithdrawsReadyBeatPreload() async throws {
         let h = BeatHarness()
         await start(h)
         await h.tick(126)
         await h.tick(170)
         let beat = try #require(h.lastPlan)
         #expect(beat.mode == .beat)
+        #expect(h.engine.preloadIsReady)
+        #expect(beat.incomingStartSec != 0, "the standby is parked at the mix-in: \(beat.incomingStartSec)")
         let mixOut = try #require(beat.mixOutSec)
         await h.tick(mixOut - 7.5)
         let cancels = h.engine.cancelPreloadCount
         h.service.setShuffleMode(.off)
-        #expect(h.engine.cancelPreloadCount == cancels, "the ready preload stays")
-        let updated = try #require(h.engine.updatedPlans.last ?? nil)
-        #expect(updated.mode != .beat)
-        #expect(updated.incomingRate == 1)
-        #expect(updated.incomingStartSec == beat.incomingStartSec)
+        #expect(h.engine.cancelPreloadCount == cancels + 1, "withdrawn, to be parked again at the plain trim-in")
+        #expect(h.engine.updatedPlans.isEmpty, "no plan is pushed at the mix-in offset")
     }
 
     @Test("a manual skip on a beat preload hands the engine the skip plan, at the beat plan's park offset")

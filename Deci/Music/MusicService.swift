@@ -3402,6 +3402,12 @@ final class MusicService {
             cancelPreload()
             return
         }
+        // Outside Mix the incoming song starts at its plain trim-in. A standby parked anywhere else (a beat plan's mix-in, a drop
+        // swap's drop) would start mid-song under the plain fade: it is withdrawn and offered again, parked at the trim-in.
+        if inputs.plainFade, offered.plan.incomingStartSec != plan.incomingStartSec {
+            cancelPreload()
+            return
+        }
         // The standby is parked on a beat plan's mix-in and starts at its rate (and one parked for another plan cannot take
         // a beat mix): a replan that changes either is the preload withdrawn and offered again with the new plan.
         let wasBeat = offered.plan.mode == .beat
