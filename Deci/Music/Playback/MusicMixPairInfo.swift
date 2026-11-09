@@ -1,8 +1,9 @@
 // Deci/Music/Playback/MusicMixPairInfo.swift
 import Foundation
 
-/// What Up next shows for a song in Mix: its tempo and key, and how the song before it hands over (on the beat or with a
-/// fade). Built from the stored analysis rows of the two songs; a song with no row has neither number.
+/// What Up next knows about a song in Mix: its tempo and key, and how the song before it hands over (on the beat or with
+/// a fade). The row itself shows only the tempo. Built from the stored analysis rows of the two songs; a song with no
+/// row has neither number.
 nonisolated struct MusicMixPairInfo: Equatable, Sendable {
     enum Mode: Equatable, Sendable {
         case beat
@@ -22,11 +23,9 @@ nonisolated struct MusicMixPairInfo: Equatable, Sendable {
         "\(outgoingId)>\(incomingId)"
     }
 
-    /// The small grey line on the song's row: "128 · 8A", or whichever of the two is known; nil when neither is.
-    var rowText: String? {
-        let parts = [bpm.map(String.init), camelot].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
-    }
+    /// The tempo on the song's row, "128", shown beside the length in a colour of its own; nil when the song has no
+    /// trusted beat grid. Only the tempo: a key beside it read as one more number and made the row confusing.
+    var rowText: String? { bpm.map(String.init) }
 
     /// The pair as the transition planner would plan it with Crossfade on: a beat mix when both songs carry a trusted
     /// grid, a fade in every other case.

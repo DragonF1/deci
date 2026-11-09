@@ -92,6 +92,9 @@ private struct MixHarness {
 
     func tick(_ position: TimeInterval) async {
         engine.tick(position, playing: true)
+        // The next song is resolved once it has settled as next, so the clock moves between two ticks.
+        clock.advance(by: MusicService.analysisSettle + 0.1)
+        engine.tick(position + 0.25, playing: true)
         await service.prefetchTask?.value
         await service.analysisTask?.value
         engine.tick(position + 0.5, playing: true)

@@ -85,6 +85,9 @@ struct BeatHarness {
 
     func tick(_ position: TimeInterval) async {
         engine.tick(position, playing: true)
+        // The next song is resolved once it has settled as next, so the clock moves between two ticks.
+        clock.advance(by: MusicService.analysisSettle + 0.1)
+        engine.tick(position + 0.25, playing: true)
         await service.prefetchTask?.value
         await service.analysisTask?.value
         engine.tick(position + 0.5, playing: true)
@@ -223,8 +226,8 @@ struct MusicServiceBeatMixTests {
         await h.startQueue(["a", "b"])
         let gate = MusicTestGate()
         await h.provider.hold("b", gate)
-        await h.engine.tickNoGate(h.service, at: 126)
-        await h.engine.tickNoGate(h.service, at: 232)
+        await h.engine.tickNoGate(h.service, clock: h.clock, at: 126)
+        await h.engine.tickNoGate(h.service, clock: h.clock, at: 232)
         let before = try #require(h.lastPlan)
         await h.reader.set(BeatHarness.row("b", period: 0.48))
         await gate.open()
@@ -342,8 +345,10 @@ struct MusicServiceDropSwapSkipTests {
 @MainActor
 private extension FakePlaybackEngine {
     /// A tick that does not wait for the held analysis job.
-    func tickNoGate(_ service: MusicService, at position: TimeInterval) async {
+    func tickNoGate(_ service: MusicService, clock: MutableClock, at position: TimeInterval) async {
         tick(position, playing: true)
+        clock.advance(by: MusicService.analysisSettle + 0.1)
+        tick(position + 0.25, playing: true)
         await service.prefetchTask?.value
         tick(position + 0.5, playing: true)
     }

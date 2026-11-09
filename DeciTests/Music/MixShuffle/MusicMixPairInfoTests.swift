@@ -30,11 +30,11 @@ enum MixRows {
 @MainActor
 @Suite("MusicMixPairInfo")
 struct MusicMixPairInfoTests {
-    @Test("the row text is the whole tempo and the Camelot key, or whichever is known")
+    @Test("the row text is the whole tempo only, never the key")
     func rowText() {
-        #expect(MusicMixPairInfo(bpm: 128, camelot: "8A", mode: .beat).rowText == "128 \u{00B7} 8A")
+        #expect(MusicMixPairInfo(bpm: 128, camelot: "8A", mode: .beat).rowText == "128")
         #expect(MusicMixPairInfo(bpm: 128, camelot: nil, mode: .fade).rowText == "128")
-        #expect(MusicMixPairInfo(bpm: nil, camelot: "8A", mode: .fade).rowText == "8A")
+        #expect(MusicMixPairInfo(bpm: nil, camelot: "8A", mode: .fade).rowText == nil)
         #expect(MusicMixPairInfo(bpm: nil, camelot: nil, mode: .fade).rowText == nil)
     }
 

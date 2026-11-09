@@ -105,6 +105,9 @@ private struct TransitionHarness {
     /// Ticks to `position`, lets the prefetch and its analysis job finish, then ticks half a second on.
     func tick(_ position: TimeInterval) async {
         engine.tick(position, playing: true)
+        // The next song is resolved once it has settled as next, so the clock moves between two ticks.
+        clock.advance(by: MusicService.analysisSettle + 0.1)
+        engine.tick(position + 0.25, playing: true)
         await service.prefetchTask?.value
         await service.analysisTask?.value
         engine.tick(position + 0.5, playing: true)
@@ -113,6 +116,9 @@ private struct TransitionHarness {
     /// Like `tick`, without waiting for the analysis job (it is held).
     func tickNoWait(_ position: TimeInterval) async {
         engine.tick(position, playing: true)
+        // The next song is resolved once it has settled as next, so the clock moves between two ticks.
+        clock.advance(by: MusicService.analysisSettle + 0.1)
+        engine.tick(position + 0.25, playing: true)
         await service.prefetchTask?.value
         engine.tick(position + 0.5, playing: true)
     }
@@ -248,16 +254,16 @@ struct MusicServiceTransitionTests {
         #expect(h.lastPlan?.incomingStartSec == 0.5)
     }
 
-    @Test("no job in flight (current song under 150 s): offered at once, as in tier 1")
-    func noJobMeansNoWait() async throws {
+    @Test("a short current song: the next song is analysed early too, and the offer comes at its window once the job is done")
+    func shortSongAnalysesNextToo() async throws {
         let h = TransitionHarness()
         await h.reader.set(TransitionHarness.row("a", duration: 120, silenceEnd: 118, outroStart: 108))
         await h.startQueue(["a", "b"], duration: 120)
         await h.tickNoWait(95)
         #expect(h.engine.preloads.isEmpty)
-        await h.tickNoWait(100)
+        await h.tick(100)
         #expect(h.engine.preloads.count == 1)
-        #expect(await h.provider.ensuredIDs == ["a"], "no early fetch for the next song")
+        #expect(await h.provider.ensuredIDs == ["a", "b"], "the next song is analysed from the start, not only for long songs")
         #expect(h.lastPlan?.mode == .fixed)
     }
 

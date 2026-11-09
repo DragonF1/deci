@@ -159,7 +159,7 @@ struct MusicServiceMixAutoplayTests {
         for seed in [1, 2, 3, 4] as [UInt64] {
             let h = MixShuffleHarness(seed: seed)
             for id in Self.page + Self.radio { await h.backend.setStream(MusicSamples.stream(videoId: id, duration: 140)) }
-            // Songs short enough that no analysis is waited for. Nothing is known, so the first radio song is a seeded random pick.
+            // Nothing is known, so the first radio song is a seeded random pick.
             for id in Self.page + ["c"] { await h.backend.setAutomix(afterVideoId: id, tracks: MusicSamples.tracks(id) + Self.radio.map { MusicSamples.track($0) }) }
             let page = MusicSamples.page("VLPL1", tracks: Self.page.map { MusicSamples.track($0, title: "Song \($0)") }, audioPlaylistId: nil)
             h.service.play(MusicSamples.track("a", title: "Song a"), in: page)
@@ -176,6 +176,8 @@ struct MusicServiceMixAutoplayTests {
             #expect(staged.count == Self.radio.count)
             h.engine.tick(125, playing: true)
             await h.service.prefetchTask?.value
+            // The next song is analysed from the start now, so its job is finished before the offer is made.
+            await h.service.analysisTask?.value
             h.engine.tick(125.5, playing: true)
             let offered = h.engine.preloads.last?.videoId
             #expect(offered == staged.first)

@@ -130,7 +130,7 @@ struct MusicSongRow: View {
     /// The row's place among the songs of its list (`musicSelectionScope`), which tells it from another copy of the same
     /// song. Nil for a row that cannot be picked.
     var selectionIndex: Int?
-    /// Up next in Mix: the song's tempo and key as a small grey line ("128 \u{00B7} 8A"); nil everywhere else.
+    /// Up next in Mix: the song's tempo ("128"), in the accent beside the length; nil everywhere else.
     var mixText: String?
     let action: () -> Void
 
@@ -242,7 +242,7 @@ struct MusicSongRow: View {
         if let spoken = MusicDownloadGlyph.spokenState(downloadState) { text += ", \(spoken)" }
         if isPlaying { text += ", playing" }
         if isDimmed { text += ", not downloaded" }
-        if let mixText { text += ", " + mixText.replacingOccurrences(of: " \u{00B7} ", with: ", ") }
+        if let mixText { text += ", \(mixText) BPM" }
         return text
     }
 
@@ -270,9 +270,11 @@ struct MusicSongRow: View {
             }
             Spacer(minLength: 0)
             if let mixText {
+                // In the song's accent, so the tempo never reads as part of the grey length beside it. A picked row
+                // is already filled with that accent, so there it turns white to stay readable.
                 Text(mixText)
                     .font(.system(size: 10, weight: .regular).monospacedDigit())
-                    .foregroundStyle(Color.white.opacity(0.35))
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : accent.solid.opacity(0.85))
                     .lineLimit(1)
                     .accessibilityHidden(true)
             }

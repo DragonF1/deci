@@ -187,12 +187,11 @@ final class MusicService {
     private static let maxFailures = 3
     /// The next track's stream is resolved this long before the current one ends.
     private static let prefetchLead: TimeInterval = 15
-    /// How long before the end the next song is resolved and its whole file fetched for analysis (tier 2a).
-    static let analysisLead: TimeInterval = 75
-    /// Songs shorter than this are not fetched early: the stream preload at its own window serves them.
-    static let analysisMinDuration: TimeInterval = 150
+    /// The next song is resolved and analysed as soon as it has been the same next song this long, so a run of Next
+    /// presses does not fetch every song flicked past.
+    static let analysisSettle: TimeInterval = 1
     /// A beat mix can start up to a phrase plus its 8-bar overlap before the trimmed end: its window opens this early
-    /// (inside `analysisLead`, so the next song's file is cached and analysed by then and nothing starts sooner).
+    /// (the next song is analysed from the moment it is next, so its file is cached and analysed long before).
     static let beatLead: TimeInterval = 70
     /// The engine needs about this long to park, preroll and arm the next song: a beat mix starts no sooner than this
     /// after the plan is made, and a song that is not parked this long before the mix point is mixed the smart way.
@@ -273,6 +272,12 @@ final class MusicService {
     /// The video id last handed to the player as the preload; nil when none is out. One offer per track and window.
     @ObservationIgnored private var preloadOffered: String?
     @ObservationIgnored private var prefetched: ResolvedStream?
+    /// The song whose early resolve failed and has not been tried again: the preload window tries it once more.
+    @ObservationIgnored private var resolveFailed: String?
+    /// The song whose resolve was already retried once; a second failure is left to the playback path.
+    @ObservationIgnored private var resolveRetried: String?
+    /// The song whose near-expiry stream was already replaced once, so a short-lived answer is not asked for every tick.
+    @ObservationIgnored private var expiryRefreshed: String?
     /// History pings earned and not yet sent. One drain task sends them one at a time, in the order they were earned.
     @ObservationIgnored private var pendingPings: [HistoryPing] = []
     @ObservationIgnored private var isSendingPings = false
@@ -318,6 +323,16 @@ final class MusicService {
     @ObservationIgnored private(set) var analysisCleanupTask: Task<Void, Never>?
     /// The song `analysisTask` works for.
     @ObservationIgnored private var analysisTarget: String?
+    /// The job number of `analysisTarget`'s job.
+    @ObservationIgnored private var analysisTargetJob = 0
+    /// Jobs whose analysis is running now (job number to song). A job whose song stopped being next is left to finish.
+    @ObservationIgnored private var analysisRunning: [Int: String] = [:]
+    /// Every job that has not landed yet, running or waiting its turn, so sign-out can cancel the ones left running.
+    @ObservationIgnored private var analysisJobs: [Int: (id: String, task: Task<Void, Never>)] = [:]
+    /// The last job started: the next one waits behind it. A drop never clears it, so two fetches never overlap.
+    @ObservationIgnored private var analysisTail: Task<Void, Never>?
+    /// The song that has been next since `since`, for the settle before it is resolved and analysed early.
+    @ObservationIgnored private var nextSeen: (id: String, since: Date)?
     /// Songs whose cache file this service asked for and has not released or discarded yet.
     @ObservationIgnored private var heldCacheJobs: [String: Int] = [:]
     /// Counts the analysis jobs started; a job's number tells it apart from an older one for the same song.
@@ -1611,7 +1626,7 @@ final class MusicService {
         }
     }
 
-    /// The tempo and key line of a song's own row ("128 \u{00B7} 8A"), nil outside Mix or without a row.
+    /// The tempo line of a song's own row ("128"), nil outside Mix or without a row.
     func mixRowText(for id: String) -> String? {
         guard isMixOn else { return nil }
         _ = mixPairs  // reading it makes a view that shows this line update with the pairs
@@ -2422,6 +2437,7 @@ final class MusicService {
         prefetchTask?.cancel()
         prefetchTask = nil
         prefetchAttempt = nil
+        resetPrefetchRetries()
         if prefetched?.videoId == track { prefetched = nil }
         trackChangedForAnalysis(to: track)
         mixTrackChanged()
@@ -2880,49 +2896,93 @@ final class MusicService {
         let lead = leadTime
         // DJ-length songs: the song is cut earlier than its end, so the next one is resolved and analysed that much earlier too.
         let djEarly = target.map { djShift(toward: $0.videoId) } ?? 0
-        guard duration > lead * 2, duration - position <= resolveLead(forDuration: duration) + djEarly,
-              let next = target, prefetchAttempt != next.videoId else { return }
+        // Measured to the trimmed end like the preload window. With analysis on the window opens `beatLead` early, so a
+        // song that is not resolved early (signed out) is still resolved before its smart or beat window.
+        let resolveLead = analysis != nil && loopMode != .song ? max(lead, Self.beatLead) : lead
+        let inWindow = duration > lead * 2 && preloadLead(for: nil).end - position <= resolveLead + djEarly
+        if inWindow, let next = target, resolveFailed == next.videoId, prefetchAttempt == next.videoId, prefetched == nil {
+            resolveFailed = nil
+            resolveRetried = next.videoId
+            prefetchAttempt = nil
+        }
+        // With analysis on, the next song is resolved and analysed as soon as it has settled as next, whatever the
+        // current song's length; the preload keeps its own window.
+        let early = analysisWantsNext && nextSongSettled(target?.videoId)
+        guard early || inWindow, let next = target, prefetchAttempt != next.videoId else { return }
         prefetchAttempt = next.videoId
         prefetchTask = Task { [weak self] in
-            guard let self, let stream = try? await self.streamForSource(of: next.videoId) else { return }
+            guard let self else { return }
+            guard let stream = try? await self.streamForSource(of: next.videoId) else {
+                // One more try at the preload window; after that the playback path deals with it.
+                if !Task.isCancelled, self.prefetchAttempt == next.videoId, self.resolveRetried != next.videoId {
+                    self.resolveFailed = next.videoId
+                }
+                return
+            }
             guard !Task.isCancelled, self.prefetchAttempt == next.videoId else { return }
             self.prefetched = stream
-            self.startAnalysis(for: stream, duration: duration)
+            self.startAnalysis(for: stream)
             self.offerPreload(position: self.player.currentTime)
         }
     }
 
-    /// How long before the end the next song is resolved: the preload lead, or `analysisLead` when its whole file is to be
-    /// fetched and analysed first (a song long enough, not on Loop song). The preload itself still waits for its window.
-    private func resolveLead(forDuration duration: TimeInterval) -> TimeInterval {
-        guard analysis != nil, loopMode != .song, duration >= Self.analysisMinDuration else { return leadTime }
-        return max(leadTime, Self.analysisLead)
+    /// The next song is worth analysing: a provider is there, and it is neither offline, signed out nor Loop song.
+    private var analysisWantsNext: Bool {
+        analysis != nil && !isOffline && authState != .signedOut && loopMode != .song
+    }
+
+    /// True once `id` has been the next song for `analysisSettle` seconds; a different next song starts the count again.
+    private func nextSongSettled(_ id: String?) -> Bool {
+        guard let id else {
+            nextSeen = nil
+            return false
+        }
+        if nextSeen?.id != id { nextSeen = (id, now()) }
+        guard let since = nextSeen?.since else { return false }
+        return now().timeIntervalSince(since) >= Self.analysisSettle
     }
 
     // MARK: - Analysis and the track cache
 
     /// Hands the next song to the analysis side: a network song is fetched whole into the track cache (its file is kept
-    /// for the preload), a downloaded one is analysed from its own file. Not offline, not signed out, not for a short song
-    /// or Loop song, and one job at a time: a job for a song that is no longer next is dropped first.
-    private func startAnalysis(for stream: ResolvedStream, duration: TimeInterval) {
+    /// for the preload), a downloaded one is analysed from its own file. Not offline, not signed out, not Loop song, and
+    /// one job at a time: a job for a song that is no longer next is not cancelled when it is already running (its row
+    /// is still stored, only its file goes), and the new job waits behind it.
+    private func startAnalysis(for stream: ResolvedStream) {
         guard let analysis, !isOffline, authState != .signedOut, loopMode != .song,
-              duration >= Self.analysisMinDuration, stream.videoId != analysisCurrentID,
-              analysisTarget != stream.videoId else { return }
+              stream.videoId != analysisCurrentID, analysisTarget != stream.videoId else { return }
         let id = stream.videoId
-        if let old = analysisTarget { dropSpeculativeAnalysis(old) }
+        let previous = analysisTail
+        if let old = analysisTarget { retireSpeculativeAnalysis(old) }
         analysisTarget = id
         nextRowSettled = nil
         let wantsFile = stream.origin == .network
+        // The song is next again while its own job still runs: that job is taken back, it keeps the file it is fetching.
+        if let running = analysisRunning.first(where: { $0.value == id })?.key, let job = analysisJobs[running] {
+            analysisTargetJob = running
+            if wantsFile { heldCacheJobs[id] = running }
+            analysisTask = job.task
+            return
+        }
         analysisJobCounter += 1
         let job = analysisJobCounter
+        analysisTargetJob = job
         if wantsFile { heldCacheJobs[id] = job }
-        // Behind the cleanup of earlier jobs, so a late cancel or discard for this song cannot hit this fetch.
+        // Behind the cleanup of earlier jobs, so a late cancel or discard for this song cannot hit this fetch, and behind
+        // the job before it, so only one analysis runs at a time.
         let cleanup = analysisCleanupTask
-        analysisTask = Task { [weak self] in
+        let task = Task { [weak self] in
+            await previous?.value
             await cleanup?.value
-            guard !Task.isCancelled else { return }
-            let outcome = await analysis.ensure(stream: stream, wantsFile: wantsFile)
             guard let self else { return }
+            defer {
+                self.analysisJobs[job] = nil
+                self.analysisRunning[job] = nil
+            }
+            guard !Task.isCancelled else { return }
+            // Running until it has landed, row read and file settled, so a song that is next again can take it back.
+            self.analysisRunning[job] = id
+            let outcome = await analysis.ensure(stream: stream, wantsFile: wantsFile)
             // The row the job stored is read before the preload is offered again, so a plan can use it.
             if !Task.isCancelled, self.analysisTarget == id {
                 await self.readTransitionRow(id)
@@ -2942,6 +3002,9 @@ final class MusicService {
             // A row that landed lets a waiting offer go ahead (a file alone did before; the offer is the same call).
             self.offerPreload(position: self.player.currentTime)
         }
+        analysisJobs[job] = (id, task)
+        analysisTask = task
+        analysisTail = task
     }
 
     /// The song that starts playing gets its analysis asked for once, when it has no fresh entry (the coordinator checks
@@ -2957,12 +3020,24 @@ final class MusicService {
         }
     }
 
+    /// The song was next but is not any more. A job that is analysing now is left to finish so its row is stored (its
+    /// file is discarded when it lands, nobody will play it); one still waiting or already done is dropped.
+    private func retireSpeculativeAnalysis(_ id: String) {
+        guard analysisTarget == id else { return }
+        guard analysisRunning[analysisTargetJob] == id else { return dropSpeculativeAnalysis(id) }
+        analysisTarget = nil
+        analysisTargetJob = 0
+        if cachedFile?.videoId == id { cachedFile = nil }
+        heldCacheJobs.removeValue(forKey: id)
+    }
+
     /// The song was going to be next but is not: its job stops and its file goes now.
     private func dropSpeculativeAnalysis(_ id: String) {
         guard analysisTarget == id else { return }
         analysisTask?.cancel()
         analysisTask = nil
         analysisTarget = nil
+        analysisTargetJob = 0
         if cachedFile?.videoId == id { cachedFile = nil }
         let held = heldCacheJobs.removeValue(forKey: id) != nil
         queueAnalysisCall { provider in
@@ -2990,8 +3065,22 @@ final class MusicService {
             currentAnalysisAsked = nil
             queueAnalysisCall { await $0.cancel(videoId: asked) }
         }
-        if let target = analysisTarget, target != id { dropSpeculativeAnalysis(target) }
-        if let id, analysisTarget == id { analysisTarget = nil }
+        // Nothing is playing any more (sign-out, end of queue): every job left stops too. Cancelling the task is what
+        // reaches the coordinator, which ignores a plain cancel while a job that wants the file is waiting.
+        if id == nil {
+            for (_, job) in analysisJobs {
+                job.task.cancel()
+                let running = job.id
+                queueAnalysisCall { await $0.cancel(videoId: running) }
+            }
+        }
+        if let target = analysisTarget, target != id {
+            if id == nil { dropSpeculativeAnalysis(target) } else { retireSpeculativeAnalysis(target) }
+        }
+        if let id, analysisTarget == id {
+            analysisTarget = nil
+            analysisTargetJob = 0
+        }
         if cachedFile != nil, cachedFile?.videoId != id { cachedFile = nil }
         if let leaving, leaving != id {
             heldCacheJobs.removeValue(forKey: leaving)
@@ -3024,7 +3113,14 @@ final class MusicService {
         prefetchTask?.cancel()
         prefetchTask = nil
         prefetchAttempt = nil
+        resetPrefetchRetries()
         cancelPreload()
+    }
+
+    private func resetPrefetchRetries() {
+        resolveFailed = nil
+        resolveRetried = nil
+        expiryRefreshed = nil
     }
 
     // MARK: - Preload (gapless)
@@ -3116,6 +3212,15 @@ final class MusicService {
               isInPreloadWindow(position: position) else { return }
         let (_, end) = preloadLead(for: stream)
         if isAwaitingRow(for: stream), end - position > Self.analysisDeadline { return }
+        // A stream resolved early may be about to expire by now: it is replaced once before it is offered, unless the
+        // preload plays from the cache file anyway.
+        if stream.origin == .network, cachedFile?.videoId != stream.videoId, expiryRefreshed != stream.videoId,
+           stream.expiresAt <= Date().addingTimeInterval(60) {
+            expiryRefreshed = stream.videoId
+            prefetched = nil
+            prefetchAttempt = nil
+            return
+        }
         preloadOffered = target.videoId
         let plan = transitionPlan(for: stream)
         player.preload(stream: preloadStream(for: stream), track: target, plan: plan?.plan)

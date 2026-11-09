@@ -105,7 +105,7 @@ struct MusicServiceMixReviewTests {
         #expect(h.service.mixInfo(from: current.videoId, to: "qq") == nil)
     }
 
-    @Test("a row's tempo and key text comes from its own song, not from the pair before it")
+    @Test("a row's tempo text comes from its own song, not from the pair before it")
     func rowTextIsOwn() async throws {
         let ids = Self.ids(6)
         let h = MixShuffleHarness()
