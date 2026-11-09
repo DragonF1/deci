@@ -434,7 +434,8 @@ struct MusicBeatPlannerTests {
         #expect(good.mode == .beat)
 
         let clash = MusicTransitionPlanner.plan(Self.inputs(b: Self.grid(period: 60 / 131, anchor: 0.1, phase: 1)))
-        #expect(clash.mode == .smart && clash.fallbackReason == "tempoClash")
+        // Tier 4b: a clash is now a quick cut or an echo out (a beat-mode plan with no overlap), not a plain fade.
+        #expect(clash.mode == .beat && clash.style != .longBlend && clash.fallbackReason == "tempoClash")
 
         let none = Self.inputs(a: nil, b: nil)
         let plan = MusicTransitionPlanner.plan(none)

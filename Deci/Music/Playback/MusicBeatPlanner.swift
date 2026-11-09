@@ -168,9 +168,119 @@ enum MusicBeatPlanner {
         return refuse(late ? .tooLate : .noPhraseRoom)
     }
 
+    // MARK: Styled plans (Tier 4b)
+
+    /// The cut fade: a few milliseconds, enough to take the click off the step and short enough that the downbeat stays hard.
+    static let cutFadeSeconds = 0.004
+    /// The echo tail is at most this long, however slow the song.
+    static let maxEchoTailSec = 3.0
+    /// Repeats the tail aims for: at feedback 0.5 six repeats are about -36 dB.
+    static let echoRepeats = 6.0
+
+    /// A quick cut or an echo out on the outgoing song's last bar line, for any tempo gap. The incoming song starts on its
+    /// first bar line at or after its smart start, at rate 1. Beat mode with no overlap: the engine starts the incoming
+    /// deck on the cut. nil when a grid is unusable, there is no bar line with room, or the incoming song is too short.
+    static func styledPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, style: MusicTransitionStyle) -> TransitionPlan? {
+        griddedStyledPlan(inputs, smart: smart, style: style) ?? gridlessStyledPlan(inputs, smart: smart, style: style)
+    }
+
+    /// A cut or an echo with no beat grid to lean on (unanalysed songs, a missing or unusable grid): it lands where the smart
+    /// plan's fade would start, the incoming song at the smart plan's start, and an echo uses the fixed delay. nil when the
+    /// smart plan has no fade start or the incoming song is too short.
+    private static func gridlessStyledPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, style: MusicTransitionStyle) -> TransitionPlan? {
+        guard style == .quickCut || style == .echoOut, inputs.beatMixEnabled, inputs.crossfadeOn, smart.mode == .smart,
+              !inputs.manualSkip, !inputs.albumInOrder, !inputs.loopSong,
+              let aDuration = valid(inputs.outgoing.durationSeconds), let bDuration = valid(inputs.incoming.durationSeconds),
+              let cut = smart.fadeStartSec, cut.isFinite, cut > 0, smart.incomingStartSec.isFinite, smart.incomingStartSec >= 0
+        else { return nil }
+        if let earliest = inputs.earliestMixOutSec, cut < earliest { return nil }
+        let bEnd = inputs.incoming.analysis.flatMap { MusicTransitionPlanner.trimmedEnd(of: $0, duration: bDuration) } ?? bDuration
+        guard bEnd - smart.incomingStartSec >= minIncomingRemainingSec else { return nil }
+        let aEnd = smart.outgoingEndSec ?? aDuration
+        var plan = smart
+        plan.mode = .beat
+        plan.reason = .ok
+        plan.style = style
+        plan.incomingRate = 1
+        plan.mixOutSec = cut
+        plan.mixInSec = smart.incomingStartSec
+        plan.fallbackIncomingStartSec = smart.incomingStartSec
+        plan.fadeStartSec = cut
+        plan.fadeSeconds = cutFadeSeconds
+        plan.overlapBars = 0
+        plan.overlapSec = cutFadeSeconds
+        plan.barSec = 0
+        plan.glideBackSec = 0
+        plan.bassSwapAtSec = nil
+        plan.bassHandoverSec = 0
+        if style == .echoOut {
+            let delay = MusicEchoSettings.untrustedDelaySeconds
+            let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, aEnd - cut))
+            plan.echoDelaySec = delay
+            plan.echoTailSec = tail
+            plan.outgoingEndSec = cut + tail
+        } else {
+            plan.outgoingEndSec = cut
+        }
+        return plan
+    }
+
+    private static func griddedStyledPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, style: MusicTransitionStyle) -> TransitionPlan? {
+        guard style == .quickCut || style == .echoOut, inputs.beatMixEnabled, inputs.crossfadeOn, smart.mode == .smart,
+              !inputs.manualSkip, !inputs.albumInOrder, !inputs.loopSong,
+              let aDuration = valid(inputs.outgoing.durationSeconds), let bDuration = valid(inputs.incoming.durationSeconds),
+              let a = inputs.outgoing.analysis, let b = inputs.incoming.analysis,
+              let aGrid = inputs.outgoing.grid ?? a.usableGrid, let bGrid = inputs.incoming.grid ?? b.usableGrid,
+              usable(aGrid), usable(bGrid) else { return nil }
+        let bothTrusted = trusted(aGrid) && trusted(bGrid)
+        // A grid that failed the trust checks is only good enough when it still knows where the bar lines are.
+        guard bothTrusted || (aGrid.downbeatPhase != nil && bGrid.downbeatPhase != nil) else { return nil }
+        let aEnd = smart.outgoingEndSec ?? aDuration
+        let barSec = 4 * aGrid.periodSec
+        guard let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: 1, barSec: barSec, end: aEnd),
+              let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else { return nil }
+        if let earliest = inputs.earliestMixOutSec, mixOut < earliest { return nil }
+        let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration
+        guard bEnd - mixIn >= minIncomingRemainingSec else { return nil }
+
+        var plan = smart
+        plan.mode = .beat
+        plan.reason = .ok
+        plan.style = style
+        plan.incomingRate = 1
+        plan.mixOutSec = mixOut
+        plan.mixInSec = mixIn
+        plan.fallbackIncomingStartSec = smart.incomingStartSec
+        plan.incomingStartSec = mixIn
+        plan.fadeStartSec = mixOut
+        plan.fadeSeconds = cutFadeSeconds
+        plan.overlapBars = 0
+        plan.overlapSec = cutFadeSeconds
+        plan.barSec = barSec
+        plan.glideBackSec = 0
+        plan.bassSwapAtSec = nil
+        plan.bassHandoverSec = 0
+        if style == .echoOut {
+            let delay = bothTrusted ? min(aGrid.periodSec, MusicEchoSettings.maxDelaySeconds) : MusicEchoSettings.untrustedDelaySeconds
+            let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, aEnd - mixOut))
+            plan.echoDelaySec = delay
+            plan.echoTailSec = tail
+            plan.outgoingEndSec = mixOut + tail
+        } else {
+            plan.outgoingEndSec = mixOut
+        }
+        return plan
+    }
+
+    /// A grid whose numbers can be believed at all (the trust checks are stricter).
+    private static func usable(_ grid: MusicBeatGrid) -> Bool {
+        MusicBeatGrid.periodRange.contains(grid.periodSec)
+            && [grid.anchorSec, grid.spanStartSec, grid.spanEndSec].allSatisfy { $0.isFinite && abs($0) <= maxGridSeconds }
+    }
+
     // MARK: Pieces
 
-    private static func trusted(_ grid: MusicBeatGrid) -> Bool {
+    static func trusted(_ grid: MusicBeatGrid) -> Bool {
         MusicBeatGrid.periodRange.contains(grid.periodSec)
             && [grid.anchorSec, grid.spanStartSec, grid.spanEndSec].allSatisfy({ $0.isFinite && abs($0) <= maxGridSeconds })
             && grid.beatConfidence >= minConfidence && grid.intervalSpread <= maxIntervalSpread

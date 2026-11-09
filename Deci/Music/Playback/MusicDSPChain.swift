@@ -363,7 +363,7 @@ final class MusicDSPChain: @unchecked Sendable {
         let startGain = lease.currentGain
         let fade = lease.beginFade()
         let offset = lease.beginOffset()
-        if !isOwner, lease.isDraining, fade.remaining == 0, fade.value <= 0 {
+        if !isOwner, lease.isDraining, fade.remaining == 0, fade.value <= 0, !lease.isEchoActive {
             // The drain is over: nothing of this lease is heard any more.
             Self.silence(list)
             lease.noteSilenced(frames)
@@ -449,7 +449,16 @@ final class MusicDSPChain: @unchecked Sendable {
         dsp.processEqualizer(input: input, output: samples, frames: frames)
         dsp.compensator.process(input: input, output: samples, frameCount: frames)
 
+        // Tier 4b: an echo takes a copy of the signal before the fade, so cutting the dry never cuts the tail.
+        let echoing = lease.beginEchoRender() && lease.echo.capture(input, frames: frames)
+        if !lease.isEchoActive { lease.applyHistoryClear() }
+        // Without an echo the block goes into the line as history, so a later request finds the song's last second there.
+        if !echoing && !lease.isEchoActive { lease.echo.record(input, frames: frames) }
         Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade, offset: offset, lease: lease, bass: bass)
+        if echoing {
+            lease.echo.mix(into: samples, frames: frames, scale: offset.meanValue(over: frames))
+            if lease.echo.isReleasedOut { lease.finishEchoRender() }
+        }
         if metered { dsp.notePeak(samples, count: sampleCount) }
     }
 
@@ -777,16 +786,22 @@ struct MusicFade {
     var curve = MusicFadeCurve.linear
     /// Where an equal-power ramp started, and how many frames it spans in all.
     var from: Float = 1
+    /// The ramp's own length in frames (without `delay`).
     var total = 0
+    /// Tier 4b: frames the fade holds at `value` before the ramp starts. `remaining` counts them too. A quick cut uses it
+    /// so the outgoing song stays at full level until the incoming song's first frame.
+    var delay = 0
 
     /// The gain `used` frames into the ramp (`used` is 1 for the first frame): its value as that frame is heard.
     private func gain(afterFrames used: Int) -> Float {
         if used >= remaining { return target }
+        let ramped = used - delay
+        if ramped <= 0 { return value }
         switch curve {
         case .linear:
-            return value + step * Float(used)
+            return value + step * Float(ramped)
         case .equalPower:
-            let progress = Double(total - remaining + used) / Double(total)
+            let progress = Double(total - (remaining - delay) + ramped) / Double(total)
             let angle = progress * Double.pi / 2
             let shape = target >= from ? sin(angle) : 1 - cos(angle)
             return from + (target - from) * Float(shape)
@@ -832,6 +847,7 @@ struct MusicFade {
         let used = min(frames, remaining)
         next.value = gain(afterFrames: used)
         next.remaining = remaining - used
+        next.delay = max(0, delay - used)
         if next.remaining == 0 { next.value = target }
         return next
     }
@@ -951,6 +967,23 @@ final class MusicRenderLease: @unchecked Sendable {
     /// pairs one caller's target with another's length.
     private let fadeRequest = Atomic<UInt64>(UInt64(Float(1).bitPattern) << 32)
     private let fadeGeneration = Atomic<Int>(0)
+    /// Frames the newest fade holds before it starts (stored before the request word, read after the generation).
+    private let fadeDelayRequest = Atomic<Int>(0)
+
+    // Tier 4b P1: the echo channel. Settings first, then the generation; the renderer reads them in that order.
+    private let echoActiveFlag = Atomic<Bool>(false)
+    private let echoDelayFrames = Atomic<Int>(0)
+    private let echoCutFrames = Atomic<Int>(0)
+    private let echoParams = Atomic<UInt64>(0)
+    private let echoLowpass = Atomic<UInt32>(MusicEchoSettings.defaultLowpassHz.bitPattern)
+    private let echoGeneration = Atomic<Int>(0)
+    private nonisolated(unsafe) var seenEchoGeneration = 0
+    private let echoReleaseFrames = Atomic<Int>(0)
+    private let echoReleaseGeneration = Atomic<Int>(0)
+    private nonisolated(unsafe) var seenEchoReleaseGeneration = 0
+    /// Set once a block went through the gain-only path (mono, more than two channels, a big planar block): no echo there.
+    private let gainOnlySeen = Atomic<Bool>(false)
+    fileprivate let echo: MusicEchoDelay
 
     // Tier 3b P4: the bass channel. `bassActiveFlag` is off outside a beat mix (every render then takes the old path).
     private let bassActiveFlag = Atomic<Bool>(false)
@@ -1002,6 +1035,7 @@ final class MusicRenderLease: @unchecked Sendable {
     }
 
     fileprivate func noteGainOnly(_ frames: Int) {
+        gainOnlySeen.store(true, ordering: .relaxed)
         #if DEBUG
         callCount.wrappingAdd(1, ordering: .relaxed)
         gainOnlyCount.wrappingAdd(frames, ordering: .relaxed)
@@ -1052,6 +1086,7 @@ final class MusicRenderLease: @unchecked Sendable {
         self.token = token
         dsp = chain.makeDSP(rate: rate, token: token)
         split = MusicBassSplit(sampleRate: rate)
+        echo = MusicEchoDelay(sampleRate: rate, maxBlockFrames: max(4_096, maxFrames))
         currentGain = chain.targetGain
         seenSnapGeneration = chain.snapGeneration.load(ordering: .acquiring)
     }
@@ -1119,9 +1154,14 @@ final class MusicRenderLease: @unchecked Sendable {
     ///
     /// `fromSilence` starts the ramp at 0 whatever the fade was before, for the incoming side of a crossfade whose
     /// hold at 0 may not have been rendered yet.
-    func setFade(to gain: Float, over seconds: Double = 0, curve: MusicFadeCurve = .linear, fromSilence: Bool = false) {
+    func setFade(
+        to gain: Float, over seconds: Double = 0, curve: MusicFadeCurve = .linear, fromSilence: Bool = false,
+        after delay: Double = 0
+    ) {
         guard gain.isFinite else { return }
         let rate = dsp.sampleRate
+        let wait = Int(min((min(max(delay.isFinite ? delay : 0, 0), 3_600) * rate).rounded(), Double(Self.maxFadeFrames)))
+        fadeDelayRequest.store(wait, ordering: .relaxed)
         // An hour is far past any real fade; the frame count is capped at 28 bits, the curve takes two bits above it and "from silence" one more.
         let clamped = seconds.isFinite ? min(max(seconds, 0), 3_600) : 0
         let frames = UInt32(min((clamped * rate).rounded(), Double(Self.maxFadeFrames)))
@@ -1135,8 +1175,8 @@ final class MusicRenderLease: @unchecked Sendable {
 
     /// Makes this lease the outgoing side of a crossfade: it fades to silence over `seconds` and, unlike a lease that was
     /// superseded, stays audible and metered until it gets there. Call before the incoming lease claims the chain.
-    func drain(over seconds: Double, curve: MusicFadeCurve = .equalPower) {
-        setFade(to: 0, over: seconds, curve: curve)
+    func drain(over seconds: Double, curve: MusicFadeCurve = .equalPower, after delay: Double = 0) {
+        setFade(to: 0, over: seconds, curve: curve, after: delay)
         drainingFlag.store(true, ordering: .releasing)
     }
 
@@ -1153,12 +1193,14 @@ final class MusicRenderLease: @unchecked Sendable {
             let frames = Int(low & Self.maxFadeFrames)
             let curve = MusicFadeCurve(rawValue: (low >> 28) & 3) ?? .linear
             if low & (1 << 30) != 0 { fade.value = 0 }
+            let wait = fadeDelayRequest.load(ordering: .relaxed)
             if frames <= 0 {
                 fade = MusicFade(value: target, target: target, step: 0, remaining: 0)
             } else {
                 fade.target = target
                 fade.step = (target - fade.value) / Float(frames)
-                fade.remaining = frames
+                fade.remaining = frames + wait
+                fade.delay = wait
                 fade.curve = curve
                 fade.from = fade.value
                 fade.total = frames
@@ -1169,6 +1211,92 @@ final class MusicRenderLease: @unchecked Sendable {
 
     fileprivate func endFade(_ state: MusicFade) {
         fade = state
+    }
+
+    // MARK: - Echo (Tier 4b P1)
+
+    /// Starts the echo tail on this lease: from the next render the line is fed the pre-fade signal for `cutAfterFrames`
+    /// frames, then only recirculates and is heard. Any thread.
+    func beginEcho(_ settings: MusicEchoSettings) {
+        echoDelayFrames.store(settings.delayFrames, ordering: .relaxed)
+        echoCutFrames.store(settings.cutAfterFrames, ordering: .relaxed)
+        echoParams.store(UInt64(settings.feedback.bitPattern) << 32 | UInt64(settings.wetGain.bitPattern), ordering: .relaxed)
+        echoLowpass.store(settings.lowpassHz.bitPattern, ordering: .relaxed)
+        echoActiveFlag.store(true, ordering: .relaxed)
+        echoGeneration.wrappingAdd(1, ordering: .releasing)
+    }
+
+    /// Seconds to frames at this lease's rate, for callers that think in seconds.
+    func frames(forSeconds seconds: Double) -> Int {
+        Int(min(max(seconds.isFinite ? seconds : 0, 0), 3_600) * dsp.sampleRate)
+    }
+
+    func endEcho() { echoActiveFlag.store(false, ordering: .releasing) }
+
+    /// False once this lease has rendered through the gain-only path: the echo only exists on the full stereo path, so an
+    /// engine that wants an echo uses a quick cut on such a lease instead of a silent tail.
+    var supportsEcho: Bool { !gainOnlySeen.load(ordering: .relaxed) }
+
+    /// Fades the echo's wet signal to nothing over `seconds` of rendered audio (about 30 ms): a seek, a skip or a load that
+    /// ends the tail early. Any thread.
+    func releaseEcho(over seconds: Double) {
+        echoReleaseFrames.store(frames(forSeconds: seconds), ordering: .relaxed)
+        echoReleaseGeneration.wrappingAdd(1, ordering: .releasing)
+    }
+
+    #if DEBUG
+    /// Tests: pretend a gain-only block was rendered (a mono lease), and read the release that was asked for.
+    func debugMarkGainOnly() { gainOnlySeen.store(true, ordering: .relaxed) }
+    var debugEchoRelease: (generation: Int, frames: Int) {
+        (echoReleaseGeneration.load(ordering: .relaxed), echoReleaseFrames.load(ordering: .relaxed))
+    }
+    #endif
+
+    /// Renderer: the wet is gone, so the echo is over.
+    private let historyClearGeneration = Atomic<Int>(0)
+    private nonisolated(unsafe) var seenHistoryClearGeneration = 0
+
+    /// Forgets the echo's history (a seek, a flush or a load: what was heard before is not the song's last beat any more).
+    /// Any thread; the renderer clears the line on its next block.
+    func clearEchoHistory() { historyClearGeneration.wrappingAdd(1, ordering: .releasing) }
+
+    /// Renderer: carries out a history clear that was asked for.
+    fileprivate func applyHistoryClear() {
+        let generation = historyClearGeneration.load(ordering: .acquiring)
+        guard generation != seenHistoryClearGeneration else { return }
+        seenHistoryClearGeneration = generation
+        echo.clearHistory()
+    }
+
+    #if DEBUG
+    var debugHistoryClearGeneration: Int { historyClearGeneration.load(ordering: .relaxed) }
+    #endif
+
+    fileprivate func finishEchoRender() { echoActiveFlag.store(false, ordering: .releasing) }
+
+    var isEchoActive: Bool { echoActiveFlag.load(ordering: .acquiring) }
+
+    /// Renderer: picks up a new echo request. True while an echo is on.
+    fileprivate func beginEchoRender() -> Bool {
+        guard echoActiveFlag.load(ordering: .acquiring) else { return false }
+        let generation = echoGeneration.load(ordering: .acquiring)
+        if generation != seenEchoGeneration {
+            seenEchoGeneration = generation
+            let params = echoParams.load(ordering: .relaxed)
+            echo.start(MusicEchoSettings(
+                delayFrames: echoDelayFrames.load(ordering: .relaxed),
+                cutAfterFrames: echoCutFrames.load(ordering: .relaxed),
+                feedback: Float(bitPattern: UInt32(params >> 32)),
+                wetGain: Float(bitPattern: UInt32(params & 0xFFFF_FFFF)),
+                lowpassHz: Float(bitPattern: echoLowpass.load(ordering: .relaxed))
+            ))
+        }
+        let release = echoReleaseGeneration.load(ordering: .acquiring)
+        if release != seenEchoReleaseGeneration {
+            seenEchoReleaseGeneration = release
+            echo.beginRelease(frames: echoReleaseFrames.load(ordering: .relaxed))
+        }
+        return true
     }
 
     // MARK: - Bass (Tier 3b P4)

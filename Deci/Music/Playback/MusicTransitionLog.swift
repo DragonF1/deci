@@ -115,4 +115,9 @@ enum MusicTransitionLog {
         // Avoid "-0.0" for tiny negatives and negative zero.
         return text.hasPrefix("-") && Double(text) == 0 ? String(text.dropFirst()) : text
     }
+
+    /// Tier 4b: which style a planned or applied transition used. Ids and plain words only.
+    static func styleLine(from: String, to: String, style: MusicTransitionStyle, reason: String?, previous: MusicTransitionStyle?) -> String {
+        "transition_style from=\(from) to=\(to) style=\(style.rawValue) reason=\(reason ?? "none") prev=\(previous?.rawValue ?? "none")"
+    }
 }

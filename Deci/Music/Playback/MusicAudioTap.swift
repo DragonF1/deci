@@ -222,12 +222,43 @@ final class MusicTapDeck: @unchecked Sendable {
 
     /// Makes this deck the outgoing side of a crossfade: it fades to silence and stays audible until it has (see
     /// `MusicRenderLease.drain`). Call before the incoming deck activates.
-    func drain(over seconds: Double, curve: MusicFadeCurve = .equalPower) {
+    /// `delay` seconds of rendered audio pass first at full level (a quick cut waits for the incoming first frame).
+    func drain(over seconds: Double, curve: MusicFadeCurve = .equalPower, after delay: Double = 0) {
         state.withLock { state in
             guard !state.retired else { return }
             state.draining = true
-            state.lease?.drain(over: seconds, curve: curve)
+            state.lease?.drain(over: seconds, curve: curve, after: delay)
         }
+    }
+
+    /// Tier 4b: starts the echo tail on this deck's lease (see `MusicRenderLease.beginEcho`). `delay` is in seconds; the cut
+    /// comes `cutAfter` seconds of rendered audio from now.
+    func beginEcho(delay: Double, cutAfter: Double, feedback: Float = MusicEchoSettings.defaultFeedback) {
+        state.withLock { state in
+            guard !state.retired, let lease = state.lease else { return }
+            lease.beginEcho(MusicEchoSettings(
+                delayFrames: lease.frames(forSeconds: delay), cutAfterFrames: lease.frames(forSeconds: cutAfter),
+                feedback: feedback, wetGain: MusicEchoSettings.defaultWetGain, lowpassHz: MusicEchoSettings.defaultLowpassHz
+            ))
+        }
+    }
+
+    /// False when this deck's lease renders through the gain-only path (no echo possible). True with no lease yet.
+    var supportsEcho: Bool { state.withLock { $0.lease?.supportsEcho ?? true } }
+
+    /// Fades the echo tail out over `seconds` (about 30 ms) instead of stepping it off.
+    func releaseEcho(over seconds: Double) {
+        state.withLock { $0.lease?.releaseEcho(over: seconds) }
+    }
+
+    /// Forgets the echo history on this deck's lease (see `MusicRenderLease.clearEchoHistory`).
+    func clearEchoHistory() {
+        state.withLock { $0.lease?.clearEchoHistory() }
+    }
+
+    /// The echo is over (the lease is about to be released).
+    func endEcho() {
+        state.withLock { $0.lease?.endEcho() }
     }
 
     /// Marks this deck as the incoming side of a crossfade until `endOverlap()`.

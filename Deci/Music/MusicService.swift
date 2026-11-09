@@ -110,6 +110,9 @@ final class MusicService {
     /// How each song in Up next is reached in Mix, by `MusicMixPairInfo.key(from:to:)`. Only pairs whose two songs have a
     /// stored analysis row are here; empty outside Mix.
     private(set) var mixPairs: [String: MusicMixPairInfo] = [:]
+    /// Tier 4b: the style of the last transition that was applied. The picker never repeats it, and the first Up next glyph
+    /// is chosen against it.
+    private(set) var lastAppliedStyle: MusicTransitionStyle?
     /// What happens when a track or the queue ends. Remembered across launches.
     private(set) var loopMode: MusicLoopMode {
         didSet { reconcilePreload() }
@@ -1454,6 +1457,7 @@ final class MusicService {
             mixTask?.cancel()
             mixTask = nil
             mixPairs = [:]
+            lastAppliedStyle = nil
             mixOrderPending = false
             mixAvoid = []
             mixReplanPending = false
@@ -1603,12 +1607,15 @@ final class MusicService {
         await readMixRows(for: chain)
         guard !Task.isCancelled, isMixOn else { return }
         var pairs: [String: MusicMixPairInfo] = [:]
-        for (outgoing, incoming) in zip(chain, chain.dropFirst()) {
-            guard let outRow = mixRows[outgoing.videoId], let inRow = mixRows[incoming.videoId] else { continue }
-            pairs[MusicMixPairInfo.key(from: outgoing.videoId, to: incoming.videoId)] = MusicMixPairInfo.make(
-                outgoing: mixSide(outgoing, row: outRow), incoming: mixSide(incoming, row: inRow),
-                settingSeconds: crossfadeSeconds, beatMixEnabled: isBeatMixOn
-            )
+        // Each row is planned against the style of the row before it; the first one against the last applied style.
+        // A missing analysis row gives a plain fade (a long blend) for that pair.
+        let sides: [MusicTransitionSide?] = chain.map { song in mixRows[song.videoId].map { mixSide(song, row: $0) } }
+        let infos = MusicMixPairInfo.makeChain(
+            sides: sides, lastApplied: lastAppliedStyle, settingSeconds: crossfadeSeconds, beatMixEnabled: isBeatMixOn
+        )
+        for (index, info) in infos.enumerated() {
+            guard let info else { continue }
+            pairs[MusicMixPairInfo.key(from: chain[index].videoId, to: chain[index + 1].videoId)] = info
         }
         if pairs != mixPairs { mixPairs = pairs }
         // Keep the rows of what Mix can still use: the shown chain, the next two windows, the staged radio, the avoided.
@@ -2173,6 +2180,19 @@ final class MusicService {
         // ordinary end of the track, which advances the queue once and sends the one final ping.
         // Consumed, not withdrawn: the queue moving on below must not take it back from the player.
         preloadOffered = nil
+        // What the engine really ran: a plan it downgraded (late, given up, off the grid, no echo path) was a plain fade.
+        let planned = offeredPlan?.plan.style
+        let ran = player.lastTransitionStyle ?? planned ?? .longBlend
+        lastAppliedStyle = isBeatMixOn ? ran : nil
+        if let applied = offeredPlan {
+            let reason = ran == planned ? applied.plan.fallbackReason : "engineDowngrade"
+            if ran != .longBlend || planned != .longBlend || reason == MusicTransitionStylePicker.noAlternative {
+                log(MusicTransitionLog.styleLine(
+                    from: applied.inputs.outgoing.videoId, to: applied.inputs.incoming.videoId, style: ran,
+                    reason: reason, previous: applied.inputs.previousStyle
+                ))
+            }
+        }
         offeredPlan = nil
         // The old session closes with its final ping (it reads the player's position, still the old track's end).
         sendFinalPing()
@@ -2222,6 +2242,8 @@ final class MusicService {
             player.updateTransitionPlan(skipPlan)
         }
         guard player.crossfadeToPreloaded(seconds: Self.quickFadeSeconds) else { return false }
+        // The skip played a quick plain fade.
+        lastAppliedStyle = player.lastTransitionStyle ?? .longBlend
         preloadOffered = nil
         offeredPlan = nil
         startAdvancedSession(stream: stream, adopting: { self.player.adoptPreloaded() })
@@ -3001,7 +3023,7 @@ final class MusicService {
             crossfadeOn: mixesTransitions, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
             manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId,
-            bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn
+            bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn, previousStyle: lastAppliedStyle
         )
         // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
         inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead

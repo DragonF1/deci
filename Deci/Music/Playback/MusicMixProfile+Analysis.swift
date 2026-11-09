@@ -9,8 +9,7 @@ extension MusicMixProfile {
     private static let loudLufs = -5.0
 
     /// `analysis` nil (no row yet) gives a profile of unknowns, which the engine scores neutral and never blocks.
-    @MainActor
-    init(videoId: String, artist: String, analysis: MusicAnalysis?) {
+    nonisolated init(videoId: String, artist: String, analysis: MusicAnalysis?) {
         guard let analysis else {
             self.init(videoId: videoId, artist: artist)
             return

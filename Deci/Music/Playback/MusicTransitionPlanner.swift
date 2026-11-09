@@ -59,6 +59,14 @@ struct TransitionPlan: Equatable, Sendable {
     /// The same before the guard acted (the first colliding option).
     var vocalBeforeSec: Double? = nil
 
+    // Tier 4b (transition styles). Defaulted: every plan built before 4b is a long blend.
+    /// How this transition sounds. A beat-matched plan is `.longBlend`; a cut or echo is a beat-mode plan with no overlap.
+    var style: MusicTransitionStyle = .longBlend
+    /// Echo out: seconds the outgoing song keeps playing after the cut (the tail), already held to what is left of the song.
+    var echoTailSec: Double = 0
+    /// Echo out: the delay time, one beat with a trusted grid, else `MusicEchoSettings.untrustedDelaySeconds`.
+    var echoDelaySec: Double = 0
+
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(
         mode: .gapless, incomingStartSec: 0, outgoingEndSec: nil, fadeStartSec: nil, fadeSeconds: 0,
@@ -78,6 +86,8 @@ struct MusicTransitionSide: Equatable, Sendable {
     /// Tier 3d-4: where the song is sung, in song seconds, from synced lyrics. nil = unknown (the structural proxy is
     /// used); empty = known instrumental.
     var vocalIntervals: [ClosedRange<Double>]? = nil
+    /// Tier 4b: genre tags from the song facts, often empty. Only ever a tie-break for the style picker.
+    var genres: [String] = []
 }
 
 struct MusicTransitionInputs: Equatable, Sendable {
@@ -102,14 +112,18 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var earliestMixOutSec: Double? = nil
     /// Tier 3c: keep two singers from overlapping in a mix. Off keeps every plan exactly as it was.
     var vocalGuardEnabled: Bool = false
+    /// Tier 4b: the style the last applied transition used (the picker never repeats it). nil = none yet.
+    var previousStyle: MusicTransitionStyle? = nil
     static let skipFadeSeconds = 0.3
 
     init(
         outgoing: MusicTransitionSide, incoming: MusicTransitionSide, crossfadeOn: Bool,
         settingSeconds: Double, albumInOrder: Bool = false, loopSong: Bool = false,
         cleanStartFlag: Bool = false, cleanPairFlag: Bool = false, manualSkip: Bool = false,
-        beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false, vocalGuardEnabled: Bool = false
+        beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false, vocalGuardEnabled: Bool = false,
+        previousStyle: MusicTransitionStyle? = nil
     ) {
+        self.previousStyle = previousStyle
         self.outgoing = outgoing
         self.incoming = incoming
         self.crossfadeOn = crossfadeOn
@@ -146,9 +160,43 @@ enum MusicTransitionPlanner {
     /// The beat planner gets the UNGUARDED smart plan so a beat plan never inherits the guard's shortening; the guard
     /// applies only to the smart plan that comes back on a refusal.
     static func plan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
+        guard inputs.beatMixEnabled, smart.mode == .smart else { return vocalGuarded(smart, inputs) }
+        let beat = MusicBeatPlanner.plan(inputs, smart: smart)
+        let reason = beat.fallbackReason.flatMap { MusicBeatPlanner.Fallback(rawValue: $0) }
+        let previous = inputs.previousStyle
+        // Tier 4b: the picker is asked for every pair, with the beat-matched blend as one ranked candidate. A refusal for
+        // a tempo, a grid or a phrase always gets a style; a pair that failed some other way (no grid at all, too late, two
+        // singers) only does when a blend would repeat the one before it.
+        let always: [MusicBeatPlanner.Fallback] = [.tempoClash, .gridLowConf, .noPhraseRoom]
+        let onRepeat: [MusicBeatPlanner.Fallback] = [.gridMissing, .tooLate, .vocalClash]
+        let eligible: Bool = {
+            if beat.mode == .beat { return true }
+            guard let reason else { return false }
+            return always.contains(reason) || (previous == .longBlend && onRepeat.contains(reason))
+        }()
+        guard eligible else { return legacyPlan(inputs, smart: smart, beat: beat) }
+        let signals = MusicTransitionStylePicker.inputs(for: inputs)
+        for style in MusicTransitionStylePicker.ranked(signals, previous: previous) {
+            if style == .longBlend {
+                if beat.mode == .beat { return beat }
+                // A refusal that is not a tempo clash keeps the guarded smart fade as a candidate; with a clash the
+                // blend is ranked below the cut and the echo and is only reached when neither can be built.
+                return legacyPlan(inputs, smart: smart, beat: beat)
+            }
+            if var plan = MusicBeatPlanner.styledPlan(inputs, smart: smart, style: style) {
+                plan.fallbackReason = beat.mode == .beat ? nil : beat.fallbackReason
+                return plan
+            }
+        }
+        // Nothing but the blend can be built. It stays, and the log says it repeats because there was no alternative.
+        var out = legacyPlan(inputs, smart: smart, beat: beat)
+        if previous == .longBlend { out.fallbackReason = out.fallbackReason ?? MusicTransitionStylePicker.noAlternative }
+        return out
+    }
+
+    private static func legacyPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, beat: TransitionPlan) -> TransitionPlan {
         let base = vocalGuarded(smart, inputs)
         guard inputs.beatMixEnabled, smart.mode == .smart else { return base }
-        let beat = MusicBeatPlanner.plan(inputs, smart: smart)
         if beat.mode == .beat { return beat }
         /// A refusal: the guarded smart plan plus the reason (and, for a clash, what the beat planner measured).
         func refused() -> TransitionPlan {
@@ -180,6 +228,8 @@ enum MusicTransitionPlanner {
         if brokenV2(inputs.outgoing) || brokenV2(inputs.incoming) || (anyGrid && v2WithoutGrid) { return refused() }
         return base
     }
+
+    // MARK: Styles (Tier 4b)
 
     // MARK: Vocal guard
 

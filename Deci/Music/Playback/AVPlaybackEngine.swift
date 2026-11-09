@@ -48,6 +48,8 @@ protocol PlaybackEngine: AnyObject {
     /// The plan of the current preload, nil without one. `incomingStartSec` is where the standby really is parked: 0 when
     /// the seek to the planned offset could not be done.
     var transitionPlan: TransitionPlan? { get }
+    /// Tier 4b: the style the last crossfade really ran, nil when the engine does not say (the plan's style is then used).
+    var lastTransitionStyle: MusicTransitionStyle? { get }
     /// Drops the preload, whether it is still loading, ready or already scheduled to start.
     func cancelPreload()
 
@@ -65,6 +67,10 @@ protocol PlaybackEngine: AnyObject {
     var canCrossfadeToPreloaded: Bool { get }
     /// Where the outgoing track really was when the last crossfade started, nil after a gapless hand-over or a load.
     var outgoingPositionAtCrossfade: TimeInterval? { get }
+}
+
+extension PlaybackEngine {
+    var lastTransitionStyle: MusicTransitionStyle? { nil }
 }
 
 extension PlaybackEngine {
@@ -125,7 +131,18 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// its first frame is heard.
     private static let fadeLead: TimeInterval = 0.05
     /// A fade shorter than this is not worth it: the switch is gapless instead.
-    private static let minimumFade: TimeInterval = 1
+    nonisolated private static let minimumFade: TimeInterval = 1
+    /// Tier 4b: a quick cut or an echo out fades the dry signal in a few milliseconds (the downbeat stays hard), so its floor
+    /// is far lower.
+    nonisolated private static let minimumStyledFade: TimeInterval = 0.003
+
+    /// The shortest fade the plan's style accepts: a cut and an echo are made of a very short one.
+    nonisolated static func minimumFade(for style: MusicTransitionStyle?) -> TimeInterval {
+        switch style ?? .longBlend {
+        case .quickCut, .echoOut: return minimumStyledFade
+        default: return minimumFade
+        }
+    }
     /// Tier 3b: seconds added to the incoming start host time so two beats land together (measured in the 3a spike).
     nonisolated static let beatCalibrationSec = -0.007
     /// Never schedule a fade start closer than this to now.
@@ -250,6 +267,10 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var beatOverlap: BeatOverlap?
     /// True while the decks' bass channels are on (from the flip of a beat mix with a swap until the drain is over).
     private var bassSwapActive = false
+    /// The draining deck is playing an echo tail: a seek, skip or load ends it with a short wet ramp.
+    private var drainEchoing = false
+    /// Tier 4b: the style the last crossfade really ran (a plan the engine downgraded reports a long blend). nil before any.
+    private(set) var lastTransitionStyle: MusicTransitionStyle?
     /// The rate glide back to 1 that follows a beat mix, nil outside one.
     private var glide: Glide?
     private var glideTask: Task<Void, Never>?
@@ -415,6 +436,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         pendingGlide = 0
         outgoingPositionAtCrossfade = nil
         active.tearDown()
+        active.tap?.clearEchoHistory()
         wantsPlay = autoplay
         pendingStart = startAt
         active.player.automaticallyWaitsToMinimizeStalling = true
@@ -714,6 +736,8 @@ final class AVPlaybackEngine: PlaybackEngine {
             active.tap?.fade(to: 1, over: Self.quickDrain)
         }
         restoreEndForSeek(to: seconds)
+        // The history the echo would repeat is from before the seek: forget it now and again once the seek has landed.
+        active.tap?.clearEchoHistory()
         // The end moved: the standby's start goes with it, and is set again once the seek has landed.
         cancelSchedule()
         let token = active.token
@@ -721,6 +745,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         active.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.active.token == token else { return }
+                self.active.tap?.clearEchoHistory()
                 self.activeTransportChanged()
             }
         }
@@ -1091,8 +1116,9 @@ final class AVPlaybackEngine: PlaybackEngine {
             let fade = fadeLength(remaining: remaining, end: end)
             return (fade, fade, 1, false)
         }
+        let floor = Self.minimumFade(for: plan.mode == .beat ? plan.style : .longBlend)
         guard plan.mode == .smart || plan.mode == .fixed || plan.mode == .beat,
-              plan.fadeSeconds >= Self.minimumFade else { return (0, 0, 1, false) }
+              plan.fadeSeconds >= floor else { return (0, 0, 1, false) }
         if beatGivenUp, plan.mode == .beat {
             let fixed = fadeLength(remaining: remaining, end: end)
             return (fixed, fixed, 1, false)
@@ -1102,11 +1128,12 @@ final class AVPlaybackEngine: PlaybackEngine {
             logFallback(reason: "noLease")
             return (0, 0, 1, false)
         }
-        let fade = min(plan.fadeSeconds, remaining - Self.fadeGuard)
         let isBeat = plan.mode == .beat
+        // A cut or an echo starts on the grid close to the item's end: no guard is held back for its short fade.
+        let fade = min(plan.fadeSeconds, remaining - (isBeat && plan.style != .longBlend ? 0 : Self.fadeGuard))
         // Too little is left for the plan's fade: the setting's own fade, held to what remains (gapless only when even
         // that is under a second). A beat mix cut short is no longer on the grid, so it runs at rate 1 as a plain fade.
-        guard fade >= Self.minimumFade, !isBeat || fade >= plan.fadeSeconds - 0.05 else {
+        guard fade >= floor, !isBeat || fade >= plan.fadeSeconds - 0.05 else {
             if isBeat { logFallback(reason: "late") }
             let fixed = fadeLength(remaining: remaining, end: end)
             return (fixed, fixed, 1, false)
@@ -1373,6 +1400,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             Self.logger.notice("\(line, privacy: .public)")
         }
         transitionPlan = nil
+        lastTransitionStyle = .longBlend
         requestedStartOffset = 0
         endTrimmed = false
         endRestoredBySeek = false
@@ -1423,11 +1451,13 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard let stream = preloadStream, preloadReady, plannedFade > 0 else { return }
         // The timer runs on the main actor and may be late: the fade is held to what is really left of the outgoing item.
         var fade = plannedFade
+        let style = plannedBeat ? plannedPlan?.style : nil
         if let item = active.player.currentItem, let end = endTime(of: item) {
             let left = end.seconds - active.player.currentTime().seconds
-            if left.isFinite { fade = min(fade, left - Self.fadeGuard) }
+            // A styled fade is a few milliseconds long and fires right before the end: only an item that is over is late.
+            if left.isFinite { fade = min(fade, left - (style.map { $0 != .longBlend } == true ? 0 : Self.fadeGuard)) }
         }
-        guard fade >= Self.minimumFade else {
+        guard fade >= Self.minimumFade(for: style) else {
             // Too late for a fade worth hearing: the transition is the gapless one, scheduled again from the end.
             cancelSchedule()
             return
@@ -1489,7 +1519,30 @@ final class AVPlaybackEngine: PlaybackEngine {
         // incoming one renders its first frame. The real gap is the scheduled host time less now, `fadeLead` without one.
         let startGap = Self.startGap(scheduledHost: scheduledHost, now: CMClockGetTime(CMClockGetHostTimeClock()))
         // The outgoing lease drains before the incoming one claims the chain, so it is never silenced in between.
-        outgoing.tap?.drain(over: fade)
+        // A cut or an echo holds the outgoing dry signal at full level until the incoming song's first frame (the start gap),
+        // then fades it in about 30 ms, so no silent gap opens between the two.
+        var style = (onGrid ? plan?.style : nil) ?? .longBlend
+        // An echo needs the full stereo path on the outgoing lease (mono and big planar blocks only get the gain): there it
+        // is a quick cut, never a silent tail.
+        if style == .echoOut {
+            let canEcho = (plan?.echoTailSec ?? 0) > 0 && (plan?.echoDelaySec ?? 0) > 0 && outgoing.tap?.supportsEcho == true
+            if !canEcho { style = .quickCut }
+        }
+        lastTransitionStyle = style
+        if style == .longBlend {
+            outgoing.tap?.drain(over: fade)
+        } else {
+            outgoing.tap?.drain(over: fade, after: startGap)
+        }
+        var echoSeconds = 0.0
+        drainEchoing = false
+        if style == .echoOut, let plan {
+            // The line already holds the song's last second (every lease records its dry signal): it is fed until the cut,
+            // then the repeats of the last beat start.
+            outgoing.tap?.beginEcho(delay: plan.echoDelaySec, cutAfter: startGap)
+            echoSeconds = startGap + plan.echoTailSec
+            drainEchoing = true
+        }
         // A beat mix with a bass swap: the lows stay with the outgoing deck and hand over in one step on a bar boundary.
         // A start that was late has lost the grid, so the highs just fade as they would for any plan.
         if onGrid, !startStandby, let plan { beginBassSwap(outgoing: outgoing, incoming: incoming, plan: plan, fade: fade, gap: startGap) }
@@ -1548,7 +1601,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         applyLevel(to: outgoing)
         wantsPlay = true
         pendingStart = 0
-        startDrainTimer(seconds: fade)
+        // An echo's outgoing deck plays on (dry gain 0) until its tail is over: the item's own end stops the timer.
+        // A cut holds the outgoing deck until the incoming one starts (`startGap`), then fades it: it is released after both.
+        startDrainTimer(seconds: echoSeconds > 0 ? echoSeconds + 0.1 : (style == .longBlend ? fade : startGap + fade))
     }
 
     /// Drives the lease bass channels of a beat plan with a swap: the outgoing deck holds the bass (1) and the incoming one
@@ -1627,6 +1682,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         drainTask = nil
         guard let old = draining else { return }
         draining = nil
+        drainEchoing = false
+        old.tap?.endEcho()
         old.tearDown()
         old.player.automaticallyWaitsToMinimizeStalling = false
         endBassSwap()
@@ -1733,6 +1790,8 @@ final class AVPlaybackEngine: PlaybackEngine {
                 active.tap?.setBass(to: 1, over: Self.quickDrain)
             }
             old.tap?.drain(over: Self.quickDrain, curve: .linear)
+            // An echo tail is faded with its own wet ramp, so ending it early leaves no step.
+            if drainEchoing { old.tap?.releaseEcho(over: Self.quickDrain) }
             startQuickDrainTimer()
         } else {
             finishDrain()

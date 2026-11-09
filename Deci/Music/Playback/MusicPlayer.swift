@@ -150,6 +150,9 @@ final class MusicPlayer {
     /// The plan of the current preload as the engine holds it.
     var transitionPlan: TransitionPlan? { engine.transitionPlan }
 
+    /// The style the engine's last crossfade really ran, nil when the engine does not say.
+    var lastTransitionStyle: MusicTransitionStyle? { engine.lastTransitionStyle }
+
     /// Where the playing song is cut short, as the engine's plan last said (nil: it plays to its natural end, also after a
     /// seek brought that end back). The engine clears its plan before `.advanced`, so the last value seen is kept.
     @ObservationIgnored private(set) var outgoingEndSnapshot: TimeInterval?
