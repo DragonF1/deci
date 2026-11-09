@@ -170,4 +170,8 @@ actor MusicBackendLive: MusicBackend {
     func related(videoId: String) async throws -> [MusicTrack] {
         try await client.related(videoId: videoId)
     }
+
+    func queueDurations(videoIds: [String]) async throws -> [String: Int] {
+        try await client.queueDurations(videoIds: videoIds)
+    }
 }

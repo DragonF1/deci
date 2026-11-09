@@ -81,45 +81,17 @@ struct MusicMixPairInfoTests {
         #expect(info.bpm == 120)
     }
 
-    @Test("the glyph and its name tell a beat mix from a fade")
-    func glyphs() {
-        let beat = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat)
-        let fade = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .fade)
-        #expect(beat.symbol != fade.symbol)
-        #expect(beat.modeLabel == "Beat mix")
-        #expect(fade.modeLabel == "Fade")
-    }
-
-    @Test("the glyph and label follow the style: scissors for a cut, a wave for an echo")
-    func styleGlyphs() {
-        let cut = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat, style: .quickCut)
-        let echo = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat, style: .echoOut)
-        let blend = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat, style: .longBlend)
-        #expect(cut.symbol == "scissors" && cut.modeLabel == "Quick cut")
-        #expect(echo.symbol == "waveform.path" && echo.modeLabel == "Echo out")
-        #expect(blend.symbol == "metronome" && blend.modeLabel == "Beat mix")
+    @Test("a style-less pair is a long blend")
+    func defaultStyle() {
         #expect(MusicMixPairInfo(bpm: nil, camelot: nil, mode: .fade).style == .longBlend)
-        for style in MusicTransitionStyle.allCases {
-            let info = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat, style: style)
-            #expect(!info.symbol.isEmpty && !info.modeLabel.contains("\u{2014}"))
-        }
     }
 
-    @Test("the filter sweep and the drop swap have their own glyph and plain label")
-    func p2Glyphs() {
-        let sweep = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat, style: .filterSweep)
-        let drop = MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat, style: .dropSwap)
-        #expect(sweep.symbol == "line.3.horizontal.decrease" && sweep.modeLabel == "Filter sweep")
-        #expect(drop.symbol == "arrow.down.to.line" && drop.modeLabel == "Drop swap")
-    }
-
-    @Test("a tempo clash pair shows a cut or an echo, not the fade arrows")
+    @Test("a tempo clash pair plans a cut or an echo")
     func clashShowsStyle() {
         let a = MixRows.row("aaaaaaaaaaa", bpm: 120)
         let b = MixRows.row("bbbbbbbbbbb", bpm: 90)
         let info = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(b))
         #expect(info.style == .quickCut || info.style == .echoOut)
-        #expect(info.symbol == "scissors" || info.symbol == "waveform.path")
         let after = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(b), previousStyle: info.style)
         #expect(after.style != info.style)
     }

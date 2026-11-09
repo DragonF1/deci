@@ -416,6 +416,25 @@ struct MusicQueue: Equatable, Codable {
         return autoplay.count
     }
 
+    /// Gives the songs that carry no length one from `known` (seconds by video id): the queue, the staged radio and the
+    /// parked radio. A song with a length keeps it. True when a song changed.
+    @discardableResult
+    mutating func fillMissingDurations(_ known: [String: Int]) -> Bool {
+        guard !known.isEmpty else { return false }
+        var changed = false
+        func filled(_ list: [MusicTrack]) -> [MusicTrack] {
+            list.map { track in
+                guard track.durationSeconds == nil, let seconds = known[track.videoId], seconds > 0 else { return track }
+                changed = true
+                return track.withDuration(seconds)
+            }
+        }
+        tracks = filled(tracks)
+        autoplay = filled(autoplay)
+        parked = filled(parked)
+        return changed
+    }
+
     /// Lays the staged radio out in the order of `ids`, which must name exactly its songs; anything else is ignored.
     mutating func reorderAutoplay(_ ids: [String]) {
         guard ids.count == autoplay.count, Set(ids) == Set(autoplay.map(\.videoId)) else { return }

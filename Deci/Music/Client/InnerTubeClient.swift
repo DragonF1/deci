@@ -560,6 +560,41 @@ actor InnerTubeClient {
         return tracks
     }
 
+    // MARK: - Queue lengths
+
+    /// The length of each of up to 50 songs from `music/get_queue`, which the site calls on Play next and Add to queue.
+    /// Signed in it goes out like every other call; signed out it goes out without an Authorization header, which this
+    /// read-only call does not need. Only counts are logged, never an id.
+    func queueDurations(videoIds: [String]) async throws -> [String: Int] {
+        let ids = Array(videoIds.filter { !$0.isEmpty }.prefix(50))
+        guard !ids.isEmpty else { return [:] }
+        let session = try await sessionOrFallback()
+        let body: [String: Any] = ["videoIds": ids]
+        let data: Data
+        if currentJar().hasSignInCookies {
+            data = try await post("music/get_queue", session: session, body: body)
+        } else {
+            guard let url = URL(string: "https://music.youtube.com/youtubei/v1/music/get_queue?prettyPrint=false") else {
+                throw MusicError.parse("request url is not valid")
+            }
+            var headers = [
+                "X-YouTube-Client-Name": MusicAuthHeaders.clientName,
+                "X-YouTube-Client-Version": session.clientVersion,
+                "Origin": MusicAuthHeaders.origin,
+                "Referer": MusicAuthHeaders.origin + "/",
+                "Content-Type": "application/json",
+                "User-Agent": MusicAuthHeaders.userAgent,
+            ]
+            if let visitorData = session.visitorData, !visitorData.isEmpty { headers["X-Goog-Visitor-Id"] = visitorData }
+            let response = try await send(url, headers: headers, body: body, session: session, onBehalfOf: nil)
+            guard (200..<300).contains(response.statusCode) else { throw Self.postError(for: response.statusCode) }
+            data = response.data
+        }
+        let lengths = try InnerTubeParser.queueDurations(from: data)
+        Self.log.info("queue lengths: \(lengths.count) of \(ids.count) songs had one")
+        return lengths
+    }
+
     // MARK: - Likes
 
     /// The like state of one song, from the like button in the overlay of a `next` call for it alone. Nil when the answer

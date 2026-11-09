@@ -237,6 +237,10 @@ actor FakeMusicBackend: MusicBackend {
     private(set) var likeStatusCalls: [String] = []
     private(set) var rateCalls: [RateCall] = []
     private(set) var relatedCalls: [String] = []
+    /// The lengths `queueDurations` knows by id, the batches it was asked for, and an error to throw instead.
+    var queueDurationMap: [String: Int] = [:]
+    private(set) var queueDurationCalls: [[String]] = []
+    var queueDurationError: (any Error)?
     private(set) var searchedQueries: [String] = []
     private(set) var searchedArtistQueries: [String] = []
     private(set) var searchedTopResultQueries: [String] = []
@@ -674,6 +678,15 @@ actor FakeMusicBackend: MusicBackend {
         if let gate { await gate.wait() }
         if let error { throw error }
         return tracks
+    }
+
+    func setQueueDurations(_ map: [String: Int]) { queueDurationMap = map }
+    func setQueueDurationError(_ error: (any Error)?) { queueDurationError = error }
+
+    func queueDurations(videoIds: [String]) async throws -> [String: Int] {
+        queueDurationCalls.append(videoIds)
+        if let queueDurationError { throw queueDurationError }
+        return queueDurationMap.filter { videoIds.contains($0.key) }
     }
 
     func search(_ query: String) async throws -> [Deci.MusicTrack] {

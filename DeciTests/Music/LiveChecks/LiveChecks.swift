@@ -133,7 +133,7 @@ final class LiveChecks {
             if info?.mode == .beat { beatGlyphs += 1 }
             if info?.mode == .fade { fadeGlyphs += 1 }
             if text == nil || info == nil { rowsOK = false }
-            lines.append("row \(index + 1) \(name(track.videoId)): text \(text ?? "none"), glyph \(info?.symbol ?? "none")")
+            lines.append("row \(index + 1) \(name(track.videoId)): text \(text ?? "none"), pair \(info == nil ? "none" : "planned")")
         }
         chain.removeAll()
         self.chainPairs = []

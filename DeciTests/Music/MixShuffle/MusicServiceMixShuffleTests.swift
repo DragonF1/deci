@@ -213,6 +213,23 @@ struct MusicServiceMixShuffleTests {
         #expect(Set(h.order) == Set(MixShuffleHarness.ids))
     }
 
+    @Test("songs that arrived without a length get the one their analysis row knows once Mix reads it")
+    func fillsMissingLengths() async {
+        let h = MixShuffleHarness()
+        await h.storeRows()
+        let ids = MixShuffleHarness.ids
+        for id in ids { await h.backend.setStream(MusicSamples.stream(videoId: id, duration: 240)) }
+        let tracks = ids.map { MusicSamples.track($0, title: "Song \($0)", artist: "Artist \($0)", seconds: nil) }
+        await h.backend.setRadio(seed: ids[0], tracks: tracks, continuation: nil)
+        h.service.play(tracks[0])
+        await h.settle()
+        h.service.setShuffleMode(.mix)
+        await h.settle()
+        let queued = h.service.queue.tracks.dropFirst()
+        #expect(!queued.isEmpty)
+        #expect(queued.allSatisfy { $0.durationSeconds == 240 })
+    }
+
     @Test("Mix fills the pairs Up next reads: tempo, key and how each song is reached")
     func pairsFilled() async throws {
         let h = MixShuffleHarness()

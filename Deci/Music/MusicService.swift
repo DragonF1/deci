@@ -47,7 +47,10 @@ final class MusicService {
     let player: MusicPlayer
     /// What plays next: the tapped track, then the radio's tracks as they arrive, or a page's tracks in page order.
     private(set) var queue = MusicQueue() {
-        didSet { reconcilePreload() }
+        didSet {
+            reconcilePreload()
+            askForQueueLengths()
+        }
     }
     /// Home, Library, History and the pages opened from them.
     let browse: MusicBrowseStore
@@ -562,6 +565,7 @@ final class MusicService {
     private func connectivityChanged(_ online: Bool) {
         guard online else { return networkLost() }
         queueRetryAttempts = 0
+        askForQueueLengths()
         related.connectionReturned()
         songData.connectionReturned()
         if deferredSearch != nil { search() }
@@ -617,6 +621,8 @@ final class MusicService {
     }
 
     func signOut() {
+        queueLengthTask?.cancel()
+        queueLengthTask = nil
         cancelWork()
         cancelReport()
         endQueue()
@@ -1613,12 +1619,98 @@ final class MusicService {
         return MusicMixPairInfo(bpm: row.usableGrid.map { Int($0.bpm.rounded()) }, camelot: row.trustedCamelot, mode: .fade).rowText
     }
 
+    /// Records the lengths the app already knows (the exact one of an analysis row read for Mix, or of a stream just
+    /// resolved) and gives the queued songs that arrived without one theirs. No network.
+    private func fillQueueDurations(resolved: ResolvedStream? = nil) {
+        for (id, row) in mixRows where row.format.durationMs > 0 {
+            knownLengths[id] = Int((Double(row.format.durationMs) / 1000).rounded())
+        }
+        if let resolved, let seconds = resolved.durationSeconds, seconds.isFinite, seconds > 0 {
+            knownLengths[resolved.videoId] = Int(seconds.rounded())
+        }
+        fillQueueFromKnownLengths()
+    }
+
+    /// Filled on a copy: a mutating call on `queue` fires its didSet and observers even when nothing changed.
+    private func fillQueueFromKnownLengths() {
+        var filled = queue
+        if filled.fillMissingDurations(knownLengths) { queue = filled }
+    }
+
+    /// Every length learned this session, by video id: from YouTube's queue answers, analysis rows and resolved streams.
+    /// A song that comes back into the queue as a fresh copy without a length (the same page played again, a song added
+    /// that is already queued) gets its length from here and is not asked about again.
+    @ObservationIgnored private var knownLengths: [String: Int] = [:]
+    /// Songs `askForQueueLengths` already asked YouTube about, so one it gives no length for is never asked again.
+    @ObservationIgnored private var askedLengthIds: Set<String> = []
+    @ObservationIgnored private(set) var queueLengthTask: Task<Void, Never>?
+    /// The most ids either memory holds; past it they keep only the songs now queued.
+    private static let askedLengthCap = 5000
+    /// What `music/get_queue` takes in one call.
+    private static let queueLengthBatch = 50
+
+    private var queuedTracks: [MusicTrack] { queue.tracks + queue.autoplay + queue.parked }
+
+    /// The ids in the queue, the staged radio and the parked radio that have no length and were not asked about yet.
+    private func unaskedLengthIds() -> [String] {
+        var seen = Set<String>()
+        return queuedTracks.compactMap { track in
+            guard track.durationSeconds == nil, knownLengths[track.videoId] == nil,
+                  !askedLengthIds.contains(track.videoId), seen.insert(track.videoId).inserted
+            else { return nil }
+            return track.videoId
+        }
+    }
+
+    /// Whether the queue holds a song without a length that is worth a pass: one whose length is already known, or one
+    /// not asked about yet.
+    private func queueNeedsLengths() -> Bool {
+        queuedTracks.contains { track in
+            track.durationSeconds == nil && (knownLengths[track.videoId] != nil || !askedLengthIds.contains(track.videoId))
+        }
+    }
+
+    /// Asks YouTube Music for the length of every queued song that has none (Home tiles, quick picks and some artist rows
+    /// carry none), 50 at a time, one call at a time, behind playback. Runs from the queue's `didSet`, the one place every
+    /// change to the queue passes, and when the network returns. Each pass first fills the queue from the lengths already
+    /// known. A failed call is logged once and the task stops: its songs are asked again on a later queue change after a
+    /// network failure, and not after an answer from YouTube that was a refusal or made no sense.
+    private func askForQueueLengths() {
+        guard queueLengthTask == nil, !isOffline, queueNeedsLengths() else { return }
+        if askedLengthIds.count > Self.askedLengthCap || knownLengths.count > Self.askedLengthCap {
+            let queued = Set(queuedTracks.map(\.videoId))
+            askedLengthIds.formIntersection(queued)
+            knownLengths = knownLengths.filter { queued.contains($0.key) }
+        }
+        queueLengthTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                self.fillQueueFromKnownLengths()
+                let batch = Array(self.unaskedLengthIds().prefix(Self.queueLengthBatch))
+                if batch.isEmpty { break }
+                self.askedLengthIds.formUnion(batch)
+                do {
+                    let lengths = try await self.backend.queueDurations(videoIds: batch)
+                    if Task.isCancelled { break }
+                    for (id, seconds) in lengths where seconds > 0 { self.knownLengths[id] = seconds }
+                } catch {
+                    if Task.isCancelled { break }
+                    if error is URLError { self.askedLengthIds.subtract(batch) }
+                    logger.error("queue lengths failed: \(Self.logDescription(of: error), privacy: .public)")
+                    break
+                }
+            }
+            // A cancelled task leaves the slot to whoever cancelled it: a newer task may already hold it.
+            if !Task.isCancelled { self?.queueLengthTask = nil }
+        }
+    }
+
     /// Works out how each of the next songs is reached, from the rows read so far.
     private func refreshMixPairs() async {
         guard isMixOn, let current = queue.current else { return }
         let chain = [current] + Array(queue.upcoming.prefix(Self.mixShownCount))
         await readMixRows(for: chain)
         guard !Task.isCancelled, isMixOn else { return }
+        fillQueueDurations()
         var pairs: [String: MusicMixPairInfo] = [:]
         // Each row is planned against the style of the row before it; the first one against the last applied style.
         // A missing analysis row gives a plain fade (a long blend) for that pair.
@@ -2046,6 +2138,7 @@ final class MusicService {
             let stream = try await streamForPlayback(of: track)
             guard generation == playGeneration, !Task.isCancelled else { return }
             session = makeSession(for: stream)
+            fillQueueDurations(resolved: stream)
             player.load(stream: stream, track: track)
             fetchTrackingURLs(for: stream, generation: generation)
             analyseCurrent(stream)

@@ -11,7 +11,7 @@ struct MusicTrack: Sendable, Hashable, Identifiable, Codable {
     /// Artists joined for display, e.g. "Daft Punk, Pharrell Williams".
     let artist: String
     let album: String?
-    let durationSeconds: Int?
+    var durationSeconds: Int?
     let thumbnailURL: URL?
     /// The names in `artist` that have an artist page behind them, in the order they are shown. Empty when the
     /// row's artist runs carry no page (or the source has none), so the line is plain text.
@@ -28,6 +28,13 @@ struct MusicTrack: Sendable, Hashable, Identifiable, Codable {
     var plays: Int?
 
     var id: String { videoId }
+
+    /// The same song with a length, for a row that arrived without one.
+    func withDuration(_ seconds: Int) -> MusicTrack {
+        var copy = self
+        copy.durationSeconds = seconds
+        return copy
+    }
 }
 
 /// Whether the signed-in user likes a song, as YouTube Music keeps it. Liking and disliking are exclusive; `indifferent`
@@ -515,6 +522,10 @@ protocol MusicBackend: Sendable {
     /// no related tab or the answer has no song shelf. Throws `.signedOut` when signed out or the session is gone,
     /// `.forbidden` for a 403, `.http` for any other failed status, `.parse` for an answer that is not what was expected.
     func related(videoId: String) async throws -> [MusicTrack]
+    /// The length in seconds of each of up to 50 songs, by video id, from YouTube Music's own queue call. A song YouTube
+    /// gives no length for is left out. Works signed out too. Throws `.http` for a failed status, `.parse` for an answer
+    /// that is not what was expected.
+    func queueDurations(videoIds: [String]) async throws -> [String: Int]
 }
 
 /// Client playback nonce: 16 chars from A-Za-z0-9-_, one per playback session.

@@ -29,8 +29,6 @@ import Testing
     func glyphsExist() {
         let names = [
             MusicShuffleMode.mixSymbol, MusicShuffleMode.shuffleSymbol,
-            MusicMixPairInfo(bpm: nil, camelot: nil, mode: .beat).symbol,
-            MusicMixPairInfo(bpm: nil, camelot: nil, mode: .fade).symbol,
         ]
         for name in names {
             #expect(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil, "\(name) is not an SF Symbol")

@@ -17,27 +17,6 @@ nonisolated struct MusicMixPairInfo: Equatable, Sendable {
     /// Tier 4b: how the handover sounds. A cut and an echo are beat-mode plans, so the style tells them from a blend.
     var style: MusicTransitionStyle = .longBlend
 
-    /// The tiny glyph between two Up next rows: scissors for a quick cut, a wave for an echo out, a metronome for a beat
-    /// mix, the merge arrows for a fade.
-    var symbol: String {
-        switch style {
-        case .quickCut: return "scissors"
-        case .echoOut: return "waveform.path"
-        case .filterSweep: return "line.3.horizontal.decrease"
-        case .dropSwap: return "arrow.down.to.line"
-        case .loopExtend: return "repeat"
-        default: return mode == .beat ? "metronome" : "arrow.triangle.merge"
-        }
-    }
-
-    /// The glyph's name for VoiceOver.
-    var modeLabel: String {
-        switch style {
-        case .quickCut, .echoOut, .filterSweep, .dropSwap, .loopExtend: return style.label
-        default: return mode == .beat ? "Beat mix" : "Fade"
-        }
-    }
-
     /// The key the cache keeps this info under.
     static func key(from outgoingId: String, to incomingId: String) -> String {
         "\(outgoingId)>\(incomingId)"

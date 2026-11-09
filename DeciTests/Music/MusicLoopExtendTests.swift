@@ -272,8 +272,6 @@ struct MusicLoopExtendTests {
         #expect(!MusicTransitionStylePicker.ranked(fits, previous: .loopExtend).contains(.loopExtend))
         #expect(MusicTransitionStyle.pickable.contains(.loopExtend))
         #expect(MusicTransitionStyle.loopExtend.label == "Loop extend" && !MusicTransitionStyle.loopExtend.isCutLike)
-        #expect(MusicMixPairInfo(bpm: 120, camelot: nil, mode: .beat, style: .loopExtend).symbol == "repeat")
-        #expect(MusicMixPairInfo(bpm: 120, camelot: nil, mode: .beat, style: .loopExtend).modeLabel == "Loop extend")
     }
 
     @Test("with loop extend in the mix the picker still never repeats and still returns only pickable styles")
