@@ -351,6 +351,7 @@ struct MusicBeatPlannerTests {
         let plan = B.plan(i, smart: smart)
         var expected = smart
         expected.fallbackReason = reason
+        if reason == "gridLowConf" { #expect(plan.gridFail != nil, sourceLocation: sourceLocation); expected.gridFail = plan.gridFail }
         #expect(plan == expected, "fallback \(reason)", sourceLocation: sourceLocation)
         #expect(plan.mode != .beat, sourceLocation: sourceLocation)
     }
@@ -377,12 +378,62 @@ struct MusicBeatPlannerTests {
 
     @Test("low confidence, spread and drift gate both songs", arguments: [
         (Float(0.3), Float(0.01), Float(0)), (0.13, 0.01, 0), (0.49, 0.01, 0),
-        (0.9, 0.05, 0), (0.9, 0.01, 0.004), (0.9, 0.01, -0.004),
+        (0.9, 0.08, 0), (0.9, 0.01, 0.004), (0.9, 0.01, -0.004),
     ])
     func lowConfidence(confidence: Float, spread: Float, drift: Float) {
         let weak = Self.grid(confidence: confidence, spread: spread, drift: drift)
         expectFallback(Self.inputs(a: weak), "gridLowConf")
         expectFallback(Self.inputs(b: weak), "gridLowConf")
+    }
+
+    // MARK: Grid trust checks (Tier 4c A)
+
+    @Test("one failing check is reported alone", arguments: [
+        (Float(0.3), Float(0.01), Float(0), [B.GridCheck.confidence]),
+        (0.9, 0.09, 0, [.spread]),
+        (0.9, 0.01, 0.004, [.drift]),
+        (0.9, 0.01, -0.004, [.drift]),
+        (0.3, 0.09, 0.01, [.confidence, .spread, .drift]),
+    ])
+    func failedChecksPerCheck(confidence: Float, spread: Float, drift: Float, expected: [B.GridCheck]) {
+        #expect(B.failedChecks(Self.grid(confidence: confidence, spread: spread, drift: drift)) == expected)
+        #expect(B.trusted(Self.grid(confidence: confidence, spread: spread, drift: drift)) == false)
+    }
+
+    @Test("boundaries: limits pass, just beyond fails")
+    func checkBoundaries() {
+        #expect(B.failedChecks(Self.grid(confidence: 0.5, spread: 0.04, drift: 0.003)).isEmpty)
+        #expect(B.failedChecks(Self.grid(confidence: 0.4999)) == [.confidence])
+        #expect(B.failedChecks(Self.grid(period: 1.0, spread: 0.0401)) == [.spread])
+        #expect(B.failedChecks(Self.grid(drift: 0.0031)) == [.drift])
+        #expect(B.failedChecks(Self.grid(confidence: .nan)) == [.confidence])
+    }
+
+    @Test("the spread limit follows the period and has a floor and a ceiling")
+    func spreadLimitIsTempoAware() {
+        #expect(B.spreadLimit(period: 1.0) == B.maxIntervalSpread)          // slow: floor
+        #expect(abs(B.spreadLimit(period: 0.5) - 0.06) < 1e-6)               // 30 ms of a 0.5 s beat
+        #expect(B.spreadLimit(period: 0.3) == B.maxIntervalSpreadCeiling)    // fast: ceiling
+        #expect(B.spreadLimit(period: .nan) == B.maxIntervalSpread)
+        // ceiling holds: a truly unsteady grid is refused even at a fast tempo
+        #expect(B.failedChecks(Self.grid(period: 0.3, spread: 0.08)) == [.spread])
+    }
+
+    @Test("141.2 vs 141.7 BPM with spread 0.05 (refused before) is now a beat mix")
+    func closeTempoPairAccepted() {
+        let a = Self.grid(period: 60 / 141.2, spread: 0.05)
+        let b = Self.grid(period: 60 / 141.7, anchor: 0.1, phase: 1, spread: 0.05, span: 0.1...236)
+        #expect(Self.plan(Self.inputs(a: a, b: b)).mode == .beat)
+    }
+
+    @Test("an unsteady grid above the ceiling still refuses, and the plan says which song and check")
+    func unsteadyRefusedWithReason() {
+        let bad = Self.grid(period: 60 / 141.7, spread: 0.09)
+        let plan = Self.plan(Self.inputs(b: bad))
+        #expect(plan.fallbackReason == "gridLowConf")
+        #expect((plan.gridFail ?? "").hasPrefix("out:ok;in:spread=0.090>0.070"))
+        let both = Self.plan(Self.inputs(a: Self.grid(confidence: 0.3), b: Self.grid(drift: 0.01))).gridFail ?? ""
+        #expect(both == "out:confidence=0.300<0.50;in:drift=0.0100>0.0030")
     }
 
     @Test("the confidence limits themselves pass")

@@ -82,6 +82,12 @@ struct MusicTransitionLogTests {
         #expect(line == "transition_beat_plan from=a to=b bpmA=- bpmB=- rate=0.9524 bars=8 mixOut=123.40 mixIn=12.50 swapAt=8.00 handover=0.25")
     }
 
+    @Test func beatFallbackLineCarriesGridFail() {
+        let line = MusicTransitionLog.beatFallbackLine(
+            from: "a", to: "b", reason: "gridLowConf", bpmA: 141.2, bpmB: 141.7, gridFail: "out:ok;in:spread=0.090>0.070")
+        #expect(line == "transition_beat_fallback from=a to=b reason=gridLowConf bpmA=141.20 bpmB=141.70 gridFail=out:ok;in:spread=0.090>0.070")
+    }
+
     @Test func beatFallbackLineGolden() {
         #expect(MusicTransitionLog.beatFallbackLine(from: "a", to: "b", reason: "tempoClash", bpmA: 120, bpmB: nil)
             == "transition_beat_fallback from=a to=b reason=tempoClash bpmA=120.00 bpmB=-")

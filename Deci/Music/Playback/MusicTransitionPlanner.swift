@@ -49,6 +49,8 @@ struct TransitionPlan: Equatable, Sendable {
     var glideBackSec: Double = 0
     /// Why beat mode was refused, when it was (a `MusicBeatPlanner.Fallback` raw value).
     var fallbackReason: String? = nil
+    /// With `gridLowConf`: which song's grid failed which check, e.g. "out:spread=0.090>0.070 in:ok". nil otherwise.
+    var gridFail: String? = nil
     /// Beat mode: the smart plan's incoming start. When the engine cannot honour the beat plan it re-parks the standby here, so
     /// the song starts at its smart start and not on the first bar line (`incomingStartSec` is the mix-in of the beat plan).
     var fallbackIncomingStartSec: Double? = nil

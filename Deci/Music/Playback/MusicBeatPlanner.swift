@@ -18,7 +18,12 @@ enum MusicBeatPlanner {
 
     static let tempoTolerance = 0.08
     static let minConfidence: Float = 0.5
+    /// intervalSpread is a fraction of the beat period. The floor 0.04 is the old flat limit; a faster song has a shorter
+    /// period, so the same timing wobble in seconds is a larger fraction: the limit is `spreadSeconds` worth of period,
+    /// never below the floor and never above `maxIntervalSpreadCeiling` (a truly unsteady grid stays refused).
     static let maxIntervalSpread: Float = 0.04
+    static let maxIntervalSpreadCeiling: Float = 0.07
+    static let spreadSeconds: Double = 0.030
     static let maxDriftSec: Float = 0.003
     static let phraseBars = 8
     /// An overlap longer than this is never planned (very slow songs fall to a shorter length, then to the smart plan).
@@ -75,7 +80,11 @@ enum MusicBeatPlanner {
         guard smart.mode == .smart, let a = inputs.outgoing.analysis, let b = inputs.incoming.analysis,
               let aGrid = inputs.outgoing.grid ?? a.usableGrid,
               let bGrid = inputs.incoming.grid ?? b.usableGrid else { return refuse(.gridMissing) }
-        guard trusted(aGrid), trusted(bGrid) else { return refuse(.gridLowConf) }
+        guard trusted(aGrid), trusted(bGrid) else {
+            var plan = refuse(.gridLowConf)
+            plan.gridFail = gridFailText(outgoing: aGrid, incoming: bGrid)
+            return plan
+        }
         guard let tempo = tempoMatch(outBpm: aGrid.bpm, inBpm: bGrid.bpm) else { return refuse(.tempoClash) }
 
         let aEnd = smart.outgoingEndSec ?? aDuration
@@ -280,11 +289,47 @@ enum MusicBeatPlanner {
 
     // MARK: Pieces
 
+    enum GridCheck: String, Sendable { case confidence, spread, drift }
+
+    /// The spread limit for a grid with this period (a fraction of the period).
+    static func spreadLimit(period: Double) -> Float {
+        guard period.isFinite, period > 0 else { return maxIntervalSpread }
+        return min(maxIntervalSpreadCeiling, max(maxIntervalSpread, Float(spreadSeconds / period)))
+    }
+
+    /// Every trust check the grid fails, in a fixed order. Empty = trusted. One source of truth for the planner, the
+    /// loop planner and the mix profile.
+    static func failedChecks(_ grid: MusicBeatGrid) -> [GridCheck] {
+        var out: [GridCheck] = []
+        // NaN fails every comparison, so write each check as "not good".
+        if !(grid.beatConfidence >= minConfidence) { out.append(.confidence) }
+        if !(grid.intervalSpread <= spreadLimit(period: grid.periodSec)) { out.append(.spread) }
+        if !(abs(grid.driftSec) <= maxDriftSec) { out.append(.drift) }
+        return out
+    }
+
     static func trusted(_ grid: MusicBeatGrid) -> Bool {
         MusicBeatGrid.periodRange.contains(grid.periodSec)
             && [grid.anchorSec, grid.spanStartSec, grid.spanEndSec].allSatisfy({ $0.isFinite && abs($0) <= maxGridSeconds })
-            && grid.beatConfidence >= minConfidence && grid.intervalSpread <= maxIntervalSpread
-            && abs(grid.driftSec) <= maxDriftSec
+            && failedChecks(grid).isEmpty
+    }
+
+    /// "out:spread=0.090>0.070;in:ok" style text: which song failed which check, with the value and the limit.
+    static func gridFailText(outgoing: MusicBeatGrid, incoming: MusicBeatGrid) -> String {
+        func side(_ name: String, _ grid: MusicBeatGrid) -> String {
+            guard !trusted(grid) else { return "\(name):ok" }
+            let checks = failedChecks(grid)
+            if checks.isEmpty { return "\(name):range" }
+            let parts = checks.map { check -> String in
+                switch check {
+                case .confidence: return String(format: "confidence=%.3f<%.2f", grid.beatConfidence, minConfidence)
+                case .spread: return String(format: "spread=%.3f>%.3f", grid.intervalSpread, spreadLimit(period: grid.periodSec))
+                case .drift: return String(format: "drift=%.4f>%.4f", abs(grid.driftSec), maxDriftSec)
+                }
+            }
+            return "\(name):" + parts.joined(separator: ",")
+        }
+        return side("out", outgoing) + ";" + side("in", incoming)
     }
 
     static func valid(_ value: Double?) -> Double? {

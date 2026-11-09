@@ -3277,7 +3277,8 @@ final class MusicService {
             ))
         } else if offered.inputs.beatMixEnabled, offered.inputs.crossfadeOn, let reason = offered.plan.fallbackReason {
             log(MusicTransitionLog.beatFallbackLine(
-                from: outgoing.videoId, to: incoming.videoId, reason: reason, bpmA: bpmA, bpmB: bpmB
+                from: outgoing.videoId, to: incoming.videoId, reason: reason, bpmA: bpmA, bpmB: bpmB,
+                gridFail: offered.plan.gridFail
             ))
         }
     }

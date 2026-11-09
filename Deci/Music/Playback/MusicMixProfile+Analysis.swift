@@ -20,10 +20,7 @@ extension MusicMixProfile {
             guard let lufs, lufs.isFinite else { return nil }
             return Float(max(0, min(1, (lufs - Self.quietLufs) / (Self.loudLufs - Self.quietLufs))))
         }
-        let trusted = grid.map {
-            $0.beatConfidence >= MusicBeatPlanner.minConfidence && $0.intervalSpread <= MusicBeatPlanner.maxIntervalSpread
-                && abs($0.driftSec) <= MusicBeatPlanner.maxDriftSec
-        } ?? false
+        let trusted = grid.map { MusicBeatPlanner.failedChecks($0).isEmpty } ?? false
         self.init(
             videoId: videoId, artist: artist, bpm: grid?.bpm, gridTrusted: trusted,
             camelot: key?.trustedCamelot.flatMap { MusicCamelot(code: $0) }, energy: key?.energy,

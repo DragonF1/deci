@@ -79,8 +79,12 @@ enum MusicTransitionLog {
     /// transition_beat_fallback from=<id> to=<id> reason=tempoClash bpmA=120.00 bpmB=-
     /// A pair that is mixed the smart way though beat mixing was on: the planner's reason, or `notReady` when the next
     /// song was not parked in time. A bpm that is not known prints "-".
-    static func beatFallbackLine(from: String, to: String, reason: String, bpmA: Double?, bpmB: Double?) -> String {
+    /// `gridFail` (a gridLowConf refusal) adds which song failed which check: gridFail=out:spread=0.090>0.070;in:ok
+    static func beatFallbackLine(
+        from: String, to: String, reason: String, bpmA: Double?, bpmB: Double?, gridFail: String? = nil
+    ) -> String {
         "transition_beat_fallback from=\(from) to=\(to) reason=\(reason) bpmA=\(bpm(bpmA)) bpmB=\(bpm(bpmB))"
+            + (gridFail.map { " gridFail=\($0)" } ?? "")
     }
 
     /// transition_beat_applied from=<id> to=<id> rate=0.9524 calib=-7.0ms (engine side, at the flip)
