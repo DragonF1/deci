@@ -188,6 +188,43 @@ import Testing
         }
     }
 
+    @Test func skippedArtistDoesNotLeadWhenAFreshArtistFitsTempo() {
+        // Every song fits the anchor's tempo, so only the artist decides. The skipped song's band has two more songs.
+        let skipped = Self.song("skipped", 100, artist: "Same Band")
+        let band = [Self.song("band1", 100, artist: "Same Band"), Self.song("band2", 101, artist: "Same Band")]
+        let fresh = (0..<4).map { Self.song("fresh\($0)", 100 + Double($0), artist: "other-\($0)") }
+        let upcoming = band + fresh
+        let anchor = Self.song("anchor", 100, artist: "Current")
+        var before = 0.0, after = 0.0
+        let seeds = 1...40
+        func meanSlot(_ ids: [String]) -> Double {
+            let slots = ids.indices.filter { ids[$0].hasPrefix("band") }
+            return Double(slots.reduce(0, +)) / Double(slots.count)
+        }
+        for seed in seeds {
+            var plain = MusicMixOrderer(seed: UInt64(seed))
+            before += meanSlot(plain.reorderTail(anchor: anchor, upcoming: upcoming, avoid: []))
+            var replanned = MusicMixOrderer(seed: UInt64(seed))
+            let ids = replanned.reorderTail(anchor: anchor, upcoming: upcoming, avoid: [skipped])
+            #expect(!ids[0].hasPrefix("band"), "seed \(seed): \(ids)")
+            #expect(Set(ids) == Set(upcoming.map(\.videoId)))
+            after += meanSlot(ids)
+        }
+        let n = Double(seeds.count)
+        #expect(after / n >= before / n, "mean slot before \(before / n) after \(after / n)")
+    }
+
+    @Test func skippedArtistStillWinsWhenNoFreshArtistFitsTempo() {
+        // The only tempo fit for the anchor is the skipped artist's other song, so the tempo walk keeps it first.
+        let skipped = Self.song("skipped", 101, artist: "Same Band")
+        let upcoming = [Self.song("band1", 102, artist: "Same Band"), Self.song("f160", 160, artist: "other-a"), Self.song("f175", 175, artist: "other-b")]
+        for seed in 1...30 {
+            var orderer = MusicMixOrderer(seed: UInt64(seed))
+            let ids = orderer.reorderTail(anchor: Self.song("anchor", 100, artist: "Current"), upcoming: upcoming, avoid: [skipped])
+            #expect(ids.first == "band1", "seed \(seed): \(ids)")
+        }
+    }
+
     @Test func beamLooksAheadAcrossTheWholeSample() {
         // Pool is {93.5, 107.5}; 114 is in the sample but clashes with the anchor, so it is not a candidate. Only 107.5
         // has a fitting follow-up (114). Keys and energy are set so the best pair score is in the beam band, and 93.5

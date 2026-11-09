@@ -227,6 +227,8 @@ nonisolated struct MusicMixOrderer: Sendable {
         let avoidIds = Set(avoid.map(\.videoId))
         let compact = songs.map(MusicMixCompact.init)
         let metas = songs.map { meta($0, avoided: avoidIds.contains($0.videoId)) }
+        // Artists of the skipped songs, so the tempo gate can keep their other songs out of the front when it has a choice.
+        let avoidedArtists = Set(avoid.map { meta($0, avoided: true).artist }.filter { $0 >= 0 })
 
         // History of what just played, oldest first, for spacing: avoided songs, then the anchor.
         var scorer = Scorer(compact: compact, metas: metas, arc: arc)
@@ -327,7 +329,7 @@ nonisolated struct MusicMixOrderer: Sendable {
                 if gateOn || !scorer.hasCurrent {
                     gate(
                         &pool, current: gateOn ? scorer.current! : nil, looked: looked, remaining: remaining, compact: compact, metas: metas,
-                        degree: degree, strict: strict, lastArtist: lastArtist, crowded: crowded)
+                        degree: degree, strict: strict, lastArtist: lastArtist, crowded: crowded, avoidedArtists: avoidedArtists)
                 }
                 for position in pool {
                     guard let result = scorer.evaluate(remaining[position], allowLift: allowLift, target: t, strict: strict) else { continue }
@@ -369,7 +371,7 @@ nonisolated struct MusicMixOrderer: Sendable {
     @_optimize(speed)
     private mutating func gate(
         _ pool: inout [Int], current: MusicMixCompact?, looked: Int, remaining: [Int], compact: [MusicMixCompact],
-        metas: [Meta], degree: [Int], strict: Bool, lastArtist: Int, crowded: Int?
+        metas: [Meta], degree: [Int], strict: Bool, lastArtist: Int, crowded: Int?, avoidedArtists: Set<Int>
     ) {
         // A recently played song only competes when nothing else is allowed.
         var preferFresh = false
@@ -419,6 +421,12 @@ nonisolated struct MusicMixOrderer: Sendable {
                 for i in 0..<Self.sampleLimit { fitting.swapAt(i, i + generator.below(fitting.count - i)) }
                 fitting.removeLast(fitting.count - Self.sampleLimit)
             }
+        }
+        // A skipped artist's other songs wait while a song by someone else also fits the tempo. The soft artist penalty
+        // cannot do this alone, because the tempo gate has already left it a single candidate.
+        if !avoidedArtists.isEmpty {
+            let others = fitting.filter { !avoidedArtists.contains(metas[remaining[$0]].artist) }
+            if !others.isEmpty { fitting = others }
         }
         // Fewest neighbours first. Unknown tempo songs stay out of the minimum and are always kept.
         var minDegree = Int.max
