@@ -413,3 +413,16 @@ struct MusicArtworkURLTests {
         #expect(large("https://lh3.googleusercontent.com/abc=rj") == "https://lh3.googleusercontent.com/abc=rj")
     }
 }
+
+@Suite("Now Playing rate")
+struct NowPlayingRateTests {
+    @Test("a nudged deck reports its rate so the system extrapolates elapsed time correctly")
+    func nudgedRate() {
+        var state = Deci.NowPlayingState(track: MusicSamples.track("a", title: "T", artist: "A"), elapsed: 10, duration: 100, isPlaying: true)
+        state.rate = 1.05
+        let info = NowPlayingInfo.dictionary(for: state)
+        #expect(abs((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? 0) - 1.05) < 1e-9)
+        state.isPlaying = false
+        #expect(NowPlayingInfo.dictionary(for: state)[MPNowPlayingInfoPropertyPlaybackRate] as? Double == 0)
+    }
+}

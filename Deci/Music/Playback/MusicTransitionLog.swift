@@ -93,22 +93,6 @@ enum MusicTransitionLog {
         "transition_beat_applied from=\(from) to=\(to) rate=\(fixed(rate, 4)) calib=\(fixed(calibrationSec * 1000, 1))ms"
     }
 
-    enum GlideEvent: Equatable {
-        case start
-        case end
-        case cancel(why: String)
-    }
-
-    /// transition_glide start rate=0.9524 over=10.0 | transition_glide end | transition_glide cancel why=seek rate=0.9810
-    /// The incoming song's rate on its way back to 1 after a beat mix. `cancel` is a seek, a skip or an output change.
-    static func glideLine(event: GlideEvent, rate: Double, seconds: Double) -> String {
-        switch event {
-        case .start: return "transition_glide start rate=\(fixed(rate, 4)) over=\(fixed(seconds, 1))"
-        case .end: return "transition_glide end"
-        case .cancel(let why): return "transition_glide cancel why=\(why) rate=\(fixed(rate, 4))"
-        }
-    }
-
     private static func bpm(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "-" }
         return fixed(value, 2)

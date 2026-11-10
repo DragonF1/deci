@@ -97,7 +97,7 @@ struct MusicBeatPlannerTests {
         #expect(mixOut + phrase + plan.overlapSec > 236)
         #expect(plan.fadeStartSec == mixOut && plan.fadeSeconds == plan.overlapSec)
         #expect(plan.outgoingEndSec == mixOut + plan.overlapSec)
-        #expect(plan.glideBackSec == 10 && plan.incomingRate == 1)
+        #expect(plan.incomingRate == 1)
     }
 
     @Test("the incoming start is its first bar boundary at or after the trimmed start")

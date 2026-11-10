@@ -36,7 +36,6 @@ enum MusicBeatPlanner {
     static let outroSlackBars = 8
     /// The incoming song must still have this much left after the overlap.
     static let minIncomingRemainingSec = 20.0
-    static let glideBackSeconds = 10.0
     /// The bass hands over across this many outgoing beats.
     static let bassHandoverBeats = 2.0
 
@@ -159,7 +158,6 @@ enum MusicBeatPlanner {
             plan.overlapBars = bars
             plan.overlapSec = overlap
             plan.barSec = barSec
-            plan.glideBackSec = glideBackSeconds
             if let first = firstCollision, let c = collision {
                 plan.vocalAction = "shorten"
                 plan.vocalCollisionSec = c
@@ -232,7 +230,6 @@ enum MusicBeatPlanner {
         plan.overlapBars = 0
         plan.overlapSec = cutFadeSeconds
         plan.barSec = 0
-        plan.glideBackSec = 0
         plan.bassSwapAtSec = nil
         plan.bassHandoverSec = 0
         if style == .echoOut {
@@ -283,7 +280,6 @@ enum MusicBeatPlanner {
         plan.overlapBars = 0
         plan.overlapSec = cutFadeSeconds
         plan.barSec = barSec
-        plan.glideBackSec = 0
         plan.bassSwapAtSec = nil
         plan.bassHandoverSec = 0
         if style == .echoOut {

@@ -28,7 +28,6 @@ struct MusicFloorBlendTests {
         #expect(abs((plan.mixOutSec ?? 0) - (smart.fadeStartSec ?? 0)) <= 2.0 && abs((plan.mixInSec ?? 0) - smart.incomingStartSec) <= 2.0)
         #expect(plan.bassSwapAtSec == 4 && plan.bassHandoverSec == 2)
         #expect(plan.outgoingEndSec == (plan.mixOutSec ?? 0) + 8)
-        #expect(plan.glideBackSec == 0)
     }
 
     @Test("a tempo mismatch above 3 percent thins the outgoing song early: a sweep from the settings, the bass in at about a quarter")

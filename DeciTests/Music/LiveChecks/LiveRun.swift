@@ -53,6 +53,9 @@ nonisolated struct LiveTransition: Sendable {
     var nonFinite = 0
     var dropouts = 0
     var glideSeen = false
+    /// Rate changes seen on the active deck from the flip on (the first one is the start itself), and engine-counted writes.
+    var rateWrites = 0
+    var engineRateWrites = 0
     var dropoutDetail = ""
     var fallbackCount = 0
     var failure: String?
@@ -209,7 +212,7 @@ nonisolated extension LiveScan {
                             let f = (hostSec - pts[k].w) / max(1e-6, pts[k + 1].w - pts[k].w)
                             item = pts[k].t + f * (pts[k + 1].t - pts[k].t)
                         }
-                        if let ge = glideEnd, let fe = fadeEnd, host > fe, host < ge { tags.append("during glide ticks") }
+                        if let ge = glideEnd, let fe = fadeEnd, host > fe, host < ge { tags.append("during the 10 s after the fade") }
                         var inFade = false
                         if let fs = fadeStart, host >= fs, host <= (fadeEnd ?? .max) { inFade = true }
                         let sinceEnd = fadeEnd.map { liveF((Double(host) - Double($0)) / 1e6, 0) + " ms vs crossfade end" } ?? "-"
@@ -364,23 +367,22 @@ final class LiveRunner {
             let span = begun.duration(to: .now)
             record.overlapSec = Double(span.components.seconds) + Double(span.components.attoseconds) / 1e18
             let fadeEnd = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            // A nudged beat mix: keep capturing the incoming deck through the whole glide back to 1 (it starts once the
-            // outgoing deck has drained, ticks every 0.1 s and ends with a set to exactly 1).
+            // A nudged beat mix: the incoming deck keeps its rate for the song (no glide). Keep capturing it for 10 s after
+            // the fade (where the old glide ran) and note every rate change seen on it: there must be none.
             var glideEnd: UInt64?
             if abs(record.rate - 1) > 0.0005 {
-                let limit = ContinuousClock.now + .seconds(25)
-                var seenGlide = false
+                let limit = ContinuousClock.now + .seconds(10)
                 var lastActive: Float = engine.avPlayer.rate
                 while ContinuousClock.now < limit {
                     let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                     let r = engine.avPlayer.rate
                     if r != lastActive { rateEvents.append(LiveRateEvent(host: now, deck: "active", rate: r)); lastActive = r }
-                    if engine.debugGlide != nil { seenGlide = true }
-                    if seenGlide, engine.debugGlide == nil { glideEnd = now; rateEvents.append(LiveRateEvent(host: now, deck: "glide end", rate: r)); break }
-                    if !seenGlide, ContinuousClock.now > limit - .seconds(22) { break }
                     try? await Task.sleep(for: .milliseconds(20))
                 }
+                glideEnd = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             }
+            record.rateWrites = rateEvents.filter { $0.deck == "active" && $0.rate != 0 }.count
+            record.engineRateWrites = engine.playingRateWriteCount
             record.glideSeen = glideEnd != nil
             try? await Task.sleep(for: .seconds(1.5))
             if let map = engine.debugActiveLoop {

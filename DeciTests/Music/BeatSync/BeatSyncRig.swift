@@ -298,7 +298,6 @@ final class BeatSyncRig {
         plan.overlapBars = Int(overlapSeconds / (4 * BeatSyncSignal.beatPeriod))
         plan.overlapSec = overlapSeconds
         plan.barSec = 4 * BeatSyncSignal.beatPeriod
-        plan.glideBackSec = 10
         engine.preload(
             ResolvedStream(
                 videoId: "b", url: urlB126, itag: 140, durationSeconds: Self.fileSeconds,

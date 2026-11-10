@@ -98,18 +98,11 @@ struct MusicTransitionLogTests {
             == "transition_beat_applied from=a to=b rate=0.9524 calib=-7.0ms")
     }
 
-    @Test func glideLinesGolden() {
-        #expect(MusicTransitionLog.glideLine(event: .start, rate: 0.952381, seconds: 10) == "transition_glide start rate=0.9524 over=10.0")
-        #expect(MusicTransitionLog.glideLine(event: .end, rate: 1, seconds: 0) == "transition_glide end")
-        #expect(MusicTransitionLog.glideLine(event: .cancel(why: "seek"), rate: 0.981, seconds: 0) == "transition_glide cancel why=seek rate=0.9810")
-    }
-
     @Test func beatLinesCarryNoUrlsAndNoDashes() {
         let lines = [
             MusicTransitionLog.beatPlanLine(from: "a", to: "b", plan: beatPlan(), bpmA: 120, bpmB: 126),
             MusicTransitionLog.beatFallbackLine(from: "a", to: "b", reason: "notReady", bpmA: 120, bpmB: 126),
             MusicTransitionLog.beatAppliedLine(from: "a", to: "b", rate: 1.04, calibrationSec: -0.007),
-            MusicTransitionLog.glideLine(event: .cancel(why: "output"), rate: .nan, seconds: 0),
         ]
         for line in lines {
             #expect(!line.contains("http"))

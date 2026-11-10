@@ -1,6 +1,6 @@
 // DeciTests/Music/BeatSync/AVPlaybackEngineBeatTests.swift
 // Tier 3b P3 on the real engine: items keep their pitch at a nudged rate (.spectral), a beat plan schedules the standby
-// at its rate, the rate glides back to 1 over play-intent time only, and a seek, a skip or an output change snaps it.
+// at its rate and keeps it for the whole song (Tier 4c: no glide, no rate write while a deck plays), and a skip resets it.
 // Tone files, a real DSP chain at 0 gain so nothing is heard.
 
 import Foundation
@@ -47,7 +47,6 @@ struct AVPlaybackEngineBeatTests {
         plan.overlapBars = 1
         plan.overlapSec = overlap
         plan.barSec = overlap
-        plan.glideBackSec = 10
         plan.bassSwapAtSec = swapAt
         plan.bassHandoverSec = handover
         plan.fallbackIncomingStartSec = smartStart
@@ -62,34 +61,6 @@ struct AVPlaybackEngineBeatTests {
 
     // MARK: - Pure maths
 
-    @Test("the glide rate is a smoothstep: flat at both ends, monotone, exactly 1 at the end")
-    func glideMaths() {
-        let from: Float = 0.9524
-        #expect(AVPlaybackEngine.glideRate(from: from, elapsed: 0, total: 10) == from)
-        #expect(AVPlaybackEngine.glideRate(from: from, elapsed: 10, total: 10) == 1)
-        #expect(AVPlaybackEngine.glideRate(from: from, elapsed: 25, total: 10) == 1)
-        var previous = from
-        for step in 1...100 {
-            let rate = AVPlaybackEngine.glideRate(from: from, elapsed: Double(step) * 0.1, total: 10)
-            #expect(rate >= previous)
-            #expect(rate <= 1)
-            previous = rate
-        }
-        // A rate above 1 comes down monotonically.
-        var down: Float = 1.05
-        for step in 1...100 {
-            let rate = AVPlaybackEngine.glideRate(from: 1.05, elapsed: Double(step) * 0.1, total: 10)
-            #expect(rate <= down)
-            down = rate
-        }
-        // Flat start: the first tick barely moves it.
-        #expect(abs(AVPlaybackEngine.glideRate(from: from, elapsed: 0.1, total: 10) - from) < 0.0005)
-        // Bad input is rate 1, never NaN.
-        #expect(AVPlaybackEngine.glideRate(from: .nan, elapsed: 1, total: 10) == 1)
-        #expect(AVPlaybackEngine.glideRate(from: from, elapsed: .nan, total: 10) == 1)
-        #expect(AVPlaybackEngine.glideRate(from: from, elapsed: 1, total: 0) == 1)
-    }
-
     @Test("the overlap drift is zero on the grid, positive when the incoming deck is ahead")
     func driftMaths() {
         let onGrid = AVPlaybackEngine.overlapDrift(incoming: 12.0 + 0.95 * 2, outgoing: 102, rate: 0.95, mixIn: 12, mixOut: 100)
@@ -98,7 +69,9 @@ struct AVPlaybackEngineBeatTests {
         #expect(abs(ahead - 0.05) < 1e-6)
         #expect(AVPlaybackEngine.resumeDriftTolerance == 0.03)
         #expect(AVPlaybackEngine.beatCalibrationSec == -0.007)
-        #expect(AVPlaybackEngine.glideTick == 0.1)
+        // Two different deck rates: the incoming deck's rate relative to the outgoing one's decides the drift.
+        let relative = AVPlaybackEngine.overlapDrift(incoming: 12.0 + (0.95 / 1.05) * 2, outgoing: 102, rate: Float(0.95 / 1.05), mixIn: 12, mixOut: 100)
+        #expect(abs(relative) < 1e-5)
     }
 
     // MARK: - Items
@@ -204,102 +177,6 @@ struct AVPlaybackEngineBeatTests {
         #expect(engine.transitionPlan?.mixOutSec == 22, "a different mix-in is refused")
     }
 
-    // MARK: - Glide
-
-    @Test("the glide steps from r to 1 monotonically and is over within 10 s of play intent")
-    func glideSteps() async throws {
-        let first = try await writeTone("g1", seconds: 4)
-        let engine = makeEngine()
-        engine.load(stream("g1", duration: 4, url: first), startAt: 0, autoplay: false)
-        engine.debugSetWantsPlay(true)
-        engine.debugStartGlide(from: 0.95, over: 10)
-        var previous: Float = 0.95
-        var steps = 0
-        while let rate = engine.debugGlideCurrentRate {
-            #expect(rate >= previous)
-            #expect(rate <= 1)
-            previous = rate
-            engine.debugAdvanceGlide(by: AVPlaybackEngine.glideTick)
-            steps += 1
-            if steps > 200 { break }
-        }
-        #expect(engine.debugGlide == nil)
-        #expect(steps >= 99 && steps <= 101, "10 s in 100 ms steps, was \(steps)")
-        engine.unload()
-    }
-
-    @Test("a pause holds the glide where it is, and a resume carries on from there")
-    func pauseHoldsGlide() async throws {
-        let first = try await writeTone("p1", seconds: 4)
-        let engine = makeEngine()
-        engine.load(stream("p1", duration: 4, url: first), startAt: 0, autoplay: false)
-        engine.debugSetWantsPlay(true)
-        engine.debugStartGlide(from: 0.95, over: 10)
-        for _ in 0..<30 { engine.debugAdvanceGlide(by: 0.1) }
-        let held = try #require(engine.debugGlide)
-        #expect(abs(held.elapsed - 3.0) < 0.001)
-        engine.pause()
-        for _ in 0..<50 { engine.debugAdvanceGlide(by: 0.1) }
-        #expect(engine.debugGlide == held, "paused ticks do not count")
-        engine.debugSetWantsPlay(true)
-        engine.debugAdvanceGlide(by: 0.1)
-        #expect(abs((engine.debugGlide?.elapsed ?? 0) - 3.1) < 0.001)
-        engine.unload()
-    }
-
-    @Test("a seek, a skip, an output change and an unload each snap the glide to 1")
-    func snapsToOne() async throws {
-        let first = try await writeTone("n1", seconds: 6)
-        let engine = makeEngine()
-        engine.load(stream("n1", duration: 6, url: first), startAt: 0, autoplay: false)
-        let loaded = await waitUntil(timeout: .seconds(30)) { engine.avPlayer.currentItem?.status == .readyToPlay }
-        #expect(loaded)
-        engine.debugSetWantsPlay(true)
-
-        engine.debugStartGlide(from: 0.95, over: 10)
-        #expect(engine.debugGlide != nil)
-        engine.seek(to: 1)
-        #expect(engine.debugGlide == nil, "seek")
-
-        engine.debugStartGlide(from: 0.95, over: 10)
-        engine.setOutputDevice(uid: nil)
-        #expect(engine.debugGlide == nil, "output change")
-
-        engine.debugStartGlide(from: 0.95, over: 10)
-        engine.debugSetBeatOverlap(AVPlaybackEngine.BeatOverlap(rate: 0.95, mixIn: 2, mixOut: 6, glideSeconds: 10))
-        engine.unload()
-        #expect(engine.debugGlide == nil, "skip")
-        #expect(engine.debugBeatOverlap == nil)
-    }
-
-    @Test("a rate that is already 1 starts no glide")
-    func noGlideAtRateOne() async throws {
-        let first = try await writeTone("z1", seconds: 4)
-        let engine = makeEngine()
-        engine.load(stream("z1", duration: 4, url: first), startAt: 0, autoplay: false)
-        engine.debugStartGlide(from: 1, over: 10)
-        #expect(engine.debugGlide == nil)
-        engine.debugStartGlide(from: 0.95, over: 0)
-        #expect(engine.debugGlide == nil)
-        engine.unload()
-    }
-
-    @Test("a deck that reaches the glide a hair off 1 glides from there: no lone rate set, no snap")
-    func nearOneGlideIsNotSnapped() async throws {
-        let first = try await writeTone("h1", seconds: 20)
-        let engine = makeEngine()
-        engine.load(stream("h1", duration: 20, url: first), startAt: 0, autoplay: true)
-        let playing = await waitUntil(timeout: .seconds(30)) { engine.position > 0.5 && engine.avPlayer.rate != 0 }
-        #expect(playing)
-        engine.avPlayer.rate = 0.9996
-        engine.debugStartGlide(from: 0.9996, over: 10)
-        #expect(engine.debugGlide != nil, "any finite rate other than 1 glides back")
-        #expect(abs(engine.avPlayer.rate - 0.9996) < 0.00001, "startGlide sets nothing itself, was \(engine.avPlayer.rate)")
-        engine.debugStartGlide(from: 1, over: 10)
-        #expect(engine.debugGlide == nil)
-        engine.unload()
-    }
-
     @Test("a plan that is not a beat plan (a manual skip's) is accepted on a beat preload, at the same park offset")
     func skipPlanIsAccepted() async throws {
         let first = try await writeTone("k1", seconds: 30)
@@ -320,28 +197,6 @@ struct AVPlaybackEngineBeatTests {
         // A beat plan with another rate is still refused.
         engine.updateTransitionPlan(beatPlan(rate: 0.97, mixIn: 2, mixOut: 20, overlap: 4))
         #expect(engine.transitionPlan?.mode == .fixed)
-    }
-
-    @Test("a pause stops the glide's ticker and a play starts it again from where it was held")
-    func pauseStopsGlideTicker() async throws {
-        let first = try await writeTone("t1", seconds: 8)
-        let engine = makeEngine()
-        engine.load(stream("t1", duration: 8, url: first), startAt: 0, autoplay: false)
-        let loaded = await waitUntil(timeout: .seconds(30)) { engine.avPlayer.currentItem?.status == .readyToPlay }
-        #expect(loaded)
-        engine.debugSetWantsPlay(true)
-        engine.debugStartGlide(from: 0.95, over: 10)
-        #expect(engine.debugGlideTicking)
-        engine.pause()
-        #expect(!engine.debugGlideTicking, "no ticker while paused")
-        let held = engine.debugGlide
-        try await Task.sleep(for: .milliseconds(350))
-        #expect(engine.debugGlide == held)
-        engine.play()
-        #expect(engine.debugGlideTicking, "the held glide ticks again")
-        let moved = await waitUntil(timeout: .seconds(5)) { (engine.debugGlide?.elapsed ?? 0) > 0.15 }
-        #expect(moved)
-        engine.unload()
     }
 
     /// Plays A into B on a real beat overlap and returns once the flip has happened.
@@ -379,7 +234,7 @@ struct AVPlaybackEngineBeatTests {
         #expect(abs(drift(engine)) < 0.06, "drift after a short pause \(drift(engine))")
         let drained = await waitUntil(timeout: .seconds(30)) { !engine.isCrossfading }
         #expect(drained)
-        #expect(engine.avPlayer.automaticallyWaitsToMinimizeStalling, "restored once the glide starts")
+        #expect(engine.avPlayer.automaticallyWaitsToMinimizeStalling, "restored once the overlap is over")
         engine.unload()
     }
 
@@ -432,7 +287,6 @@ struct AVPlaybackEngineBeatTests {
         var plan = beatPlan(rate: 1, mixIn: 0, mixOut: 4, overlap: 8, swapAt: 4, handover: 2)
         plan.overlapBars = 0
         plan.barSec = 0
-        plan.glideBackSec = 0
         engine.preload(stream("fb", duration: 30, url: second), plan: plan)
         let flipped = await waitUntil(timeout: .seconds(40)) { engine.isCrossfading && engine.debugBeatOverlap != nil }
         #expect(flipped, "a gridless beat plan must take the beat path")
@@ -683,7 +537,7 @@ struct AVPlaybackEngineBeatTests {
         return engine
     }
 
-    @Test("a normal nudged beat plan: the flip keeps the overlap at the plan's rate, the swap runs, the drain glides from it")
+    @Test("a normal nudged beat plan: the flip keeps the overlap at the plan's rate, the swap runs, the deck keeps the rate after the drain")
     func flipKeepsNudgedBeat() async throws {
         let engine = try await preparedEngine(plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 8, swapAt: 4, handover: 1), name: "fn")
         #expect(await awaitFlip(engine))
@@ -691,7 +545,8 @@ struct AVPlaybackEngineBeatTests {
         #expect(engine.debugBassSwapActive)
         #expect(abs(engine.avPlayer.rate - 0.95) < 0.001)
         #expect(await awaitDrain(engine))
-        #expect(engine.debugGlide?.from == 0.95, "the glide starts from the nudge")
+        #expect(engine.deckRate == 0.95)
+        #expect(abs(engine.avPlayer.rate - 0.95) < 0.001, "the rate is kept after the overlap, was \(engine.avPlayer.rate)")
         #expect(engine.debugBeatOverlap == nil)
         engine.unload()
     }
@@ -714,7 +569,6 @@ struct AVPlaybackEngineBeatTests {
         #expect(restarted, "incoming \(engine.avPlayer.rate), outgoing \(engine.debugDrainingPlayer?.rate ?? -1)")
         #expect(!engine.avPlayer.automaticallyWaitsToMinimizeStalling, "the synced resume ran")
         #expect(await awaitDrain(engine))
-        #expect(engine.debugGlide == nil, "nothing to glide at rate 1")
         #expect(engine.avPlayer.rate == 1)
         engine.unload()
     }
@@ -727,7 +581,6 @@ struct AVPlaybackEngineBeatTests {
         #expect(engine.debugBeatOverlap == nil, "the flip must not build an overlap from the plan, \(String(describing: engine.debugBeatOverlap))")
         #expect(!engine.debugBassSwapActive)
         #expect(await awaitDrain(engine))
-        #expect(engine.debugGlide == nil)
         #expect(engine.avPlayer.rate == 1, "rate after the drain \(engine.avPlayer.rate)")
         engine.unload()
     }
@@ -740,7 +593,6 @@ struct AVPlaybackEngineBeatTests {
         #expect(engine.debugBeatOverlap == nil)
         #expect(!engine.debugBassSwapActive)
         _ = await awaitDrain(engine)
-        #expect(engine.debugGlide == nil)
         #expect(engine.avPlayer.rate == 1, "rate after the hand-over \(engine.avPlayer.rate)")
         engine.unload()
     }
@@ -760,8 +612,144 @@ struct AVPlaybackEngineBeatTests {
         #expect(engine.debugBeatOverlap == nil)
         #expect(!engine.debugBassSwapActive)
         #expect(await awaitDrain(engine))
-        #expect(engine.debugGlide == nil)
         #expect(engine.avPlayer.rate == 1, "rate after the drain \(engine.avPlayer.rate)")
+        engine.unload()
+    }
+
+    // MARK: - Constant deck rate (Tier 4c): no rate write while a deck plays
+
+    /// Rates the player reports from now on (KVO), so any rate write on a playing deck shows up. Zero is a pause.
+    private final class RateLog {
+        var rates: [Float] = []
+        var observation: NSKeyValueObservation?
+        init(_ player: AVPlayer) {
+            observation = player.observe(\.rate, options: [.new]) { [weak self] _, change in
+                if let rate = change.newValue { MainActor.assumeIsolated { self?.rates.append(rate) } }
+            }
+        }
+        var moving: [Float] { rates.filter { $0 != 0 } }
+    }
+
+    /// A nudged mix that has fully drained: the incoming deck runs at 0.95 for good.
+    private func drainedNudgedEngine(name: String) async throws -> AVPlaybackEngine {
+        let engine = try await preparedEngine(plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 4), name: name)
+        #expect(await awaitFlip(engine))
+        #expect(await awaitDrain(engine))
+        return engine
+    }
+
+    @Test("a nudged mix makes no rate write on the playing incoming deck, and the rate is kept after the overlap")
+    func zeroRateWritesAfterTheFlip() async throws {
+        let engine = try await preparedEngine(plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 4), name: "zw")
+        #expect(await awaitFlip(engine))
+        let log = RateLog(engine.avPlayer)
+        #expect(await awaitDrain(engine))
+        try await Task.sleep(for: .seconds(3))
+        #expect(engine.playingRateWriteCount == 0)
+        #expect(log.moving.allSatisfy { abs($0 - 0.95) < 1e-5 }, "rates seen on the incoming deck \(log.rates)")
+        #expect(abs(engine.avPlayer.rate - 0.95) < 1e-5)
+        #expect(engine.deckRate == 0.95)
+        engine.unload()
+    }
+
+    @Test("pause and play after a nudged mix keep the rate, with no write")
+    func rateKeptAfterPausePlay() async throws {
+        let engine = try await drainedNudgedEngine(name: "pp")
+        let log = RateLog(engine.avPlayer)
+        engine.pause()
+        #expect(engine.avPlayer.rate == 0)
+        engine.play()
+        let resumed = await waitUntil(timeout: .seconds(10)) { engine.avPlayer.rate != 0 }
+        #expect(resumed)
+        #expect(abs(engine.avPlayer.rate - 0.95) < 1e-5, "after pause and play \(engine.avPlayer.rate)")
+        #expect(log.moving.allSatisfy { abs($0 - 0.95) < 1e-5 }, "rates \(log.rates)")
+        #expect(engine.playingRateWriteCount == 0)
+        engine.unload()
+    }
+
+    @Test("a seek after a nudged mix keeps the rate")
+    func rateKeptAfterSeek() async throws {
+        let engine = try await drainedNudgedEngine(name: "sk")
+        engine.seek(to: 4)
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(abs(engine.avPlayer.rate - 0.95) < 1e-5, "after a seek \(engine.avPlayer.rate)")
+        #expect(engine.deckRate == 0.95)
+        #expect(engine.playingRateWriteCount == 0)
+        engine.unload()
+    }
+
+    @Test("a pause in the middle of a nudged overlap and a resume restart both decks at their rates, still no write on a playing deck")
+    func resumeInOverlapKeepsBothRates() async throws {
+        let engine = try await overlapEngine()
+        let log = RateLog(engine.avPlayer)
+        engine.pause()
+        engine.play()
+        let restarted = await waitUntil(timeout: .seconds(5)) { abs(engine.avPlayer.rate - 0.95) < 0.001 }
+        #expect(restarted)
+        #expect(await awaitDrain(engine))
+        #expect(log.moving.allSatisfy { abs($0 - 0.95) < 1e-5 }, "rates \(log.rates)")
+        #expect(engine.playingRateWriteCount == 0)
+        engine.unload()
+    }
+
+    @Test("a schedule armed on a deck that plays at 0.95 fires at the right host time: item seconds are 1/0.95 wall seconds")
+    func scheduleAtANonUnityDeckRate() async throws {
+        let engine = try await drainedNudgedEngine(name: "sc")
+        let third = try await writeTone("sc3", seconds: 20)
+        engine.preload(stream("sc3", duration: 20, url: third), plan: beatPlan(rate: 1.05, mixIn: 2, mixOut: 15, overlap: 2))
+        let scheduled = await waitUntil(timeout: .seconds(40)) { engine.scheduledStartHost != nil }
+        #expect(scheduled)
+        let host = try #require(engine.scheduledStartHost).seconds
+        let nowHost = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+        let end = try #require(engine.debugEffectiveEnd)
+        let position = engine.avPlayer.currentTime().seconds
+        // The standby starts `lead` wall seconds before the end: the plan's fade start is item 15, so the lead is
+        // (end - 15) / 0.95 wall seconds (at least the fade).
+        let lead = max(2.0, (end - 15) / 0.95)
+        let expected = nowHost + (end - position) / 0.95 - lead
+        #expect(abs(host - expected) < 0.25, "scheduled \(host - nowHost) s ahead, expected \(expected - nowHost)")
+        // Rate 1 would be wrong by (end - position) * (1/0.95 - 1) seconds.
+        #expect(abs(engine.debugPlannedRate - 1.05) < 1e-5)
+        engine.unload()
+    }
+
+    @Test("the host time of an item time on a deck that plays at 0.95 divides by the deck rate")
+    func hostTimeOfActiveItemTimeUsesTheDeckRate() async throws {
+        let engine = try await drainedNudgedEngine(name: "ht")
+        let position = engine.avPlayer.currentTime().seconds
+        let nowHost = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+        let host = try #require(engine.hostTime(ofActiveItemTime: position + 3)?.seconds)
+        #expect(abs((host - nowHost) - 3 / 0.95) < 0.15, "3 item seconds are \(host - nowHost) wall seconds")
+        engine.unload()
+    }
+
+    @Test("a manual load after a nudged mix resets the deck rate to 1")
+    func skipResetsTheRate() async throws {
+        let engine = try await drainedNudgedEngine(name: "rs")
+        let next = try await writeTone("rs-next", seconds: 10)
+        engine.load(stream("rs-next", duration: 10, url: next), startAt: 0, autoplay: true)
+        #expect(engine.deckRate == 1)
+        #expect(engine.avPlayer.defaultRate == 1)
+        let playing = await waitUntil(timeout: .seconds(30)) { engine.avPlayer.rate != 0 }
+        #expect(playing)
+        #expect(engine.avPlayer.rate == 1, "a new song plays at 1, was \(engine.avPlayer.rate)")
+        engine.unload()
+    }
+
+    @Test("a plain fade (no beat plan) after a nudged mix runs the next song at 1")
+    func plainFadeAfterNudgedMixIsRateOne() async throws {
+        let engine = try await drainedNudgedEngine(name: "pf")
+        let next = try await writeTone("pf-next", seconds: 20)
+        engine.preload(stream("pf-next", duration: 20, url: next))
+        let ready = await waitUntil(timeout: .seconds(30)) { engine.preloadIsReady }
+        #expect(ready)
+        let scheduled = await waitUntil(timeout: .seconds(40)) { engine.scheduledStartHost != nil }
+        #expect(scheduled)
+        #expect(engine.debugPlannedRate == 1)
+        #expect(await awaitFlip(engine))
+        #expect(engine.deckRate == 1)
+        #expect(await awaitDrain(engine))
+        #expect(engine.avPlayer.rate == 1, "after the plain fade \(engine.avPlayer.rate)")
         engine.unload()
     }
 }

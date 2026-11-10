@@ -48,7 +48,6 @@ struct AVPlaybackEngineStyleFlipTests {
         plan.overlapBars = 0
         plan.overlapSec = MusicBeatPlanner.cutFadeSeconds
         plan.barSec = 2
-        plan.glideBackSec = 0
         plan.echoTailSec = tail
         plan.echoDelaySec = delay
         return plan
@@ -211,7 +210,6 @@ struct AVPlaybackEngineStyleFlipTests {
         plan.overlapBars = 1
         plan.overlapSec = overlap
         plan.barSec = overlap
-        plan.glideBackSec = 0
         if style == .filterSweep {
             plan.sweepFromHz = 30
             plan.sweepToHz = 1_500

@@ -47,8 +47,6 @@ struct TransitionPlan: Equatable, Sendable {
     var bassHandoverSec: Double = 0
     /// A floor blend whose mix-out and mix-in were snapped onto the beat grids (beat on beat, downbeat on downbeat when both are known).
     var floorAligned = false
-    /// Seconds the incoming rate takes to glide back to 1 after the outgoing song has gone.
-    var glideBackSec: Double = 0
     /// Why beat mode was refused, when it was (a `MusicBeatPlanner.Fallback` raw value).
     var fallbackReason: String? = nil
     /// With `gridLowConf`: which song's grid failed which check, e.g. "out:spread=0.090>0.070 in:ok". nil otherwise.

@@ -144,7 +144,6 @@ extension MusicBeatPlanner {
         plan.overlapBars = 0
         plan.overlapSec = fade
         plan.barSec = 0
-        plan.glideBackSec = 0
         if guardOn, chosen.collision > MusicVocalGuard.budgetSec {
             // No place within reach is clean: the least bad one, recorded the way the smart guard records its own fallback.
             plan.vocalAction = "min"

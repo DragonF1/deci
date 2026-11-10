@@ -97,7 +97,6 @@ extension MusicBeatPlanner {
             plan.overlapBars = lead
             plan.overlapSec = overlap
             plan.barSec = barOut
-            plan.glideBackSec = glideBackSeconds
             if inputs.bassSwapAvailable {
                 // The lows of the new song come in over the last two beats, so they are full on the drop itself.
                 let handover = min(bassHandoverBeats * aGrid.periodSec, overlap / 2)

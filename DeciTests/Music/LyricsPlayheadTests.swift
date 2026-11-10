@@ -24,6 +24,12 @@ struct LyricsPlayheadTests {
         #expect(abs(head.position(at: t0.addingTimeInterval(0.3)) - 42.3) < 0.0001)
     }
 
+    @Test("A nudged deck: carried-forward time advances at the deck rate")
+    func nudgedRate() {
+        let head = LyricsPlayhead(time: 42, isPlaying: true, observedAt: t0, rate: 1.05)
+        #expect(abs(head.position(at: t0.addingTimeInterval(0.4)) - 42.42) < 0.0001)
+    }
+
     @Test("A player that stopped ticking cannot run the playhead away")
     func extrapolationIsCapped() {
         let head = LyricsPlayhead(time: 42, isPlaying: true, observedAt: t0)

@@ -12,6 +12,8 @@ struct NowPlayingState: Equatable {
     var elapsed: TimeInterval
     var duration: TimeInterval
     var isPlaying: Bool
+    /// Item seconds per wall second: the rate a Mix nudged the deck to (1 otherwise).
+    var rate: Double = 1
 }
 
 enum NowPlayingCommand: Equatable, Sendable {
@@ -166,7 +168,7 @@ enum NowPlayingInfo {
             MPMediaItemPropertyArtist: state.track.artist,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
-            MPNowPlayingInfoPropertyPlaybackRate: state.isPlaying ? 1.0 : 0.0
+            MPNowPlayingInfoPropertyPlaybackRate: state.isPlaying ? max(0.5, min(state.rate.isFinite ? state.rate : 1, 2)) : 0.0
         ]
         if let album = state.track.album, !album.isEmpty {
             info[MPMediaItemPropertyAlbumTitle] = album

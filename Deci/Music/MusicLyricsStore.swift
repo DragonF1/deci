@@ -212,9 +212,9 @@ final class MusicLyricsStore {
 
     /// The player's position, for the highlight. Only while the panel is open and the popup is showing: a hidden
     /// panel does not redraw on every tick, and the next sample is taken when it comes back.
-    func observePlayback(position: TimeInterval, isPlaying: Bool) {
+    func observePlayback(position: TimeInterval, isPlaying: Bool, rate: Double = 1) {
         guard isWatching else { return }
-        record(LyricsPlayhead(time: position, isPlaying: isPlaying, observedAt: now()))
+        record(LyricsPlayhead(time: position, isPlaying: isPlaying, observedAt: now(), rate: rate))
     }
 
     /// Takes a new playhead; `isPlaying` is published only if it changed.

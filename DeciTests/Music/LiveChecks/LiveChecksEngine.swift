@@ -133,7 +133,7 @@ extension LiveChecks {
         for t in runs where t.crossfaded {
             let sane = t.capturePeak > 0.01 && t.capturePeak <= 1.05 && t.chainPeak <= 4
             if t.nonFinite > 0 || t.dropouts > 0 || t.stalls > 0 || t.glitchLines > 0 || !sane { ok10 = false }
-            lines10.append("\(world.byId[t.from]?.index ?? -1) > \(world.byId[t.to]?.index ?? -1): capture peak \(liveF(Double(t.capturePeak), 3)), chain post-gain peak \(liveF(Double(t.chainPeak), 3)), non-finite \(t.nonFinite), digital dropouts >= 30 ms \(t.dropouts)\(glideNote(t))\(t.dropoutDetail.isEmpty ? "" : " [" + t.dropoutDetail + "]"), stalls \(t.stalls), engine glitch lines \(t.glitchLines)")
+            lines10.append("\(world.byId[t.from]?.index ?? -1) > \(world.byId[t.to]?.index ?? -1): capture peak \(liveF(Double(t.capturePeak), 3)), chain post-gain peak \(liveF(Double(t.chainPeak), 3)), non-finite \(t.nonFinite), digital dropouts >= 30 ms \(t.dropouts)\(glideNote(t)), rate changes on the incoming deck \(t.rateWrites), engine rate writes while playing \(t.engineRateWrites)\(t.dropoutDetail.isEmpty ? "" : " [" + t.dropoutDetail + "]"), stalls \(t.stalls), engine glitch lines \(t.glitchLines)")
         }
         let failed = runs.filter { !$0.crossfaded }
         if !failed.isEmpty { ok10 = false }
@@ -398,5 +398,5 @@ extension LiveChecks {
 
 private func glideNote(_ t: LiveTransition) -> String {
     guard abs(t.rate - 1) > 0.0005 else { return "" }
-    return t.glideSeen ? " (captured through the whole glide back to 1)" : " (glide NOT seen to its end)"
+    return t.glideSeen ? " (captured 10 s past the fade at the kept rate)" : ""
 }

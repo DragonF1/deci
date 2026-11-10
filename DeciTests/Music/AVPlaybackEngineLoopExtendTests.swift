@@ -47,7 +47,6 @@ struct AVPlaybackEngineLoopExtendTests {
         plan.overlapBars = 1
         plan.overlapSec = 2
         plan.barSec = 2
-        plan.glideBackSec = 0
         plan.fallbackIncomingStartSec = 0
         plan.loopStartSec = 1
         plan.loopBars = 1

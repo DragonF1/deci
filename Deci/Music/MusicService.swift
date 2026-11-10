@@ -3632,7 +3632,8 @@ final class MusicService {
             track: track,
             elapsed: player.currentTime,
             duration: player.duration,
-            isPlaying: player.isPlaying
+            isPlaying: player.isPlaying,
+            rate: player.deckRate
         ))
     }
 
@@ -3657,7 +3658,7 @@ final class MusicService {
     /// reports the listening to the watchtime schedule.
     func handlePlaybackTick(position: TimeInterval, isPlaying: Bool) {
         // Before the session guard: the lyrics highlight needs the position whether or not History is tracking.
-        lyrics.observePlayback(position: position, isPlaying: isPlaying)
+        lyrics.observePlayback(position: position, isPlaying: isPlaying, rate: player.deckRate)
         // Before it as well: the remembered place moves on whether or not History is tracking.
         if isPlaying, sessionStore != nil, now().timeIntervalSince(lastPeriodicSave) >= Self.sessionSaveInterval {
             lastPeriodicSave = now()
