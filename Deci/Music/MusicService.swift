@@ -116,6 +116,9 @@ final class MusicService {
     /// Tier 4b: the style of the last transition that was applied. The picker never repeats it, and the first Up next glyph
     /// is chosen against it.
     private(set) var lastAppliedStyle: MusicTransitionStyle?
+    /// Tier 4c: the rate the playing deck keeps for its whole song (the applied Mix plan's incoming rate; 1 after a skip, a
+    /// load or a plain start). Read from the engine, which resets it on every one of those, so it cannot go stale.
+    var activeDeckRate: Double { player.deckRate }
     /// What happens when a track or the queue ends. Remembered across launches.
     private(set) var loopMode: MusicLoopMode {
         didSet { reconcilePreload() }
@@ -1798,7 +1801,9 @@ final class MusicService {
         }
         var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
         let order = orderer.reorderTail(
-            anchor: profile(anchor), upcoming: window.map(profile), avoid: mixAvoid, count: MusicMixOrderer.tailCount
+            anchor: profile(anchor), upcoming: window.map(profile), avoid: mixAvoid, count: MusicMixOrderer.tailCount,
+            // Only the playing song is held at a rate; a preloaded anchor has not started yet.
+            anchorRate: fixedCount == 0 ? activeDeckRate : 1
         )
         queue.mixOrder(order)
         if dropStaleRadio() { topUpQueueAfterModeChange() }
@@ -3310,7 +3315,8 @@ final class MusicService {
         var inputs = MusicTransitionInputs(
             outgoing: MusicTransitionSide(
                 videoId: current.videoId, durationSeconds: current.durationSeconds, analysis: outgoing,
-                youtubeLoudnessDb: current.loudnessDb, vocalIntervals: vocalLookahead?.intervals(for: current.videoId)
+                youtubeLoudnessDb: current.loudnessDb, vocalIntervals: vocalLookahead?.intervals(for: current.videoId),
+                deckRate: activeDeckRate
             ),
             incoming: MusicTransitionSide(
                 videoId: next.videoId, durationSeconds: next.durationSeconds, analysis: incoming,
@@ -3325,7 +3331,7 @@ final class MusicService {
         )
         inputs.plainFade = !isMixOn
         // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
-        inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead
+        inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead * activeDeckRate
         let plan = MusicTransitionPlanner.plan(inputs)
         let rows = Set([outgoing, incoming].compactMap { $0?.videoId })
         return (plan, OfferedPlan(inputs: inputs, plan: plan, plannedWithRows: rows))

@@ -16,7 +16,10 @@ enum MusicBeatPlanner {
         case gridMissing, gridLowConf, tempoClash, noPhraseRoom, tooLate, vocalClash
     }
 
-    static let tempoTolerance = 0.08
+    /// Tier 4c: no song is ever played more than this far off its own natural tempo (the incoming rate of a plan). Beyond it
+    /// the pair meets at half or double time, else it gets the floor blend.
+    static let maxRateError = 0.08
+    static let tempoTolerance = maxRateError
     static let minConfidence: Float = 0.5
     /// intervalSpread is a fraction of the beat period. The floor 0.04 is the old flat limit; a faster song has a shorter
     /// period, so the same timing wobble in seconds is a larger fraction: the limit is `spreadSeconds` worth of period,
@@ -40,6 +43,28 @@ enum MusicBeatPlanner {
     static let bassHandoverBeats = 2.0
 
     // MARK: Tempo
+
+    /// The rate the outgoing deck is already playing at (1 when unknown or implausible).
+    static func outgoingRate(_ inputs: MusicTransitionInputs) -> Double {
+        let r = inputs.outgoing.deckRate
+        return r.isFinite && r > 0.5 && r < 2 ? r : 1
+    }
+
+    /// The vocal collision of an overlap that is `wallLength` wall seconds long, the outgoing deck at `outgoingRate`
+    /// (item seconds per wall second) and the incoming at `rate`. The guard works in outgoing item seconds with the incoming
+    /// relative to it; the answer is converted back to wall seconds. With an outgoing rate of 1 it is the guard unchanged.
+    static func guardCollision(
+        _ inputs: MusicTransitionInputs, outStart: Double, inStart: Double, rate: Double, wallLength: Double,
+        incomingLoop: MusicLoopMap? = nil
+    ) -> Double? {
+        let ro = outgoingRate(inputs)
+        guard let c = MusicVocalGuard.collisionSec(
+            outgoing: inputs.outgoing.analysis, incoming: inputs.incoming.analysis, outStart: outStart, inStart: inStart,
+            rate: rate / ro, length: wallLength * ro, outgoingIntervals: inputs.outgoing.vocalIntervals,
+            incomingIntervals: inputs.incoming.vocalIntervals, incomingLoop: incomingLoop
+        ) else { return nil }
+        return c / ro
+    }
 
     /// The incoming rate that puts the incoming beats on the outgoing beats. `multiple` is how many incoming beats
     /// fit in one outgoing beat at the same tempo: 1 same, 2 the incoming is double time, 0.5 half time. For 2 and 0.5
@@ -74,6 +99,7 @@ enum MusicBeatPlanner {
         if inputs.manualSkip { return refuse(.manualSkip) }
         guard inputs.crossfadeOn else { return refuse(.disabled) }
         if smart.reason == .tooShort { return refuse(.tooShort) }
+        let outRate = outgoingRate(inputs)
         guard let aDuration = valid(inputs.outgoing.durationSeconds),
               let bDuration = valid(inputs.incoming.durationSeconds) else { return refuse(.noDuration) }
         guard smart.mode == .smart, let a = inputs.outgoing.analysis, let b = inputs.incoming.analysis,
@@ -84,7 +110,7 @@ enum MusicBeatPlanner {
             plan.gridFail = gridFailText(outgoing: aGrid, incoming: bGrid)
             return plan
         }
-        guard let tempo = tempoMatch(outBpm: aGrid.bpm, inBpm: bGrid.bpm) else { return refuse(.tempoClash) }
+        guard let tempo = tempoMatch(outBpm: aGrid.bpm * outRate, inBpm: bGrid.bpm) else { return refuse(.tempoClash) }
 
         let aEnd = smart.outgoingEndSec ?? aDuration
         let barSec = 4 * aGrid.periodSec
@@ -113,7 +139,9 @@ enum MusicBeatPlanner {
             }
             // The 4 bar tier failing for a non-vocal reason keeps the vocal clash: the longer lengths were the ones refused.
             let guardTier = index >= lengths.count
-            let overlap = Double(bars) * barSec
+            // Bars are the outgoing song's own seconds; the overlap is heard in wall seconds, `outRate` item seconds each.
+            let overlapItem = Double(bars) * barSec
+            let overlap = overlapItem / outRate
             guard overlap <= maxOverlapSec,
                   let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
                   let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else {
@@ -131,10 +159,7 @@ enum MusicBeatPlanner {
             }
             var collision: Double?
             if inputs.vocalGuardEnabled {
-                collision = MusicVocalGuard.collisionSec(
-                    outgoing: a, incoming: b, outStart: mixOut, inStart: mixIn, rate: tempo.rate, length: overlap,
-                    outgoingIntervals: inputs.outgoing.vocalIntervals, incomingIntervals: inputs.incoming.vocalIntervals
-                )
+                collision = guardCollision(inputs, outStart: mixOut, inStart: mixIn, rate: tempo.rate, wallLength: overlap)
                 if let c = collision, c > MusicVocalGuard.budgetSec {
                     vocalSkipped += 1
                     if firstCollision == nil { firstCollision = c }
@@ -154,7 +179,7 @@ enum MusicBeatPlanner {
             plan.incomingStartSec = mixIn
             plan.fadeStartSec = mixOut
             plan.fadeSeconds = overlap
-            plan.outgoingEndSec = mixOut + overlap
+            plan.outgoingEndSec = mixOut + overlapItem
             plan.overlapBars = bars
             plan.overlapSec = overlap
             plan.barSec = barSec
@@ -165,10 +190,10 @@ enum MusicBeatPlanner {
             }
             if inputs.bassSwapAvailable, bothPhrased, bars != 4 {
                 plan.bassSwapAtSec = overlap / 2
-                plan.bassHandoverSec = bassHandoverBeats * aGrid.periodSec
+                plan.bassHandoverSec = bassHandoverBeats * aGrid.periodSec / outRate
             }
             if inputs.vocalGuardEnabled, let intervals = inputs.outgoing.vocalIntervals,
-               MusicVocalGuard.cutsOutgoingSinger(intervals, endSec: mixOut + overlap) {
+               MusicVocalGuard.cutsOutgoingSinger(intervals, endSec: mixOut + overlapItem) {
                 if clipped == nil { clipped = plan }
                 continue
             }
@@ -283,7 +308,7 @@ enum MusicBeatPlanner {
         plan.bassSwapAtSec = nil
         plan.bassHandoverSec = 0
         if style == .echoOut {
-            let delay = bothTrusted ? min(aGrid.periodSec, MusicEchoSettings.maxDelaySeconds) : MusicEchoSettings.untrustedDelaySeconds
+            let delay = bothTrusted ? min(aGrid.periodSec / outgoingRate(inputs), MusicEchoSettings.maxDelaySeconds) : MusicEchoSettings.untrustedDelaySeconds
             let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, aEnd - mixOut))
             plan.echoDelaySec = delay
             plan.echoTailSec = tail

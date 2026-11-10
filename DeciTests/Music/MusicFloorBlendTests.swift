@@ -99,11 +99,11 @@ struct MusicFloorBlendTests {
         return abs(t - (first + ((t - first) / bar).rounded() * bar))
     }
 
-    @Test("tempos within 3 percent with both downbeats: the blend starts downbeat on downbeat, at rate 1")
+    @Test("tempos within 3 percent with both downbeats: the blend starts downbeat on downbeat, at the matched rate")
     func alignedOnDownbeats() throws {
         let i = BT.inputs(b: BT.grid(period: 0.5 * 1.02, anchor: 0.1, phase: 1, span: 0.1...236))
         let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
-        #expect(plan.mode == .beat && plan.style == .longBlend && plan.incomingRate == 1 && plan.floorAligned)
+        #expect(plan.mode == .beat && plan.style == .longBlend && abs(plan.incomingRate - 1.02) < 1e-9 && plan.floorAligned)
         let a = try #require(i.outgoing.grid), b = try #require(i.incoming.grid)
         #expect(Self.barOffset(a, try #require(plan.mixOutSec)) < 0.001)
         #expect(Self.barOffset(b, try #require(plan.mixInSec)) < 0.001)
@@ -247,5 +247,39 @@ struct MusicFloorBlendTests {
         i.outgoing.vocalIntervals = [0...236]
         let worst = try #require(B.floorBlendPlan(i, smart: smart))
         #expect(worst.mode == .beat && worst.vocalAction == "min")
+    }
+
+    // MARK: Tier 4c C2: the 3 to 8 percent band
+
+    @Test("a 5 percent gap with both grids: the blend is matched and aligned, the incoming at the matching rate, no sweep")
+    func fivePercentGapIsMatchedAndAligned() throws {
+        // 120 against 126 bpm: the incoming plays at 120/126 for the whole song, so the kicks stay together.
+        let i = BT.inputs(b: BT.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, span: 0.1...236))
+        let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
+        #expect(plan.mode == .beat && plan.style == .longBlend && plan.floorAligned)
+        #expect(abs(plan.incomingRate - 120.0 / 126) < 1e-9)
+        let a = try #require(i.outgoing.grid), b = try #require(i.incoming.grid)
+        #expect(Self.barOffset(a, try #require(plan.mixOutSec)) < 0.001)
+        #expect(Self.barOffset(b, try #require(plan.mixInSec)) < 0.001)
+        #expect(plan.sweepFromHz == 0)
+    }
+
+    @Test("a gap over 8 percent is still thinned at rate 1; the 8 percent edge is matched")
+    func overEightPercentIsThinned() throws {
+        let wide = BT.inputs(b: BT.grid(period: 60.0 / 131, anchor: 0.1, phase: 1, span: 0.1...236))
+        let thin = try #require(B.floorBlendPlan(wide, smart: Self.smart(wide)))
+        #expect(thin.style == .filterSweep && thin.incomingRate == 1 && !thin.floorAligned)
+        let edge = BT.inputs(b: BT.grid(period: 60.0 / 129.5, anchor: 0.1, phase: 1, span: 0.1...236))
+        let matched = try #require(B.floorBlendPlan(edge, smart: Self.smart(edge)))
+        #expect(matched.style == .longBlend && abs(matched.incomingRate - 120.0 / 129.5) < 1e-9)
+    }
+
+    @Test("the outgoing deck's own rate counts: a song held at 1.05 meets a 126 bpm song at rate 1, and its fade spends 1.05 item s per wall s")
+    func outgoingDeckRateCounts() throws {
+        var i = BT.inputs(b: BT.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, span: 0.1...236))
+        i.outgoing.deckRate = 1.05
+        let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
+        #expect(plan.style == .longBlend && abs(plan.incomingRate - 1) < 1e-9)
+        #expect(abs((plan.outgoingEndSec ?? 0) - ((plan.mixOutSec ?? 0) + plan.fadeSeconds * 1.05)) < 1e-9)
     }
 }

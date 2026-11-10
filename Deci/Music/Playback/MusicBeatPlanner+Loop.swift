@@ -37,7 +37,7 @@ extension MusicBeatPlanner {
               let a = inputs.outgoing.analysis, let b = inputs.incoming.analysis,
               let aGrid = inputs.outgoing.grid ?? a.usableGrid, let bGrid = inputs.incoming.grid ?? b.usableGrid,
               trusted(aGrid), trusted(bGrid), aGrid.downbeatPhase != nil, bGrid.downbeatPhase != nil,
-              let tempo = tempoMatch(outBpm: aGrid.bpm, inBpm: bGrid.bpm), tempo.multiple == 1,
+              let tempo = tempoMatch(outBpm: aGrid.bpm * outgoingRate(inputs), inBpm: bGrid.bpm), tempo.multiple == 1,
               b.introEnd.isFinite else { return nil }
         // The blend as it would be with no vocal guard: the overlap the intro has to cover.
         var open = inputs
@@ -47,10 +47,7 @@ extension MusicBeatPlanner {
               let mixOut = base.mixOutSec else { return nil }
         let rate = base.incomingRate
         let consumed = base.overlapSec * rate
-        let collisionBefore = MusicVocalGuard.collisionSec(
-            outgoing: a, incoming: b, outStart: mixOut, inStart: mixIn, rate: rate, length: base.overlapSec,
-            outgoingIntervals: inputs.outgoing.vocalIntervals, incomingIntervals: inputs.incoming.vocalIntervals
-        )
+        let collisionBefore = guardCollision(inputs, outStart: mixOut, inStart: mixIn, rate: rate, wallLength: base.overlapSec)
         // Only an intro that is too short for the overlap needs a loop; a clean pair keeps its plain blend.
         if forced {
             let barIn = 4 * bGrid.periodSec
@@ -80,10 +77,8 @@ extension MusicBeatPlanner {
             let map = MusicLoopMap(spec)
             // The song after the overlap still has its 20 seconds (the repeats count as song that is already gone).
             guard bEnd - (mixIn + consumed - spec.extensionSec) >= minIncomingRemainingSec else { continue }
-            let collision = MusicVocalGuard.collisionSec(
-                outgoing: a, incoming: b, outStart: mixOut, inStart: mixIn, rate: rate, length: base.overlapSec,
-                outgoingIntervals: inputs.outgoing.vocalIntervals, incomingIntervals: inputs.incoming.vocalIntervals,
-                incomingLoop: map
+            let collision = guardCollision(
+                inputs, outStart: mixOut, inStart: mixIn, rate: rate, wallLength: base.overlapSec, incomingLoop: map
             )
             guard let c = collision, c <= MusicVocalGuard.budgetSec else { continue }
             var out = base

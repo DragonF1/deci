@@ -53,9 +53,10 @@ extension MusicBeatPlanner {
               let a = inputs.outgoing.analysis, let b = inputs.incoming.analysis,
               let aGrid = inputs.outgoing.grid ?? a.usableGrid, let bGrid = inputs.incoming.grid ?? b.usableGrid,
               trusted(aGrid), trusted(bGrid), aGrid.downbeatPhase != nil, bGrid.downbeatPhase != nil,
-              let tempo = tempoMatch(outBpm: aGrid.bpm, inBpm: bGrid.bpm), tempo.multiple == 1,
+              let tempo = tempoMatch(outBpm: aGrid.bpm * outgoingRate(inputs), inBpm: bGrid.bpm), tempo.multiple == 1,
               let drop = MusicDropDetector.best(in: b, grid: bGrid) else { return nil }
 
+        let outRate = outgoingRate(inputs)
         let aEnd = smart.outgoingEndSec ?? aDuration
         let barOut = 4 * aGrid.periodSec
         let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration
@@ -68,17 +69,17 @@ extension MusicBeatPlanner {
               drop.timeSec <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else { return nil }
 
         for lead in dropLeadBars {
-            let overlap = Double(lead) * barOut
-            let mixOut = phraseEnd - overlap
-            // The incoming song advances `rate` item seconds per outgoing second.
+            // Bars are the outgoing song's own seconds; the overlap is heard in wall seconds.
+            let overlapItem = Double(lead) * barOut
+            let overlap = overlapItem / outRate
+            let mixOut = phraseEnd - overlapItem
+            // The incoming song advances `rate` item seconds per wall second.
             let mixIn = drop.timeSec - overlap * tempo.rate
             guard overlap <= maxOverlapSec, mixOut >= earliestOut - 1e-9, mixIn >= earliestIn - 1e-9 else { continue }
             if let earliest = inputs.earliestMixOutSec, mixOut < earliest { continue }
             if inputs.vocalGuardEnabled,
-               let collision = MusicVocalGuard.collisionSec(
-                   outgoing: a, incoming: b, outStart: mixOut, inStart: mixIn, rate: tempo.rate, length: overlap,
-                   outgoingIntervals: inputs.outgoing.vocalIntervals, incomingIntervals: inputs.incoming.vocalIntervals
-               ), collision > MusicVocalGuard.budgetSec {
+               let collision = guardCollision(inputs, outStart: mixOut, inStart: mixIn, rate: tempo.rate, wallLength: overlap),
+               collision > MusicVocalGuard.budgetSec {
                 continue
             }
             var plan = smart
@@ -99,7 +100,7 @@ extension MusicBeatPlanner {
             plan.barSec = barOut
             if inputs.bassSwapAvailable {
                 // The lows of the new song come in over the last two beats, so they are full on the drop itself.
-                let handover = min(bassHandoverBeats * aGrid.periodSec, overlap / 2)
+                let handover = min(bassHandoverBeats * aGrid.periodSec / outRate, overlap / 2)
                 plan.bassSwapAtSec = overlap - handover
                 plan.bassHandoverSec = handover
             }

@@ -300,4 +300,62 @@ import Testing
         #expect(netClashes(slot) == 0)
         #expect(slot >= 3)
     }
+
+    // MARK: Tier 4c C2: deck rate, stepwise slack, tempo jumps
+
+    @Test func playingSongsEffectiveTempoIsWhatTheNextOneMeets() {
+        // The anchor is 100 bpm held at 1.2 deck rate (never planned by the planner, but the arithmetic is exact): 120 effective.
+        // 121 fits it, 100 does not; with rate 1 it is the other way round.
+        let upcoming = [Self.song("near100", 100), Self.song("near120", 121), Self.song("far", 170)]
+        for seed in 1...30 {
+            var held = MusicMixOrderer(seed: UInt64(seed))
+            #expect(held.reorderTail(anchor: Self.song("a", 100), upcoming: upcoming, avoid: [], anchorRate: 1.2).first == "near120")
+            var plain = MusicMixOrderer(seed: UInt64(seed))
+            #expect(plain.reorderTail(anchor: Self.song("a", 100), upcoming: upcoming, avoid: []).first == "near100")
+        }
+    }
+
+    @Test func nearestFallbackNarrowsStepwise() {
+        // From 100 nothing fits. 150 is the nearest (0.25); 151 (0.255) is within the old fixed slack of 0.02 but the
+        // narrowest step that leaves two candidates is 0.01, so 130 (0.30) and 135 (0.325) never compete, and the pick is among the near two.
+        let songs = [Self.song("c150", 150), Self.song("c151", 151), Self.song("c130", 130), Self.song("c135", 135)]
+        for seed in 1...40 {
+            var orderer = MusicMixOrderer(seed: UInt64(seed))
+            let first = orderer.order(songs, first: Self.song("c100", 100)).first
+            #expect(first == "c150" || first == "c151", "seed \(seed): \(String(describing: first))")
+        }
+        #expect(MusicMixOrderer.nearestSlackSteps == MusicMixOrderer.nearestSlackSteps.sorted())
+        #expect(MusicMixOrderer.nearestSlack == 0.02)
+    }
+
+    @Test func aTempoJumpRanksBelowAnyStepInsideTheLine() {
+        // From 100: 160 (a jump of 0.28 after folding) and 190 (0.05 after folding, half time). Both are cut by the gate in
+        // a normal set; this checks the ranking function directly: the same key and energy, the jump scores lower.
+        let a = MusicMixCompact(Self.song("a", 100))
+        let jump = MusicMixCompact(Self.song("j", 160)), near = MusicMixCompact(Self.song("n", 140))
+        #expect((MusicMixScore.tempoError(a, jump) ?? 0) > MusicMixOrderer.tempoJumpError)
+        #expect((MusicMixScore.tempoError(a, near) ?? 0) > MusicMixOrderer.tempoJumpError)
+        #expect(MusicMixOrderer.tempoJumpPenalty > 0)
+    }
+
+    @Test func seededCorpusHasUnderFivePercentJumpsOver15Percent() {
+        var steps = 0, jumps = 0
+        for seed in 1...12 {
+            var g = MusicMixGenerator(seed: UInt64(seed) &* 131)
+            // A sparse corpus, uniform 70 to 180 bpm: far fewer neighbours than the gaussian set, so jumps are tempting.
+            let songs: [MusicMixProfile] = (0..<60).map { i in
+                Self.song("u\(i)", Double.random(in: 70...180, using: &g), energy: Float.random(in: 0...1, using: &g))
+            }
+            var orderer = MusicMixOrderer(seed: UInt64(seed))
+            let ids = orderer.order(songs, first: nil)
+            let byId = Dictionary(songs.map { ($0.videoId, MusicMixCompact($0)) }, uniquingKeysWith: { a, _ in a })
+            for (x, y) in zip(ids, ids.dropFirst()) {
+                steps += 1
+                if (MusicMixScore.tempoError(byId[x]!, byId[y]!) ?? 0) > MusicMixOrderer.tempoJumpError { jumps += 1 }
+            }
+        }
+        let share = Double(jumps) / Double(steps)
+        print("tempo jumps over 15%: \(jumps) of \(steps) = \(share)")
+        #expect(share < 0.05)
+    }
 }

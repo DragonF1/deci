@@ -47,8 +47,17 @@ nonisolated struct MusicMixOrderer: Sendable {
     /// A step looks at this many random remaining songs at most, which bounds a 500 song set to a few tens of thousands
     /// of scores and adds variety. Smaller sets are scanned whole.
     static let sampleLimit = 32
-    /// When no song fits on tempo, every song this close (as a fraction) to the nearest one stays eligible.
-    static let nearestSlack = 0.02
+    /// When no song fits on tempo, songs this close (as a fraction) to the nearest one stay eligible. The search is stepwise:
+    /// the narrowest step that leaves `nearestMinPool` songs wins, so a near tie keeps its choice and a far song is only
+    /// let in when there is nothing closer. The last step is the widest slack ever allowed.
+    static let nearestSlackSteps = [0.0, 0.005, 0.01, 0.02]
+    static let nearestMinPool = 2
+    static let nearestSlack = nearestSlackSteps[nearestSlackSteps.count - 1]
+    /// A step whose tempos differ by more than this (half and double time folded in) is a jump: a tempo jump ranks lower
+    /// than any step inside the line, whatever its pair score (a Mix plays each song at most 8% off its own tempo, so a
+    /// jump past 15% cannot be matched and gets the thinned sweep).
+    static let tempoJumpError = 0.15
+    static let tempoJumpPenalty = 0.25
 
     private var generator: MusicMixGenerator
 
@@ -70,8 +79,14 @@ nonisolated struct MusicMixOrderer: Sendable {
     /// After a manual skip: the next `count` upcoming songs are re-ordered out of the new current song (`anchor`),
     /// pushing the recently played `avoid` songs and their artists to the back. The rest stays as is.
     mutating func reorderTail(
-        anchor: MusicMixProfile?, upcoming: [MusicMixProfile], avoid: [MusicMixProfile], count: Int = tailCount
+        anchor: MusicMixProfile?, upcoming: [MusicMixProfile], avoid: [MusicMixProfile], count: Int = tailCount,
+        anchorRate: Double = 1
     ) -> [String] {
+        // The playing song may be held at a nudged rate for its whole song: its effective tempo is what the next song meets.
+        var anchor = anchor
+        if let bpm = anchor?.bpm, bpm.isFinite, bpm > 0, anchorRate.isFinite, anchorRate > 0.5, anchorRate < 2 {
+            anchor?.bpm = bpm * anchorRate
+        }
         let head = Array(upcoming.prefix(max(0, count)))
         let picked = run(songs: head, anchor: anchor, firstIndex: nil, arc: false, avoid: avoid)
         return picked.map { head[$0].videoId } + upcoming.dropFirst(head.count).map(\.videoId)
@@ -191,6 +206,9 @@ nonisolated struct MusicMixOrderer: Sendable {
                 distance += 1
             }
             if meta.avoided { value -= MusicMixOrderer.avoidPenalty }
+            if hasCurrent, let error = MusicMixScore.tempoError(current!, compact[index]), error > MusicMixOrderer.tempoJumpError {
+                value -= MusicMixOrderer.tempoJumpPenalty
+            }
             return (value, pair)
         }
     }
@@ -416,7 +434,12 @@ nonisolated struct MusicMixOrderer: Sendable {
             for position in all {
                 minError = min(minError, MusicMixScore.tempoError(current, compact[remaining[position]]) ?? 0)
             }
-            fitting = all.filter { (MusicMixScore.tempoError(current, compact[remaining[$0]]) ?? 0) <= minError + Self.nearestSlack }
+            let errors = all.map { MusicMixScore.tempoError(current, compact[remaining[$0]]) ?? 0 }
+            for slack in Self.nearestSlackSteps {
+                let step = all.indices.filter { errors[$0] <= minError + slack }.map { all[$0] }
+                fitting = step
+                if step.count >= min(Self.nearestMinPool, all.count) { break }
+            }
             if fitting.count > Self.sampleLimit {
                 for i in 0..<Self.sampleLimit { fitting.swapAt(i, i + generator.below(fitting.count - i)) }
                 fitting.removeLast(fitting.count - Self.sampleLimit)

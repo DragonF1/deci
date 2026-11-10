@@ -768,4 +768,48 @@ extension MusicBeatPlannerTests {
         #expect(tooLate.fallbackReason == "tooLate" && tooLate.fadeSeconds == guarded.fadeSeconds)
         #expect(tooLate.vocalAction == guarded.vocalAction)
     }
+
+    // MARK: Tier 4c C2: the deck rate of the outgoing song
+
+    @Test("an outgoing deck held at 1.05 meets a 126 bpm song at rate 1; wall overlap is item overlap / 1.05")
+    func outgoingDeckRate() throws {
+        var i = Self.inputs(b: Self.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, span: 0.1...236))
+        i.outgoing.deckRate = 1.05
+        let plan = Self.plan(i)
+        #expect(plan.mode == .beat && abs(plan.incomingRate - 1) < 1e-9)
+        let items = Double(plan.overlapBars) * plan.barSec
+        #expect(abs(plan.overlapSec - items / 1.05) < 1e-9 && plan.fadeSeconds == plan.overlapSec)
+        #expect(abs((plan.outgoingEndSec ?? 0) - ((plan.mixOutSec ?? 0) + items)) < 1e-9)
+        // Without the deck rate the same pair is rate 120/126.
+        let plain = Self.plan(Self.inputs(b: Self.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, span: 0.1...236)))
+        #expect(abs(plain.incomingRate - 120.0 / 126) < 1e-9)
+    }
+
+    @Test("70 against 140 meets at double time with the deck rate counted")
+    func halfTimeWithDeckRate() throws {
+        var i = Self.inputs(a: Self.grid(period: 60.0 / 70), b: Self.grid(period: 60.0 / 140, anchor: 0.1, phase: 1, span: 0.1...236))
+        let plain = try #require(B.tempoMatch(outBpm: 70, inBpm: 140))
+        #expect(plain.multiple == 2 && abs(plain.rate - 1) < 1e-12)
+        i.outgoing.deckRate = 1.04
+        let held = try #require(B.tempoMatch(outBpm: 70 * 1.04, inBpm: 140))
+        #expect(held.multiple == 2 && abs(held.rate - 1.04) < 1e-12)
+        let plan = Self.plan(i)
+        #expect(plan.mode == .beat && abs(plan.incomingRate - 1.04) < 1e-9)
+    }
+
+    @Test("the rate cap is 8 percent for the incoming song: 120 against 131 is refused, and a held 1.08 deck makes 130 fit")
+    func rateCap() {
+        #expect(B.maxRateError == 0.08 && B.tempoTolerance == B.maxRateError)
+        let clash = Self.plan(Self.inputs(b: Self.grid(period: 60.0 / 131, anchor: 0.1, phase: 1, span: 0.1...236)))
+        #expect(clash.mode != .beat && clash.fallbackReason == "tempoClash")
+        var held = Self.inputs(b: Self.grid(period: 60.0 / 131, anchor: 0.1, phase: 1, span: 0.1...236))
+        held.outgoing.deckRate = 1.08
+        let plan = Self.plan(held)
+        #expect(plan.mode == .beat)
+        #expect(abs(plan.incomingRate - 1) <= B.maxRateError + 1e-12)
+        // A garbage deck rate reads as 1.
+        var bad = Self.inputs()
+        bad.outgoing.deckRate = .nan
+        #expect(B.outgoingRate(bad) == 1)
+    }
 }

@@ -156,7 +156,8 @@ struct MusicServiceBeatMixTests {
         await h.tick(222)
         let plan = try #require(h.lastPlan)
         #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.fadeSeconds >= 6)
-        #expect(plan.incomingRate == 1)
+        // Tier 4c C2: the pair is within 8%, so the floor blend starts the incoming at the matched rate.
+        #expect(abs(plan.incomingRate - 1) <= MusicBeatPlanner.maxRateError)
     }
 
     @Test("a next song without a grid gives a gridless floor blend, never the plain smart fade")
@@ -215,7 +216,7 @@ struct MusicServiceBeatMixTests {
         // The first offer comes when the playhead is already within the preroll of the mix point.
         await h.tick(mixOut - 4)
         let plan = try #require(h.lastPlan)
-        #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.incomingRate == 1)
+        #expect(plan.mode == .beat && plan.overlapBars == 0 && abs(plan.incomingRate - 1) <= MusicBeatPlanner.maxRateError)
         #expect((plan.mixOutSec ?? 0) > mixOut - 4, "the blend starts after the playhead, from the earliest point the engine can meet")
     }
 

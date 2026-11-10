@@ -2,8 +2,9 @@
 // Tier 4c: the floor of every Mix transition. When no beat grid can be trusted (or the tempos, the phrase room or two singers
 // refuse a beat blend), the pair still gets a blend: a beat-mode plan at rate 1 with a 6 to 8 s overlap that starts at the
 // smart plan's start and hands the bass over mid-way, so the engine runs it through its beat path like any blend. When both
-// songs have a grid and the tempos meet within 3% the start is snapped beat on beat (downbeat on downbeat when both are known);
-// otherwise nothing can be aligned and the outgoing song is thinned instead (see `floorBlendPlan`). Pure, like the rest.
+// songs have a grid and the tempos meet within `maxRateError` (8%, the outgoing deck's own rate counted) the incoming song
+// starts at the matched rate, kept for the whole song, and its start is snapped beat on beat (downbeat on downbeat when both
+// are known); otherwise nothing can be aligned and the outgoing song is thinned instead (see `floorBlendPlan`). Pure.
 
 import Foundation
 
@@ -13,8 +14,9 @@ extension MusicBeatPlanner {
     static let floorMinFadeSeconds = 6.0
     /// The bass hands over across this many seconds in a floor blend.
     static let floorBassHandoverSec = 2.0
-    /// Tempos closer than this (a fraction, half and double time folded in) count as matched: kicks stay together for the overlap.
-    static let floorTempoError = 0.03
+    /// Tempos closer than this (a fraction, half and double time folded in) count as matched: the incoming song is played at
+    /// the matching rate, so the kicks stay together for the whole overlap. The same 8% cap as every Mix rate.
+    static let floorTempoError = maxRateError
     /// The incoming song must still have this much left after the overlap.
     static let floorMinIncomingRemainingSec = 10.0
     /// How far (whole seconds, each way) a floor blend may move off the smart start to keep two singers apart.
@@ -34,13 +36,16 @@ extension MusicBeatPlanner {
         gridlessBlendPlan(inputs, smart: smart, forceSweep: true)
     }
 
-    /// True when both songs have a tempo and they meet within `floorTempoError`.
-    static func floorTempoMatched(_ inputs: MusicTransitionInputs) -> Bool {
+    /// The incoming rate that puts the incoming beats on the outgoing deck's beats, when both songs have a tempo and they meet
+    /// within `floorTempoError` (half and double time folded in). nil otherwise.
+    static func floorTempo(_ inputs: MusicTransitionInputs) -> (rate: Double, multiple: Double)? {
         func bpm(_ side: MusicTransitionSide) -> Double? { (side.grid ?? side.analysis?.usableGrid)?.bpm }
-        guard let a = bpm(inputs.outgoing), let b = bpm(inputs.incoming), a.isFinite, b.isFinite, a > 0, b > 0 else { return false }
-        let ratio = max(a, b) / min(a, b)
-        return min(ratio - 1, abs(ratio / 2 - 1)) <= floorTempoError + 1e-9
+        guard let a = bpm(inputs.outgoing), let b = bpm(inputs.incoming), a.isFinite, b.isFinite, a > 0, b > 0 else { return nil }
+        return tempoMatch(outBpm: a * outgoingRate(inputs), inBpm: b, tolerance: floorTempoError)
     }
+
+    /// True when both songs have a tempo and they meet within `floorTempoError`.
+    static func floorTempoMatched(_ inputs: MusicTransitionInputs) -> Bool { floorTempo(inputs) != nil }
 
     /// The grids a floor blend can be snapped onto: both songs have one and their tempos meet within 3%. `bars` is true when both
     /// have a downbeat and the tempos are the same speed (not half or double time), so a downbeat can land on a downbeat.
@@ -50,7 +55,7 @@ extension MusicBeatPlanner {
               let b = inputs.incoming.grid ?? inputs.incoming.analysis?.usableGrid,
               a.periodSec.isFinite, b.periodSec.isFinite, a.periodSec > 0, b.periodSec > 0,
               a.anchorSec.isFinite, b.anchorSec.isFinite else { return nil }
-        let sameSpeed = abs(a.periodSec / b.periodSec - 1) <= floorTempoError + 1e-9
+        let sameSpeed = floorTempo(inputs)?.multiple == 1
         return (a, b, sameSpeed && a.barTime(0) != nil && b.barTime(0) != nil)
     }
 
@@ -73,12 +78,16 @@ extension MusicBeatPlanner {
         let aEnd = smart.outgoingEndSec ?? aDuration
         let bEnd = inputs.incoming.analysis.flatMap { MusicTransitionPlanner.trimmedEnd(of: $0, duration: bDuration) } ?? bDuration
         let alignment = floorAlignment(inputs)
+        let outRate = outgoingRate(inputs)
+        // The rate the incoming song keeps for its whole song: the match when the tempos meet (3 to 8% included), else 1.
+        let matchRate = floorTempo(inputs)?.rate ?? 1
+        let inRate = abs(matchRate - 1) <= 1e-9 ? 1 : matchRate
         // The incoming start moves to its next beat (downbeat) so it can land on one of the outgoing song's.
         var inStart = smart.incomingStartSec
         var inSnapped = false
         if let alignment {
             let snapped = snap(alignment.incoming, inStart, bars: alignment.bars, atOrAfter: true).time
-            if snapped.isFinite, bEnd - snapped - floorMinFadeSeconds >= floorMinIncomingRemainingSec { inStart = snapped; inSnapped = true }
+            if snapped.isFinite, bEnd - snapped - floorMinFadeSeconds * inRate >= floorMinIncomingRemainingSec { inStart = snapped; inSnapped = true }
         }
         let earliest = max(0, inputs.earliestMixOutSec ?? 0)
         let guardOn = inputs.vocalGuardEnabled
@@ -92,35 +101,35 @@ extension MusicBeatPlanner {
         var firstCollision: Double?
         func consider(_ mixOut: Double, _ fade: Double) -> Bool {
             var start = max(mixOut, earliest)
-            guard start + fade <= aEnd + 1e-9 else { return false }
+            // The fade is heard in wall seconds; the outgoing song spends `outRate` item seconds of it each.
+            let fadeItem = fade * outRate
+            guard start + fadeItem <= aEnd + 1e-9 else { return false }
             // Snap the mix-out onto an outgoing beat (downbeat), staying inside the song and after the earliest point.
             var aligned = false
             if inSnapped, let alignment {
                 var (time, unit) = snap(alignment.out, start, bars: alignment.bars, atOrAfter: false)
-                if time + fade > aEnd + 1e-9 { time -= unit }
+                if time + fadeItem > aEnd + 1e-9 { time -= unit }
                 if time < earliest - 1e-9 { time += unit }
-                if time.isFinite, time >= earliest - 1e-9, time >= 0, time + fade <= aEnd + 1e-9 { start = time; aligned = true }
+                if time.isFinite, time >= earliest - 1e-9, time >= 0, time + fadeItem <= aEnd + 1e-9 { start = time; aligned = true }
             }
-            let clips = guardOn && outIntervals.map { MusicVocalGuard.cutsOutgoingSinger($0, endSec: start + fade) } == true
-            let collision = guardOn ? (MusicVocalGuard.collisionSec(
-                outgoing: inputs.outgoing.analysis, incoming: inputs.incoming.analysis, outStart: start, inStart: inStart,
-                length: fade, outgoingIntervals: outIntervals, incomingIntervals: inputs.incoming.vocalIntervals
-            ) ?? 0) : 0
+            let clips = guardOn && outIntervals.map { MusicVocalGuard.cutsOutgoingSinger($0, endSec: start + fadeItem) } == true
+            let collision = guardOn ? (guardCollision(inputs, outStart: start, inStart: inStart, rate: inRate, wallLength: fade) ?? 0) : 0
             if firstCollision == nil { firstCollision = collision }
             let cost = collision + (clips ? 100 : 0)
             if best == nil || cost < best!.cost - 1e-12 { best = (start, fade, cost, collision, aligned) }
             return !clips && collision <= MusicVocalGuard.budgetSec
         }
         search: for fade in [floorFadeSeconds, floorMinFadeSeconds] {
-            guard bEnd - inStart - fade >= floorMinIncomingRemainingSec, aEnd - fade >= earliest else { continue }
-            let base = min(smartStart, aEnd - fade)
+            let fadeItem = fade * outRate
+            guard bEnd - inStart - fade * inRate >= floorMinIncomingRemainingSec, aEnd - fadeItem >= earliest else { continue }
+            let base = min(smartStart, aEnd - fadeItem)
             if consider(base, fade) { break search }
             guard guardOn else { continue }
             // The blend would end mid-word: move it so it ends in a gap between lines, within a few seconds.
-            if let intervals = outIntervals, let gap = MusicVocalGuard.nearestGap(intervals, to: max(base, earliest) + fade),
-               consider(gap - fade, fade) { break search }
+            if let intervals = outIntervals, let gap = MusicVocalGuard.nearestGap(intervals, to: max(base, earliest) + fadeItem),
+               consider(gap - fadeItem, fade) { break search }
             for step in 1...floorShiftSearchSec {
-                for shifted in [base - Double(step), base + Double(step)] where shifted >= earliest && shifted <= aEnd - fade {
+                for shifted in [base - Double(step), base + Double(step)] where shifted >= earliest && shifted <= aEnd - fadeItem {
                     if consider(shifted, fade) { break search }
                 }
             }
@@ -132,7 +141,9 @@ extension MusicBeatPlanner {
         plan.mode = .beat
         plan.reason = .ok
         plan.fallbackReason = nil
-        plan.incomingRate = 1
+        // Tier 4c: the matched rate (3 to 8% included) is the incoming song's rate for its whole song; no match keeps 1.
+        let sweeps = forceSweep || !floorTempoMatched(inputs)
+        plan.incomingRate = inRate
         plan.mixOutSec = chosen.mixOut
         plan.mixInSec = inStart
         plan.floorAligned = chosen.aligned && inSnapped
@@ -140,7 +151,7 @@ extension MusicBeatPlanner {
         plan.incomingStartSec = inStart
         plan.fadeStartSec = chosen.mixOut
         plan.fadeSeconds = fade
-        plan.outgoingEndSec = chosen.mixOut + fade
+        plan.outgoingEndSec = chosen.mixOut + fade * outRate
         plan.overlapBars = 0
         plan.overlapSec = fade
         plan.barSec = 0
@@ -150,7 +161,7 @@ extension MusicBeatPlanner {
             plan.vocalCollisionSec = chosen.collision
             plan.vocalBeforeSec = firstCollision
         }
-        if forceSweep || !floorTempoMatched(inputs) {
+        if sweeps {
             plan.style = .filterSweep
             plan.sweepFromHz = Double(MusicSweepSettings.defaultFromHz)
             plan.sweepToHz = Double(MusicSweepSettings.defaultToHz)

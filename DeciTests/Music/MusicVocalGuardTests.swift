@@ -150,4 +150,18 @@ struct MusicVocalGuardTests {
             #expect(settings.musicVocalGuard, "\(name)")
         }
     }
+
+    @Test("the planner's guard counts the outgoing deck rate: item seconds of the held deck, collision back in wall seconds")
+    func outgoingDeckRateInGuard() throws {
+        typealias BT = MusicBeatPlannerTests
+        var i = BT.inputs()
+        // A sings to item 200 (outro), B from item 8 (intro end). Plain deck: A heard [0, 10], B from 8, collision 2 s.
+        let plain = try #require(MusicBeatPlanner.guardCollision(i, outStart: 190, inStart: 0, rate: 1, wallLength: 16))
+        #expect(abs(plain - 2) < 1e-9)
+        // Outgoing held at 1.05, incoming at 1.05 too (relative 1): the overlap is 16.8 outgoing item s, the collision is
+        // the same 2 item s, which is 2 / 1.05 wall s.
+        i.outgoing.deckRate = 1.05
+        let held = try #require(MusicBeatPlanner.guardCollision(i, outStart: 190, inStart: 0, rate: 1.05, wallLength: 16))
+        #expect(abs(held - 2 / 1.05) < 1e-9)
+    }
 }

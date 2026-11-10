@@ -106,6 +106,9 @@ struct MusicTransitionSide: Equatable, Sendable {
     var vocalIntervals: [ClosedRange<Double>]? = nil
     /// Tier 4b: genre tags from the song facts, often empty. Only ever a tie-break for the style picker.
     var genres: [String] = []
+    /// Tier 4c: the rate this song's deck plays at for its whole song (a Mix nudged it), item seconds per wall second. Only
+    /// meaningful on the outgoing side. 1 for a song that was started plainly.
+    var deckRate: Double = 1
 }
 
 struct MusicTransitionInputs: Equatable, Sendable {
