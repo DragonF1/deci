@@ -181,6 +181,12 @@ extension LiveChecks {
         var reasons: [String: Int] = [:]
         var planErrors: [Double] = []
         var inDown = 0, outDown = 0, uncovered = 0, extrapolated = 0
+        // Truth bar positions come from an alignment offset that aliases by whole beats, so a downbeat is only judged on a
+        // song whose offset is under half a beat (the same rule the triage uses). Timing (beat phase) is judged on all.
+        let alignmentByKey = LiveAlignment.load()
+        func aliasFree(_ song: LiveSong) -> Bool { alignmentByKey[song.key]?.aliasFree ?? false }
+        var inJudged = 0, outJudged = 0
+        var splits: [(err: Double, bars: Int, extrapolated: Bool)] = []
         var lines7: [String] = []
         var inRange: [String] = []
         var inRangeIn = 0, inRangeOut = 0, inRangeCount = 0
@@ -209,8 +215,9 @@ extension LiveChecks {
             planErrors.append(err)
             let inIsDown = nb.inBar == 1 && abs(nb.delta) < 0.06
             let outIsDown = na.inBar == 1 && abs(na.delta) < 0.06
-            if inIsDown { inDown += 1 }
-            if outIsDown { outDown += 1 }
+            if aliasFree(p.b) { inJudged += 1; if inIsDown { inDown += 1 } }
+            if aliasFree(p.a) { outJudged += 1; if outIsDown { outDown += 1 } }
+            splits.append((err, p.plan.overlapBars, na.extrapolated || nb.extrapolated))
             lines7.append("\(p.a.index) > \(p.b.index): phase error \(liveF(err, 1)) ms, rate \(liveF(rate, 3)), bars \(p.plan.overlapBars), incoming enters truth beat \(nb.inBar) (offset \(liveF(nb.delta * 1000, 0)) ms), outgoing leaves truth beat \(na.inBar) (offset \(liveF(na.delta * 1000, 0)) ms)")
         }
         let absErr = planErrors.map(abs)
@@ -233,7 +240,17 @@ extension LiveChecks {
             engineLines.append("real overlap \(a.index) > \(b.index): beat phase error median \(liveF(med, 1)) ms, max \(liveF(errs.max() ?? .nan, 1)) ms over \(errs.count) samples (AVPlayer item times vs truth beats)")
         }
         let measured = planErrors.count
-        let downShare = measured == 0 ? 0 : Double(inDown) / Double(measured)
+        // No alias free song in any plan means the bar position cannot be judged: not a failure, and said so below.
+        let downJudged = inJudged + outJudged
+        let downShare = downJudged == 0 ? 1 : Double(inDown + outDown) / Double(downJudged)
+        func med(_ rows: [(err: Double, bars: Int, extrapolated: Bool)]) -> String {
+            rows.isEmpty ? "n/a (0 plans)" : "median \(liveF(LiveScan.median(rows.map { abs($0.err) }), 1)) ms, max \(liveF(rows.map { abs($0.err) }.max() ?? .nan, 1)) ms over \(rows.count) plans"
+        }
+        let splitLines = [
+            "SPLIT phase error: real blends (bars > 0) \(med(splits.filter { $0.bars > 0 })); bars=0 cuts \(med(splits.filter { $0.bars == 0 }))",
+            "SPLIT phase error: truth annotated at both mix points \(med(splits.filter { !$0.extrapolated })); truth carried past the last annotated beat \(med(splits.filter { $0.extrapolated }))",
+            "downbeat share, alias free songs only (bar position needs no alignment choice): incoming \(inDown) of \(inJudged), outgoing \(outDown) of \(outJudged)\(downJudged == 0 ? " (nothing to judge, so no verdict from this)" : "")",
+        ]
         let enginePass = engineMedians.allSatisfy { $0 <= 60 }
         let pass7 = measured >= 1 && planMedian <= 40 && downShare >= 0.6 && enginePass
         let alignment = LiveAlignment.load()
@@ -277,9 +294,9 @@ extension LiveChecks {
             "refusal reasons of the non-beat plans: \(reasons.sorted { $0.key < $1.key }.map { "\($0.key) x\($0.value)" }.joined(separator: ", "))",
             "beat_this grids passing the planner gate: \(gatePass) of \(withGrid) songs with a grid (\(world.songs.count) songs)",
             "plan phase error vs truth beats: median \(liveF(planMedian, 1)) ms, max \(liveF(planMax, 1)) ms over \(measured) of \(beat) beat plans (\(extrapolated) use a truth grid carried on past the last annotated beat, at most 15 s; \(uncovered) excluded: mix point farther out)",
-            "incoming song enters on a truth downbeat: \(inDown) of \(measured); outgoing leaves on a downbeat: \(outDown) of \(measured) (thresholds: median <= 40 ms, downbeat share >= 60%, real overlaps median <= 60 ms)",
+            "thresholds: plan phase error median <= 40 ms, downbeat share >= 60% (alias free songs only), real overlaps median <= 60 ms",
             "real engine overlaps measured as beat mixes: \(realBeat.count); \(engineMedians.isEmpty ? "none, so only the planned alignment is measured" : "see below")",
-        ] + engineLines + lines7 + triage7)
+        ] + splitLines + engineLines + lines7 + triage7)
 
         // Check 8
         let budget = MusicVocalGuard.budgetSec

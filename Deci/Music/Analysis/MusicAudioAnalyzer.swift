@@ -549,7 +549,11 @@ nonisolated enum MusicFileAnalyzer {
         logger.notice("analysis_grid_ms beatthis_drain=\(ms(start.duration(to: drained))) beatthis_model=\(ms(drained.duration(to: clock.now)))")
         switch outcome {
         case .grid(let grid):
-            return (grid, "beatthis")
+            // Tier 4c A2: a confident grid half a beat off the onsets is moved (the downbeat is dropped with it).
+            let (audio, rate) = decimator.finish()
+            let fixed = MusicBeatPhaseCheck.corrected(grid, samples: audio, rate: rate)
+            if fixed != grid { logger.notice("analysis_beat_phase_shift half_beat=1") }
+            return (fixed, "beatthis")
         case .cancelled:
             return (nil, "beatthis")
         case .noGrid:

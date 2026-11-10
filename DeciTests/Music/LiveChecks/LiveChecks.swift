@@ -108,7 +108,7 @@ final class LiveChecks {
     // MARK: 2. Up next text and glyphs
 
     func check2() async {
-        let title = "Up next shows BPM + Camelot and the beat/fade glyph only in Mix"
+        let title = "Up next shows the BPM number (no key, no glyph) only in Mix"
         let (rig, _) = await startFake(count: world.songs.count)
         let service = rig.service
         service.setShuffleMode(.mix)
@@ -122,17 +122,21 @@ final class LiveChecks {
         let current = service.queue.current
         let upcoming = Array(service.queue.upcoming.prefix(12))
         var chain = [current].compactMap { $0 } + upcoming
-        var texts = 0, beatGlyphs = 0, fadeGlyphs = 0
+        var texts = 0, beatGlyphs = 0, fadeGlyphs = 0, withBpm = 0, wantBpm = 0
         var lines: [String] = []
         var rowsOK = true
         for (index, track) in upcoming.enumerated() {
             let text = service.mixRowText(for: track.videoId)
             let prev = chain[index].videoId
             let info = service.mixInfo(from: prev, to: track.videoId)
-            if let text, text.contains("\u{00B7}") || Int(text.prefix(3)) != nil { texts += 1 }
+            // Since ba05722 and b4afb52 a Mix row shows the tempo only: a bare number, present exactly when the song has a grid.
+            let hasGrid = world.rows[track.videoId]?.usableGrid != nil
+            if let text, !text.isEmpty, text.allSatisfy(\.isNumber) { texts += 1; withBpm += 1 }
+            if (text != nil) != hasGrid { rowsOK = false }
+            if hasGrid { wantBpm += 1 }
             if info?.mode == .beat { beatGlyphs += 1 }
             if info?.mode == .fade { fadeGlyphs += 1 }
-            if text == nil || info == nil { rowsOK = false }
+            if info == nil { rowsOK = false }
             lines.append("row \(index + 1) \(name(track.videoId)): text \(text ?? "none"), pair \(info == nil ? "none" : "planned")")
         }
         chain.removeAll()
@@ -151,31 +155,32 @@ final class LiveChecks {
             for (a, b) in zip(ahead, ahead.dropFirst()) { chainPairs.append((a.videoId, b.videoId)) }
         }
         let mixShot = LiveRender.shot(MusicQueueView(service: service, navigation: navigation(service)), width: 380, height: 520, name: "check2-upnext-mix.png")
-        let mixOCR = mixShot?.text.filter { LiveChecks.hasCamelot($0) }.count ?? 0
+        let mixOCR = mixShot?.text.filter { LiveChecks.hasBpm($0) }.count ?? 0
         service.setShuffleMode(.shuffle)
         await world.settle(service)
         let shuffleTexts = service.queue.upcoming.prefix(12).compactMap { service.mixRowText(for: $0.videoId) }.count
         let shuffleGlyphs = zip([service.queue.current].compactMap { $0 } + Array(service.queue.upcoming.prefix(11)), service.queue.upcoming.prefix(12))
             .compactMap { service.mixInfo(from: $0.0.videoId, to: $0.1.videoId) }.count
         let shuffleShot = LiveRender.shot(MusicQueueView(service: service, navigation: navigation(service)), width: 380, height: 520, name: "check2-upnext-shuffle.png")
-        let shuffleOCR = shuffleShot?.text.filter { LiveChecks.hasCamelot($0) }.count ?? 0
+        let shuffleOCR = shuffleShot?.text.filter { LiveChecks.hasBpm($0) }.count ?? 0
         service.setShuffleMode(.off)
         await world.settle(service)
         let offTexts = service.queue.upcoming.prefix(12).compactMap { service.mixRowText(for: $0.videoId) }.count
-        let pass = got && rowsOK && texts == upcoming.count && beatGlyphs + fadeGlyphs == upcoming.count
+        let pass = got && rowsOK && texts == wantBpm && wantBpm >= 1
             && shuffleTexts == 0 && shuffleGlyphs == 0 && offTexts == 0
             && (mixShot?.inkFraction ?? 0) > 0.02 && mixOCR >= 1 && shuffleOCR == 0
         finish(2, title, pass: pass, [
-            "Mix: \(texts) of \(upcoming.count) rows carry the grey text, glyphs: \(beatGlyphs) beat (metronome), \(fadeGlyphs) fade (merge arrows)",
+            "Mix: \(withBpm) of \(upcoming.count) rows carry a BPM number (\(wantBpm) songs have a grid, so that is the expected count); pair info present on every row; modes \(beatGlyphs) beat, \(fadeGlyphs) fade (not drawn any more)",
             "Shuffle: \(shuffleTexts) texts, \(shuffleGlyphs) glyphs. Off: \(offTexts) texts.",
-            "OCR of the rendered view: Mix image has \(mixOCR) rows with a number and a middle dot; Shuffle image has \(shuffleOCR). Ink Mix \(liveF((mixShot?.inkFraction ?? 0) * 100, 1))%, Shuffle \(liveF((shuffleShot?.inkFraction ?? 0) * 100, 1))%.",
+            "OCR of the rendered view: Mix image has \(mixOCR) OCR strings with a BPM-looking number; Shuffle image has \(shuffleOCR). Ink Mix \(liveF((mixShot?.inkFraction ?? 0) * 100, 1))%, Shuffle \(liveF((shuffleShot?.inkFraction ?? 0) * 100, 1))%.",
             "PNG: \(mixShot?.url.path ?? "render failed")",
             "PNG: \(shuffleShot?.url.path ?? "render failed")",
         ] + lines)
     }
 
-    static func hasCamelot(_ text: String) -> Bool {
-        text.range(of: #"\b\d{1,2}[AB]\b"#, options: .regularExpression) != nil
+    /// A bare 60...200 number that is not part of a m:ss length: what a Mix row's tempo reads as after OCR.
+    static func hasBpm(_ text: String) -> Bool {
+        text.range(of: #"(?<![:\d])(6\d|[7-9]\d|1\d\d|200)(?![:\d])"#, options: .regularExpression) != nil
     }
 
     func navigation(_ service: MusicService) -> MusicSearchNavigation { MusicSearchNavigation(service: service) }

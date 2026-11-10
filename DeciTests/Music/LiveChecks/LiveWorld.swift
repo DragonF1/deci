@@ -100,8 +100,7 @@ final class LiveWorld {
 
     /// The planner's own gate for a grid.
     nonisolated static func gatePasses(_ g: MusicBeatGrid) -> Bool {
-        MusicBeatGrid.periodRange.contains(g.periodSec) && g.beatConfidence >= MusicBeatPlanner.minConfidence
-            && g.intervalSpread <= MusicBeatPlanner.maxIntervalSpread && abs(g.driftSec) <= MusicBeatPlanner.maxDriftSec
+        MusicBeatGrid.periodRange.contains(g.periodSec) && MusicBeatPlanner.failedChecks(g).isEmpty
     }
 
     // MARK: - A real service
