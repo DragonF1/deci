@@ -234,6 +234,15 @@ struct MusicAnalysisStoreTests {
         #expect(await store.entry(for: Self.id) != nil)
     }
 
+    @Test("A version 5 row (grid not yet checked against the onsets) is stale and listed for re-analysis")
+    func versionFiveIsStale() async throws {
+        let store = MusicAnalysisStore(url: nil)
+        try await store.put(Self.sample(version: 5))
+        #expect(MusicAnalysis.currentVersion >= 6)
+        #expect(await store.freshness(of: Self.id, matching: nil) == .staleVersion)
+        #expect(await store.staleVideoIds(limit: 10) == [Self.id])
+    }
+
     @Test("An energy payload with an unknown version counts as staleVersion")
     func unknownPayload() async throws {
         let folder = makeFolder()

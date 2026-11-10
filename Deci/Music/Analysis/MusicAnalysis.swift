@@ -10,8 +10,10 @@ struct MusicAnalysis: Sendable, Equatable {
     /// from kick, back-beat, harmony and section cues with a held-out check (3b accuracy P2). 5: the row carries a musical
     /// key and an energy rating (tier 4); an older row has neither until the sweep redoes it. Version 5 is also the
     /// first with beat_this grids (3d); it is unreleased and the installed build writes 4, so every installed row is
-    /// re-analysed into one anyway and no further bump is needed.
-    static let currentVersion = 5
+    /// re-analysed into one anyway. 6: the beat_this grid is checked against the onsets and moved half a beat when it
+    /// sat on the offbeat (tier 4c), so a version 5 grid may still be half a beat off. Older rows are redone lazily
+    /// (next-song preload, then the paced background sweep), never all at once.
+    static let currentVersion = 6
     /// First version whose rows may carry a beat grid; older rows keep their fade fields but have no grid. A version 2
     /// or 3 grid stays usable (an unreadable file drops its old bass-only downbeat guess, a re-analysis replaces it) until the background sweep replaces it with a version 4 one.
     static let gridVersion = 2
