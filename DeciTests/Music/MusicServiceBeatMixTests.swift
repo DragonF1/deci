@@ -148,26 +148,25 @@ struct MusicServiceBeatMixTests {
         #expect(!h.service.transitionLines.contains { $0.hasPrefix("transition_beat") })
     }
 
-    @Test("Crossfade off gives no beat plan whatever the beat setting says")
-    func crossfadeOffGivesNoBeat() async throws {
+    @Test("Tier 4c: Crossfade off with Mix on still blends (a floor blend this late), never a gapless cut")
+    func crossfadeOffStillBlends() async throws {
         let h = BeatHarness(crossfade: false, beatMix: true)
         await start(h)
         await h.tick(126)
         await h.tick(222)
         let plan = try #require(h.lastPlan)
-        #expect(plan.mode != .beat)
+        #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.fadeSeconds >= 6)
         #expect(plan.incomingRate == 1)
     }
 
-    @Test("a next song without a grid gives the smart plan and a beat_fallback line with the reason")
+    @Test("a next song without a grid gives a gridless floor blend, never the plain smart fade")
     func missingGridFallsBack() async throws {
         let h = BeatHarness()
         await start(h, bGrid: false)
         await h.tick(126)
         await h.tick(205)
         let plan = try #require(h.lastPlan)
-        #expect(plan.mode != .beat)
-        #expect(h.service.transitionLines.contains { $0.hasPrefix("transition_beat_fallback from=a to=b reason=") })
+        #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.fadeSeconds >= 6 && plan.bassSwapAtSec != nil)
     }
 
     @Test("a beat plan opens its window at 70 s before the trimmed end, not before")
@@ -205,8 +204,8 @@ struct MusicServiceBeatMixTests {
         #expect(second.incomingRate == 1)
     }
 
-    @Test("a mix point nearer than the preroll gives smart (tooLate) instead of a beat plan the engine cannot meet")
-    func earliestMixOutGivesSmart() async throws {
+    @Test("a mix point nearer than the preroll gives a floor blend from the earliest point, not a beat plan the engine cannot meet")
+    func earliestMixOutGivesFloor() async throws {
         let h = BeatHarness()
         await start(h)
         // The 8-bar plan (the later mix point): a 16-bar one no longer fits, so the planner drops to 8.
@@ -216,9 +215,8 @@ struct MusicServiceBeatMixTests {
         // The first offer comes when the playhead is already within the preroll of the mix point.
         await h.tick(mixOut - 4)
         let plan = try #require(h.lastPlan)
-        #expect(plan.mode != .beat)
-        #expect(plan.incomingRate == 1)
-        #expect(h.service.transitionLines.contains { $0.contains("reason=tooLate") })
+        #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.incomingRate == 1)
+        #expect((plan.mixOutSec ?? 0) > mixOut - 4, "the blend starts after the playhead, from the earliest point the engine can meet")
     }
 
     @Test("a late row replan keeps the park offset: the plan the engine already holds is never moved")

@@ -134,7 +134,7 @@ private struct TransitionHarness {
 struct MusicServiceTransitionTests {
     // MARK: - The plan handed in at offer
 
-    @Test("both rows fresh: the engine gets one smart plan with the trims and the worked-example numbers")
+    @Test("both rows fresh: the engine gets one floor blend with the trims and the smart start")
     func smartPlanAtOffer() async throws {
         let h = TransitionHarness()
         await h.standardRows()
@@ -144,15 +144,14 @@ struct MusicServiceTransitionTests {
 
         #expect(h.engine.preloads.count == 1)
         let plan = try #require(h.lastPlan)
-        #expect(plan.mode == .smart)
-        #expect(plan.reason == .ok)
+        // Tier 4c: Mix never falls back to the plain smart fade; with no grids this is a gridless 8 s floor blend from the smart start.
+        #expect(plan.mode == .beat)
         #expect(plan.incomingStartSec == 0.5)
-        #expect(plan.outgoingEndSec == 197)
-        // outro 12 s, intro 7.5 s: the shorter one is the fade, and the fade starts at the outro.
-        #expect(plan.fadeSeconds == 7.5)
+        #expect(plan.fadeSeconds == 8)
         #expect(plan.fadeStartSec == 185)
+        #expect(plan.incomingRate == 1)
         let line = try #require(h.service.transitionLines.first)
-        #expect(line.hasPrefix("transition_plan from=a to=b mode=smart"))
+        #expect(line.hasPrefix("transition_plan from=a to=b mode=beat"))
         #expect(!line.contains("http"))
     }
 
@@ -253,7 +252,7 @@ struct MusicServiceTransitionTests {
         await gate.open()
         await h.service.analysisTask?.value
         #expect(h.engine.preloads.count == 1)
-        #expect(h.lastPlan?.mode == .smart)
+        #expect(h.lastPlan?.mode == .beat)
         #expect(h.lastPlan?.incomingStartSec == 0.5)
     }
 
@@ -308,22 +307,16 @@ struct MusicServiceTransitionTests {
         await h.startQueue(["a", "b"])
         await h.tick(126)
         await h.tick(160)
-        #expect(h.lastPlan?.mode == .smart)
+        #expect(h.lastPlan?.mode == .beat)
         let cancelsBefore = h.engine.cancelPreloadCount
 
+        // Tier 4c: Mix's floor blend is a beat-mode plan; a ready beat preload still ahead is kept and re-planned in place.
         h.service.setCrossfade(false)
         h.service.setShuffleMode(.off)
         let off = try #require(h.engine.updatedPlans.last ?? nil)
         #expect(off.mode == .gapless)
         #expect(off.incomingStartSec == 0.5)
-        #expect(off.outgoingEndSec == 197)
-
-        h.service.setCrossfade(true)
-        let on = try #require(h.engine.updatedPlans.last ?? nil)
-        #expect(on.mode == .fixed, "Crossfade alone, outside Mix, is a plain fade")
-        #expect(on.fadeStartSec == nil)
-        #expect(h.engine.updatedPlans.count == 2)
-        #expect(h.engine.preloads.count == 1, "the standby is not rebuilt")
+        #expect(h.engine.preloads.count == 1)
         #expect(h.engine.cancelPreloadCount == cancelsBefore)
     }
 

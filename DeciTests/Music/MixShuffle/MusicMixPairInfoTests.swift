@@ -55,12 +55,12 @@ struct MusicMixPairInfoTests {
         #expect(info.camelot != nil)
     }
 
-    @Test("a song without a grid fades, and shows no tempo")
+    @Test("a song without a grid still blends (a gridless floor blend), and shows no tempo")
     func noGridFades() {
         let a = MixRows.row("aaaaaaaaaaa", bpm: 120)
         let b = MixRows.row("bbbbbbbbbbb", bpm: nil)
         let info = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(b))
-        #expect(info.mode == .fade)
+        #expect(info.mode == .beat)
         #expect(info.bpm == nil)
     }
 
@@ -86,14 +86,14 @@ struct MusicMixPairInfoTests {
         #expect(MusicMixPairInfo(bpm: nil, camelot: nil, mode: .fade).style == .longBlend)
     }
 
-    @Test("a tempo clash pair plans a cut or an echo")
+    @Test("a tempo clash pair plans a blend, never a cut or an echo")
     func clashShowsStyle() {
         let a = MixRows.row("aaaaaaaaaaa", bpm: 120)
         let b = MixRows.row("bbbbbbbbbbb", bpm: 90)
         let info = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(b))
-        #expect(info.style == .quickCut || info.style == .echoOut)
+        #expect(info.style != .quickCut && info.style != .echoOut)
         let after = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(b), previousStyle: info.style)
-        #expect(after.style != info.style)
+        #expect(after.style != .quickCut && after.style != .echoOut)
     }
 
     @Test("Up next glyphs chain down the queue: row i is chosen against row i-1, the first against the last applied style")
@@ -105,10 +105,10 @@ struct MusicMixPairInfoTests {
         let sides = rows.map { Optional(MixRows.side($0)) }
         let chain = MusicMixPairInfo.makeChain(sides: sides, lastApplied: nil).compactMap { $0 }
         #expect(chain.count == 3)
-        #expect(chain[0].style != .longBlend)
-        for index in 1..<chain.count { #expect(chain[index].style != chain[index - 1].style) }
+        // Tier 4c: tempo clashes blend; a style may repeat, so the chain only has to stay a blend (no cut or echo).
+        for info in chain { #expect(info.style != .quickCut && info.style != .echoOut) }
         let seeded = MusicMixPairInfo.makeChain(sides: sides, lastApplied: chain[0].style).compactMap { $0 }
-        #expect(seeded[0].style != chain[0].style)
+        #expect(seeded.count == 3)
         #expect(MusicMixPairInfo.makeChain(sides: [sides[0]], lastApplied: nil).isEmpty)
     }
 

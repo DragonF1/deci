@@ -88,4 +88,37 @@ enum MusicVocalGuard {
             inStart: inStart, rate: rate, length: length
         )
     }
+
+    // MARK: Cut-off (the outgoing singer stopped mid-word)
+
+    /// How far a mix point may move to land in a gap between sung lines.
+    static let gapSearchSec = 4.0
+    /// Where in a gap the moved end lands, in seconds past the last word.
+    static let gapMarginSec = 0.05
+
+    /// True when the outgoing song is still being sung at `endSec`: the audible end of a cut (its mix-out), or of a blend (its
+    /// mix-out plus its fade), falls strictly inside a vocal interval.
+    static func cutsOutgoingSinger(_ intervals: [ClosedRange<Double>], endSec: Double) -> Bool {
+        guard endSec.isFinite else { return false }
+        return intervals.contains { $0.lowerBound < endSec && endSec < $0.upperBound }
+    }
+
+    /// The same with the structural proxy when the song has no lyric intervals: it sings between `introEnd` and `outroStart`,
+    /// so an end before the outro start clips the singer. A song the proxy cannot read (no analysis, a value that is not
+    /// finite, introEnd >= outroStart) never clips.
+    static func cutsOutgoingSinger(outgoing: MusicAnalysis?, intervals: [ClosedRange<Double>]?, endSec: Double) -> Bool {
+        if let intervals { return cutsOutgoingSinger(intervals, endSec: endSec) }
+        guard endSec.isFinite, let a = outgoing, a.introEnd.isFinite, a.outroStart.isFinite, a.outroStart > 0,
+              a.introEnd < a.outroStart else { return false }
+        return a.introEnd < endSec && endSec < a.outroStart
+    }
+
+    /// The point nearest `endSec` (within `within` seconds) that no sung line covers: just past the end of a line or just
+    /// before the start of one. nil when there is none.
+    static func nearestGap(_ intervals: [ClosedRange<Double>], to endSec: Double, within: Double = gapSearchSec) -> Double? {
+        guard endSec.isFinite else { return nil }
+        let candidates = intervals.flatMap { [$0.lowerBound - gapMarginSec, $0.upperBound + gapMarginSec] }
+            .filter { abs($0 - endSec) <= within && $0 >= 0 && !cutsOutgoingSinger(intervals, endSec: $0) }
+        return candidates.min { abs($0 - endSec) < abs($1 - endSec) }
+    }
 }

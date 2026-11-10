@@ -287,18 +287,18 @@ struct MusicBeatPlannerTests {
 
     @Test("a missing grid is only reported when a grid was expected")
     func gridMissingReporting() {
-        // No song has a grid: silent (every song before 3b).
-        #expect(MusicTransitionPlanner.plan(Self.inputs(a: nil, b: nil)).fallbackReason == nil)
+        // No song has a grid: tier 4c still blends (the floor blend), and the log says why there is no beat plan.
+        #expect(MusicTransitionPlanner.plan(Self.inputs(a: nil, b: nil)).fallbackReason == "gridMissing")
         // The other song has one and this version 2 row has none: reported.
         #expect(MusicTransitionPlanner.plan(Self.inputs(a: nil)).fallbackReason == "gridMissing")
         // A version 2 row whose stored grid is corrupt: reported even when nothing else has a grid.
         var broken = Self.inputs(a: nil, b: nil)
         broken.outgoing.analysis?.beatGrid = Data([1, 2, 3])
         #expect(MusicTransitionPlanner.plan(broken).fallbackReason == "gridMissing")
-        // A version 1 row: silent.
+        // A version 1 row: the same.
         var v1 = Self.inputs(a: nil)
         v1.outgoing.analysis?.version = 1
-        #expect(MusicTransitionPlanner.plan(v1).fallbackReason == nil)
+        #expect(MusicTransitionPlanner.plan(v1).fallbackReason == "gridMissing")
     }
 
     @Test("the incoming room is measured to its trimmed end")
@@ -490,7 +490,9 @@ struct MusicBeatPlannerTests {
 
         let none = Self.inputs(a: nil, b: nil)
         let plan = MusicTransitionPlanner.plan(none)
-        #expect(plan == MusicTransitionPlanner.smartPlan(none) && plan.fallbackReason == nil)
+        // Tier 4c: no grid at all is a floor blend (beat mode, rate 1, 6 s or more, bass swap), never the plain smart fade.
+        #expect(plan.mode == .beat && plan.fallbackReason == "gridMissing" && plan.incomingRate == 1)
+        #expect(plan.fadeSeconds >= 6 && plan.bassSwapAtSec != nil)
 
         var off = Self.inputs(); off.beatMixEnabled = false
         let offPlan = MusicTransitionPlanner.plan(off)
@@ -655,8 +657,9 @@ extension MusicBeatPlannerTests {
         #expect(plan.fadeSeconds == smart.fadeSeconds && plan.fadeStartSec == smart.fadeStartSec)
         #expect((plan.vocalBeforeSec ?? 0) > MusicVocalGuard.budgetSec)
         // Through the transition planner the smart plan is the guarded one and says it came from a beat plan.
+        // Tier 4c: the planner then blends anyway (the floor blend) and keeps the reason for the log.
         let full = MusicTransitionPlanner.plan(i)
-        #expect(full.mode == .smart && full.fallbackReason == "vocalClash" && full.vocalAction == "beatToSmart")
+        #expect(full.mode == .beat && full.fallbackReason == "vocalClash" && full.fadeSeconds >= 6)
         #expect(full.incomingStartSec == smart.incomingStartSec)
     }
 
@@ -699,7 +702,7 @@ extension MusicBeatPlannerTests {
         #expect(plan.mode == .smart && plan.fallbackReason == "vocalClash")
         #expect((plan.vocalBeforeSec ?? 0) > MusicVocalGuard.budgetSec)
         let full = MusicTransitionPlanner.plan(i)
-        #expect(full.mode == .smart && full.fallbackReason == "vocalClash" && full.vocalAction == "beatToSmart")
+        #expect(full.mode == .beat && full.fallbackReason == "vocalClash" && full.bassSwapAtSec != nil)
     }
 
     @Test("guard off never runs the 4 bar tier")
@@ -754,12 +757,10 @@ extension MusicBeatPlannerTests {
         let smart = Self.collidingSmart(for: i)
         let guarded = MusicTransitionPlanner.vocalGuarded(smart, i)
         #expect(guarded.fadeSeconds < smart.fadeSeconds)
+        // Tier 4c: the refusal leads to the floor blend, not the guarded smart fade.
         let plan = MusicTransitionPlanner.plan(i, smart: smart)
-        #expect(plan.mode == .smart && plan.fallbackReason == "vocalClash" && plan.vocalAction == "beatToSmart")
-        #expect(plan.fadeSeconds == guarded.fadeSeconds && plan.fadeStartSec == guarded.fadeStartSec)
-        #expect(plan.outgoingRampSeconds == guarded.outgoingRampSeconds)
-        #expect((plan.vocalBeforeSec ?? 0) > MusicVocalGuard.budgetSec)
-        // Any other refusal: guarded smart plus the reason.
+        #expect(plan.mode == .beat && plan.fallbackReason == "vocalClash" && plan.fadeSeconds >= 6)
+        // A mix point already past leaves no room for a blend: the guarded smart plus the reason, as before.
         var late = i
         late.earliestMixOutSec = 1000
         let tooLate = MusicTransitionPlanner.plan(late, smart: smart)

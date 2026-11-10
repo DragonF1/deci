@@ -115,7 +115,12 @@ struct MusicDropSwapPlanTests {
         let plan = MusicTransitionPlanner.plan(Self.inputs(previous: nil))
         #expect(plan.mode == .beat)
         #expect(plan.style == .longBlend || plan.style == .dropSwap)
-        let swap = MusicTransitionPlanner.plan(Self.inputs(previous: .longBlend))
+        // A pristine blend outranks a drop swap, also right after a blend (Tier 4c: a blend may repeat); the swap is picked once
+        // the blend is degraded, here by a huge energy jump, and it is built with the picker asked for it first.
+        #expect(MusicTransitionPlanner.plan(Self.inputs(previous: .longBlend)).style == .longBlend)
+        let swap = MusicTransitionStylePicker.$debugScopedStyle.withValue(.dropSwap) {
+            MusicTransitionPlanner.plan(Self.inputs(previous: .longBlend))
+        }
         #expect(swap.style == .dropSwap)
         #expect(swap.overlapBars > 0 && swap.mode == .beat)
         let line = MusicTransitionLog.styleLine(from: "a", to: "b", style: swap.style, reason: swap.fallbackReason, previous: .longBlend)
@@ -181,7 +186,8 @@ struct MusicDropSwapPlanTests {
         i.outgoing.analysis?.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.4).encode()
         i.incoming.analysis?.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.7).encode()
         i.previousStyle = .longBlend
-        let plan = MusicTransitionPlanner.plan(i)
+        // Tier 4c: a pristine blend outranks the sweep, so the sweep is asked for first here; the plan it builds is what is checked.
+        let plan = MusicTransitionStylePicker.$debugScopedStyle.withValue(.filterSweep) { MusicTransitionPlanner.plan(i) }
         #expect(plan.style == .filterSweep, "got \(plan.style.rawValue)")
         #expect(plan.sweepFromHz == 30 && plan.sweepToHz == 1_500)
         #expect(plan.overlapBars > 0 && plan.mode == .beat)

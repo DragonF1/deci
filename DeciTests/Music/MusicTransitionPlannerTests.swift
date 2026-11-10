@@ -50,13 +50,16 @@ struct MusicTransitionPlannerTests {
         aDuration: Double = 200, bDuration: Double = 200, aLufs: Double = -14, bLufs: Double = -14,
         crossfade: Bool = true, setting: Double = 6
     ) -> MusicTransitionInputs {
-        inputs(
+        // The tier 2 smart plan is under test here, so Mix (tier 4c, its own suites) is off.
+        var i = inputs(
             a: side("aaaaaaaaaaa", duration: aDuration, analysis: analysis(
                 "aaaaaaaaaaa", duration: aDuration, silenceEnd: aEnd, outroStart: aOutro, lufs: aLufs)),
             b: side("bbbbbbbbbbb", duration: bDuration, analysis: analysis(
                 "bbbbbbbbbbb", duration: bDuration, silenceStart: bStart, introEnd: bIntroEnd, lufs: bLufs)),
             crossfade: crossfade, setting: setting
         )
+        i.beatMixEnabled = false
+        return i
     }
 
     // MARK: Eligibility (D3)

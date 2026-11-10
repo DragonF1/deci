@@ -227,48 +227,52 @@ enum MusicTransitionPlanner {
     private static func basePlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
         guard inputs.beatMixEnabled, smart.mode == .smart else { return vocalGuarded(smart, inputs) }
         let beat = MusicBeatPlanner.plan(inputs, smart: smart)
-        let reason = beat.fallbackReason.flatMap { MusicBeatPlanner.Fallback(rawValue: $0) }
         let previous = inputs.previousStyle
-        // Tier 4b: the picker is asked for every pair, with the beat-matched blend as one ranked candidate. A refusal for
-        // a tempo, a grid or a phrase always gets a style; a pair that failed some other way (no grid at all, too late, two
-        // singers) only does when a blend would repeat the one before it.
-        let always: [MusicBeatPlanner.Fallback] = [.tempoClash, .gridLowConf, .noPhraseRoom]
-        let onRepeat: [MusicBeatPlanner.Fallback] = [.gridMissing, .tooLate, .vocalClash]
+        // Tier 4c: every Mix pair gets a blend. The picker ranks the styles that suit the pair (a cut or an echo only a hard
+        // ending, matching tempos and a phrase end); the beat-matched blend is one of them. When none can be built (a tempo, a
+        // grid, a phrase or two singers refused it) the floor blend comes last and is never refused: the smart fade is only
+        // left for a pair too short to hold a 6 s overlap.
         // Tier 4b P2b: an intro too short for the overlap can be looped; then loop extend is a candidate.
         let loop = MusicBeatPlanner.loopExtendPlan(inputs, smart: smart)
-        let eligible: Bool = {
-            if beat.mode == .beat || loop != nil { return true }
-            guard let reason else { return false }
-            return always.contains(reason) || (previous == .longBlend && onRepeat.contains(reason))
-        }()
-        guard eligible else { return legacyPlan(inputs, smart: smart, beat: beat) }
         var signals = MusicTransitionStylePicker.inputs(for: inputs)
         signals.loopFits = loop != nil
+        func finish(_ built: TransitionPlan) -> TransitionPlan {
+            var plan = built
+            plan.fallbackReason = beat.mode == .beat ? nil : beat.fallbackReason
+            if beat.mode != .beat { plan.gridFail = beat.gridFail }
+            return plan
+        }
         for style in MusicTransitionStylePicker.ranked(signals, previous: previous) {
+            // The beat-matched blend, or (when the beat planner refused) the floor blend below.
             if style == .longBlend {
                 if beat.mode == .beat { return beat }
-                // A refusal that is not a tempo clash keeps the guarded smart fade as a candidate; with a clash the
-                // blend is ranked below the cut and the echo and is only reached when neither can be built.
-                return legacyPlan(inputs, smart: smart, beat: beat)
+                continue
             }
-            // The sweep is the beat blend with a high-pass on the outgoing song; the drop swap is planned on its own.
+            // The sweep is the beat blend with a high-pass on the outgoing song, or the same thing without a grid; the drop
+            // swap is planned on its own.
             let built: TransitionPlan?
             switch style {
-            case .filterSweep: built = beat.mode == .beat ? MusicBeatPlanner.filterSweepPlan(from: beat) : nil
+            case .filterSweep:
+                built = beat.mode == .beat ? MusicBeatPlanner.filterSweepPlan(from: beat) : MusicBeatPlanner.gridlessSweepPlan(inputs, smart: smart)
             case .dropSwap: built = MusicBeatPlanner.dropSwapPlan(inputs, smart: smart)
             case .loopExtend: built = loop
             default: built = MusicBeatPlanner.styledPlan(inputs, smart: smart, style: style)
             }
-            if var plan = built {
-                plan.fallbackReason = beat.mode == .beat ? nil : beat.fallbackReason
-                return plan
-            }
+            if let built { return finish(built) }
         }
-        // Nothing but the blend can be built. It stays, and the log says it repeats because there was no alternative.
+        // A cold intro (a smart fade under 6 s) is looped first, then blended.
+        if smart.fadeSeconds < floorFadeThreshold, let loop { return finish(loop) }
+        if beat.mode == .beat { return beat }
+        if let floor = MusicBeatPlanner.floorBlendPlan(inputs, smart: smart) { return finish(floor) }
+        // A song too short for the floor blend: the guarded smart fade stays, and the log says it repeats because there was
+        // no alternative.
         var out = legacyPlan(inputs, smart: smart, beat: beat)
         if previous == .longBlend { out.fallbackReason = out.fallbackReason ?? MusicTransitionStylePicker.noAlternative }
         return out
     }
+
+    /// A smart fade shorter than this is a cold intro: a loop extend or the floor blend gives it room.
+    static let floorFadeThreshold = 6.0
 
     private static func legacyPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, beat: TransitionPlan) -> TransitionPlan {
         let base = vocalGuarded(smart, inputs)

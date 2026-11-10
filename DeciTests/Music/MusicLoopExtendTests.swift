@@ -241,14 +241,14 @@ struct MusicLoopExtendTests {
         #expect(loopPlan(album) == nil)
     }
 
-    @Test("the planner picks loop extend for a short intro, and never twice in a row")
+    @Test("the planner picks loop extend for a short intro, and it may repeat: it carries no repeat penalty")
     func plannerPicks() {
         let first = MusicTransitionPlanner.plan(Self.shortIntro())
         #expect(first.style == .loopExtend && first.loopRepeats > 0)
         var again = Self.shortIntro()
         again.previousStyle = .loopExtend
         let second = MusicTransitionPlanner.plan(again)
-        #expect(second.style != .loopExtend && second.loopRepeats == 0 && second.loopBars == 0)
+        #expect(second.style == .loopExtend && second.loopRepeats > 0)
         var remote = Self.shortIntro()
         remote.incomingLocal = false
         #expect(MusicTransitionPlanner.plan(remote).style != .loopExtend)
@@ -269,20 +269,20 @@ struct MusicLoopExtendTests {
         var fits = base
         fits.loopFits = true
         #expect(MusicTransitionStylePicker.ranked(fits, previous: nil).first == .loopExtend)
-        #expect(!MusicTransitionStylePicker.ranked(fits, previous: .loopExtend).contains(.loopExtend))
+        #expect(MusicTransitionStylePicker.ranked(fits, previous: .loopExtend).first == .loopExtend)
         #expect(MusicTransitionStyle.pickable.contains(.loopExtend))
         #expect(MusicTransitionStyle.loopExtend.label == "Loop extend" && !MusicTransitionStyle.loopExtend.isCutLike)
     }
 
-    @Test("with loop extend in the mix the picker still never repeats and still returns only pickable styles")
+    @Test("with loop extend in the mix the picker still returns only pickable styles, each once")
     func neverRepeatsWithLoop() {
         for var signals in MusicStylePickerP2Tests.samples {
             signals.loopFits = true
             for previous in [nil] + MusicTransitionStyle.allCases.map(Optional.some) {
                 let ranked = MusicTransitionStylePicker.ranked(signals, previous: previous)
-                #expect(!ranked.contains { $0 == previous })
                 #expect(ranked.allSatisfy { MusicTransitionStyle.pickable.contains($0) })
-                #expect(MusicTransitionStylePicker.pick(signals, previous: previous) != previous)
+                #expect(Set(ranked).count == ranked.count)
+                #expect(MusicTransitionStyle.pickable.contains(MusicTransitionStylePicker.pick(signals, previous: previous)))
             }
         }
     }

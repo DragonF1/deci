@@ -37,53 +37,57 @@ struct MusicStyleNoRepeatTests {
         return i
     }
 
-    @Test("a beat-matched pair is a long blend with no previous style, and something else right after a long blend")
-    func blendThenSomethingElse() {
+    @Test("a beat-matched pair is a long blend with no previous style, and again right after a long blend")
+    func blendThenBlend() {
         #expect(MusicTransitionPlanner.plan(Self.matched(previous: nil)).style == .longBlend)
         let after = MusicTransitionPlanner.plan(Self.matched(previous: .longBlend))
-        #expect(after.style != .longBlend)
-        #expect(after.mode == .beat && after.overlapBars == 0)
+        #expect(after.style == .longBlend)
+        #expect(after.mode == .beat && after.overlapBars > 0)
     }
 
-    @Test("a pair with no grid at all stays the plain fade until a fade would repeat, then it echoes or cuts without a grid")
-    func gridlessRepeat() throws {
-        let first = MusicTransitionPlanner.plan(Self.gridless(previous: nil))
-        #expect(first.style == .longBlend && first.mode == .smart)
-        let i = Self.gridless(previous: .longBlend)
-        let smart = MusicTransitionPlanner.smartPlan(i)
-        let plan = MusicTransitionPlanner.plan(i)
-        #expect(plan.style == .quickCut || plan.style == .echoOut)
-        #expect(plan.mode == .beat && plan.incomingRate == 1)
-        #expect(plan.mixOutSec == smart.fadeStartSec, "a cut without a grid lands at the fade start")
-        let echo = try #require(MusicBeatPlanner.styledPlan(i, smart: smart, style: .echoOut))
-        #expect(echo.echoDelaySec == MusicEchoSettings.untrustedDelaySeconds)
-        #expect(echo.echoTailSec > 0 && echo.outgoingEndSec == (echo.mixOutSec ?? 0) + echo.echoTailSec)
+    @Test("a pair with no grid at all still gets a floor blend (beat mode, 6 to 8 s, bass swap), before or after a blend")
+    func gridlessFloor() {
+        for previous in [nil, MusicTransitionStyle.longBlend] {
+            let plan = MusicTransitionPlanner.plan(Self.gridless(previous: previous))
+            #expect(plan.mode == .beat && plan.incomingRate == 1)
+            #expect(plan.fadeSeconds >= 6 && plan.fadeSeconds <= 8)
+            #expect(plan.bassSwapAtSec != nil && plan.style != .quickCut && plan.style != .echoOut)
+        }
     }
 
-    @Test("whatever came before, no pair gets the same style twice in a row, grids or not")
-    func neverRepeats() {
+    @Test("a cut or an echo never follows itself, and no pair without a hard ending ever gets one")
+    func noCutsWithoutAHardEnding() {
         let makers: [(MusicTransitionStyle?) -> MusicTransitionInputs] = [Self.matched, Self.gridless, Self.clash, Self.everything]
         for make in makers {
-            for previous in MusicTransitionStyle.allCases {
+            for previous in [nil] + MusicTransitionStyle.allCases.map(Optional.some) {
                 let plan = MusicTransitionPlanner.plan(make(previous))
-                let ran = plan.mode == .beat ? plan.style : .longBlend
-                #expect(ran != previous, "previous \(previous.rawValue) then \(ran.rawValue)")
+                #expect(plan.style != .quickCut && plan.style != .echoOut, "previous \(previous?.rawValue ?? "none")")
             }
         }
     }
 
-    @Test("a run over a pair with a drop and rising energy never repeats and uses the new styles")
-    func everythingRun() {
+    @Test("a seeded run of 200 pairs: blends dominate, no cut or echo, the repeat penalty never forces a style off a blend")
+    func seededRun() {
+        var generator = SeededGenerator(seed: 4_242)
         var previous: MusicTransitionStyle?
-        var ran: [MusicTransitionStyle] = []
-        for _ in 0..<10 {
-            let plan = MusicTransitionPlanner.plan(Self.everything(previous: previous))
-            let style: MusicTransitionStyle = plan.mode == .beat ? plan.style : .longBlend
-            #expect(style != previous)
-            ran.append(style)
-            previous = style
+        var counts: [MusicTransitionStyle: Int] = [:]
+        for _ in 0..<200 {
+            let signals = MusicTransitionStyleInputs(
+                tempoError: Double.random(in: 0...0.4, using: &generator),
+                energyJump: Float.random(in: -0.5...0.8, using: &generator),
+                keyDistance: Int.random(in: 0...6, using: &generator),
+                gridTrusted: Bool.random(using: &generator),
+                dropConfidence: Float.random(in: 0...1, using: &generator),
+                tailDropDb: Double.random(in: 0...15, using: &generator),
+                mixOutOnPhrase: Bool.random(using: &generator)
+            )
+            let pick = MusicTransitionStylePicker.pick(signals, previous: previous)
+            #expect(MusicTransitionStylePicker.suits(pick, signals))
+            counts[pick, default: 0] += 1
+            previous = pick
         }
-        #expect(ran.contains(.dropSwap) || ran.contains(.filterSweep))
+        let blends = counts[.longBlend, default: 0] + counts[.filterSweep, default: 0] + counts[.dropSwap, default: 0] + counts[.loopExtend, default: 0]
+        #expect(blends > 100, "counts \(counts)")
     }
 
     @Test("when nothing else can be built the blend stays and is logged as noAlternative")
@@ -102,28 +106,38 @@ struct MusicStyleNoRepeatTests {
         #expect(MusicBeatPlanner.cutFadeSeconds >= 0.003 && MusicBeatPlanner.cutFadeSeconds <= 0.005)
     }
 
-    @Test("a run of low-confidence pairs gives fade, echo, fade, echo: the smart fade is not locked out")
+    @Test("a run of low-confidence pairs is a blend every time: the floor never gives up")
     func lowConfidenceRun() {
         var previous: MusicTransitionStyle?
-        var ran: [MusicTransitionStyle] = []
         for _ in 0..<6 {
             var i = BT.inputs(a: BT.grid(confidence: 0.3))
             i.previousStyle = previous
             let plan = MusicTransitionPlanner.plan(i)
-            let style: MusicTransitionStyle = plan.mode == .beat ? plan.style : .longBlend
-            ran.append(style)
-            previous = style
+            #expect(plan.mode == .beat && plan.fadeSeconds >= 6 && plan.bassSwapAtSec != nil)
+            previous = plan.style
         }
-        #expect(ran == [.longBlend, .echoOut, .longBlend, .echoOut, .longBlend, .echoOut])
     }
 
-    @Test("a run of pairs with a tempo clash never gets the fade: cut and echo take turns")
+    @Test("a run of pairs with a tempo clash is a thinned floor blend every time, never a cut or an echo")
     func clashRun() {
         var previous: MusicTransitionStyle?
         for _ in 0..<4 {
             let plan = MusicTransitionPlanner.plan(Self.clash(previous: previous))
-            #expect(plan.style == .quickCut || plan.style == .echoOut)
+            #expect(plan.mode == .beat && plan.style == .filterSweep && plan.fadeSeconds >= 6)
             previous = plan.style
         }
+    }
+}
+
+/// A small deterministic generator (SplitMix64) so the simulation gives the same pairs on every run.
+struct SeededGenerator: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
     }
 }

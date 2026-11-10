@@ -420,6 +420,32 @@ struct AVPlaybackEngineBeatTests {
         engine.unload()
     }
 
+    @Test("a gridless floor plan (rate 1, no bars, no glide, a bass swap) plays through the beat path with the bass swap")
+    func gridlessFloorPlanRunsTheBeatPath() async throws {
+        let first = try await writeTone("fa", seconds: 24)
+        let second = try await writeTone("fb", seconds: 30)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("fa", duration: 24, url: first), startAt: 0, autoplay: true)
+        // The shape MusicBeatPlanner.floorBlendPlan builds: bars 0, bar length 0, no glide, an 8 s overlap, the bass at the
+        // middle for 2 s, no tempo change.
+        var plan = beatPlan(rate: 1, mixIn: 0, mixOut: 4, overlap: 8, swapAt: 4, handover: 2)
+        plan.overlapBars = 0
+        plan.barSec = 0
+        plan.glideBackSec = 0
+        engine.preload(stream("fb", duration: 30, url: second), plan: plan)
+        let flipped = await waitUntil(timeout: .seconds(40)) { engine.isCrossfading && engine.debugBeatOverlap != nil }
+        #expect(flipped, "a gridless beat plan must take the beat path")
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(engine.debugBassSwapActive)
+        let outgoing = try #require(engine.debugDrainingTap?.debugBass)
+        let incoming = try #require(engine.debugActiveTap?.debugBass)
+        #expect(outgoing.active && incoming.active)
+        #expect(outgoing.initial == 1 && outgoing.target == 0 && incoming.initial == 0 && incoming.target == 1)
+        #expect(abs(engine.avPlayer.rate - 1) < 0.001)
+        engine.unload()
+    }
+
     @Test("a plan without a swap leaves the bass channels off")
     func noSwapNoChannels() async throws {
         let engine = try await overlapEngine()

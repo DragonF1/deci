@@ -96,6 +96,8 @@ enum MusicBeatPlanner {
         // Tier 3c: lengths skipped only because two singers would overlap, and the first and least of those collisions.
         var vocalSkipped = 0
         var firstCollision: Double?, leastCollision = Double.infinity
+        // Tier 4c: the first blend whose end falls inside a sung line. It is kept only when no other length ends in a gap.
+        var clipped: TransitionPlan?
 
         // The 4-bar guard tier comes last, and only when a longer length had room and collided (a length with no room
         // does not stop it: a 16 bar overlap that never fits is no reason to refuse a clean 4 bar one).
@@ -167,8 +169,14 @@ enum MusicBeatPlanner {
                 plan.bassSwapAtSec = overlap / 2
                 plan.bassHandoverSec = bassHandoverBeats * aGrid.periodSec
             }
+            if inputs.vocalGuardEnabled, let intervals = inputs.outgoing.vocalIntervals,
+               MusicVocalGuard.cutsOutgoingSinger(intervals, endSec: mixOut + overlap) {
+                if clipped == nil { clipped = plan }
+                continue
+            }
             return plan
         }
+        if let clipped { return clipped }
         if vocalSkipped > 0 {
             var plan = refuse(.vocalClash)
             plan.vocalBeforeSec = leastCollision
@@ -203,6 +211,11 @@ enum MusicBeatPlanner {
               let cut = smart.fadeStartSec, cut.isFinite, cut > 0, smart.incomingStartSec.isFinite, smart.incomingStartSec >= 0
         else { return nil }
         if let earliest = inputs.earliestMixOutSec, cut < earliest { return nil }
+        // A cut that stops the outgoing singer mid-word is not a candidate: the pair gets a blend.
+        if inputs.vocalGuardEnabled,
+           MusicVocalGuard.cutsOutgoingSinger(outgoing: inputs.outgoing.analysis, intervals: inputs.outgoing.vocalIntervals, endSec: cut) {
+            return nil
+        }
         let bEnd = inputs.incoming.analysis.flatMap { MusicTransitionPlanner.trimmedEnd(of: $0, duration: bDuration) } ?? bDuration
         guard bEnd - smart.incomingStartSec >= minIncomingRemainingSec else { return nil }
         let aEnd = smart.outgoingEndSec ?? aDuration
@@ -249,6 +262,10 @@ enum MusicBeatPlanner {
         guard let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: 1, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
               let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else { return nil }
         if let earliest = inputs.earliestMixOutSec, mixOut < earliest { return nil }
+        if inputs.vocalGuardEnabled,
+           MusicVocalGuard.cutsOutgoingSinger(outgoing: a, intervals: inputs.outgoing.vocalIntervals, endSec: mixOut) {
+            return nil
+        }
         let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration
         guard bEnd - mixIn >= minIncomingRemainingSec else { return nil }
 

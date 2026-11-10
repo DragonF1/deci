@@ -115,12 +115,12 @@ private struct MixHarness {
 @MainActor
 @Suite("MusicService no-mix flags")
 struct MusicServiceMixFlagTests {
-    @Test("no flags: the plan is smart, as before")
+    @Test("no flags: the plan is a floor blend (beat mode), never gapless")
     func unflaggedIsSmart() async {
         let h = MixHarness()
         defer { h.cleanUp() }
         await h.offerB()
-        #expect(h.lastPlan?.mode == .smart)
+        #expect(h.lastPlan?.mode == .beat)
     }
 
     @Test("a song flagged Always start clean gets the clean plan: no overlap, trims kept")
@@ -160,7 +160,7 @@ struct MusicServiceMixFlagTests {
         defer { h.cleanUp() }
         h.flags.setPairClean(true, from: "b", to: "a")
         await h.offerB()
-        #expect(h.lastPlan?.mode == .smart)
+        #expect(h.lastPlan?.mode == .beat)
     }
 
     @Test("flagging a different song leaves this transition mixing")
@@ -169,7 +169,7 @@ struct MusicServiceMixFlagTests {
         defer { h.cleanUp() }
         h.flags.setStartsClean(true, videoId: "c")
         await h.offerB()
-        #expect(h.lastPlan?.mode == .smart)
+        #expect(h.lastPlan?.mode == .beat)
     }
 
     @Test("a manual skip into a flagged song still gets the 0.3 s quick fade")
@@ -195,7 +195,7 @@ struct MusicServiceMixFlagTests {
         let h = MixHarness()
         defer { h.cleanUp() }
         await h.offerB()
-        #expect(h.lastPlan?.mode == .smart)
+        #expect(h.lastPlan?.mode == .beat)
         let cancels = h.engine.cancelPreloadCount
 
         h.service.performMix(.startClean(on: false), for: MusicSamples.track("b", title: "Song b"))
@@ -215,13 +215,18 @@ struct MusicServiceMixFlagTests {
         h.flags.setStartsClean(true, videoId: "b")
         await h.offerB()
         #expect(h.lastPlan?.mode == .clean)
+        let cancels = h.engine.cancelPreloadCount
 
         h.service.performMix(.startClean(on: true), for: MusicSamples.track("b", title: "Song b"))
 
-        let plan = try #require(h.engine.updatedPlans.last ?? nil)
-        #expect(plan.mode == .smart)
-        #expect(plan.fadeStartSec == 185)
+        // Tier 4c: clean to a beat-mode floor blend changes the plan mode, so the parked preload is dropped and offered again.
         #expect(!h.flags.startsClean("b"))
+        #expect(h.engine.cancelPreloadCount > cancels)
+        await h.settle()
+        await h.tick(160)
+        let plan = try #require(h.lastPlan)
+        #expect(plan.mode == .beat)
+        #expect(plan.fadeStartSec == 185)
     }
 
     @Test("a flag set after the transition is past changes nothing and sends no update")

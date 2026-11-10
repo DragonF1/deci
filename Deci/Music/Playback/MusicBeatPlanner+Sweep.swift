@@ -11,9 +11,9 @@ extension MusicBeatPlanner {
     // MARK: Filter sweep
 
     /// The beat blend `beat` with a high-pass sweep on the outgoing song: same timing, rate nudge and overlap. nil when
-    /// `beat` is not a beat blend with an overlap.
+    /// `beat` is not a beat blend with an overlap (a floor blend has no bars, a cut has no overlap to speak of).
     static func filterSweepPlan(from beat: TransitionPlan) -> TransitionPlan? {
-        guard beat.mode == .beat, beat.style == .longBlend, beat.overlapBars > 0, beat.overlapSec > 0 else { return nil }
+        guard beat.mode == .beat, beat.style == .longBlend, beat.overlapSec >= 1 else { return nil }
         var plan = beat
         plan.style = .filterSweep
         plan.sweepFromHz = Double(MusicSweepSettings.defaultFromHz)

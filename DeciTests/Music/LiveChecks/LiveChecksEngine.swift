@@ -80,24 +80,36 @@ extension LiveChecks {
 
         runA = a.transitions
         realBeat = (a.transitions + c.transitions + b.transitions).filter { $0.mode == "beat" }
+            .filter { !LiveChecks.isFloorBlend(bars: $0.line("transition_beat_plan")?.kv["bars"], overlapSec: $0.overlapSec) }
         allRealRuns = a.transitions + c.transitions + b.transitions
 
         // Check 3
         var lines3: [String] = ["Settings fade length 7 s, Crossfade OFF, Mix on."]
         var ok3 = !(a.transitions + c.transitions).isEmpty
-        for t in a.transitions { lines3.append("run A (beat mix on) " + describe(t)); if !t.crossfaded || t.overlapSec < 1 { ok3 = false } }
+        // Tier 4c rule: with Mix on and Crossfade OFF every transition is still a blend (overlapped on two decks), and a beat-mode
+        // plan is never shorter than the 6 s floor; its measured overlap is within 1.5 s of the planned length. The Settings
+        // length (7 s) is only the base of the smart plan of the non-Mix run C, which shortens or lengthens it to the pair (2 to 12 s). A plan that is not beat mode in run A (a song too short for the floor)
+        // only has to overlap.
+        var floorOK = true
+        for t in a.transitions {
+            lines3.append("run A (beat mix on) " + describe(t))
+            if !t.crossfaded || t.overlapSec < 1 { ok3 = false }
+            if t.mode == "beat", let fade = t.planFade, fade >= 1 {
+                if fade < 6 - 1e-6 || abs(t.overlapSec - fade) > 1.5 { floorOK = false }
+            }
+        }
         var fadeLengthOK = true
         for t in c.transitions {
             lines3.append("run C (beat mix off) " + describe(t))
             if !t.crossfaded || t.overlapSec < 1 { ok3 = false }
             let guardTouched = t.line("transition_vocal_guard") != nil
             if let fade = t.planFade, !guardTouched {
-                if abs(fade - 7) > 0.05 || abs(t.overlapSec - fade) > 1.5 { fadeLengthOK = false }
+                if fade < 2 - 0.05 || fade > 12 + 0.05 || abs(t.overlapSec - fade) > 1.5 { fadeLengthOK = false }
             }
         }
         if c.transitions.isEmpty { fadeLengthOK = false }
-        finish(3, "Mix with Crossfade OFF still blends, fade length = Settings", pass: ok3 && fadeLengthOK, [
-            "every transition overlapped on two decks: \(ok3); non-beat plan fade equals Settings 7 s and the measured overlap is within 1.5 s of it: \(fadeLengthOK)",
+        finish(3, "Mix with Crossfade OFF still blends: Mix blends are 6 s or more, smart fades 2 to 12 s", pass: ok3 && fadeLengthOK && floorOK, [
+            "RULE encoded (Tier 4c): Mix on, Crossfade OFF: every transition overlapped on two decks (\(ok3)); each beat-mode plan in run A is at least 6 s with a measured overlap within 1.5 s of its plan (\(floorOK)); with Mix off (run C) the smart plan fade is 2 to 12 s and the measured overlap is within 1.5 s of it (\(fadeLengthOK))",
         ] + lines3)
 
         // Check 5
@@ -177,7 +189,7 @@ extension LiveChecks {
         }
         let gatePass = world.songs.filter { song in world.rows[song.videoId]?.usableGrid.map(LiveWorld.gatePasses) ?? false }.count
         let withGrid = world.songs.filter { world.rows[$0.videoId]?.usableGrid != nil }.count
-        var beat = 0, smart = 0, other = 0
+        var beat = 0, smart = 0, other = 0, floorBlends = 0
         var reasons: [String: Int] = [:]
         var planErrors: [Double] = []
         var inDown = 0, outDown = 0, uncovered = 0, extrapolated = 0
@@ -198,6 +210,8 @@ extension LiveChecks {
             }
             if p.plan.mode != .beat { reasons[p.plan.fallbackReason ?? "none (\(p.plan.mode.rawValue), \(p.plan.reason.rawValue))", default: 0] += 1 }
             guard p.plan.mode == .beat, let mo = p.plan.mixOutSec, let mi = p.plan.mixInSec else { continue }
+            // A floor blend (Tier 4c) leans on no grid and aligns nothing by design: it is counted, not judged for phase.
+            if LiveChecks.isFloorBlend(bars: String(p.plan.overlapBars), overlapSec: p.plan.overlapSec) { floorBlends += 1; continue }
             let rate = p.plan.incomingRate
             // The truth annotation does not span the whole file: past it the grid is extrapolated (flagged) or, too far, excluded.
             guard let na = LiveChecks.truthNearest(p.a, mo), let nb = LiveChecks.truthNearest(p.b, mi) else {
@@ -289,8 +303,25 @@ extension LiveChecks {
             "grid downbeat sits N beats off the truth downbeat (mod 4), counted per truth downbeat: N=0 \(shifts[0]), N=1 \(shifts[1]), N=2 \(shifts[2]), N=3 \(shifts[3])",
             "planner beat plans with both mix points inside the annotated range (nothing extrapolated): \(inRangeCount) of \(beat); incoming on a truth downbeat \(inRangeIn), outgoing on a truth downbeat \(inRangeOut)",
         ] + inRange + perSong
-        finish(7, "Beat mixes land on the bar", pass: pass7, [
-            "planned pairs: \(planned.count) (five Mix chains from check 2, seeds 11 23 37 51 77): \(beat) beat plans, \(smart) smart plans, \(other) other",
+        // Tier 4c report lines: what every planned pair became, and how many are real blends of 6 s or more.
+        var styleCounts: [String: Int] = [:]
+        var blendCount = 0, blendLong = 0
+        for p in planned {
+            let name = p.plan.mode == .beat ? p.plan.style.rawValue : "plainFade(\(p.plan.mode.rawValue))"
+            styleCounts[name, default: 0] += 1
+            let isBlend = p.plan.mode == .beat ? !p.plan.style.isCutLike : p.plan.fadeSeconds > 0
+            if isBlend {
+                blendCount += 1
+                let length = p.plan.mode == .beat ? p.plan.overlapSec : p.plan.fadeSeconds
+                if length >= 6 - 1e-6 { blendLong += 1 }
+            }
+        }
+        let tier4c = [
+            "TIER 4c style counts over \(planned.count) planned pairs: \(styleCounts.sorted { $0.key < $1.key }.map { "\($0.key) x\($0.value)" }.joined(separator: ", "))",
+            "TIER 4c blends of 6 s or more: \(blendLong) of \(blendCount) blends (\(liveF(blendCount == 0 ? 0 : Double(blendLong) / Double(blendCount) * 100, 1)) %)",
+        ]
+        finish(7, "Beat mixes land on the bar", pass: pass7, tier4c + [
+            "planned pairs: \(planned.count) (five Mix chains from check 2, seeds 11 23 37 51 77): \(beat) beat plans (\(floorBlends) are gridless floor blends, counted but not phase-judged, \(beat - floorBlends) aligned), \(smart) smart plans, \(other) other",
             "refusal reasons of the non-beat plans: \(reasons.sorted { $0.key < $1.key }.map { "\($0.key) x\($0.value)" }.joined(separator: ", "))",
             "beat_this grids passing the planner gate: \(gatePass) of \(withGrid) songs with a grid (\(world.songs.count) songs)",
             "plan phase error vs truth beats: median \(liveF(planMedian, 1)) ms, max \(liveF(planMax, 1)) ms over \(measured) of \(beat) beat plans (\(extrapolated) use a truth grid carried on past the last annotated beat, at most 15 s; \(uncovered) excluded: mix point farther out)",
@@ -335,6 +366,9 @@ extension LiveChecks {
             "guard actions in the planned pairs: \(guardActions.isEmpty ? "none" : guardActions.sorted { $0.key < $1.key }.map { "\($0.key) x\($0.value)" }.joined(separator: ", ")); guard lines in the real engine runs: \(engineGuard)",
         ] + lines8)
     }
+
+    /// A floor blend: beat mode with no bars (nothing aligned) and a real overlap, as opposed to a cut or an echo.
+    static func isFloorBlend(bars: String?, overlapSec: Double) -> Bool { bars == "0" && overlapSec >= 4 }
 
     /// Singing intervals without the guard's padding: a line runs to its end or the next line, at most 8 s.
     static func rawIntervals(_ lines: [LyricLine], _ duration: Double) -> [ClosedRange<Double>] {
