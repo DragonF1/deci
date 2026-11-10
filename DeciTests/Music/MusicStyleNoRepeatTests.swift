@@ -123,7 +123,10 @@ struct MusicStyleNoRepeatTests {
             previous = plan.style
         }
         #expect(counts[.longBlend, default: 0] >= 100, "counts \(counts)")
-        #expect(counts[.filterSweep, default: 0] <= 70, "counts \(counts)")
+        // Since 068677c a pair with an untrusted grid on either side sweeps (a rate-1 blend with an unknown phase would put two
+        // kicks out of step), so the sweep share is about 40 percent here; plain long blends must still be the most common style.
+        #expect(counts[.filterSweep, default: 0] <= 90, "counts \(counts)")
+        #expect(counts[.longBlend, default: 0] > counts[.filterSweep, default: 0], "counts \(counts)")
     }
 
     @Test("when nothing else can be built the blend stays and is logged as noAlternative")
