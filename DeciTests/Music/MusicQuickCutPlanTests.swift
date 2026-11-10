@@ -53,6 +53,17 @@ struct MusicQuickCutPlanTests {
         #expect(shaky.echoDelaySec == 0.375)
     }
 
+    @Test("an echo tail is wall seconds: the outgoing end moves by tail times the deck rate, and never past the song")
+    func echoTailAtDeckRate() throws {
+        var i = BT.inputs()
+        i.outgoing.deckRate = 1.08
+        let plan = try #require(MusicBeatPlanner.styledPlan(i, smart: MusicTransitionPlanner.smartPlan(i), style: .echoOut))
+        let out = try #require(plan.mixOutSec)
+        #expect(plan.echoTailSec > 0)
+        #expect(abs(try #require(plan.outgoingEndSec) - (out + plan.echoTailSec * 1.08)) < 1e-9)
+        #expect(try #require(plan.outgoingEndSec) <= 236 + 1e-9)
+    }
+
     @Test("the tail never runs past the end of the song")
     func tailTruncated() throws {
         for period in stride(from: 0.2, through: 0.5, by: 0.01) {

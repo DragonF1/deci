@@ -20,11 +20,13 @@ struct MusicServiceVocalLookaheadTests {
         let counter = Counter()
         let service: MusicService
         let lookahead: MusicVocalLookahead
+        let wantsMix: Bool
 
         init(
             crossfade: Bool = true, beatMix: Bool = true, vocalGuard: Bool = true, online: Bool = true,
-            loop: Bool = false
+            loop: Bool = false, mix: Bool = true
         ) {
+            wantsMix = mix
             let counter = counter
             lookahead = MusicVocalLookahead(
                 readCache: { await counter.read($0); return nil },
@@ -48,6 +50,8 @@ struct MusicServiceVocalLookaheadTests {
             for id in ["a", "b"] { await backend.setStream(MusicSamples.stream(videoId: id, duration: 240)) }
             let tracks = ["a", "b"].map { MusicSamples.track($0, title: "Song \($0)") }
             await backend.setRadio(seed: "a", tracks: tracks, continuation: nil)
+            // Beat mix only acts in Mix (since a1c993a), so the gates under test are only reached with Mix on.
+            if wantsMix { service.setShuffleMode(.mix) }
             service.play(tracks[0])
             while let t = service.playTask { await t.value; if service.playTask == t { break } }
             engine.emit(.playingChanged(true))
@@ -68,9 +72,9 @@ struct MusicServiceVocalLookaheadTests {
         #expect(c.count == Set(c).count)
     }
 
-    @Test("any of crossfade, beat mix or vocal guard off: nothing is read or sent")
+    @Test("any of Mix, beat mix or vocal guard off: nothing is read or sent")
     func settingGate() async {
-        for h in [Harness(crossfade: false), Harness(beatMix: false), Harness(vocalGuard: false)] {
+        for h in [Harness(mix: false), Harness(beatMix: false), Harness(vocalGuard: false)] {
             await h.run()
             let (c, y) = (await h.counter.cache, await h.counter.youtube)
             #expect(c.isEmpty && y.isEmpty)

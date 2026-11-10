@@ -2123,7 +2123,7 @@ final class MusicService {
         if preloadOffered != nil, !isInPreloadWindow(position: player.currentTime) { cancelPreload() }
         // A seek past a DJ-length cut: the parked plan mixes out where the playhead already is, so it is withdrawn and the next
         // tick plans the song's usual end (or the next cut) from here.
-        if let dj = offeredPlan?.plan, dj.djSection != nil, let out = dj.mixOutSec, out < player.currentTime + Self.beatPrerollLead {
+        if let dj = offeredPlan?.plan, dj.djSection != nil, let out = dj.mixOutSec, out < player.currentTime + Self.beatPrerollLead * activeDeckRate {
             cancelPreload()
         }
         // The jump is not listening time, however short: restart the count from where it landed.
@@ -3293,7 +3293,7 @@ final class MusicService {
     private func giveUpBeatMixIfNotReady(position: TimeInterval) {
         guard let offered = offeredPlan, offered.plan.mode == .beat, let mixOut = offered.plan.mixOutSec,
               preloadOffered == offered.inputs.incoming.videoId, !player.preloadIsReady,
-              position >= mixOut - Self.beatPrerollLead else { return }
+              position >= mixOut - Self.beatPrerollLead * activeDeckRate else { return }
         let outgoing = offered.inputs.outgoing
         let incoming = offered.inputs.incoming
         log(MusicTransitionLog.beatFallbackLine(

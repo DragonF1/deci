@@ -259,10 +259,11 @@ enum MusicBeatPlanner {
         plan.bassHandoverSec = 0
         if style == .echoOut {
             let delay = MusicEchoSettings.untrustedDelaySeconds
-            let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, aEnd - cut))
+            let ro = outgoingRate(inputs)
+            let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, (aEnd - cut) / ro))
             plan.echoDelaySec = delay
             plan.echoTailSec = tail
-            plan.outgoingEndSec = cut + tail
+            plan.outgoingEndSec = cut + tail * ro
         } else {
             plan.outgoingEndSec = cut
         }
@@ -309,10 +310,11 @@ enum MusicBeatPlanner {
         plan.bassHandoverSec = 0
         if style == .echoOut {
             let delay = bothTrusted ? min(aGrid.periodSec / outgoingRate(inputs), MusicEchoSettings.maxDelaySeconds) : MusicEchoSettings.untrustedDelaySeconds
-            let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, aEnd - mixOut))
+            let ro = outgoingRate(inputs)
+            let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, (aEnd - mixOut) / ro))
             plan.echoDelaySec = delay
             plan.echoTailSec = tail
-            plan.outgoingEndSec = mixOut + tail
+            plan.outgoingEndSec = mixOut + tail * ro
         } else {
             plan.outgoingEndSec = mixOut
         }
