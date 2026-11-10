@@ -57,6 +57,14 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
         "corespeech",
     ]
 
+    /// True for any process that is Deci itself (this process, or another Deci build such as a test host
+    /// or dev build). Tapping those makes the watchdog probe silent hosts and glitches shared Bluetooth output.
+    nonisolated static func isOwnProcess(pid: pid_t, bundleID: String?, ownPID: pid_t, ownBundleID: String?) -> Bool {
+        if pid == ownPID { return true }
+        guard let bundleID, let ownBundleID, !ownBundleID.isEmpty else { return false }
+        return bundleID == ownBundleID
+    }
+
     /// Returns true if the bundle ID or process name indicates a system daemon that should be filtered
     private func isSystemDaemon(bundleID: String?, name: String) -> Bool {
         // Check bundle ID prefixes
@@ -217,6 +225,7 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
                 uniquingKeysWith: { _, latest in latest }
             )
             let myPID = ProcessInfo.processInfo.processIdentifier
+            let myBundleID = Bundle.main.bundleIdentifier
 
             var appsByPID: [pid_t: AudioApp] = [:]
 
@@ -244,6 +253,11 @@ final class AudioProcessMonitor: AudioProcessMonitoring {
 
                 // Skip system daemons (siri, coreaudio, etc.) - they shouldn't appear in the apps list
                 if isSystemDaemon(bundleID: bundleID, name: name) { continue }
+
+                // Never tap another Deci process (test hosts, dev builds): it plays silence and trips the rescue ladder.
+                if Self.isOwnProcess(pid: pid, bundleID: bundleID, ownPID: myPID, ownBundleID: myBundleID)
+                    || Self.isOwnProcess(pid: parentPID, bundleID: bundleID, ownPID: myPID, ownBundleID: myBundleID)
+                    || Self.isOwnProcess(pid: pid, bundleID: objectID.readProcessBundleID(), ownPID: myPID, ownBundleID: myBundleID) { continue }
 
                 #if DEBUG
                 // Debug runs next to the owner's listening: tap only the named test app.
