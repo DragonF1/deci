@@ -45,6 +45,8 @@ struct TransitionPlan: Equatable, Sendable {
     /// Offset from the overlap start where the bass hands over; nil when there is no swap.
     var bassSwapAtSec: Double? = nil
     var bassHandoverSec: Double = 0
+    /// A floor blend whose mix-out and mix-in were snapped onto the beat grids (beat on beat, downbeat on downbeat when both are known).
+    var floorAligned = false
     /// Seconds the incoming rate takes to glide back to 1 after the outgoing song has gone.
     var glideBackSec: Double = 0
     /// Why beat mode was refused, when it was (a `MusicBeatPlanner.Fallback` raw value).
@@ -246,6 +248,8 @@ enum MusicTransitionPlanner {
             // The beat-matched blend, or (when the beat planner refused) the floor blend below.
             if style == .longBlend {
                 if beat.mode == .beat { return beat }
+                // The beat planner refused: the long blend is still the default, as the floor blend (thinned only when the tempos clash).
+                if let floor = MusicBeatPlanner.floorBlendPlan(inputs, smart: smart) { return finish(floor) }
                 continue
             }
             // The sweep is the beat blend with a high-pass on the outgoing song, or the same thing without a grid; the drop

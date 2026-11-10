@@ -80,7 +80,7 @@ extension LiveChecks {
 
         runA = a.transitions
         realBeat = (a.transitions + c.transitions + b.transitions).filter { $0.mode == "beat" }
-            .filter { !LiveChecks.isFloorBlend(bars: $0.line("transition_beat_plan")?.kv["bars"], overlapSec: $0.overlapSec) }
+            .filter { !LiveChecks.isFloorBlend(bars: $0.line("transition_beat_plan")?.kv["bars"], overlapSec: $0.overlapSec, aligned: $0.line("transition_beat_plan")?.kv["aligned"] == "1") }
         allRealRuns = a.transitions + c.transitions + b.transitions
 
         // Check 3
@@ -211,7 +211,7 @@ extension LiveChecks {
             if p.plan.mode != .beat { reasons[p.plan.fallbackReason ?? "none (\(p.plan.mode.rawValue), \(p.plan.reason.rawValue))", default: 0] += 1 }
             guard p.plan.mode == .beat, let mo = p.plan.mixOutSec, let mi = p.plan.mixInSec else { continue }
             // A floor blend (Tier 4c) leans on no grid and aligns nothing by design: it is counted, not judged for phase.
-            if LiveChecks.isFloorBlend(bars: String(p.plan.overlapBars), overlapSec: p.plan.overlapSec) { floorBlends += 1; continue }
+            if LiveChecks.isFloorBlend(bars: String(p.plan.overlapBars), overlapSec: p.plan.overlapSec, aligned: p.plan.floorAligned) { floorBlends += 1; continue }
             let rate = p.plan.incomingRate
             // The truth annotation does not span the whole file: past it the grid is extrapolated (flagged) or, too far, excluded.
             guard let na = LiveChecks.truthNearest(p.a, mo), let nb = LiveChecks.truthNearest(p.b, mi) else {
@@ -261,7 +261,7 @@ extension LiveChecks {
             rows.isEmpty ? "n/a (0 plans)" : "median \(liveF(LiveScan.median(rows.map { abs($0.err) }), 1)) ms, max \(liveF(rows.map { abs($0.err) }.max() ?? .nan, 1)) ms over \(rows.count) plans"
         }
         let splitLines = [
-            "SPLIT phase error: real blends (bars > 0) \(med(splits.filter { $0.bars > 0 })); bars=0 cuts \(med(splits.filter { $0.bars == 0 }))",
+            "SPLIT phase error: real blends (bars > 0) \(med(splits.filter { $0.bars > 0 })); bars=0 cuts and aligned floor blends \(med(splits.filter { $0.bars == 0 }))",
             "SPLIT phase error: truth annotated at both mix points \(med(splits.filter { !$0.extrapolated })); truth carried past the last annotated beat \(med(splits.filter { $0.extrapolated }))",
             "downbeat share, alias free songs only (bar position needs no alignment choice): incoming \(inDown) of \(inJudged), outgoing \(outDown) of \(outJudged)\(downJudged == 0 ? " (nothing to judge, so no verdict from this)" : "")",
         ]
@@ -316,7 +316,19 @@ extension LiveChecks {
                 if length >= 6 - 1e-6 { blendLong += 1 }
             }
         }
+        // Why the sweeps are sweeps: the tempo gap of each (half and double time folded in); "unknown" has no usable grid on a side.
+        var sweepGaps: [String: Int] = [:]
+        var sweepReasons: [String: Int] = [:]
+        for p in planned where p.plan.mode == .beat && p.plan.style == .filterSweep {
+            sweepReasons[p.plan.fallbackReason ?? "none (beat plan swept)", default: 0] += 1
+            guard let ga = world.rows[p.a.videoId]?.usableGrid, let gb = world.rows[p.b.videoId]?.usableGrid else { sweepGaps["unknown", default: 0] += 1; continue }
+            let ratio = max(ga.bpm, gb.bpm) / min(ga.bpm, gb.bpm)
+            let gap = min(ratio - 1, abs(ratio / 2 - 1))
+            sweepGaps[gap <= 0.03 ? "gap<=3%" : gap <= 0.08 ? "gap 3-8%" : "gap>8%", default: 0] += 1
+        }
         let tier4c = [
+            "TIER 4c why the beat planner left those to the floor: \(sweepReasons.sorted { $0.key < $1.key }.map { "\($0.key) x\($0.value)" }.joined(separator: ", "))",
+            "TIER 4c sweeps by tempo gap: \(sweepGaps.sorted { $0.key < $1.key }.map { "\($0.key) x\($0.value)" }.joined(separator: ", "))",
             "TIER 4c style counts over \(planned.count) planned pairs: \(styleCounts.sorted { $0.key < $1.key }.map { "\($0.key) x\($0.value)" }.joined(separator: ", "))",
             "TIER 4c blends of 6 s or more: \(blendLong) of \(blendCount) blends (\(liveF(blendCount == 0 ? 0 : Double(blendLong) / Double(blendCount) * 100, 1)) %)",
         ]
@@ -368,7 +380,8 @@ extension LiveChecks {
     }
 
     /// A floor blend: beat mode with no bars (nothing aligned) and a real overlap, as opposed to a cut or an echo.
-    static func isFloorBlend(bars: String?, overlapSec: Double) -> Bool { bars == "0" && overlapSec >= 4 }
+    /// An unaligned floor blend (no grid, or tempos beyond 3%). A floor blend snapped onto the grids (`aligned=1`) is judged like any beat plan.
+    static func isFloorBlend(bars: String?, overlapSec: Double, aligned: Bool = false) -> Bool { bars == "0" && overlapSec >= 4 && !aligned }
 
     /// Singing intervals without the guard's padding: a line runs to its end or the next line, at most 8 s.
     static func rawIntervals(_ lines: [LyricLine], _ duration: Double) -> [ClosedRange<Double>] {

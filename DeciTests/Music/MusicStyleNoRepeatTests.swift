@@ -90,6 +90,42 @@ struct MusicStyleNoRepeatTests {
         #expect(blends > 100, "counts \(counts)")
     }
 
+    @Test("a seeded run of 200 real planned pairs: the long blend (beat-matched or floor) is the default, the sweep is a spice, no non-blend twice in a row")
+    func plannedVariety() {
+        var generator = SeededGenerator(seed: 777)
+        var previous: MusicTransitionStyle?
+        var counts: [MusicTransitionStyle: Int] = [:]
+        var nonBlendRun = 0
+        for _ in 0..<200 {
+            let bpmA = Double.random(in: 85...135, using: &generator)
+            // A Mix queue is ranked by compatibility: most neighbours are close in tempo, some are far, some have no usable grid.
+            let kind = Double.random(in: 0...1, using: &generator)
+            let bpmB = kind < 0.7 ? bpmA * Double.random(in: 0.95...1.05, using: &generator)
+                : bpmA * Double.random(in: 0.7...1.3, using: &generator)
+            func grid(_ bpm: Double, anchor: Double, span: ClosedRange<Double>) -> MusicBeatGrid? {
+                let roll = Double.random(in: 0...1, using: &generator)
+                if roll < 0.03 { return nil }
+                let phase: Int? = roll < 0.2 ? nil : Int.random(in: 0...3, using: &generator)
+                return BT.grid(period: 60 / bpm, anchor: anchor, phase: phase, confidence: roll < 0.15 ? 0.3 : 0.9, span: span)
+            }
+            var i = BT.inputs(a: grid(bpmA, anchor: 0.2, span: 0.2...236), b: grid(bpmB, anchor: 0.1, span: 0.1...236))
+            i.outgoing.analysis?.keyInfo = MusicKeyInfo(
+                tonic: Int.random(in: 0...11, using: &generator), isMinor: Bool.random(using: &generator), confidence: 0.5,
+                energy: Float.random(in: 0.2...0.9, using: &generator)).encode()
+            i.incoming.analysis?.keyInfo = MusicKeyInfo(
+                tonic: Int.random(in: 0...11, using: &generator), isMinor: Bool.random(using: &generator), confidence: 0.5,
+                energy: Float.random(in: 0.2...0.9, using: &generator)).encode()
+            i.previousStyle = previous
+            let plan = MusicTransitionPlanner.plan(i)
+            counts[plan.style, default: 0] += 1
+            nonBlendRun = (plan.style == .longBlend || plan.style == .filterSweep) ? 0 : nonBlendRun + 1
+            #expect(nonBlendRun <= 2, "non-blend styles in a row")
+            previous = plan.style
+        }
+        #expect(counts[.longBlend, default: 0] >= 100, "counts \(counts)")
+        #expect(counts[.filterSweep, default: 0] <= 70, "counts \(counts)")
+    }
+
     @Test("when nothing else can be built the blend stays and is logged as noAlternative")
     func noAlternative() {
         var i = Self.gridless(previous: .longBlend)

@@ -1,8 +1,9 @@
 // Deci/Music/Playback/MusicBeatPlanner+Floor.swift
 // Tier 4c: the floor of every Mix transition. When no beat grid can be trusted (or the tempos, the phrase room or two singers
 // refuse a beat blend), the pair still gets a blend: a beat-mode plan at rate 1 with a 6 to 8 s overlap that starts at the
-// smart plan's start and hands the bass over mid-way, so the engine runs it through its beat path like any blend. No grid is
-// leaned on, so nothing is aligned: the outgoing song is thinned instead (see `floorBlendPlan`). Pure, like the rest.
+// smart plan's start and hands the bass over mid-way, so the engine runs it through its beat path like any blend. When both
+// songs have a grid and the tempos meet within 3% the start is snapped beat on beat (downbeat on downbeat when both are known);
+// otherwise nothing can be aligned and the outgoing song is thinned instead (see `floorBlendPlan`). Pure, like the rest.
 
 import Foundation
 
@@ -41,6 +42,27 @@ extension MusicBeatPlanner {
         return min(ratio - 1, abs(ratio / 2 - 1)) <= floorTempoError + 1e-9
     }
 
+    /// The grids a floor blend can be snapped onto: both songs have one and their tempos meet within 3%. `bars` is true when both
+    /// have a downbeat and the tempos are the same speed (not half or double time), so a downbeat can land on a downbeat.
+    static func floorAlignment(_ inputs: MusicTransitionInputs) -> (out: MusicBeatGrid, incoming: MusicBeatGrid, bars: Bool)? {
+        guard floorTempoMatched(inputs),
+              let a = inputs.outgoing.grid ?? inputs.outgoing.analysis?.usableGrid,
+              let b = inputs.incoming.grid ?? inputs.incoming.analysis?.usableGrid,
+              a.periodSec.isFinite, b.periodSec.isFinite, a.periodSec > 0, b.periodSec > 0,
+              a.anchorSec.isFinite, b.anchorSec.isFinite else { return nil }
+        let sameSpeed = abs(a.periodSec / b.periodSec - 1) <= floorTempoError + 1e-9
+        return (a, b, sameSpeed && a.barTime(0) != nil && b.barTime(0) != nil)
+    }
+
+    /// The grid's beat (or downbeat) closest to `t`, or the first one at or after it.
+    private static func snap(_ grid: MusicBeatGrid, _ t: Double, bars: Bool, atOrAfter: Bool) -> (time: Double, unit: Double) {
+        let unit = bars ? 4 * grid.periodSec : grid.periodSec
+        let origin = bars ? (grid.barTime(0) ?? grid.anchorSec) : grid.anchorSec
+        let position = (t - origin) / unit
+        let index = atOrAfter ? (position - 1e-9).rounded(.up) : position.rounded()
+        return (origin + index * unit, unit)
+    }
+
     private static func gridlessBlendPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, forceSweep: Bool) -> TransitionPlan? {
         guard inputs.beatMixEnabled, inputs.crossfadeOn, smart.mode == .smart, !inputs.manualSkip, !inputs.albumInOrder,
               !inputs.loopSong, !inputs.cleanStartFlag, !inputs.cleanPairFlag,
@@ -50,7 +72,14 @@ extension MusicBeatPlanner {
               smart.incomingStartSec.isFinite, smart.incomingStartSec >= 0 else { return nil }
         let aEnd = smart.outgoingEndSec ?? aDuration
         let bEnd = inputs.incoming.analysis.flatMap { MusicTransitionPlanner.trimmedEnd(of: $0, duration: bDuration) } ?? bDuration
-        let inStart = smart.incomingStartSec
+        let alignment = floorAlignment(inputs)
+        // The incoming start moves to its next beat (downbeat) so it can land on one of the outgoing song's.
+        var inStart = smart.incomingStartSec
+        var inSnapped = false
+        if let alignment {
+            let snapped = snap(alignment.incoming, inStart, bars: alignment.bars, atOrAfter: true).time
+            if snapped.isFinite, bEnd - snapped - floorMinFadeSeconds >= floorMinIncomingRemainingSec { inStart = snapped; inSnapped = true }
+        }
         let earliest = max(0, inputs.earliestMixOutSec ?? 0)
         let guardOn = inputs.vocalGuardEnabled
         let outIntervals = inputs.outgoing.vocalIntervals
@@ -59,11 +88,19 @@ extension MusicBeatPlanner {
         // trying the smart start first, then a gap just past a line, then the start moved earlier or later by whole seconds
         // (nearest first, at most 10 s); when none is clean the least bad one is taken, so a blend is always planned while
         // there is room, and the guard's own "min" action is recorded on it.
-        var best: (mixOut: Double, fade: Double, cost: Double, collision: Double)?
+        var best: (mixOut: Double, fade: Double, cost: Double, collision: Double, aligned: Bool)?
         var firstCollision: Double?
         func consider(_ mixOut: Double, _ fade: Double) -> Bool {
-            let start = max(mixOut, earliest)
+            var start = max(mixOut, earliest)
             guard start + fade <= aEnd + 1e-9 else { return false }
+            // Snap the mix-out onto an outgoing beat (downbeat), staying inside the song and after the earliest point.
+            var aligned = false
+            if inSnapped, let alignment {
+                var (time, unit) = snap(alignment.out, start, bars: alignment.bars, atOrAfter: false)
+                if time + fade > aEnd + 1e-9 { time -= unit }
+                if time < earliest - 1e-9 { time += unit }
+                if time.isFinite, time >= earliest - 1e-9, time >= 0, time + fade <= aEnd + 1e-9 { start = time; aligned = true }
+            }
             let clips = guardOn && outIntervals.map { MusicVocalGuard.cutsOutgoingSinger($0, endSec: start + fade) } == true
             let collision = guardOn ? (MusicVocalGuard.collisionSec(
                 outgoing: inputs.outgoing.analysis, incoming: inputs.incoming.analysis, outStart: start, inStart: inStart,
@@ -71,7 +108,7 @@ extension MusicBeatPlanner {
             ) ?? 0) : 0
             if firstCollision == nil { firstCollision = collision }
             let cost = collision + (clips ? 100 : 0)
-            if best == nil || cost < best!.cost - 1e-12 { best = (start, fade, cost, collision) }
+            if best == nil || cost < best!.cost - 1e-12 { best = (start, fade, cost, collision, aligned) }
             return !clips && collision <= MusicVocalGuard.budgetSec
         }
         search: for fade in [floorFadeSeconds, floorMinFadeSeconds] {
@@ -98,6 +135,7 @@ extension MusicBeatPlanner {
         plan.incomingRate = 1
         plan.mixOutSec = chosen.mixOut
         plan.mixInSec = inStart
+        plan.floorAligned = chosen.aligned && inSnapped
         plan.fallbackIncomingStartSec = inStart
         plan.incomingStartSec = inStart
         plan.fadeStartSec = chosen.mixOut

@@ -660,7 +660,8 @@ extension MusicBeatPlannerTests {
         // Tier 4c: the planner then blends anyway (the floor blend) and keeps the reason for the log.
         let full = MusicTransitionPlanner.plan(i)
         #expect(full.mode == .beat && full.fallbackReason == "vocalClash" && full.fadeSeconds >= 6)
-        #expect(full.incomingStartSec == smart.incomingStartSec)
+        // Tier 4c: tempos match, so the incoming start is snapped to its next downbeat (never earlier, within a bar).
+        #expect(full.incomingStartSec >= smart.incomingStartSec - 1e-9 && full.incomingStartSec - smart.incomingStartSec <= 2.0 + 1e-9)
     }
 
     @Test("guard off, the same fixture: the 8 bar overlap is kept")

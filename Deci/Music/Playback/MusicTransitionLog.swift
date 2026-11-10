@@ -65,6 +65,7 @@ enum MusicTransitionLog {
             + " rate=\(fixed(plan.incomingRate, 4)) bars=\(plan.overlapBars)"
             + " mixOut=\(fixed(plan.mixOutSec ?? 0, 2)) mixIn=\(fixed(plan.mixInSec ?? 0, 2))"
             + " swapAt=\(swap) handover=\(fixed(plan.bassHandoverSec, 2))"
+            + (plan.floorAligned ? " aligned=1" : "")
     }
 
     /// transition_vocal_guard from=<id> to=<id> action=shorten before=6.20 after=0.00 fade=5.00

@@ -24,7 +24,8 @@ struct MusicFloorBlendTests {
         let plan = try #require(B.floorBlendPlan(i, smart: smart))
         #expect(plan.mode == .beat && plan.style == .longBlend && plan.reason == .ok)
         #expect(plan.incomingRate == 1 && plan.fadeSeconds == 8 && plan.overlapSec == 8 && plan.overlapBars == 0)
-        #expect(plan.mixOutSec == smart.fadeStartSec && plan.mixInSec == smart.incomingStartSec)
+        // Snapped onto the beat grids: within a bar of the smart start, never before it.
+        #expect(abs((plan.mixOutSec ?? 0) - (smart.fadeStartSec ?? 0)) <= 2.0 && abs((plan.mixInSec ?? 0) - smart.incomingStartSec) <= 2.0)
         #expect(plan.bassSwapAtSec == 4 && plan.bassHandoverSec == 2)
         #expect(plan.outgoingEndSec == (plan.mixOutSec ?? 0) + 8)
         #expect(plan.glideBackSec == 0)
@@ -72,6 +73,89 @@ struct MusicFloorBlendTests {
             #expect(plan.overlapBars > 0 || plan.bassSwapAtSec != nil, "a floor blend always swaps the bass")
             #expect(plan.style != .quickCut && plan.style != .echoOut)
         }
+    }
+
+    @Test("a pair the beat planner refused but whose tempos meet gets the long blend, not a sweep: the sweep is for clashes")
+    func refusedButMatchedIsALongBlend() {
+        for i in [BT.inputs(a: BT.grid(confidence: 0.3)), BT.inputs(bDuration: 60), BT.inputs(a: BT.grid(phase: nil, confidence: 0.3))] {
+            let plan = MusicTransitionPlanner.plan(i)
+            #expect(plan.mode == .beat && plan.style == .longBlend, "style \(plan.style.rawValue)")
+        }
+        let clash = MusicTransitionPlanner.plan(BT.inputs(a: BT.grid(confidence: 0.3), b: BT.grid(period: 60 / 160, anchor: 0.1, phase: 1)))
+        #expect(clash.style == .filterSweep)
+    }
+
+    // MARK: aligned floor blends
+
+    /// The offset of `t` from the nearest beat of `grid`, in seconds (0 = on a beat).
+    static func beatOffset(_ grid: MusicBeatGrid, _ t: Double) -> Double {
+        let k = ((t - grid.anchorSec) / grid.periodSec).rounded()
+        return abs(t - grid.beatTime(Int(k)))
+    }
+
+    /// The offset of `t` from the nearest downbeat of `grid`.
+    static func barOffset(_ grid: MusicBeatGrid, _ t: Double) -> Double {
+        let first = grid.barTime(0) ?? 0
+        let bar = 4 * grid.periodSec
+        return abs(t - (first + ((t - first) / bar).rounded() * bar))
+    }
+
+    @Test("tempos within 3 percent with both downbeats: the blend starts downbeat on downbeat, at rate 1")
+    func alignedOnDownbeats() throws {
+        let i = BT.inputs(b: BT.grid(period: 0.5 * 1.02, anchor: 0.1, phase: 1, span: 0.1...236))
+        let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
+        #expect(plan.mode == .beat && plan.style == .longBlend && plan.incomingRate == 1 && plan.floorAligned)
+        let a = try #require(i.outgoing.grid), b = try #require(i.incoming.grid)
+        #expect(Self.barOffset(a, try #require(plan.mixOutSec)) < 0.001)
+        #expect(Self.barOffset(b, try #require(plan.mixInSec)) < 0.001)
+        #expect(plan.fadeSeconds >= 6 && plan.bassSwapAtSec == plan.fadeSeconds / 2)
+        #expect(plan.incomingStartSec == plan.mixInSec && plan.fadeStartSec == plan.mixOutSec)
+        #expect(plan.mixInSec ?? -1 >= Self.smart(i).incomingStartSec - 1e-9)
+    }
+
+    @Test("a grid without a downbeat on one side aligns beat on beat, and an unmatched tempo or a missing grid stays unaligned")
+    func alignedOnBeatsOnly() throws {
+        let noPhase = BT.inputs(b: BT.grid(anchor: 0.1, phase: nil, span: 0.1...236))
+        let plan = try #require(B.floorBlendPlan(noPhase, smart: Self.smart(noPhase)))
+        #expect(plan.floorAligned && plan.style == .longBlend)
+        #expect(Self.beatOffset(try #require(noPhase.outgoing.grid), try #require(plan.mixOutSec)) < 0.001)
+        #expect(Self.beatOffset(try #require(noPhase.incoming.grid), try #require(plan.mixInSec)) < 0.001)
+        // Half time still lands on a beat of both.
+        let half = BT.inputs(b: BT.grid(period: 1, anchor: 0.1, phase: 1, span: 0.1...236))
+        let halfPlan = try #require(B.floorBlendPlan(half, smart: Self.smart(half)))
+        #expect(halfPlan.floorAligned)
+        #expect(Self.beatOffset(try #require(half.incoming.grid), try #require(halfPlan.mixInSec)) < 0.001)
+        // A 5 percent gap: thinned early, nothing aligned.
+        let gap = BT.inputs(b: BT.grid(period: 60 / 131, anchor: 0.1, phase: 1, span: 0.1...236))
+        let thin = try #require(B.floorBlendPlan(gap, smart: Self.smart(gap)))
+        #expect(!thin.floorAligned && thin.style == .filterSweep && thin.mixOutSec == Self.smart(gap).fadeStartSec)
+        // No grid at all: nothing to align to.
+        let none = BT.inputs(a: nil, b: nil)
+        #expect(!(try #require(B.floorBlendPlan(none, smart: Self.smart(none)))).floorAligned)
+    }
+
+    @Test("the vocal cut-off search still works with the snapped start: the blend ends in a gap and starts on a beat")
+    func alignedKeepsVocalSearch() throws {
+        var i = BT.inputs()
+        i.vocalGuardEnabled = true
+        let smart = Self.smart(i)
+        let end = (smart.fadeStartSec ?? 0) + 8
+        let lines: [ClosedRange<Double>] = [(end - 12)...(end + 1)]
+        i.outgoing.vocalIntervals = lines
+        let plan = try #require(B.floorBlendPlan(i, smart: smart))
+        #expect(plan.floorAligned)
+        #expect(!MusicVocalGuard.cutsOutgoingSinger(lines, endSec: (plan.mixOutSec ?? 0) + plan.fadeSeconds))
+        #expect(Self.beatOffset(try #require(i.outgoing.grid), try #require(plan.mixOutSec)) < 0.001)
+    }
+
+    @Test("an aligned floor blend says so in the beat plan log line, and an unaligned one adds nothing")
+    func alignedLogLine() throws {
+        let i = BT.inputs()
+        let aligned = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
+        #expect(MusicTransitionLog.beatPlanLine(from: "a", to: "b", plan: aligned, bpmA: 120, bpmB: 120).hasSuffix(" aligned=1"))
+        let none = BT.inputs(a: nil, b: nil)
+        let plain = try #require(B.floorBlendPlan(none, smart: Self.smart(none)))
+        #expect(!MusicTransitionLog.beatPlanLine(from: "a", to: "b", plan: plain, bpmA: nil, bpmB: nil).contains("aligned"))
     }
 
     // MARK: gridless sweep
