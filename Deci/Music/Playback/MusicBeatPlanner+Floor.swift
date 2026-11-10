@@ -36,11 +36,18 @@ extension MusicBeatPlanner {
         gridlessBlendPlan(inputs, smart: smart, forceSweep: true)
     }
 
+    /// A side's grid for the floor: the planner's own or the stored one, counted only when it passes `trusted` (a grid the planner
+    /// refused must not set a rate or an alignment). `usableGrid` only checks the row version, so the check is made here.
+    static func floorGrid(_ side: MusicTransitionSide) -> MusicBeatGrid? {
+        guard let grid = side.grid ?? side.analysis?.usableGrid, trusted(grid) else { return nil }
+        return grid
+    }
+
     /// The incoming rate that puts the incoming beats on the outgoing deck's beats, when both songs have a tempo and they meet
     /// within `floorTempoError` (half and double time folded in). nil otherwise.
     static func floorTempo(_ inputs: MusicTransitionInputs) -> (rate: Double, multiple: Double)? {
-        func bpm(_ side: MusicTransitionSide) -> Double? { (side.grid ?? side.analysis?.usableGrid)?.bpm }
-        guard let a = bpm(inputs.outgoing), let b = bpm(inputs.incoming), a.isFinite, b.isFinite, a > 0, b > 0 else { return nil }
+        guard let a = floorGrid(inputs.outgoing)?.bpm, let b = floorGrid(inputs.incoming)?.bpm,
+              a.isFinite, b.isFinite, a > 0, b > 0 else { return nil }
         return tempoMatch(outBpm: a * outgoingRate(inputs), inBpm: b, tolerance: floorTempoError)
     }
 
@@ -51,8 +58,8 @@ extension MusicBeatPlanner {
     /// have a downbeat and the tempos are the same speed (not half or double time), so a downbeat can land on a downbeat.
     static func floorAlignment(_ inputs: MusicTransitionInputs) -> (out: MusicBeatGrid, incoming: MusicBeatGrid, bars: Bool)? {
         guard floorTempoMatched(inputs),
-              let a = inputs.outgoing.grid ?? inputs.outgoing.analysis?.usableGrid,
-              let b = inputs.incoming.grid ?? inputs.incoming.analysis?.usableGrid,
+              let a = floorGrid(inputs.outgoing),
+              let b = floorGrid(inputs.incoming),
               a.periodSec.isFinite, b.periodSec.isFinite, a.periodSec > 0, b.periodSec > 0,
               a.anchorSec.isFinite, b.anchorSec.isFinite else { return nil }
         let sameSpeed = floorTempo(inputs)?.multiple == 1

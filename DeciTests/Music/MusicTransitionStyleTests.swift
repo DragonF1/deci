@@ -178,4 +178,14 @@ struct MusicTransitionStyleTests {
         let clash = MusicTransitionStylePicker.ranked(hard, previous: nil)
         #expect(!clash.contains(.quickCut) && !clash.contains(.echoOut))
     }
+
+    @Test("the picker judges the outgoing deck's heard tempo: 120 bpm at 1.05 meets 126 bpm")
+    func deckRateCountsInTempoError() throws {
+        var i = BT.inputs(b: BT.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, span: 0.1...236))
+        let file = try #require(MusicTransitionStylePicker.inputs(for: i).tempoError)
+        #expect(abs(file - 0.05) < 0.005)
+        i.outgoing.deckRate = 1.05
+        let heard = try #require(MusicTransitionStylePicker.inputs(for: i).tempoError)
+        #expect(heard < 0.005)
+    }
 }

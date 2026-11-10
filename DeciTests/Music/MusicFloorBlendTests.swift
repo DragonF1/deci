@@ -74,11 +74,13 @@ struct MusicFloorBlendTests {
         }
     }
 
-    @Test("a pair the beat planner refused but whose tempos meet gets the long blend, not a sweep: the sweep is for clashes")
+    @Test("a pair the beat planner refused for room but with trusted grids and meeting tempos gets the long blend; an untrusted grid sweeps")
     func refusedButMatchedIsALongBlend() {
-        for i in [BT.inputs(a: BT.grid(confidence: 0.3)), BT.inputs(bDuration: 60), BT.inputs(a: BT.grid(phase: nil, confidence: 0.3))] {
-            let plan = MusicTransitionPlanner.plan(i)
-            #expect(plan.mode == .beat && plan.style == .longBlend, "style \(plan.style.rawValue)")
+        let plan = MusicTransitionPlanner.plan(BT.inputs(bDuration: 60))
+        #expect(plan.mode == .beat && plan.style == .longBlend, "style \(plan.style.rawValue)")
+        for i in [BT.inputs(a: BT.grid(confidence: 0.3)), BT.inputs(a: BT.grid(phase: nil, confidence: 0.3))] {
+            let untrusted = MusicTransitionPlanner.plan(i)
+            #expect(untrusted.mode == .beat && untrusted.style == .filterSweep && untrusted.incomingRate == 1)
         }
         let clash = MusicTransitionPlanner.plan(BT.inputs(a: BT.grid(confidence: 0.3), b: BT.grid(period: 60 / 160, anchor: 0.1, phase: 1)))
         #expect(clash.style == .filterSweep)
@@ -281,5 +283,33 @@ struct MusicFloorBlendTests {
         let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
         #expect(plan.style == .longBlend && abs(plan.incomingRate - 1) < 1e-9)
         #expect(abs((plan.outgoingEndSec ?? 0) - ((plan.mixOutSec ?? 0) + plan.fadeSeconds * 1.05)) < 1e-9)
+    }
+
+    // MARK: Review gate: an untrusted grid never sets the rate or the alignment
+
+    @Test("an untrusted grid on either side at a 5 percent gap: rate 1, no alignment, a sweep")
+    func untrustedGridNeverMatches() throws {
+        let b126 = { (confidence: Float, spread: Float) in
+            BT.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, confidence: confidence, spread: spread, span: 0.1...236)
+        }
+        let cases: [MusicTransitionInputs] = [
+            BT.inputs(a: BT.grid(confidence: 0.3), b: b126(0.9, 0.01)),
+            BT.inputs(b: b126(0.3, 0.01)),
+            BT.inputs(b: b126(0.9, 0.2)),
+            BT.inputs(a: BT.grid(spread: 0.2), b: b126(0.9, 0.01))
+        ]
+        for i in cases {
+            #expect(B.floorTempo(i) == nil && B.floorAlignment(i) == nil)
+            let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
+            #expect(plan.incomingRate == 1 && plan.floorAligned == false && plan.style == .filterSweep)
+        }
+    }
+
+    @Test("both grids trusted at a 5 percent gap keep the matched blend: rate off 1, aligned, long blend")
+    func trustedGridsStillMatch() throws {
+        let i = BT.inputs(b: BT.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, span: 0.1...236))
+        let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
+        #expect(abs(plan.incomingRate - 1) > 0.01 && abs(plan.incomingRate - 1) <= B.maxRateError)
+        #expect(plan.floorAligned && plan.style == .longBlend)
     }
 }

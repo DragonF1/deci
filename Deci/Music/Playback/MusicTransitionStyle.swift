@@ -245,7 +245,10 @@ nonisolated enum MusicTransitionStylePicker {
     static func inputs(for inputs: MusicTransitionInputs) -> MusicTransitionStyleInputs {
         let a = profile(inputs.outgoing)
         let b = profile(inputs.incoming)
-        let ca = MusicMixCompact(a), cb = MusicMixCompact(b)
+        var ca = MusicMixCompact(a)
+        let cb = MusicMixCompact(b)
+        // The outgoing deck may be running off its file tempo: the picker judges the tempo that is heard.
+        if inputs.outgoing.deckRate.isFinite, inputs.outgoing.deckRate > 0 { ca.bpm *= inputs.outgoing.deckRate }
         var out = MusicTransitionStyleInputs()
         out.tempoError = MusicMixScore.tempoError(ca, cb)
         if ca.energy >= 0, cb.energy >= 0 { out.energyJump = cb.energy - ca.energy }
