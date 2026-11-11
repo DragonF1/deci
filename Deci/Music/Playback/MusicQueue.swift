@@ -535,6 +535,27 @@ struct MusicQueue: Equatable, Codable {
         self.currentIndex = 0
     }
 
+    /// The radio songs that follow the current one straight away, in play order: empty unless the next song is one of
+    /// them. Songs the listener queued (Play next, Add to queue) end it, so they always stay ahead of the radio.
+    var radioHead: [MusicTrack] {
+        Array(upcoming.prefix { isRadioSong($0.videoId) })
+    }
+
+    /// Moves a song of `radioHead` to the front of it; the other radio songs keep their order and nothing the listener
+    /// queued moves. False, and nothing changes, when the song is not in `radioHead`.
+    @discardableResult
+    mutating func promoteRadio(_ videoId: String) -> Bool {
+        guard let currentIndex else { return false }
+        let head = radioHead
+        guard head.count > 1, head.contains(where: { $0.videoId == videoId }) else { return false }
+        let start = currentIndex + 1
+        guard head.first?.videoId != videoId,
+              let index = tracks[start..<(start + head.count)].firstIndex(where: { $0.videoId == videoId }) else { return false }
+        let track = tracks.remove(at: index)
+        tracks.insert(track, at: start)
+        return true
+    }
+
     /// Lines the songs the listener has not queued up in `order` (video ids), in the slots those songs hold after the
     /// current one. A song of `order` that is not an unqueued upcoming song is ignored; an unqueued upcoming song that
     /// `order` does not name keeps its slot. The current song, the previous songs and the queued ones stay where they are.

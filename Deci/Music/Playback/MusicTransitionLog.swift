@@ -51,6 +51,17 @@ enum MusicTransitionLog {
         "transition_replan from=\(from) to=\(to) mode=\(old?.rawValue ?? "none")->\(new?.rawValue ?? "none") reason=\(reason)"
     }
 
+    /// radio_pick candidates=10 analysed=4 known=10 picked=<id> score=0.87 reason=best|order|locked
+    /// The radio scan's end: how many radio songs were looked at, how many it had to analyse, how many have a row, which
+    /// song is next and how well it mixes (`-` when nothing could be scored). `order` kept the radio's own order because
+    /// nothing could be scored; `locked` stopped because the next song was already being prepared.
+    static func radioPickLine(
+        candidates: Int, analysed: Int, known: Int, picked: String, score: Double?, reason: String
+    ) -> String {
+        "radio_pick candidates=\(candidates) analysed=\(analysed) known=\(known) picked=\(picked)"
+            + " score=\(score.map { fixed($0, 2) } ?? "-") reason=\(reason)"
+    }
+
     /// transition_late from=<id> to=<id> reason=late
     /// A song's analysis landed after the transition was planned: nothing changes for that transition.
     static func lateLine(from: String, to: String, late: String) -> String {

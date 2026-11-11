@@ -1518,6 +1518,7 @@ final class MusicService {
         // A parked beat plan or style is Mix's: leaving Mix (or entering it) plans the pair again.
         replanOffered()
         topUpQueue()
+        radioScanSoon()
         saveSession()
     }
 
@@ -1599,6 +1600,7 @@ final class MusicService {
             guard asked < Self.mixAnalysesPerRefresh else { return }
             if Task.isCancelled || !isMixOn { return }
             asked += 1
+            _ = await radioScanInFlight?.value
             guard let stream = try? await streamForSource(of: track.videoId) else {
                 if !Task.isCancelled { mixAsked.insert(track.videoId) }
                 continue
@@ -1820,6 +1822,8 @@ final class MusicService {
     /// The staged radio was placed for this hand-over song and this order; a different one places it again.
     @ObservationIgnored private var radioPlacedKey: String?
     @ObservationIgnored private(set) var stagedRadioTask: Task<Void, Never>?
+    /// The last radio scan (see `scanRadio`); kept after it ends so a test can wait for it.
+    @ObservationIgnored private(set) var radioScanTask: Task<Void, Never>?
 
     /// Reads the stored rows of the staged radio's first songs and places it. Its own task: a skip or a track change
     /// that cancels `mixTask` leaves it alone, and a newer staging replaces it.
@@ -1835,21 +1839,32 @@ final class MusicService {
     /// pick is, once it plays.
     private func placeStagedRadio() async {
         guard isMixOn, let anchor = queue.tracks.last, queue.autoplay.count > 1 else { return }
-        func key(_ staged: [MusicTrack]) -> String {
+        func orderKey(_ staged: [MusicTrack]) -> String {
             anchor.videoId + "|" + staged.prefix(MusicMixWindow.size).map(\.videoId).joined(separator: ",")
         }
+        // A row that landed since (the radio scan stores them) places the radio again, with the real tempo and key.
+        func placedKey(_ staged: [MusicTrack]) -> String {
+            orderKey(staged) + "|" + staged.prefix(MusicMixWindow.size).filter { mixRows[$0.videoId] != nil }.map(\.videoId).joined(separator: ",")
+        }
         let staged = queue.autoplay
-        guard key(staged) != radioPlacedKey else { return }
+        guard placedKey(staged) != radioPlacedKey else { return }
+        // The next song is locked once it is being prepared: a late row never moves it.
+        guard !isNextSongLocked(staged.first) else { return }
         await readMixRows(for: Array(staged.prefix(MusicMixWindow.size)) + [anchor])
         guard !Task.isCancelled, isMixOn, queue.tracks.last?.videoId == anchor.videoId,
-              key(queue.autoplay) == key(staged) else { return }
-        let placed = Self.placement(of: staged, after: anchor, rows: mixRows, seed: shuffleGenerator.next())
+              orderKey(queue.autoplay) == orderKey(staged), !isNextSongLocked(queue.autoplay.first) else { return }
+        let placed = Self.placement(
+            of: staged, after: anchor, rows: mixRows, seed: shuffleGenerator.next(), pickFromFirst: MusicRadioPick.candidateCount
+        )
         queue.reorderAutoplay(placed.map(\.videoId))
-        radioPlacedKey = key(queue.autoplay)
+        radioPlacedKey = placedKey(queue.autoplay)
     }
 
+    /// `pickFromFirst` limits the choice of the first song to that many of the radio's first songs; the others are still
+    /// laid into the slots that cost their neighbours least. Among them only songs with a row are judged once one has.
     static func placement(
-        of fresh: [MusicTrack], after anchor: MusicTrack, rows: [String: MusicAnalysis], seed: UInt64
+        of fresh: [MusicTrack], after anchor: MusicTrack, rows: [String: MusicAnalysis], seed: UInt64,
+        pickFromFirst: Int = MusicMixWindow.size
     ) -> [MusicTrack] {
         let head = Array(fresh.prefix(MusicMixWindow.size))
         let rest = Array(fresh.dropFirst(head.count))
@@ -1860,7 +1875,9 @@ final class MusicService {
         let profiles = head.map(profile)
         let anchorProfile = profile(anchor)
         var orderer = MusicMixOrderer(seed: seed)
-        guard let pick = orderer.pickBest(from: profiles, after: anchorProfile) else { return fresh }
+        let pool = Array(profiles.prefix(pickFromFirst))
+        let knownPool = pool.filter(isKnown)
+        guard let pick = orderer.pickBest(from: knownPool.isEmpty ? pool : knownPool, after: anchorProfile) else { return fresh }
         var window = [pick]
         for candidate in profiles where candidate.videoId != pick.videoId && isKnown(candidate) {
             window.insert(candidate, at: orderer.bestInsertion(of: candidate, into: window, after: anchorProfile, minIndex: 1))
@@ -1868,6 +1885,166 @@ final class MusicService {
         let unknown = profiles.filter { $0.videoId != pick.videoId && !isKnown($0) }
         let byId = Dictionary(head.map { ($0.videoId, $0) }) { first, _ in first }
         return (window + unknown).compactMap { byId[$0.videoId] } + rest
+    }
+
+    // MARK: - Radio pick
+
+    /// While songs blend (Crossfade or Mix), the radio's first `MusicRadioPick.candidateCount` songs are analysed one at a
+    /// time behind the playing song, and the one that mixes best out of it becomes the next song. It goes into the first
+    /// radio slot, the other radio songs keep their order, and the songs the listener queued stay ahead of all of them.
+    /// Without a blend the radio's order is never touched.
+
+    /// A scan is planned or running: the early prefetch of the next song waits for it.
+    @ObservationIgnored private var radioScanRunning = false
+    /// Counts the scans started, so only the last one clears `radioScanRunning`.
+    @ObservationIgnored private var radioScanGeneration = 0
+    /// The analysis the scan has under way, the only one it ever has. The next song's job and Mix's own analyses wait for it.
+    @ObservationIgnored private var radioScanInFlight: Task<MusicAnalysisCoordinator.Outcome, Never>?
+    /// Songs the scan already asked the analyzer for (done or failed), so none is asked twice in a session.
+    @ObservationIgnored private var radioScanAsked: Set<String> = []
+    private static let radioScanKept = 200
+
+    /// The radio songs a scan looks at: the first ones still ahead, and the song they follow.
+    private struct RadioScanPlan {
+        var tracks: [MusicTrack]
+        var anchor: MusicTrack
+        /// They are the staged radio of a page (not in the queue yet).
+        var staged: Bool
+    }
+
+    /// The scan's plan for the queue as it is now; nil when no scan is wanted: songs do not blend, nothing can be analysed
+    /// (no provider, offline, signed out, Loop song), the playing song has not loaded, or the next song is not a radio song.
+    private func radioScanPlan() -> RadioScanPlan? {
+        guard mixesTransitions, analysis != nil, analysisReader != nil, !isOffline, authState != .signedOut, loopMode != .song,
+              let current = queue.current, player.currentStream?.videoId == current.videoId else { return nil }
+        let count = MusicRadioPick.candidateCount
+        if queue.upcoming.isEmpty {
+            guard playsAutoplay, !queue.autoplay.isEmpty else { return nil }
+            return RadioScanPlan(tracks: Array(queue.autoplay.prefix(count)), anchor: current, staged: true)
+        }
+        // Mix already orders the songs ahead (a window of them) from their rows, so a radio queue in Mix is left to it.
+        guard !isMixOn else { return nil }
+        let head = queue.radioHead
+        guard !head.isEmpty else { return nil }
+        return RadioScanPlan(tracks: Array(head.prefix(count)), anchor: current, staged: false)
+    }
+
+    /// The next song is being prepared (its preload is offered or its prefetch started): the pick is frozen from here, so
+    /// the song the player was given is the song the queue hands over to.
+    private func isNextSongLocked(_ next: MusicTrack?) -> Bool {
+        guard let id = next?.videoId else { return false }
+        return preloadOffered != nil || prefetchAttempt == id
+    }
+
+    /// Starts a scan behind the one before it (which is cancelled), when one is wanted.
+    private func radioScanSoon() {
+        guard radioScanPlan() != nil else { return }
+        let previous = radioScanTask
+        previous?.cancel()
+        radioScanGeneration += 1
+        let generation = radioScanGeneration
+        radioScanRunning = true
+        radioScanTask = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            await self.scanRadio()
+            if generation == self.radioScanGeneration { self.radioScanRunning = false }
+        }
+    }
+
+    /// Reads the rows of the candidates, puts the best one first, and analyses the next candidate that has no row, until
+    /// all have one, the next song is locked, the analyzer says to back off, or the queue no longer wants it. The pick is
+    /// made again after every row, so the best so far is always in the first slot.
+    private func scanRadio() async {
+        guard let analysis, let reader = analysisReader else { return }
+        var analysed = 0
+        var waited = false
+        while !Task.isCancelled {
+            guard let first = radioScanPlan() else { return }
+            await readMixRows(for: first.tracks + [first.anchor])
+            guard !Task.isCancelled, let plan = radioScanPlan(), plan.anchor.videoId == first.anchor.videoId else { return }
+            if mixRows.count > Self.radioScanKept {
+                let keep = Set(plan.tracks.map(\.videoId) + [plan.anchor.videoId])
+                mixRows = mixRows.filter { keep.contains($0.key) }
+            }
+            if radioScanAsked.count > Self.radioScanKept { radioScanAsked = radioScanAsked.intersection(plan.tracks.map(\.videoId)) }
+            if isNextSongLocked(plan.tracks.first) { return finishRadioScan(plan, analysed: analysed, locked: true) }
+            await pickRadioNext(plan)
+            // Nothing to score from without a row for the song the radio follows.
+            guard mixRows[plan.anchor.videoId] != nil,
+                  let target = plan.tracks.first(where: { mixRows[$0.videoId] == nil && !radioScanAsked.contains($0.videoId) })
+            else { return finishRadioScan(plan, analysed: analysed, locked: false) }
+            // Behind the analyses already going (the playing song's, the next song's, Mix's own), then a fresh look.
+            if !waited {
+                waited = true
+                await currentAnalysisTask?.value
+                await analysisTail?.value
+                await mixTask?.value
+                continue
+            }
+            waited = false
+            guard let stream = try? await streamForSource(of: target.videoId) else {
+                if !Task.isCancelled { radioScanAsked.insert(target.videoId) }
+                continue
+            }
+            // The next song may have been locked while the stream was resolved: no new analysis then.
+            guard !Task.isCancelled, let now = radioScanPlan(), !isNextSongLocked(now.tracks.first) else {
+                if !Task.isCancelled, let now = radioScanPlan() { finishRadioScan(now, analysed: analysed, locked: true) }
+                return
+            }
+            let job = Task { await analysis.ensure(stream: stream, wantsFile: false) }
+            radioScanInFlight = job
+            let outcome = await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+            radioScanInFlight = nil
+            // A run that was cancelled mid-way asks again later; a finished one is not asked twice.
+            if Task.isCancelled { return }
+            radioScanAsked.insert(target.videoId)
+            analysed += 1
+            if outcome == .rateLimited {
+                if let now = radioScanPlan() { finishRadioScan(now, analysed: analysed, locked: false) }
+                return
+            }
+            if let row = await reader.analysis(for: target.videoId) { mixRows[target.videoId] = row }
+        }
+    }
+
+    /// Puts the best candidate in the first radio slot, from the rows known now. Mix places a page's staged radio the way
+    /// it always does (the best first and the other known songs by cost); anything else moves only the best song, and a
+    /// radio with nothing to score keeps the order it had.
+    private func pickRadioNext(_ plan: RadioScanPlan) async {
+        func profile(_ track: MusicTrack) -> MusicMixProfile {
+            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
+        }
+        if plan.staged, isMixOn {
+            guard plan.tracks.contains(where: { MusicRadioPick.isKnown(profile($0)) }) else { return }
+            await placeStagedRadio()
+            return
+        }
+        guard let choice = MusicRadioPick.best(of: plan.tracks.map(profile), after: profile(plan.anchor)),
+              choice.videoId != plan.tracks.first?.videoId else { return }
+        if plan.staged {
+            let others = queue.autoplay.map(\.videoId).filter { $0 != choice.videoId }
+            queue.reorderAutoplay([choice.videoId] + others)
+        } else {
+            guard queue.promoteRadio(choice.videoId) else { return }
+        }
+        saveSession()
+    }
+
+    /// The scan is over for this next song: one log line with what it found.
+    private func finishRadioScan(_ plan: RadioScanPlan, analysed: Int, locked: Bool) {
+        let next = plan.staged ? queue.autoplay.first : queue.upcoming.first
+        guard let next else { return }
+        let known = plan.tracks.filter { mixRows[$0.videoId] != nil }.count
+        func profile(_ track: MusicTrack) -> MusicMixProfile {
+            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
+        }
+        let scorable = MusicRadioPick.isKnown(profile(plan.anchor)) && MusicRadioPick.isKnown(profile(next))
+        let reason = locked ? "locked" : (scorable ? "best" : "order")
+        log(MusicTransitionLog.radioPickLine(
+            candidates: plan.tracks.count, analysed: analysed, known: known, picked: next.videoId,
+            score: scorable ? MusicRadioPick.score(of: profile(next), after: profile(plan.anchor)) : nil, reason: reason
+        ))
     }
 
     /// The playing song changed: in Mix, what Up next shows is worked out again for the songs after it.
@@ -1932,6 +2109,7 @@ final class MusicService {
         guard on != isCrossfadeOn else { return }
         isCrossfadeOn = on
         savePlaybackPreferences()
+        radioScanSoon()
     }
 
     /// How long a crossfade lasts, 1 to 12 seconds: Settings' value when the service reads it live.
@@ -2140,6 +2318,8 @@ final class MusicService {
         playGeneration += 1
         let generation = playGeneration
         cancelPrefetch()
+        // The scan was for the song that is left; the new one starts its own once it has loaded.
+        radioScanTask?.cancel()
         trackChangedForAnalysis(to: track.videoId)
         mixTrackChanged()
         trackingTask?.cancel()
@@ -2167,6 +2347,7 @@ final class MusicService {
             player.load(stream: stream, track: track)
             fetchTrackingURLs(for: stream, generation: generation)
             analyseCurrent(stream)
+            radioScanSoon()
             scheduleMemoryProbe()
         } catch {
             guard generation == playGeneration else { return }
@@ -2459,6 +2640,7 @@ final class MusicService {
         session = makeSession(for: stream)
         adopt()
         fetchTrackingURLs(for: stream, generation: generation)
+        radioScanSoon()
         scheduleMemoryProbe()
         topUpQueue()
         saveSession()
@@ -2828,6 +3010,7 @@ final class MusicService {
             // The radio that follows a page waits beside it until the page runs out.
             added = queue.stageAutoplay(page.tracks, continuation: page.continuation, seed: seed)
             if added > 0, isMixOn { placeStagedRadioSoon() }
+            if added > 0 { radioScanSoon() }
         } else {
             // The radio has answered: from here the queue is the radio's, even if it had nothing new to add. A mix's
             // answer joins the queue itself and the queue stays the mix's; a plain radio asked once the mix has run dry
@@ -2845,6 +3028,7 @@ final class MusicService {
             }
             added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator, inOrder: isMixOn)
             if added > 0 { mixQueueGrew() }
+            if added > 0 { radioScanSoon() }
         }
         if added > 0, resumePendingAdvance() { return }
         // Pages overlap heavily: one that adds nothing still has a continuation, so ask again at once,
@@ -2917,7 +3101,10 @@ final class MusicService {
         }
         // With analysis on, the next song is resolved and analysed as soon as it has settled as next, whatever the
         // current song's length; the preload keeps its own window.
-        let early = analysisWantsNext && nextSongSettled(target?.videoId)
+        // While the radio scan still looks for the best next song, the early prefetch waits: it would fetch and analyse a
+        // song that the scan may replace. The window's own prefetch is the backstop and freezes the best pick so far.
+        let scanHolds = radioScanRunning && !inWindow && duration > lead * 2
+        let early = analysisWantsNext && !scanHolds && nextSongSettled(target?.videoId)
         guard early || inWindow, let next = target, prefetchAttempt != next.videoId else { return }
         prefetchAttempt = next.videoId
         prefetchTask = Task { [weak self] in
@@ -2985,6 +3172,8 @@ final class MusicService {
             await previous?.value
             await cleanup?.value
             guard let self else { return }
+            // Only one analysis runs at a time: the one the radio scan has under way lands first.
+            _ = await self.radioScanInFlight?.value
             defer {
                 self.analysisJobs[job] = nil
                 self.analysisRunning[job] = nil
