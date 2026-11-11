@@ -16,6 +16,9 @@ actor RadioRowProvider: MusicAnalysisProviding {
     private var gates: [String: MusicTestGate] = [:]
     private var stored: Set<String> = []
     private(set) var ensures: [String] = []
+    /// Analyses that were cancelled by the time they came back.
+    private(set) var cancelledEnsures: [String] = []
+    private var arrivals: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var inFlight = 0
     private(set) var maxInFlight = 0
 
@@ -28,9 +31,11 @@ actor RadioRowProvider: MusicAnalysisProviding {
     func ensure(stream: ResolvedStream, wantsFile: Bool) async -> MusicAnalysisCoordinator.Outcome {
         let id = stream.videoId
         ensures.append(id)
+        for waiter in arrivals.removeValue(forKey: id) ?? [] { waiter.resume() }
         inFlight += 1
         maxInFlight = max(maxInFlight, inFlight)
         if let gate = gates[id] { await gate.wait() }
+        if Task.isCancelled { cancelledEnsures.append(id) }
         var outcome = outcomes[id] ?? .analysed(file: nil)
         if stored.contains(id) { outcome = .alreadyFresh }
         if case .analysed = outcome, let row = rows[id] {
@@ -41,9 +46,21 @@ actor RadioRowProvider: MusicAnalysisProviding {
         return outcome
     }
 
+    /// Returns once `ensure` has been called for the song (at once when it already was).
+    func arrived(_ id: String) async {
+        if ensures.contains(id) { return }
+        await withCheckedContinuation { arrivals[id, default: []].append($0) }
+    }
+
     func release(videoId: String) {}
     func discard(videoId: String) {}
     func cancel(videoId: String) {}
+}
+
+/// Set from a task, read by the test: tells whether a task has ended.
+@MainActor
+private final class EndedFlag {
+    var ended = false
 }
 
 @MainActor
@@ -134,12 +151,23 @@ private struct PickHarness {
     }
 
     /// A one-song page whose automix after it is the radio: the song is the last of its page, so the radio is next.
-    func startPage(radio: [String] = PickHarness.radio) async {
-        await storeAnchor("a")
+    /// With `lateAnchor` the playing song has no row yet: its own analysis (scripted, and held by `gate`) stores it.
+    func startPage(radio: [String] = PickHarness.radio, lateAnchor: MusicTestGate? = nil) async {
+        if let gate = lateAnchor {
+            await provider.script(MixRows.row("a", bpm: 128, tonic: 9, minor: true))
+            await provider.hold("a", gate)
+        } else {
+            await storeAnchor("a")
+        }
         for id in ["a"] + radio { await backend.setStream(MusicSamples.stream(videoId: id, duration: 240)) }
         await backend.setAutomix(afterVideoId: "a", tracks: MusicSamples.tracks("a") + radio.map { MusicSamples.track($0) })
         let page = MusicSamples.page("VLPL1", tracks: [MusicSamples.track("a", title: "Song a")], audioPlaylistId: nil)
         service.play(MusicSamples.track("a", title: "Song a"), in: page)
+        if lateAnchor != nil {
+            await provider.arrived("a")
+            engine.emit(.playingChanged(true))
+            return
+        }
         await settle()
         engine.emit(.playingChanged(true))
     }
@@ -335,8 +363,7 @@ struct MusicRadioPickTests {
         let gate = MusicTestGate()
         await h.provider.hold("r7", gate)
         await h.startPage()
-        let reached = await h.waitUntil { await h.radioEnsures().contains("r7") }
-        #expect(reached)
+        await h.provider.arrived("r7")
         #expect(h.staged.first == "r1")
         h.service.offerPreloadForTesting("r1")
         await gate.open()
@@ -352,8 +379,7 @@ struct MusicRadioPickTests {
         let gate = MusicTestGate()
         await h.provider.hold("r2", gate)
         await h.startPage()
-        let reached = await h.waitUntil { await h.radioEnsures().contains("r2") }
-        #expect(reached)
+        await h.provider.arrived("r2")
         // Into the lead window: the prefetch of the next song starts and locks the pick.
         h.engine.tick(200, playing: true)
         await h.service.prefetchTask?.value
@@ -371,8 +397,7 @@ struct MusicRadioPickTests {
         let gate = MusicTestGate()
         await h.provider.hold("r2", gate)
         await h.startPage()
-        let reached = await h.waitUntil { await h.radioEnsures().contains("r2") }
-        #expect(reached)
+        await h.provider.arrived("r2")
         h.engine.tick(5, playing: true)
         h.clock.advance(by: MusicService.analysisSettle + 0.1)
         h.engine.tick(5.25, playing: true)
@@ -416,5 +441,171 @@ struct MusicRadioPickTests {
         #expect(line.contains("known=10"))
         #expect(line.contains("picked=r7"))
         #expect(line.contains("reason=best"))
+    }
+
+    // MARK: - Fix round
+
+    @Test("the playing song's row lands after it loaded: the scan waits for it and still picks the best")
+    func lateAnchorRowStillPicks() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r7"])
+        let gate = MusicTestGate()
+        await h.startPage(lateAnchor: gate)
+        #expect(h.staged == PickHarness.radio)
+        await gate.open()
+        await h.settleScan()
+        #expect(h.staged.first == "r7")
+        #expect(h.pickLines.last?.contains("reason=best") == true)
+    }
+
+    @Test("an analysis the Mix machinery starts while the scan resolves its stream never runs beside the scan's")
+    func neverTwoAtOnceWhileResolving() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r1"])
+        let resolve = MusicTestGate()
+        await h.backend.setResolveGate("r1", resolve)
+        let hold = MusicTestGate()
+        await h.provider.hold("r1", hold)
+        await h.startRadio()
+        h.service.setShuffleMode(.mix)
+        await resolve.open()
+        await h.provider.arrived("r1")
+        await hold.open()
+        await h.settleScan()
+        #expect(await h.provider.maxInFlight == 1)
+    }
+
+    @Test("Crossfade or Mix switched off mid-wait ends the scan at once and it stops holding the prefetch")
+    func noBlendEndsTheScanWhileWaiting() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r7"])
+        let gate = MusicTestGate()
+        await h.startPage(lateAnchor: gate)
+        #expect(h.service.radioScanRunning)
+        let scan = h.service.radioScanTask
+        let flag = EndedFlag()
+        Task { await scan?.value; flag.ended = true }
+        h.service.setCrossfade(false)
+        #expect(!h.service.radioScanRunning)
+        let ended = await h.waitUntil { flag.ended }
+        #expect(ended)
+        await gate.open()
+        await h.settleScan()
+        #expect(await h.radioEnsures().isEmpty)
+        #expect(h.staged == PickHarness.radio)
+    }
+
+    @Test("switching to no blend mid-analysis cancels the candidate's analysis and asks for no more")
+    func noBlendCancelsRunningAnalysis() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r7"])
+        let gate = MusicTestGate()
+        await h.provider.hold("r2", gate)
+        await h.startPage()
+        await h.provider.arrived("r2")
+        h.service.setCrossfade(false)
+        #expect(!h.service.radioScanRunning)
+        await gate.open()
+        await h.settleScan()
+        #expect(await h.radioEnsures() == ["r1", "r2"])
+        #expect(await h.provider.cancelledEnsures == ["r2"])
+        #expect(h.staged == PickHarness.radio)
+    }
+
+    @Test("signing out mid-scan stops it after the running analysis")
+    func signOutStopsTheScan() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r7"])
+        let gate = MusicTestGate()
+        await h.provider.hold("r2", gate)
+        await h.startPage()
+        await h.provider.arrived("r2")
+        await h.backend.setSignedIn(false)
+        await h.service.refreshAuth()
+        #expect(!h.service.radioScanRunning)
+        await gate.open()
+        await h.settleScan()
+        #expect(await h.radioEnsures() == ["r1", "r2"])
+    }
+
+    @Test("a queue replaced mid-scan gets no pick from the old scan")
+    func replacedQueueNoStalePick() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r7"])
+        let gate = MusicTestGate()
+        await h.provider.hold("r2", gate)
+        await h.startPage()
+        await h.provider.arrived("r2")
+        let others = ["x1", "x2", "x3"]
+        for id in ["b"] + others { await h.backend.setStream(MusicSamples.stream(videoId: id, duration: 240)) }
+        await h.reader.set(MixRows.row("b", bpm: 128, tonic: 9, minor: true))
+        let tracks = ["b"].map { MusicSamples.track($0, title: "Song \($0)") } + others.map { MusicSamples.track($0) }
+        await h.backend.setRadio(seed: "b", tracks: tracks, continuation: nil)
+        h.service.play(tracks[0])
+        await gate.open()
+        await h.settleScan()
+        #expect(h.order == ["b"] + others)
+        let asked = await h.radioEnsures()
+        #expect(!asked.contains("r3"))
+    }
+
+    @Test("a Play next song added mid-scan stays ahead of the radio")
+    func playNextMidScanStaysAhead() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r7"])
+        await h.reader.set(MixRows.row("q", bpm: 128, tonic: 9, minor: true))
+        await h.backend.setStream(MusicSamples.stream(videoId: "q", duration: 240))
+        let gate = MusicTestGate()
+        await h.provider.hold("r2", gate)
+        await h.startRadio()
+        await h.provider.arrived("r2")
+        h.service.playNext(MusicSamples.track("q", title: "Song q"))
+        await gate.open()
+        await h.settleScan()
+        #expect(h.order.prefix(2) == ["s", "q"])
+        #expect(Set(h.order) == Set(["s", "q"] + PickHarness.radio))
+    }
+
+    @Test("a prefetch that started locks the pick: a late row never moves the next song")
+    func lockedByPrefetch() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r7"])
+        let gate = MusicTestGate()
+        await h.provider.hold("r7", gate)
+        await h.startPage()
+        await h.provider.arrived("r7")
+        h.engine.tick(200, playing: true)
+        #expect(h.service.prefetchTask != nil)
+        await gate.open()
+        await h.settleScan()
+        #expect(h.staged.first == "r1")
+        #expect(h.pickLines.last?.contains("reason=locked") == true)
+    }
+
+    @Test("a song twice in the staged radio breaks nothing and moves no queued song")
+    func duplicateIdsAreSafe() async {
+        let h = PickHarness(crossfade: true)
+        await h.script(matching: ["r7"])
+        await h.startPage(radio: PickHarness.radio + ["r3"])
+        await h.settleScan()
+        #expect(Set(h.staged) == Set(PickHarness.radio))
+        #expect(h.service.queue.tracks.map(\.videoId) == ["a"])
+    }
+
+    @Test("Mix with a tapped song's radio: the first ten are analysed, the best lands next, the rest are never analysed")
+    func mixTappedRadioPicksBest() async {
+        let h = PickHarness(crossfade: false)
+        await h.script(matching: ["r7"])
+        h.service.setShuffleMode(.mix)
+        await h.startRadio()
+        await h.settleScan()
+        let asked = await h.radioEnsures()
+        // Mix's own window analysis may add songs of its own; every one of the first ten has a row.
+        #expect(Set(asked).isSuperset(of: Set(h.order[1...10])))
+        #expect(asked.contains("r7"))
+        #expect(h.order.first == "s")
+        #expect(h.order[1] == "r7")
+        #expect(Set(h.order) == Set(["s"] + PickHarness.radio))
+        #expect(await h.provider.maxInFlight == 1)
     }
 }

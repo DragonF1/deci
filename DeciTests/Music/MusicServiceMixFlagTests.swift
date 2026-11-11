@@ -139,7 +139,7 @@ struct MusicServiceMixFlagTests {
         #expect(plan.outgoingEndSec == 197)
         #expect(plan.incomingGainDb == 0)
         #expect(plan.outgoingGainDb == 0)
-        #expect(h.service.transitionLines.first?.contains("mode=clean") == true)
+        #expect(h.service.transitionLines.first { $0.hasPrefix("transition_") }?.contains("mode=clean") == true)
     }
 
     @Test("a flagged pair a into b gets the clean plan")

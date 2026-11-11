@@ -150,7 +150,8 @@ struct MusicServiceTransitionTests {
         #expect(plan.fadeSeconds == 8)
         #expect(plan.fadeStartSec == 185)
         #expect(plan.incomingRate == 1)
-        let line = try #require(h.service.transitionLines.first)
+        // The radio scan may log its own line first (Mix on a radio queue): the plan line is the one looked at.
+        let line = try #require(h.service.transitionLines.first { $0.hasPrefix("transition_plan") })
         #expect(line.hasPrefix("transition_plan from=a to=b mode=beat"))
         #expect(!line.contains("http"))
     }
@@ -291,7 +292,7 @@ struct MusicServiceTransitionTests {
         #expect(h.engine.plans.count == 1)
         #expect(h.lastPlan == before)
         #expect(h.engine.updatedPlans.isEmpty)
-        #expect(h.service.transitionLines.last?.contains("reason=late") == true)
+        #expect(h.service.transitionLines.last { $0.hasPrefix("transition_") }?.contains("reason=late") == true)
         // A toggle after that still re-plans from the frozen inputs: b stays unanalysed for this transition.
         h.service.setCrossfade(false)
         h.service.setShuffleMode(.off)

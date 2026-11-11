@@ -35,3 +35,40 @@ nonisolated enum MusicRadioPick {
         return best
     }
 }
+
+/// Waits for a task to finish, but stops waiting at once when the waiting task is cancelled (the task waited on is left
+/// alone). A plain `await task.value` ignores the waiter's cancellation, so a cancelled scan would linger behind it.
+nonisolated final class MusicCancellableWait: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var finished = false
+
+    private func finish() {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        finished = true
+        lock.unlock()
+        pending?.resume()
+    }
+
+    static func wait<T: Sendable>(for task: Task<T, Never>?) async {
+        guard let task else { return }
+        let gate = MusicCancellableWait()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                gate.lock.lock()
+                if gate.finished {
+                    gate.lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                gate.continuation = continuation
+                gate.lock.unlock()
+                Task.detached { _ = await task.value; gate.finish() }
+            }
+        } onCancel: {
+            gate.finish()
+        }
+    }
+}
