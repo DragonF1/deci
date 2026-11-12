@@ -218,7 +218,7 @@ struct GeneralTab: View {
                     .controlSize(.small)
                     .labelsHidden()
             }
-            .disabled(!settings.appSettings.musicCrossfadeEnabled)
+            // Never locked: Mix blends songs whatever Crossfade says, so this acts in Mix even with Crossfade off.
             SettingsRowDivider()
             SettingsRow(
                 "Vocal guard",
@@ -229,21 +229,18 @@ struct GeneralTab: View {
                     .controlSize(.small)
                     .labelsHidden()
             }
-            .disabled(!settings.appSettings.musicCrossfadeEnabled)
             SettingsRowDivider()
             SettingsRow(
                 "DJ-length songs",
-                description: "In Mix, energetic runs move on after the second chorus."
+                description: "In Mix with Beat-matched transitions on, energetic runs move on after the second chorus."
             ) {
                 Toggle("", isOn: $settings.appSettings.musicDJLength)
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .labelsHidden()
             }
-            // It acts in Mix with Beat mix on (Mix mixes whatever Crossfade says), so Crossfade does not gate it. A switch that
-            // is already on is never locked, so it can always be turned off.
-            .disabled(!settings.appSettings.musicDJLength
-                && !(settings.appSettings.musicShuffle && settings.appSettings.musicMixShuffle && settings.appSettings.musicBeatMix))
+            // Never locked by the shuffle mode or Beat mix: the planner only cuts in Mix with Beat mix on, so the switch can
+            // be set ahead of time from any mode.
             SettingsRowDivider()
             SettingsRow(
                 "Analyse songs in the background",
