@@ -1118,15 +1118,17 @@ struct MusicTrackActionsStoreTests {
 
     @Test("An older notice's timer never clears a newer notice early")
     func newerNoticeSurvives() async {
-        let h = ActionsHarness(noticeDuration: .milliseconds(150))
+        // Wide margins, as in outcomesReplaceEachOther: the check lands past the first line's deadline and 400 ms
+        // before the second one's, so a slow sleep under a loaded test run cannot reach either edge.
+        let h = ActionsHarness(noticeDuration: .seconds(1))
         let first = MusicSamples.playlistOption("PLtwo", title: "First", contains: true)
         await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [first])
         h.store.choose(first)
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await Task.sleep(for: .milliseconds(600))
         let second = MusicSamples.playlistOption("PLtwo", title: "Second", contains: true)
         await h.openCollectionPicker(for: h.albumTile, sourceId: "OLAK5uy_tile", options: [second])
         h.store.choose(second)
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await Task.sleep(for: .milliseconds(600))
         #expect(h.store.notice?.text == "Already in Second")
         #expect(await h.until { h.store.notice == nil })
     }

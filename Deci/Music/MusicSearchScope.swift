@@ -59,6 +59,7 @@ nonisolated enum MusicSearchScope: Equatable {
                 case .album: return .album
                 case .playlist, .liked: return .playlist
                 case .artist: return .artist
+                case .shelfList: return .global
                 }
             }
             switch tab {

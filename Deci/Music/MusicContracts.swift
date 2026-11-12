@@ -256,8 +256,32 @@ struct MusicCollection: Sendable, Hashable, Identifiable {
     /// Whether this opens an artist's list of all their songs (the "Show all" of the Top songs), which sorts by Popular,
     /// Album and Plays. The route carries it because an album's "OLAK5uy_" playlist has the same kind of id.
     var isArtistSongs = false
+    /// Set on the route of a shelf's full list (the "Show all" of Albums, Singles or an artist's playlists): the page it
+    /// loads the items from. The route has no page of YouTube Music behind its `browseId`; see `shelfList`.
+    var shelfList: MusicDiscographyLink?
+    /// Set when `title` is only the shelf's name for the page (a Videos link), so the loaded page's own title replaces it
+    /// as the Back label.
+    var titleIsProvisional = false
+
+    /// The route of the full list a shelf's more link opens. Its id is made of the link, so two lists of one artist
+    /// (Albums, Singles) are two pages, and it matches no id of a real page.
+    static func shelfList(title: String, link: MusicDiscographyLink) -> MusicCollection {
+        MusicCollection(
+            browseId: "\(shelfListPrefix)\(link.browseId)|\(link.params ?? "")",
+            kind: .playlist,
+            title: title,
+            subtitle: "",
+            thumbnailURL: nil,
+            shelfList: link
+        )
+    }
 
     var id: String { browseId }
+
+    /// Whether `browseId` is the id of a list route (see `shelfList`), which no page of YouTube Music has.
+    static func isShelfListId(_ browseId: String) -> Bool { browseId.hasPrefix(shelfListPrefix) }
+
+    private static let shelfListPrefix = "list|"
 
     /// The year in the second line: the last " • "-separated part that is exactly four digits in 1900 to 2100 ("Album •
     /// 2013", "Album • 2013 • 13 songs" and a bare "2013" all give 2013). Nil when the line names no year.
@@ -288,6 +312,11 @@ enum MusicShelfItem: Sendable, Hashable, Identifiable {
 struct MusicShelf: Sendable, Hashable, Identifiable {
     let title: String
     let items: [MusicShelfItem]
+    /// Where the header's "Show all" goes, as YouTube sent it. Only an artist page's shelves have it, and only when the
+    /// header names more than a page (a discography page, a playlist, a channel with params).
+    /// Deliberately not part of `id`: the link says where the full list is, not which shelf this is, so a shelf keeps its
+    /// identity (scroll position, animations) whatever the link does.
+    var more: MusicDiscographyLink?
 
     var id: String { title + "|" + (items.first?.id ?? "") }
 }
@@ -315,8 +344,8 @@ struct MusicCollectionList: Sendable, Equatable {
     let continuation: String?
 }
 
-/// Where an artist's discography lives: the "MPAD..." page a shelf header opens, and the `params` that pick its albums,
-/// singles or the rest, kept exactly as YouTube sent them.
+/// Where a shelf's full list lives: the "MPAD..." page a discography shelf header opens, a playlist ("VL...") or a channel
+/// id, and the `params` that pick its albums, singles, playlists or the rest, kept exactly as YouTube sent them.
 struct MusicDiscographyLink: Sendable, Hashable {
     let browseId: String
     let params: String?
@@ -488,6 +517,9 @@ protocol MusicBackend: Sendable {
     /// The albums on the first page of an artist's discography page ("MPAD..."), picked by `params` as the artist page's
     /// shelf header sent them. Their subtitles carry the release years.
     func discography(browseId: String, params: String?) async throws -> [MusicCollection]
+    /// Every item of a shelf's full list (the "Show all" of Albums, Singles or an artist's playlists), over up to twenty
+    /// pages. Unlike `discography`, a page that fails fails the call, so a partial list is never shown as the whole one.
+    func shelfList(browseId: String, params: String?) async throws -> [MusicCollection]
     /// The playlists the user can add `videoId` to. YouTube Music does not send a flag for the ones that already hold the
     /// song, so the options come back unmarked unless YouTube flags them; `MusicTrackActionsStore` checks membership itself.
     func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption]

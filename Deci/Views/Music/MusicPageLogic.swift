@@ -11,14 +11,17 @@ enum MusicPageKind: Equatable, Sendable {
     case artist
     case playlist
     case liked
+    /// The full list behind a shelf's "Show all": a grid of tiles with no songs.
+    case shelfList
 
     /// The kind of the page a collection opens. Liked music is told by its browse id.
     @MainActor
     static func resolve(kind: MusicCollection.Kind, browseId: String) -> MusicPageKind {
+        if MusicCollection.isShelfListId(browseId) { return .shelfList }
         switch kind {
-        case .album: .album
-        case .artist: .artist
-        case .playlist: browseId == MusicBrowseStore.likedMusic.browseId ? .liked : .playlist
+        case .album: return .album
+        case .artist: return .artist
+        case .playlist: return browseId == MusicBrowseStore.likedMusic.browseId ? .liked : .playlist
         }
     }
 
@@ -31,7 +34,7 @@ enum MusicPageKind: Equatable, Sendable {
         switch self {
         case .album: .album(number: index + 1)
         case .liked: .liked
-        case .artist, .playlist: .playlist
+        case .artist, .playlist, .shelfList: .playlist
         }
     }
 }
@@ -151,6 +154,34 @@ enum MusicTopSongsHeader {
     }
 }
 
+/// The "Show all" link on an artist page's shelves (Albums, Singles & EPs, an artist's or creator's playlists, Videos).
+enum MusicShelfMore {
+    /// What the tiles of a list belong to: the page the list was opened from, the nearest entry below it on `path` that
+    /// is no list. Without it an album tile's "Go to artist" on that artist's own Albums list would push the artist again.
+    static func trackContext(for list: MusicCollection, path: [MusicCollection]) -> MusicTrackContext {
+        guard let index = path.lastIndex(where: { $0.browseId == list.browseId }),
+              let parent = path[..<index].last(where: { $0.shelfList == nil }) else { return .none }
+        return MusicTrackContext(pageBrowseId: parent.browseId, pageTitle: parent.title, pageIsEditable: false)
+    }
+
+    static let linkTitle = "Show all"
+
+    /// What the link opens, or nil (no link) when the shelf has no more link or nothing a full list could show. A
+    /// playlist link ("VL", Videos) is that playlist's page. Any other link opens the shelf's full list, but only for a
+    /// shelf of albums, singles or playlists: the list is a grid of collections, and the more page of a shelf of songs or
+    /// videos (Live performances) holds none.
+    static func opener(for shelf: MusicShelf) -> MusicCollection? {
+        guard let link = shelf.more, !shelf.items.isEmpty else { return nil }
+        if link.browseId.hasPrefix("VL") {
+            return MusicCollection(browseId: link.browseId, kind: .playlist, title: shelf.title, subtitle: "", thumbnailURL: nil, titleIsProvisional: true)
+        }
+        let onlyCollections = shelf.items.allSatisfy { item in
+            if case .collection = item { true } else { false }
+        }
+        return onlyCollections ? .shelfList(title: shelf.title, link: link) : nil
+    }
+}
+
 /// The line under a sorted page's sort bar.
 enum MusicSortNote: Equatable {
     case none
@@ -253,6 +284,8 @@ struct MusicPageHeroText: Equatable {
             }
             let albums = albumCount.flatMap { $0 > 0 ? "\($0) \($0 == 1 ? "album" : "albums")" : nil }
             return MusicPageHeroText(kicker: "ARTIST", title: title, sub: audience ?? rest.first, meta: albums)
+        case .shelfList:
+            return MusicPageHeroText(kicker: "ALL", title: title, sub: nil, meta: nil)
         case .playlist, .liked:
             if let first = rest.first, isKindWord(first, ["Playlist", "Auto playlist"]) { rest.removeFirst() }
             let ownerParts = rest.prefix { $0.first?.isNumber != true }

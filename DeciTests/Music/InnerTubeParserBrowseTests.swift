@@ -230,7 +230,7 @@ struct InnerTubeParserBrowseTests {
         #expect(items.map(\.kind) == [.playlist, .playlist, .playlist, .album, .artist, .artist])
     }
 
-    @Test("Home tiles that Deci cannot open are dropped: podcasts, user channels, episodes, greyed out")
+    @Test("Home tiles that Deci cannot open are dropped: podcasts, episodes, audiobooks, greyed out; a user channel is an artist")
     func homeTileSkips() throws {
         let episode = #"{"watchEndpoint":{"videoId":"ep1","watchEndpointMusicSupportedConfigs":{"watchEndpointMusicConfig":{"musicVideoType":"MUSIC_VIDEO_TYPE_PODCAST_EPISODE"}}}}"#
         let greyed = #","musicItemRendererDisplayPolicy":"MUSIC_ITEM_RENDERER_DISPLAY_POLICY_GREY_OUT""#
@@ -243,7 +243,8 @@ struct InnerTubeParserBrowseTests {
             tile(title: "Kept", endpoint: browseEndpoint("MPREbkept", pageType: "MUSIC_PAGE_TYPE_ALBUM")),
         ])
         let page = try InnerTubeParser.homePage(from: data)
-        #expect(collections(in: page.shelves[0]).map(\.browseId) == ["MPREbkept"])
+        #expect(collections(in: page.shelves[0]).map(\.browseId) == ["UCuser", "MPREbkept"])
+        #expect(collections(in: page.shelves[0]).first?.kind == .artist)
     }
 
     @Test("A tile with a missing page type is told apart by its browse id prefix")
@@ -357,7 +358,7 @@ struct InnerTubeParserBrowseTests {
         #expect(items.allSatisfy { $0.artistLinks.isEmpty })
     }
 
-    @Test("An album subtitle without a linked artist, or with an artist name that has no page, keeps no artist link")
+    @Test("An album subtitle without a linked artist, or with an artist name that has no page, keeps no artist link; a creator channel is linked")
     func homeAlbumTileWithoutArtistLink() throws {
         let data = homeData(tiles: [
             tile(title: "Single", endpoint: browseEndpoint("MPREb1", pageType: "MUSIC_PAGE_TYPE_ALBUM"), subtitle: "Single \u{2022} 2021"),
@@ -374,7 +375,9 @@ struct InnerTubeParserBrowseTests {
         ])
         let items = collections(in: try InnerTubeParser.homePage(from: data).shelves[0])
         #expect(items.count == 3)
-        #expect(items.allSatisfy { $0.artistLinks.isEmpty })
+        #expect(items.prefix(2).allSatisfy { $0.artistLinks.isEmpty })
+        // A creator channel is an artist page now, so the subtitle links to it.
+        #expect(items[2].artistLinks == [MusicArtistLink(name: "Someone", browseId: "UCuser")])
     }
 
     @Test("A playlist tile and a mix tile keep no artist and no album playlist id, even with a play button")
@@ -411,12 +414,14 @@ struct InnerTubeParserBrowseTests {
         #expect(artist.audioPlaylistId == nil)
     }
 
-    @Test("The captured home keeps its playlists as they were: no artist, no album playlist id")
+    @Test("The captured home keeps its playlists as they were: no album playlist id, and the creator channel they name is linked")
     func homeCaptureCollectionsUnchanged() throws {
         let page = try InnerTubeParser.homePage(from: fixture("browse-home.json"))
         let lists = collections(in: try shelf("Trending community playlists", in: page.shelves))
         #expect(lists.count == 3)
-        #expect(lists.allSatisfy { $0.artistLinks.isEmpty && $0.audioPlaylistId == nil })
+        #expect(lists.allSatisfy { $0.audioPlaylistId == nil })
+        // Their subtitles name a YouTube creator, whose channel now opens as an artist page.
+        #expect(lists.allSatisfy { $0.artistLinks.count == 1 && $0.artistLinks[0].browseId.hasPrefix("UC") })
     }
 
     // MARK: - History

@@ -424,6 +424,16 @@ actor InnerTubeClient {
     /// The albums of an artist's discography page ("MPAD..."), picked by `params`, over at most `maxDiscographyPages`
     /// pages. A later page that fails keeps the albums already read, unless it signed out. Only counts are logged.
     func discography(browseId: String, params: String?) async throws -> [MusicCollection] {
+        try await readList(browseId: browseId, params: params, maxPages: Self.maxDiscographyPages, strict: false)
+    }
+
+    /// Every item of a shelf's full list (the "Show all" of Albums, Singles or an artist's playlists), over at most
+    /// `maxListPages` pages. A page that fails, or a cancelled load, fails the call: the list is the whole one or none.
+    func shelfList(browseId: String, params: String?) async throws -> [MusicCollection] {
+        try await readList(browseId: browseId, params: params, maxPages: Self.maxListPages, strict: true)
+    }
+
+    private func readList(browseId: String, params: String?, maxPages: Int, strict: Bool) async throws -> [MusicCollection] {
         let id = browseId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { throw MusicError.parse("discography has no browse id") }
         let data = try await browse(browseId: id, params: params)
@@ -431,11 +441,14 @@ actor InnerTubeClient {
         var albums = list.items
         var tokens = Set<String>()
         var pages = 1
-        while let token = list.continuation, pages < Self.maxDiscographyPages, tokens.insert(token).inserted {
+        while let token = list.continuation, pages < maxPages, tokens.insert(token).inserted {
+            if strict { try Task.checkCancellation() }
             do {
                 guard let more = try await browseContinuation(token, browseId: id) else { break }
                 list = try InnerTubeParser.libraryContinuationPage(from: more)
             } catch let error as MusicError where error == .signedOut {
+                throw error
+            } catch where strict {
                 throw error
             } catch {
                 Self.log.info("discography continuation failed after \(albums.count) albums")
@@ -453,6 +466,7 @@ actor InnerTubeClient {
     }
 
     private static let maxDiscographyPages = 5
+    private static let maxListPages = 20
 
     // MARK: - Song actions
 

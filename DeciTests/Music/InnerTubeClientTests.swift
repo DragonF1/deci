@@ -89,7 +89,7 @@ struct InnerTubeClientTests {
     func searchArtistsRequestShape() async throws {
         let youtube = FakeYouTube { $0.searchBody = (try? MusicFixtures.data("search-artists.json")) ?? Data() }
         let artists = try await makeClient(youtube).searchArtists("alpha")
-        #expect(artists.map(\.browseId) == ["UCartistA", "UCartistB", "UCartistD", "UCartistZ"])
+        #expect(artists.map(\.browseId) == ["UCartistA", "UCartistB", "UCartistD", "UCuserChannelE", "UCartistZ"])
 
         let request = try #require(youtube.requests(path: "/youtubei/v1/search").first)
         #expect(request.method == "POST")

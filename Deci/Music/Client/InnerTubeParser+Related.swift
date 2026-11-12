@@ -41,7 +41,7 @@ extension InnerTubeParser {
         collect("sectionListRenderer", in: root, into: &lists)
         guard !lists.isEmpty else { throw MusicError.parse("related response has no shelves") }
         for list in lists {
-            for shelf in (list["contents"] as? [[String: Any]] ?? []).compactMap(shelf(from:)) {
+            for shelf in (list["contents"] as? [[String: Any]] ?? []).compactMap { shelf(from: $0) } {
                 let tracks = shelf.items.compactMap { item -> MusicTrack? in
                     if case .track(let track) = item { return track }
                     return nil

@@ -128,6 +128,9 @@ final class MusicBrowseStore {
     @ObservationIgnored private var libraryRuns: [MusicLibrarySection: Int] = [:]
     @ObservationIgnored private var libraryTokens: [MusicLibrarySection: String] = [:]
     @ObservationIgnored private var pageRuns: [String: Int] = [:]
+    /// The full lists open on the path, by their route's id: what a list route loads from. Set on open, cleared with the
+    /// page.
+    private(set) var shelfLists: [String: MusicDiscographyLink] = [:]
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
     /// The last sorted page per playlist, so reading it again while a song plays does not sort again.
     @ObservationIgnored private var sortedPages: [String: (sort: MusicPlaylistSort, page: MusicBrowsePage)] = [:]
@@ -708,6 +711,7 @@ final class MusicBrowseStore {
     func open(_ collection: MusicCollection) {
         // A double tap must not push the same page twice.
         if path.last?.browseId != collection.browseId { path.append(collection) }
+        if let link = collection.shelfList { shelfLists[collection.browseId] = link }
         switch pageState(collection.browseId) {
         case .idle, .failed: reloadPage(collection.browseId)
         case .loading, .loaded: break
@@ -729,6 +733,16 @@ final class MusicBrowseStore {
         sortedPages[browseId] = nil
         forgetReleaseYears(browseId)
         tasks.removeValue(forKey: "page*:\(browseId)")?.cancel()
+        // A shelf's full list is no page of YouTube Music: its items come from the shelf's more link.
+        if let link = shelfLists[browseId], let list = path.last(where: { $0.browseId == browseId }) {
+            return launchShelfList(list, link: link, run: run)
+        }
+        // A list route is no page of YouTube Music: with its route gone there is nothing to load, and its id is never sent.
+        guard !MusicCollection.isShelfListId(browseId) else {
+            pageRuns[browseId] = nil
+            pages[browseId] = nil
+            return
+        }
         launch("page:\(browseId)") { [weak self, backend] in
             do {
                 let page = try await backend.page(browseId: browseId)
@@ -737,6 +751,34 @@ final class MusicBrowseStore {
                 self?.failPage(error, browseId: browseId, run: run)
             }
         }
+    }
+
+    /// Loads every item of a shelf's full list, then keeps them as one shelf of a page with no songs.
+    private func launchShelfList(_ list: MusicCollection, link: MusicDiscographyLink, run: Int) {
+        let browseId = list.browseId
+        launch("page:\(browseId)") { [weak self, backend] in
+            do {
+                let items = try await backend.shelfList(browseId: link.browseId, params: link.params)
+                self?.landShelfList(items, for: list, run: run)
+            } catch {
+                self?.failPage(error, browseId: browseId, run: run)
+            }
+        }
+    }
+
+    private func landShelfList(_ items: [MusicCollection], for list: MusicCollection, run: Int) {
+        guard pageRuns[list.browseId] == run else { return }
+        // A continuation can repeat an item of the page before it; a tile appears once.
+        let unique = Self.uniqueCollections(items, after: [])
+        pages[list.browseId] = .loaded(MusicBrowsePage(
+            browseId: list.browseId,
+            title: list.title,
+            subtitle: nil,
+            thumbnailURL: nil,
+            tracks: [],
+            continuation: nil,
+            shelves: unique.isEmpty ? [] : [MusicShelf(title: list.title, items: unique.map { .collection($0) })]
+        ))
     }
 
     /// Loads more tracks of a long playlist when its list scrolls to its end.
@@ -1136,6 +1178,7 @@ final class MusicBrowseStore {
         for key in ["page:\(browseId)", "page+:\(browseId)", "page*:\(browseId)"] { tasks.removeValue(forKey: key)?.cancel() }
         pageRuns[browseId] = nil
         pages[browseId] = nil
+        shelfLists[browseId] = nil
         storedPages.remove(browseId)
         waitingPages.remove(browseId)
         loadingMoreTracks.remove(browseId)
@@ -1158,6 +1201,7 @@ final class MusicBrowseStore {
         libraryRuns.removeAll()
         libraryTokens.removeAll()
         pageRuns.removeAll()
+        shelfLists.removeAll()
         waitingHome = false
         waitingHistory = false
         waitingLibrary.removeAll()

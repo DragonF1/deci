@@ -15,11 +15,11 @@ struct InnerTubeParserArtistsTests {
 
     // MARK: - Artists search
 
-    @Test("Artists search keeps the artist rows in order and drops albums, songs, user channels and blank ids")
+    @Test("Artists search keeps the artist rows in order and keeps user channels as artists and drops albums, songs and blank ids")
     func artistsKeepsOnlyArtists() throws {
         let artists = try InnerTubeParser.searchArtists(from: fixture("search-artists.json"))
-        #expect(artists.map(\.browseId) == ["UCartistA", "UCartistB", "UCartistD", "UCartistZ"])
-        #expect(artists.map(\.title) == ["Artist Alpha", "Artist Beta", "Artist Delta", "Artist Zeta"])
+        #expect(artists.map(\.browseId) == ["UCartistA", "UCartistB", "UCartistD", "UCuserChannelE", "UCartistZ"])
+        #expect(artists.map(\.title) == ["Artist Alpha", "Artist Beta", "Artist Delta", "Someone's Channel", "Artist Zeta"])
         #expect(artists.allSatisfy { $0.kind == .artist })
     }
 
@@ -33,7 +33,7 @@ struct InnerTubeParserArtistsTests {
     @Test("The subtitle is what the row says after Artist, or Artist when it says nothing else")
     func artistsSubtitle() throws {
         let artists = try InnerTubeParser.searchArtists(from: fixture("search-artists.json"))
-        #expect(artists.map(\.subtitle) == ["1.2M monthly audience", "3 subscribers", "Artist", "4.5K subscribers"])
+        #expect(artists.map(\.subtitle) == ["1.2M monthly audience", "3 subscribers", "Artist", "9 subscribers", "4.5K subscribers"])
     }
 
     @Test("The photo is the largest one the row offers")
@@ -43,6 +43,7 @@ struct InnerTubeParserArtistsTests {
             "https://img.example.test/alpha=w120-h120",
             "https://img.example.test/beta=w120-h120",
             "https://img.example.test/delta=w120-h120",
+            "https://img.example.test/epsilon=w120-h120",
             "https://img.example.test/zeta=w120-h120",
         ])
     }
@@ -180,7 +181,7 @@ struct InnerTubeParserArtistsTests {
         #expect(track.artistLinks == [MusicArtistLink(name: "Twin", browseId: "UCtwin")])
     }
 
-    @Test("A library-style id and a typeless UC id both link to the channel page; other page types do not")
+    @Test("A library-style id and a typeless UC id both link to the channel page; a user channel does too; other page types do not")
     func searchRowLinkKinds() throws {
         let row = Self.songRow("k", subtitle: [
             Self.run("Library Style", id: "MPLAUClibrary"), Self.run(", "),
@@ -193,6 +194,7 @@ struct InnerTubeParserArtistsTests {
         #expect(track.artistLinks == [
             MusicArtistLink(name: "Library Style", browseId: "UClibrary"),
             MusicArtistLink(name: "Typeless", browseId: "UCtypeless"),
+            MusicArtistLink(name: "User", browseId: "UCuser"),
         ])
     }
 

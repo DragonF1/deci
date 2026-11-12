@@ -346,6 +346,10 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
         var browseDefaultBody = Data("{}".utf8)
         var browseContinuationBody = Data("{}".utf8)
         var browseStatus = 200
+        /// A status for continuation requests only; nil keeps `browseStatus`.
+        var browseContinuationStatus: Int?
+        /// Builds the answer to a continuation request from its token, for a chain of pages; nil keeps `browseContinuationBody`.
+        var browseContinuationFactory: (@Sendable (String) -> Data)?
         var browseHeaders: [String: String] = [:]
         /// The account menu popup (name, handle, avatar).
         var accountMenuBody = (try? MusicFixtures.data("account-menu.json")) ?? Data()
@@ -452,10 +456,12 @@ nonisolated final class FakeYouTube: HTTPTransport, @unchecked Sendable {
             let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let isContinuation = body["continuation"] != nil || query.contains { $0.name == "ctoken" }
             let browseId = body["browseId"] as? String ?? ""
+            let token = body["continuation"] as? String ?? query.first { $0.name == "ctoken" }?.value ?? ""
+            let continuationData = config.browseContinuationFactory?(token) ?? config.browseContinuationBody
             return HTTPResponse(
-                statusCode: config.browseStatus,
+                statusCode: isContinuation ? config.browseContinuationStatus ?? config.browseStatus : config.browseStatus,
                 headers: config.browseHeaders,
-                data: isContinuation ? config.browseContinuationBody : config.browseBodies[browseId] ?? config.browseDefaultBody
+                data: isContinuation ? continuationData : config.browseBodies[browseId] ?? config.browseDefaultBody
             )
         case ("music.youtube.com", "/youtubei/v1/account/account_menu"):
             return HTTPResponse(statusCode: config.accountMenuStatus, headers: config.accountMenuHeaders, data: config.accountMenuBody)

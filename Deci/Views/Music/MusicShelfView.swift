@@ -10,6 +10,8 @@ struct MusicShelfView: View {
     let isPlaying: Bool
     let onPlay: (MusicTrack) -> Void
     let onOpen: (MusicCollection) -> Void
+    /// Opens what the shelf's "Show all" leads to; the link shows only when this is set.
+    var onShowAll: (() -> Void)?
     @Environment(\.musicCollectionPin) private var collectionPin
     @Environment(\.musicTrackMenu) private var trackMenu
 
@@ -27,7 +29,11 @@ struct MusicShelfView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: songs == nil ? MusicBrowseLayout.tileTitleGap : MusicBrowseLayout.listTitleGap) {
-            MusicSectionHeader(title: shelf.title)
+            MusicSectionHeader(
+                title: shelf.title,
+                linkTitle: onShowAll == nil ? nil : MusicShelfMore.linkTitle,
+                linkAction: onShowAll
+            )
 
             if let songs {
                 VStack(spacing: 0) {

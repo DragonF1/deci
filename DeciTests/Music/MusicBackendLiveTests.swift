@@ -91,7 +91,7 @@ struct MusicBackendLiveTests {
         defer { try? FileManager.default.removeItem(at: harness.directory) }
         harness.youtube.update { $0.searchBody = (try? MusicFixtures.data("search-artists.json")) ?? Data() }
         let artists = try await harness.backend.searchArtists("alpha")
-        #expect(artists.map(\.title) == ["Artist Alpha", "Artist Beta", "Artist Delta", "Artist Zeta"])
+        #expect(artists.map(\.title) == ["Artist Alpha", "Artist Beta", "Artist Delta", "Someone's Channel", "Artist Zeta"])
         #expect(artists.allSatisfy { $0.kind == .artist })
         let body = FakeYouTube.jsonBody(try #require(harness.youtube.requests(path: "/youtubei/v1/search").first))
         #expect(body["params"] as? String == InnerTubeClient.artistsSearchParams)

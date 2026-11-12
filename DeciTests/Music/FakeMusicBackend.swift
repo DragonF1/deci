@@ -589,6 +589,11 @@ actor FakeMusicBackend: MusicBackend {
         return albums
     }
 
+    /// A shelf's full list is scripted and recorded as a discography call.
+    func shelfList(browseId: String, params: String?) async throws -> [MusicCollection] {
+        try await discography(browseId: browseId, params: params)
+    }
+
     func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption] {
         playlistOptionsCalls.append(videoId)
         let gate = playlistOptionsGates[videoId], error = playlistOptionsErrors[videoId]

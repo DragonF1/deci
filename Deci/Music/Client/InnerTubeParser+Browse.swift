@@ -65,7 +65,7 @@ extension InnerTubeParser {
         guard let list = lists.first else { throw MusicError.parse("home response has no shelves") }
         let contents = list["contents"] as? [[String: Any]] ?? []
         return MusicHomePage(
-            shelves: contents.compactMap(shelf(from:)),
+            shelves: contents.compactMap { shelf(from: $0) },
             continuation: continuationToken(in: list, items: contents)
         )
     }
@@ -76,18 +76,22 @@ extension InnerTubeParser {
             throw MusicError.parse("home continuation has no shelves")
         }
         return MusicHomePage(
-            shelves: payload.items.compactMap(shelf(from:)),
+            shelves: payload.items.compactMap { shelf(from: $0) },
             continuation: continuationToken(in: payload.container, items: payload.items)
         )
     }
 
     /// A carousel (or a plain shelf) with a title and at least one item Deci can show.
-    static func shelf(from entry: [String: Any]) -> MusicShelf? {
+    /// `readsMore` also reads the header's "Show all" link (an artist page's shelves do; Home's do not).
+    static func shelf(from entry: [String: Any], readsMore: Bool = false) -> MusicShelf? {
         let renderer: [String: Any]
         let titleRuns: [[String: Any]]
+        var more: MusicDiscographyLink?
         if let carousel = (entry["musicCarouselShelfRenderer"] ?? entry["musicImmersiveCarouselShelfRenderer"]) as? [String: Any] {
             renderer = carousel
-            titleRuns = runs(carouselHeader(of: carousel)?["title"])
+            let header = carouselHeader(of: carousel)
+            titleRuns = runs(header?["title"])
+            if readsMore, let header { more = moreLink(in: header) }
         } else if let list = entry["musicShelfRenderer"] as? [String: Any] {
             renderer = list
             titleRuns = runs(list["title"])
@@ -96,7 +100,38 @@ extension InnerTubeParser {
         }
         guard let title = text(of: titleRuns) else { return nil }
         let items = uniqueItems((renderer["contents"] as? [[String: Any]] ?? []).compactMap(shelfItem(from:)))
-        return items.isEmpty ? nil : MusicShelf(title: title, items: items)
+        return items.isEmpty ? nil : MusicShelf(title: title, items: items, more: more)
+    }
+
+    /// The page a carousel header's "Show all" opens: the title run's endpoint, else the more button's. Only an endpoint
+    /// that names a list counts: a discography page ("MPAD"), a playlist ("VL") or anything with `params` (a channel's
+    /// playlists). A bare artist or album endpoint only names a page, which no list sits behind. `params` stay as sent.
+    private static func moreLink(in header: [String: Any]) -> MusicDiscographyLink? {
+        let title = path(runs(header["title"]).first, "navigationEndpoint", "browseEndpoint")
+        let more = path(header, "moreContentButton", "buttonRenderer", "navigationEndpoint", "browseEndpoint")
+        for case let browse as [String: Any] in [title, more] {
+            guard let id = string(browse["browseId"]) else { continue }
+            let params = string(browse["params"])
+            guard isMoreList(browse, id: id, params: params) else { continue }
+            return MusicDiscographyLink(browseId: id, params: params)
+        }
+        return nil
+    }
+
+    /// Whether an endpoint names a list: a discography page, a playlist, or a channel with `params` (an artist or user
+    /// channel). Read by page type when YouTube gives one, else by the id's prefix, as `isDiscography` does. An album
+    /// never is, with params or without.
+    private static func isMoreList(_ browse: [String: Any], id: String, params: String?) -> Bool {
+        let configs = browse["browseEndpointContextSupportedConfigs"] as? [String: Any]
+        let pageType = string((configs?["browseEndpointContextMusicConfig"] as? [String: Any])?["pageType"])
+        guard let pageType else {
+            return id.hasPrefix("MPAD") || id.hasPrefix("VL") || (id.hasPrefix("UC") && params != nil)
+        }
+        switch pageType {
+        case "MUSIC_PAGE_TYPE_ARTIST_DISCOGRAPHY", "MUSIC_PAGE_TYPE_PLAYLIST": return true
+        case "MUSIC_PAGE_TYPE_ARTIST", "MUSIC_PAGE_TYPE_USER_CHANNEL": return id.hasPrefix("UC") && params != nil
+        default: return false
+        }
     }
 
     /// The header's single `...ShelfBasicHeaderRenderer`, whichever of the carousel flavours it is.
@@ -193,7 +228,7 @@ extension InnerTubeParser {
         }
 
         let shelves = header.isArtist
-            ? uniqueShelves(sections.filter { $0["musicShelfRenderer"] == nil }.compactMap(shelf(from:)))
+            ? uniqueShelves(sections.filter { $0["musicShelfRenderer"] == nil }.compactMap { shelf(from: $0, readsMore: true) })
             : []
         return MusicBrowsePage(
             browseId: browseId,
@@ -580,14 +615,15 @@ extension InnerTubeParser {
     }
 
     /// By YouTube's page type. A destination without one is told apart by its id prefix instead;
-    /// a page type Deci does not know (podcast, user channel, audiobook) is nil.
+    /// a page type Deci does not know (podcast, audiobook) is nil.
     static func collectionKind(of browse: [String: Any]) -> MusicCollection.Kind? {
         let configs = browse["browseEndpointContextSupportedConfigs"] as? [String: Any]
         let pageType = string((configs?["browseEndpointContextMusicConfig"] as? [String: Any])?["pageType"])
         switch pageType {
         case "MUSIC_PAGE_TYPE_ALBUM": return .album
         case "MUSIC_PAGE_TYPE_PLAYLIST": return .playlist
-        case "MUSIC_PAGE_TYPE_ARTIST", "MUSIC_PAGE_TYPE_LIBRARY_ARTIST": return .artist
+        // A YouTube creator's channel opens as an artist page, with its Videos and Playlists shelves.
+        case "MUSIC_PAGE_TYPE_ARTIST", "MUSIC_PAGE_TYPE_LIBRARY_ARTIST", "MUSIC_PAGE_TYPE_USER_CHANNEL": return .artist
         case nil:
             let browseId = string(browse["browseId"]) ?? ""
             if browseId.hasPrefix("VL") { return .playlist }

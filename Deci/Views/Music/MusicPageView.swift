@@ -12,6 +12,7 @@ struct MusicPageView: View {
     let collection: MusicCollection
 
     private var browse: MusicBrowseStore { service.browse }
+    @Environment(\.musicCollectionPin) private var collectionPin
 
     /// What the field holds; empty while it is closed or on an artist page, whose field searches YouTube Music.
     private var terms: [String] { navigation.browseFilterTerms }
@@ -30,7 +31,11 @@ struct MusicPageView: View {
     /// tab the path started on.
     private var backLabel: String {
         let path = browse.path
-        let previous = path.count > 1 ? path[path.count - 2].title : nil
+        let previous: String? = path.count > 1 ? {
+            let below = path[path.count - 2]
+            if case .loaded(let page) = browse.pageState(below.browseId) { return MusicPageBackLabel.title(of: below, loaded: page.title) }
+            return below.title
+        }() : nil
         return MusicPageBackLabel.resolve(previousTitle: previous, tab: browse.tab)
     }
 
@@ -68,11 +73,56 @@ struct MusicPageView: View {
                 MusicFailedCard(message: message) { browse.reloadPage(collection.browseId) }
                     .padding(.top, 48)
                     .frame(maxHeight: .infinity, alignment: .top)
+            case .loaded(let loaded) where collection.shelfList != nil:
+                shelfListContent(loaded)
             case .loaded(let loaded):
                 // A sorted playlist shows, and queues, its sorted songs once all of them are loaded.
                 loadedContent(page: browse.displayedPage(collection.browseId) ?? loaded)
             }
         }
+    }
+
+    /// A shelf's full list: its title, then every item as a cover tile, as many to a row as the column holds (the saved
+    /// albums grid of Library). An empty list says so.
+    private func shelfListContent(_ page: MusicBrowsePage) -> some View {
+        let items = page.shelves.first?.items.compactMap { item -> MusicCollection? in
+            if case .collection(let collection) = item { collection } else { nil }
+        } ?? []
+        return ScrollView {
+            VStack(alignment: .leading, spacing: MusicBrowseLayout.tileTitleGap) {
+                MusicSectionHeader(title: collection.title)
+                if items.isEmpty {
+                    MusicStateCard(message: "Nothing here yet.", minHeight: 56)
+                } else {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: MusicBrowseLayout.shelfTile, maximum: MusicBrowseLayout.shelfTile), spacing: MusicBrowseLayout.tileGap)],
+                        alignment: .leading,
+                        spacing: MusicBrowseLayout.gridRowGap
+                    ) {
+                        ForEach(items, id: \.browseId) { item in
+                            MusicCoverTile(
+                                title: item.title,
+                                subtitle: MusicHomeText.subtitle(item.subtitle),
+                                thumbnailURL: item.thumbnailURL,
+                                size: MusicBrowseLayout.shelfTile,
+                                circular: item.kind == .artist,
+                                placeholder: item.kind.placeholderSymbol,
+                                isPinned: collectionPin?.isPinned(item) == true
+                            ) {
+                                browse.open(item)
+                            }
+                            .musicCollectionMenu(item)
+                        }
+                    }
+                    .padding(.horizontal, MusicStyle.Spacing.page)
+                }
+                MusicBottomInsetSpacer()
+            }
+            .padding(.top, MusicBrowseLayout.pageGap)
+            // The tiles belong to the page the list was opened from, so "Go to artist" there is not a push of itself.
+            .environment(\.musicTrackContext, MusicShelfMore.trackContext(for: collection, path: browse.path))
+        }
+        .scrollIndicators(.never)
     }
 
     private func loadedContent(page: MusicBrowsePage) -> some View {
@@ -431,7 +481,8 @@ struct MusicPageView: View {
             nowPlayingId: service.player.nowPlaying?.videoId,
             isPlaying: service.player.isPlaying,
             onPlay: { service.play($0) },
-            onOpen: { browse.open($0) }
+            onOpen: { browse.open($0) },
+            onShowAll: MusicShelfMore.opener(for: shelf).map { opener in { browse.open(opener) } }
         )
         .environment(
             \.musicTrackContext,

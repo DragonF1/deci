@@ -128,6 +128,14 @@ nonisolated struct MusicSortChip: Equatable {
 
 /// What the Back row of a page is called: the screen it goes back to.
 nonisolated enum MusicPageBackLabel {
+    /// The name a page on the path goes by in the Back row above the page on top of it: its route's title, except for
+    /// a route that only borrowed its title (the shelf's name for a Videos link), where the loaded page's own title wins.
+    static func title(of collection: MusicCollection, loaded: String?) -> String {
+        guard collection.titleIsProvisional,
+              let loaded = loaded?.trimmingCharacters(in: .whitespacesAndNewlines), !loaded.isEmpty else { return collection.title }
+        return loaded
+    }
+
     /// The title of the page below this one on the path, else the tab the path started on. A page opened from search
     /// results sits on the tab the search was typed on, so Back reads "Home" and lands on the results.
     static func resolve(previousTitle: String?, tab: MusicBrowseStore.Tab) -> String {

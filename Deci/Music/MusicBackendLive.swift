@@ -127,6 +127,10 @@ actor MusicBackendLive: MusicBackend {
         try await client.discography(browseId: browseId, params: params)
     }
 
+    func shelfList(browseId: String, params: String?) async throws -> [MusicCollection] {
+        try await client.shelfList(browseId: browseId, params: params)
+    }
+
     func addToPlaylistOptions(videoId: String) async throws -> [MusicPlaylistOption] {
         try await client.addToPlaylistOptions(videoId: videoId)
     }
