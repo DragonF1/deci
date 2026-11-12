@@ -164,6 +164,10 @@ struct MusicSongRow: View {
     /// Offline (or signed out) a song that is not downloaded cannot play: its row dims and a tap on it does nothing.
     private var isDimmed: Bool { menu?.isDimmed(track) == true }
 
+    /// True while the song is being fetched and analysed (tempo, fades), anywhere in Deci: a small spinner shows
+    /// beside the length. Read in the body, so the row redraws when the run starts and ends.
+    private var isAnalysing: Bool { MusicAnalysisActivity.shared.isAnalysing(track.videoId) }
+
     /// What a tap, Space or Return does: plays the row, unless it is dimmed.
     private func play() {
         guard !isDimmed else { return }
@@ -243,6 +247,7 @@ struct MusicSongRow: View {
         if isPlaying { text += ", playing" }
         if isDimmed { text += ", not downloaded" }
         if let mixText { text += ", \(mixText) BPM" }
+        if isAnalysing { text += ", analysing" }
         return text
     }
 
@@ -269,6 +274,13 @@ struct MusicSongRow: View {
                 subtitle
             }
             Spacer(minLength: 0)
+            if isAnalysing {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 12, height: 12)
+                    .help("Analysing this song")
+                    .accessibilityHidden(true)
+            }
             if let mixText {
                 // In the song's accent, so the tempo never reads as part of the grey length beside it. A picked row
                 // is already filled with that accent, so there it turns white to stay readable.

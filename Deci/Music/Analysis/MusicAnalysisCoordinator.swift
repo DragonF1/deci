@@ -69,6 +69,9 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
     }
 
     typealias Analyze = @Sendable (URL, Double?) async throws -> MusicFileAnalyzer.Result
+    /// Told when a run starts real work on a song (`true`, after the fresh check) and when that run ends (`false`), with
+    /// the run's token, so the rows can show a spinner. A run that found a fresh entry only reports its end.
+    typealias Report = @Sendable (_ videoId: String, _ token: UUID, _ active: Bool) async -> Void
 
     private let store: MusicAnalysisStore
     private let cache: MusicTrackCache
@@ -76,6 +79,7 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
     private let resolve: @Sendable (String) async throws -> ResolvedStream
     private let analyze: Analyze
     private let now: @Sendable () -> Date
+    private let report: Report
 
     /// One shared run per song. `joiners` maps each waiting caller to whether it wants the file; the run is cancelled only
     /// when no joiner is left, and a joiner that wants the file keeps it for everyone.
@@ -94,7 +98,8 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
         downloads: @escaping @Sendable (String) async -> MusicDownloadedFile?,
         resolve: @escaping @Sendable (String) async throws -> ResolvedStream,
         analyze: @escaping Analyze = { try await MusicFileAnalyzer.analyze(file: $0, exactDuration: $1) },
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init,
+        report: @escaping Report = { _, _, _ in }
     ) {
         self.store = store
         self.cache = cache
@@ -102,6 +107,7 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
         self.resolve = resolve
         self.analyze = analyze
         self.now = now
+        self.report = report
     }
 
     func analysis(for videoId: String) async -> MusicAnalysis? {
@@ -197,6 +203,7 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
     private func run(_ stream: ResolvedStream, token: UUID) async -> Outcome {
         let outcome = await work(stream, token: token)
         retire(stream.videoId, token: token)
+        await report(stream.videoId, token, false)
         return outcome
     }
 
@@ -217,6 +224,7 @@ actor MusicAnalysisCoordinator: MusicAnalysisProviding {
         case .missing:
             break
         }
+        await report(id, token, true)
 
         // A downloaded song is analysed from its own file: nothing is fetched.
         if let local = await downloads(id) {

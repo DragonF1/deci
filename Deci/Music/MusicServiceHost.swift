@@ -152,7 +152,16 @@ final class MusicServiceHost {
                     return MusicDownloadedFile(url: local.url, durationSeconds: local.durationSeconds)
                 }
             },
-            resolve: { try await backend.resolve(videoId: $0) }
+            resolve: { try await backend.resolve(videoId: $0) },
+            report: { id, token, active in
+                await MainActor.run {
+                    if active {
+                        MusicAnalysisActivity.shared.begin(id, token: token)
+                    } else {
+                        MusicAnalysisActivity.shared.end(id, token: token)
+                    }
+                }
+            }
         )
     }
 
