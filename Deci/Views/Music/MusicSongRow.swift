@@ -275,8 +275,8 @@ struct MusicSongRow: View {
             }
             Spacer(minLength: 0)
             if isAnalysing {
-                ProgressView()
-                    .controlSize(.mini)
+                // Solid, in the current song's accent like the BPM; white on a picked row, which is filled with it.
+                MusicAnalysingSpinner(color: isSelected ? Color.white.opacity(0.85) : accent.solid.opacity(0.85))
                     .frame(width: 12, height: 12)
                     .help("Analysing this song")
                     .accessibilityHidden(true)
