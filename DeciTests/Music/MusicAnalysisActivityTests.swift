@@ -37,6 +37,25 @@ struct MusicAnalysisActivityTests {
         #expect(!activity.isAnalysing("a"))
     }
 
+    @MainActor
+    @Test("the finished hook fires once, when a song's last run ends")
+    func finishedOnLastRun() {
+        let activity = MusicAnalysisActivity()
+        var finished: [String] = []
+        activity.onFinished = { finished.append($0) }
+        let first = UUID(), second = UUID()
+        activity.begin("a", token: first)
+        activity.begin("a", token: second)
+        activity.end("a", token: first)
+        #expect(finished.isEmpty, "the second run is still going")
+        activity.end("a", token: UUID())
+        #expect(finished.isEmpty, "an unknown token ends nothing")
+        activity.end("a", token: second)
+        #expect(finished == ["a"])
+        activity.end("b", token: UUID())
+        #expect(finished == ["a"], "a song that never began does not fire")
+    }
+
     @Test("a run that analyses reports start then end with one token; a fresh entry reports only the end")
     func coordinatorReports() async throws {
         let folder = TrackCacheFolder()

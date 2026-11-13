@@ -113,6 +113,9 @@ final class MusicService {
     /// How each song in Up next is reached in Mix, by `MusicMixPairInfo.key(from:to:)`. Only pairs whose two songs have a
     /// stored analysis row are here; empty outside Mix.
     private(set) var mixPairs: [String: MusicMixPairInfo] = [:]
+    /// Each shown song's own tempo and key line, by video id, from its stored row. Kept apart from `mixPairs`: a song whose
+    /// row lands after a song with none gets no pair, but its line still has to appear. Empty outside Mix.
+    private(set) var mixRowTexts: [String: String] = [:]
     /// Tier 4b: the style of the last transition that was applied. The picker never repeats it, and the first Up next glyph
     /// is chosen against it.
     private(set) var lastAppliedStyle: MusicTransitionStyle?
@@ -1495,6 +1498,7 @@ final class MusicService {
             mixTask?.cancel()
             mixTask = nil
             mixPairs = [:]
+            mixRowTexts = [:]
             lastAppliedStyle = nil
             mixOrderPending = false
             mixAvoid = []
@@ -1533,6 +1537,8 @@ final class MusicService {
     @ObservationIgnored private(set) var mixTask: Task<Void, Never>?
     /// The analysis rows Mix has read, for the songs it ordered or shows.
     @ObservationIgnored private var mixRows: [String: MusicAnalysis] = [:]
+    /// The last read of a row whose analysis ended outside Mix's own pass (`analysisLanded`).
+    @ObservationIgnored private(set) var mixLandedTask: Task<Void, Never>?
 
     /// How many songs after the playing one Up next shows tempo and key for.
     private static let mixShownCount = 40
@@ -1613,16 +1619,25 @@ final class MusicService {
             if Task.isCancelled { return }
             mixAsked.insert(track.videoId)
             if outcome == .rateLimited { return }
-            if let row = await reader.analysis(for: track.videoId) { mixRows[track.videoId] = row }
+            if let row = await reader.analysis(for: track.videoId) {
+                mixRows[track.videoId] = row
+                // Shown as soon as it lands, not after the rest of the pass.
+                publishMixPairs()
+            }
         }
     }
 
     /// Reads the stored row of every song in `tracks` that Mix has not read yet.
     private func readMixRows(for tracks: [MusicTrack]) async {
         guard let reader = analysisReader else { return }
+        var added = false
+        defer { if added { publishMixPairs() } }
         for track in tracks where mixRows[track.videoId] == nil {
             if Task.isCancelled { return }
-            if let row = await reader.analysis(for: track.videoId) { mixRows[track.videoId] = row }
+            if let row = await reader.analysis(for: track.videoId) {
+                mixRows[track.videoId] = row
+                added = true
+            }
         }
     }
 
@@ -1639,9 +1654,21 @@ final class MusicService {
     /// The tempo line of a song's own row ("128"), nil outside Mix or without a row.
     func mixRowText(for id: String) -> String? {
         guard isMixOn else { return nil }
-        _ = mixPairs  // reading it makes a view that shows this line update with the pairs
-        guard let row = mixRows[id] else { return nil }
-        return MusicMixPairInfo(bpm: row.usableGrid.map { Int($0.bpm.rounded()) }, camelot: row.trustedCamelot, mode: .fade).rowText
+        return mixRowTexts[id]
+    }
+
+    /// A song's analysis run ended outside Mix's own pass (the playing or next song, the idle queue, the Song data panel):
+    /// a song Up next shows with no row yet reads it now and shows its tempo and key, instead of waiting for the next
+    /// queue change.
+    func analysisLanded(_ videoId: String) {
+        guard isMixOn, let reader = analysisReader, mixWantsRow(videoId) else { return }
+        mixLandedTask = Task { [weak self] in
+            // A song read before may have been measured again (an older format or version): its new row replaces the old.
+            guard let row = await reader.analysis(for: videoId), let self, self.isMixOn, self.mixWantsRow(videoId),
+                  row != self.mixRows[videoId] else { return }
+            self.mixRows[videoId] = row
+            self.publishMixPairs()
+        }
     }
 
     /// Records the lengths the app already knows (the exact one of an analysis row read for Mix, or of a stream just
@@ -1735,6 +1762,39 @@ final class MusicService {
         let chain = [current] + Array(queue.upcoming.prefix(Self.mixShownCount))
         await readMixRows(for: chain)
         guard !Task.isCancelled, isMixOn else { return }
+        // Keep the rows of what Mix can still use: the shown chain, the next two windows, the staged radio, the avoided.
+        var keep = Set(chain.map(\.videoId))
+        keep.formUnion(queue.unqueuedUpcoming.prefix(MusicMixWindow.size * 2).map(\.videoId))
+        keep.formUnion(queue.autoplay.prefix(MusicMixWindow.size).map(\.videoId))
+        keep.formUnion(mixAvoid.map(\.videoId))
+        if mixRows.count > keep.count { mixRows = mixRows.filter { keep.contains($0.key) } }
+        if mixAsked.count > keep.count { mixAsked = mixAsked.intersection(keep) }
+        publishMixPairs()
+        await placeStagedRadio()
+    }
+
+    /// The songs Up next shows tempo and key for: the playing one and the next `mixShownCount`.
+    private var mixShownChain: [MusicTrack] {
+        guard let current = queue.current else { return [] }
+        return [current] + Array(queue.upcoming.prefix(Self.mixShownCount))
+    }
+
+    /// A song whose row Mix keeps and shows: one of the shown chain, or of the staged radio's first window.
+    private func mixWantsRow(_ videoId: String) -> Bool {
+        mixShownChain.contains { $0.videoId == videoId }
+            || queue.autoplay.prefix(MusicMixWindow.size).contains { $0.videoId == videoId }
+    }
+
+    /// Works out the pairs of the shown chain from the rows already read, with no reads, so a row that just landed
+    /// shows in Up next at once.
+    private func publishMixPairs() {
+        guard isMixOn else { return }
+        let chain = mixShownChain
+        guard !chain.isEmpty else {
+            if !mixPairs.isEmpty { mixPairs = [:] }
+            if !mixRowTexts.isEmpty { mixRowTexts = [:] }
+            return
+        }
         fillQueueDurations()
         var pairs: [String: MusicMixPairInfo] = [:]
         // Each row is planned against the style of the row before it; the first one against the last applied style.
@@ -1748,14 +1808,11 @@ final class MusicService {
             pairs[MusicMixPairInfo.key(from: chain[index].videoId, to: chain[index + 1].videoId)] = info
         }
         if pairs != mixPairs { mixPairs = pairs }
-        // Keep the rows of what Mix can still use: the shown chain, the next two windows, the staged radio, the avoided.
-        var keep = Set(chain.map(\.videoId))
-        keep.formUnion(queue.unqueuedUpcoming.prefix(MusicMixWindow.size * 2).map(\.videoId))
-        keep.formUnion(queue.autoplay.prefix(MusicMixWindow.size).map(\.videoId))
-        keep.formUnion(mixAvoid.map(\.videoId))
-        if mixRows.count > keep.count { mixRows = mixRows.filter { keep.contains($0.key) } }
-        if mixAsked.count > keep.count { mixAsked = mixAsked.intersection(keep) }
-        await placeStagedRadio()
+        // Every row read, so the staged radio under "AUTOPLAY" shows its lines too.
+        let texts = mixRows.compactMapValues { row in
+            MusicMixPairInfo(bpm: row.usableGrid.map { Int($0.bpm.rounded()) }, camelot: row.trustedCamelot, mode: .fade).rowText
+        }
+        if texts != mixRowTexts { mixRowTexts = texts }
     }
 
     private func mixSide(_ track: MusicTrack, row: MusicAnalysis) -> MusicTransitionSide {
@@ -2060,7 +2117,10 @@ final class MusicService {
                     if let now = radioScanPlan() { finishRadioScan(now, analysed: analysed, locked: false) }
                     return
                 }
-                if let row = await reader.analysis(for: id) { mixRows[id] = row }
+                if let row = await reader.analysis(for: id) {
+                    mixRows[id] = row
+                    publishMixPairs()
+                }
             }
         }
     }

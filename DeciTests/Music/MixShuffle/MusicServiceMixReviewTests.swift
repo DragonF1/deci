@@ -122,6 +122,42 @@ struct MusicServiceMixReviewTests {
         #expect(h.service.mixRowText(for: next.videoId) == nil)
     }
 
+    @Test("a row stored by another analysis path shows in Up next once its run ends, with no pair to carry it")
+    func landedRowShows() async throws {
+        let ids = Self.ids(6)
+        let h = MixShuffleHarness()
+        await h.startQueue(ids)
+        h.service.setShuffleMode(.mix)
+        await h.settle()
+        let next = try #require(h.service.queue.upcoming.first)
+        #expect(h.service.mixRowText(for: next.videoId) == nil)
+        // The idle queue (say) stores the next song's row. The playing song has none, so no pair changes.
+        await h.reader.set(MixRows.row(next.videoId, bpm: 128, tonic: 9, minor: true))
+        h.service.analysisLanded(next.videoId)
+        await h.service.mixLandedTask?.value
+        let text = try #require(h.service.mixRowText(for: next.videoId))
+        #expect(text.contains("128"))
+        #expect(h.service.mixPairs.isEmpty)
+        // Measured again (say a newer analysis version): the new row replaces the one shown.
+        await h.reader.set(MixRows.row(next.videoId, bpm: 96, tonic: 9, minor: true))
+        h.service.analysisLanded(next.videoId)
+        await h.service.mixLandedTask?.value
+        #expect(h.service.mixRowText(for: next.videoId)?.contains("96") == true)
+    }
+
+    @Test("a landed run outside Up next, or with Mix off, reads nothing")
+    func landedOutsideIgnored() async throws {
+        let ids = Self.ids(6)
+        let h = MixShuffleHarness()
+        await h.startQueue(ids)
+        h.service.analysisLanded(ids[1])
+        #expect(h.service.mixLandedTask == nil, "Mix is off")
+        h.service.setShuffleMode(.mix)
+        await h.settle()
+        h.service.analysisLanded("not-queued")
+        #expect(h.service.mixLandedTask == nil, "not a song Up next shows")
+    }
+
     @Test("a rate limit stops the foreground analysis pass")
     func rateLimitStops() async {
         let ids = Self.ids(20)

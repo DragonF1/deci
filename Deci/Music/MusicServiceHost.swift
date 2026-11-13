@@ -132,6 +132,8 @@ final class MusicServiceHost {
                 service: service, coordinator: coordinator, backend: backend, downloads: downloads,
                 connectivity: connectivity, settings: settings
             )
+            // A song analysed by any of those paths shows its tempo and key in Up next as soon as its run ends.
+            MusicAnalysisActivity.shared.onFinished = { [weak service] id in service?.analysisLanded(id) }
             return service
         }
         MusicMemoryLog.log("launch")
