@@ -2,8 +2,8 @@
 import SwiftUI
 
 /// The word "Mixing" in the song's colour with a light glint sweeping across it, shown while the engine mixes this song
-/// into the next one (from `MusicMixCue.lead` before the overlap to its end). It sits in the times row, in the row's
-/// 10 pt monospaced type. The glint is a short repeating animation that only runs while the word is on screen, so for a
+/// into the next one (from `MusicMixCue.lead` before the overlap to its end): in the popup between Like and Dislike, on
+/// the hover card between the times. 10 pt monospaced, the times' type. The glint is a short repeating animation that only runs while the word is on screen, so for a
 /// few seconds per song. It holds still while the song is paused, and with Reduce Motion on the word stays plain.
 struct MusicMixingLabel: View {
     let color: Color

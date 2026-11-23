@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The left column of the Music popup: what is playing and everything to control it, always on screen. A stack 142 pt
 /// wide (kicker, cover, title and artist, the spectrum that is also the progress bar, the times, a strip with Like and
-/// Dislike, the transport, the three words that open Lyrics, Related and Up next in the right column). Volume and
+/// Dislike and "Mixing" between them while a mix is due, the transport, the three words that open Lyrics, Related and Up next in the right column). Volume and
 /// output live in the Mixer popover. It takes the song's colour (`musicAccent`) for its wash and for everything that is
 /// on or played.
 ///
@@ -201,6 +201,7 @@ struct MusicPlayerColumn: View {
                 Task { service.trackActions.postIfFailed(await service.toggleLike()) }
             }
         )
+        .overlay { MusicStripMixingLabel(player: player, isPlaying: state == .playing) }
         .opacity(state.controlsOpacity)
         .disabled(!state.controlsAreEnabled)
     }
@@ -291,6 +292,35 @@ struct MusicPlayerColumn: View {
     }
 }
 
+/// "Mixing" between Like and Dislike while the song is being mixed into the next (from `MusicMixCue.lead` before the
+/// overlap to its end), over the play button. It sits on the strip, which is out of the column's layout, so nothing
+/// moves when it comes and goes. A view of its own so the cue's changes re-run only this body and not the column's
+/// (whose open menus close when it runs).
+private struct MusicStripMixingLabel: View {
+    let player: MusicPlayer?
+    let isPlaying: Bool
+
+    @Environment(\.musicAccent) private var accent
+
+    /// The word's line is 13 pt, a point taller than the strip: 1 pt up keeps its "g" clear of the play button.
+    private static let lift: CGFloat = 1
+
+    var body: some View {
+        MusicMixCueReader(cue: player?.mixCue) { mixing in
+            if mixing {
+                MusicMixingLabel(color: accent.solid, isMoving: isPlaying)
+                    .fixedSize()
+                    // The play button's middle, which is the strip's own as long as the transport stays symmetric.
+                    .offset(
+                        x: MusicTransportMetrics.centreX(of: .playPause) - MusicPopupMetrics.playerColumnContentWidth / 2,
+                        y: -Self.lift
+                    )
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 /// The times row under the spectrum. A view of its own so that the playhead, which ticks twice a second, re-runs only
 /// this body and not the column's: the column's body builds the context menus (the song's actions and the favorite
 /// slots), and a menu that is open is rebuilt, its submenus closed, every time that body runs.
@@ -301,11 +331,9 @@ private struct MusicTimesRow: View {
 
     /// The popup stays mounted while hidden: its times are read only while it is on screen.
     @Environment(\.musicPopupIsVisible) private var isPopupVisible
-    @Environment(\.musicAccent) private var accent
 
     /// The row under the spectrum. A song that plays reads "0:08 / 4:15" on the left and its view count on the right
-    /// ("1.2M views"), or "Mixing" there while it is being mixed into the next song; loading shows the spinner and
-    /// nothing on the right; with no song it is a dimmed "0:00 / 0:00".
+    /// ("1.2M views"); loading shows the spinner and nothing on the right; with no song it is a dimmed "0:00 / 0:00".
     var body: some View {
         let duration = player?.duration ?? 0
         let total = duration > 0 ? duration : TimeInterval(track?.durationSeconds ?? 0)
@@ -320,14 +348,9 @@ private struct MusicTimesRow: View {
                 }
                 Spacer(minLength: 0)
             case .playing, .paused:
-                let current = player?.readCurrentTime(observed: isPopupVisible) ?? 0
-                MusicMixCueReader(cue: player?.mixCue) { mixing in
-                    if mixing {
-                        mixingLine(current: current, total: total)
-                    } else {
-                        playbackTimes(current: current, total: total, viewCount: player?.viewCount)
-                    }
-                }
+                playbackTimes(
+                    current: player?.readCurrentTime(observed: isPopupVisible) ?? 0, total: total, viewCount: player?.viewCount
+                )
             case .signedOut, .empty:
                 timePair(current: 0, total: 0, currentOpacity: 0.30, totalOpacity: 0.30)
                 Spacer(minLength: 0)
@@ -361,17 +384,6 @@ private struct MusicTimesRow: View {
                     .lineLimit(1)
                     .help(tooltip ?? views)
             }
-        }
-    }
-
-    /// The playing row while the song is mixed into the next: the times, and "Mixing" where the view count was.
-    private func mixingLine(current: TimeInterval, total: TimeInterval) -> some View {
-        HStack(spacing: 0) {
-            timePair(current: current, total: total, currentOpacity: 0.70, totalOpacity: 0.40)
-                .layoutPriority(1)
-            Spacer(minLength: MusicPopupMetrics.timesRowGap)
-            MusicMixingLabel(color: accent.solid, isMoving: state == .playing)
-                .lineLimit(1)
         }
     }
 
