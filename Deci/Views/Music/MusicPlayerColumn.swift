@@ -302,8 +302,9 @@ private struct MusicStripMixingLabel: View {
 
     @Environment(\.musicAccent) private var accent
 
-    /// The word's line is 13 pt, a point taller than the strip: 1 pt up keeps its "g" clear of the play button.
-    private static let lift: CGFloat = 1
+    /// How far the word sits above the strip's middle. Its line is 13 pt, a point taller than the strip, and 3 pt up
+    /// leaves its "g" well clear of the play button while it stays far under the times.
+    private static let lift: CGFloat = 3
 
     var body: some View {
         MusicMixCueReader(cue: player?.mixCue) { mixing in
