@@ -47,9 +47,11 @@ private struct AutomixServiceHarness {
         while true {
             let play = service.playTask
             let radio = service.radioTask
+            let mix = service.mixTask
             await play?.value
             await radio?.value
-            if service.playTask == play, service.radioTask == radio { break }
+            await mix?.value
+            if service.playTask == play, service.radioTask == radio, service.mixTask == mix { break }
         }
     }
 
@@ -629,24 +631,245 @@ struct MusicServiceAutomixShuffleTests {
 
     // MARK: Where a page starts
 
+    // Systematic shuffle shuffles at random and then orders the window, so these tests read the order the service settled
+    // on (after `settle()`), never a seeded one. The staged radio is placed by the same ordering: its songs are the same
+    // and it still follows the page's own songs, but its internal order is not the answer's.
+
+    private func asked(_ h: AutomixServiceHarness) async -> [String] {
+        await h.backend.autoplayCalls.map(\.afterVideoId)
+    }
+
+    @Test("a shuffled page tapped in the middle plays from that row, and the automix is asked after the last song it settled on")
+    func startsShuffledFromTheMiddle() async {
+        let h = AutomixServiceHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic))
+        await scriptAutomixes(h)
+        await h.start(h.page(Self.letters), tap: "d")
+
+        let last = h.queuedIDs.last!
+        #expect(h.queuedIDs.first == "d")
+        #expect(Set(h.queuedIDs) == Set(Self.letters), "every song once")
+        #expect(await asked(h).last == last, "the final ask is after the last song of the settled order")
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: last)))
+        #expect(await h.backend.radioSeeds.isEmpty)
+    }
+
+
     // MARK: Shuffle turned on or off after the automix was staged
+
+    @Test("with Systematic shuffle the automix is asked after the last song of the shuffled queue, not the page's last, and follows it")
+    func shuffledSeed() async {
+        let h = AutomixServiceHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic))
+        await scriptAutomixes(h)
+        await h.start(h.page(Self.letters), tap: "a")
+
+        let last = h.queuedIDs.last!
+        #expect(Set(h.queuedIDs) == Set(Self.letters))
+        #expect(await asked(h).last == last)
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: last)))
+        #expect(h.listing.upcoming.suffix(3).map(\.videoId).sorted() == Self.radio(of: last).sorted(), "the radio is listed after every page song")
+    }
+
+    @Test("turning shuffle on stages the automix after the last song of the settled order, kept behind the page")
+    func shuffleOnRestages() async {
+        let h = AutomixServiceHarness()
+        await scriptAutomixes(h)
+        await h.start(h.page(Self.letters), tap: "a")
+        #expect(h.stagedIDs == Self.radio(of: "l"))
+
+        h.service.setShuffle(true)
+        await h.settle()
+
+        let last = h.queuedIDs.last!
+        let calls = await asked(h)
+        #expect(calls.first == "l")
+        #expect(calls.last == last)
+        #expect(Set(h.queuedIDs) == Set(Self.letters))
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: last)))
+        #expect(h.listing.autoplayStart == 11, "the staged radio still follows the page's eleven other songs")
+        #expect(h.service.isFillingQueue == false)
+    }
+
+    @Test("turning shuffle off puts the page back and stages the automix after its own last song again")
+    func shuffleOffRestages() async {
+        let h = AutomixServiceHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic))
+        await scriptAutomixes(h)
+        await h.start(h.page(Self.letters), tap: "a")
+        let shuffledLast = h.queuedIDs.last!
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: shuffledLast)))
+
+        h.service.setShuffle(false)
+        await h.settle()
+
+        #expect(h.queuedIDs == Self.letters)
+        #expect(await asked(h).last == "l")
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: "l")))
+    }
+
+    @Test("a song added to the queue changes nothing: it is not one of the page's songs")
+    func addedSongKeepsTheStagedAutomix() async {
+        let h = AutomixServiceHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic))
+        await scriptAutomixes(h)
+        await h.start(h.page(Self.letters), tap: "a")
+        let callsBefore = await asked(h)
+        let stagedBefore = h.stagedIDs
+
+        h.service.addToQueue(MusicSamples.track("z", title: "Song z"))
+        h.service.playNext(MusicSamples.track("y", title: "Song y"))
+        await h.settle()
+
+        #expect(await asked(h) == callsBefore)
+        #expect(h.stagedIDs == stagedBefore)
+    }
+
+    @Test("a request for the old last song that is still loading is cancelled, and its answer never lands")
+    func staleRequestIsDropped() async {
+        let h = AutomixServiceHarness()
+        let gate = MusicTestGate()
+        await scriptAutomixes(h)
+        await h.backend.setAutomixGate(afterVideoId: "l", gate)
+        h.service.play(MusicSamples.track("a", title: "Song a"), in: h.page(Self.letters))
+        await h.service.playTask?.value
+        let held = await h.eventually { await h.backend.autoplayCalls.count == 1 }
+        #expect(held)
+        let old = h.service.radioTask
+        #expect(old != nil)
+
+        h.service.setShuffle(true)
+        // The ordering does not wait on the gate; the last song it settles on is what is asked after.
+        await h.service.mixTask?.value
+        let last = h.queuedIDs.last!
+        let restaged = await h.eventually { Set(h.stagedIDs) == Set(Self.radio(of: last)) }
+        #expect(restaged)
+        let callsBefore = await asked(h)
+        #expect(callsBefore.first == "l")
+        #expect(callsBefore.last == last)
+
+        await gate.open()
+        await old?.value
+        await h.settle()
+
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: last)), "the answer for the old last song did not replace the staged one")
+        #expect(await asked(h) == callsBefore, "the old answer asked nothing more")
+        #expect(h.service.radioTask == nil)
+        #expect(h.service.isFillingQueue == false)
+    }
+
+    @Test("a request still loading for a last song that stays the last is kept")
+    func unchangedRequestIsKept() async {
+        let h = AutomixServiceHarness()
+        let gate = MusicTestGate()
+        await scriptAutomixes(h)
+        await h.backend.setAutomixGate(afterVideoId: "b", gate)
+        h.service.play(MusicSamples.track("a", title: "Song a"), in: h.page(["a", "b"]))
+        await h.service.playTask?.value
+        let held = await h.eventually { await h.backend.autoplayCalls.count == 1 }
+        #expect(held)
+        let request = h.service.radioTask
+
+        h.service.setShuffle(true)
+
+        #expect(h.service.radioTask == request)
+        await gate.open()
+        await h.settle()
+        #expect(await asked(h) == ["b"])
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: "b")))
+    }
+
+    @Test("the dropped seed does not count against the bound on eager asks: the new last song is asked")
+    func droppedSeedFreesItsPlace() async {
+        let h = AutomixServiceHarness()
+        await scriptAutomixes(h)
+        for id in ["l", "k"] { await h.backend.setAutomixError(afterVideoId: id, MusicError.http(404)) }
+        await h.start(h.page(Self.letters), tap: "a")
+        #expect(await asked(h) == ["l", "k", "j"])
+        #expect(h.stagedIDs == Self.radio(of: "j"))
+
+        h.service.setShuffle(true)
+        await h.settle()
+
+        let next = h.queuedIDs.last { $0 != "l" && $0 != "k" }!
+        let calls = await asked(h)
+        #expect(calls.count > 3, "the dropped seed's place was freed: something new was asked")
+        #expect(calls.last == next)
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: next)))
+    }
+
+    /// Plays the page's last song and presses Next, which waits for the automix after `held` (asked as the page plays,
+    /// or by the Next itself once the eager asks are used up). `refused` are asked before it and turn the ask down.
+    private func parkNextAtTheEnd(_ h: AutomixServiceHarness, refused: [String], held: String, gate: MusicTestGate) async {
+        await scriptAutomixes(h)
+        for id in refused { await h.backend.setAutomixError(afterVideoId: id, MusicError.http(404)) }
+        await h.backend.setAutomixGate(afterVideoId: held, gate)
+        h.service.play(MusicSamples.track("l", title: "Song l"), in: h.page(Self.letters))
+        await h.service.playTask?.value
+        let refusedAll = await h.eventually { await h.backend.autoplayCalls.count >= refused.count }
+        #expect(refusedAll)
+        h.engine.emit(.playingChanged(true))
+        h.service.next()
+        let asked = await h.eventually { await h.backend.autoplayCalls.last == h.call(held, "PL1") }
+        #expect(asked)
+        #expect(h.service.radioTask != nil)
+        #expect(h.service.queue.current?.videoId == "l", "at the page's last song Next waits for the request")
+    }
+
+    @Test("a Next parked behind a request that a shuffle drops goes on at once to the song now next")
+    func parkedNextFollowsTheShuffle() async {
+        let h = AutomixServiceHarness()
+        let gate = MusicTestGate()
+        await parkNextAtTheEnd(h, refused: ["l", "k"], held: "j", gate: gate)
+        let old = h.service.radioTask
+
+        h.service.setShuffle(true)
+
+        // The queue's next the instant the shuffle is on: the parked Next takes it without waiting for a new request.
+        let next = h.queuedIDs[1]
+        #expect(h.service.queue.current?.videoId == next)
+        await h.service.playTask?.value
+        #expect(h.loadedIDs.last == next)
+        await gate.open()
+        await old?.value
+        await h.settle()
+        #expect(h.service.queue.current?.videoId == next, "the ordering never moves the playing song")
+        #expect(h.loadedIDs.last == next)
+    }
+
+    @Test("a Next parked behind a request that a shuffle drops goes on, never to a stop, when nothing more is asked")
+    func parkedNextGoesOnWhenNothingIsAsked() async {
+        let h = AutomixServiceHarness()
+        let gate = MusicTestGate()
+        await parkNextAtTheEnd(h, refused: ["l", "k", "j"], held: "i", gate: gate)
+        let old = h.service.radioTask
+
+        h.service.setShuffle(true)
+
+        let next = h.queuedIDs[1]
+        #expect(h.service.queue.current?.videoId == next)
+        await h.service.playTask?.value
+        #expect(h.loadedIDs.last == next)
+        await gate.open()
+        await old?.value
+        await h.settle()
+        #expect(h.service.queue.current?.videoId == next)
+        #expect(h.loadedIDs.last == next, "it kept playing: no stop")
+    }
+
 
     @Test("the staged automix is kept, and nothing is asked, when the last song is the same after the shuffle")
     func unchangedLastSongKeepsTheStagedAutomix() async {
         let h = AutomixServiceHarness()
         await scriptAutomixes(h)
         await h.start(h.page(["a", "b"]), tap: "a")
-        #expect(h.stagedIDs == Self.radio(of: "b"))
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: "b")))
 
         h.service.setShuffle(true)
         await h.settle()
         #expect(h.queuedIDs == ["a", "b"])
-        #expect(h.stagedIDs == Self.radio(of: "b"))
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: "b")))
         h.service.setShuffle(false)
         await h.settle()
 
         #expect(await h.backend.autoplayCalls == [h.call("b", "PL1")])
-        #expect(h.stagedIDs == Self.radio(of: "b"))
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: "b")))
     }
 
     // MARK: Queue edits
@@ -669,6 +892,26 @@ struct MusicServiceAutomixShuffleTests {
     }
 
     // MARK: What is left alone
+
+    @Test("with Autoplay off the stale automix is dropped and nothing is asked until Autoplay is on again")
+    func autoplayOffAsksNothing() async {
+        let h = AutomixServiceHarness()
+        await scriptAutomixes(h)
+        await h.start(h.page(Self.letters), tap: "a")
+        h.service.setAutoplay(false)
+
+        h.service.setShuffle(true)
+        await h.settle()
+        #expect(await asked(h) == ["l"])
+        #expect(h.stagedIDs.isEmpty)
+
+        h.service.setAutoplay(true)
+        await h.settle()
+        let last = h.queuedIDs.last!
+        #expect(await asked(h).last == last)
+        #expect(Set(h.stagedIDs) == Set(Self.radio(of: last)))
+    }
+
 
     @Test("a mix page asks nothing when shuffle is turned on or off")
     func mixPageIsLeftAlone() async {
