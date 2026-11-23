@@ -295,21 +295,25 @@ final class MusicBrowseStore {
         downloads?.localCoverURL(for: address)
     }
 
-    // MARK: - Signed covers
+    // MARK: - Dead covers
 
-    /// A signed cover address expires (see `MusicSignedCover`), and this store keeps its lists for the whole run of the app,
-    /// so a custom playlist cover that loaded days ago can be a dead address now. A cover that fails to load is
-    /// asked for again here: the playlist's page carries a newly signed address, kept by playlist id.
+    /// A cover address can stop working while this store or a pin still holds it. A playlist's uploaded picture has a signed
+    /// address that expires (see `MusicSignedCover`), and the cover YouTube makes for a playlist with none, a mosaic of its
+    /// first songs, is drawn again under a new address when the songs change, after which the old one can be a 404. A
+    /// cover that fails to load is asked for again here: its page carries the address it has now. A newly signed one is
+    /// kept by playlist id for every cover that shows the old one; every new address also goes to `onCoverLanded`.
     private(set) var freshCovers: [String: URL] = [:]
-    /// Playlists whose page is being asked for a new cover right now, with the run that asked.
+    /// Pages being asked for a new cover right now, by browse id, with the run that asked.
     @ObservationIgnored private var coverRuns: [String: Int] = [:]
-    /// When each playlist's cover was last asked for. A deleted playlist or a real 404 fails again at once, so a playlist is
-    /// asked for once per `coverRetryInterval`, never in a loop.
+    /// When each page's cover was last asked for. A deleted playlist or a real 404 fails again at once, so a page is asked
+    /// for once per `coverRetryInterval`, never in a loop.
     @ObservationIgnored private var coverAttempts: [String: Date] = [:]
-    /// Playlists whose cover failed while offline, asked for when the network returns.
+    /// Pages whose cover failed while offline, asked for when the network returns.
     @ObservationIgnored private var waitingCovers: Set<String> = []
+    /// Gets every new cover address with the browse id of the page that gave it, so a pin's saved cover is replaced.
+    @ObservationIgnored var onCoverLanded: (@MainActor (String, URL) -> Void)?
 
-    /// The least time between two asks for the same playlist's cover.
+    /// The least time between two asks for the same page's cover.
     static let coverRetryInterval: TimeInterval = 10 * 60
 
     /// The newly signed address for a signed cover, nil when `address` is not one or none was fetched yet. Observable, so a
@@ -318,46 +322,60 @@ final class MusicBrowseStore {
         MusicSignedCover.playlistId(in: address).flatMap { freshCovers[$0] }
     }
 
-    /// A cover failed to load. A signed cover gets a new address from its playlist's page, unless an ask for it is out or one
-    /// went out within `coverRetryInterval`. Offline the ask waits for the network: the failed cover stays on screen as a
-    /// placeholder and nothing else would ask again. Any failure is logged and leaves the placeholder up.
-    func coverFailed(_ address: URL?) {
-        guard let id = MusicSignedCover.playlistId(in: address) else { return }
+    /// A cover failed to load. `owner` is the browse id of the playlist or album it is the cover of, when the cover knows it
+    /// (a pin does). A signed cover names its playlist itself; any other cover with no owner is left as it is. The page gets
+    /// asked for the address it has now, unless an ask for it is out or one went out within `coverRetryInterval`. Offline
+    /// the ask waits for the network: the failed cover stays on screen as a placeholder and nothing else would ask again.
+    /// Any failure is logged and leaves the placeholder up.
+    func coverFailed(_ address: URL?, owner: String? = nil) {
+        guard let browseId = Self.coverPage(of: address, owner: owner) else { return }
         guard !isOffline else {
-            waitingCovers.insert(id)
+            waitingCovers.insert(browseId)
             return
         }
-        requestCover(id)
+        requestCover(browseId)
     }
 
-    private func requestCover(_ id: String) {
-        guard coverRuns[id] == nil else { return }
+    /// The page that has a cover's current address, nil for no address (a pin with no photo never asks).
+    private static func coverPage(of address: URL?, owner: String?) -> String? {
+        guard address != nil else { return nil }
+        if let id = MusicSignedCover.playlistId(in: address) { return "VL" + id }
+        guard let owner, !owner.isEmpty else { return nil }
+        return owner
+    }
+
+    private func requestCover(_ browseId: String) {
+        guard coverRuns[browseId] == nil else { return }
         let asked = now()
-        if let last = coverAttempts[id], asked.timeIntervalSince(last) < Self.coverRetryInterval { return }
-        coverAttempts[id] = asked
+        if let last = coverAttempts[browseId], asked.timeIntervalSince(last) < Self.coverRetryInterval { return }
+        coverAttempts[browseId] = asked
         let run = newRun()
-        coverRuns[id] = run
-        launch("cover:\(id)") { [weak self, backend] in
+        coverRuns[browseId] = run
+        launch("cover:\(browseId)") { [weak self, backend] in
             do {
-                let page = try await backend.page(browseId: "VL" + id)
-                self?.landCover(page.thumbnailURL, id: id, run: run)
+                let page = try await backend.page(browseId: browseId)
+                self?.landCover(page.thumbnailURL, browseId: browseId, run: run)
             } catch {
-                self?.failCover(error, id: id, run: run)
+                self?.failCover(error, browseId: browseId, run: run)
             }
         }
     }
 
-    private func landCover(_ address: URL?, id: String, run: Int) {
-        guard coverRuns[id] == run else { return }
-        coverRuns[id] = nil
-        // Only a signed cover of the same playlist counts: another address would show another picture or a dead one again.
-        guard let address, MusicSignedCover.playlistId(in: address) == id else { return }
-        freshCovers[id] = address
+    private func landCover(_ address: URL?, browseId: String, run: Int) {
+        guard coverRuns[browseId] == run else { return }
+        coverRuns[browseId] = nil
+        guard let address else { return }
+        if let id = MusicSignedCover.playlistId(in: address) {
+            // Another playlist's signed cover would show another picture.
+            guard "VL" + id == browseId else { return }
+            freshCovers[id] = address
+        }
+        onCoverLanded?(browseId, address)
     }
 
-    private func failCover(_ error: any Error, id: String, run: Int) {
-        guard coverRuns[id] == run else { return }
-        coverRuns[id] = nil
+    private func failCover(_ error: any Error, browseId: String, run: Int) {
+        guard coverRuns[browseId] == run else { return }
+        coverRuns[browseId] = nil
         logger.info("cover refresh failed: \(MusicService.logDescription(of: error), privacy: .public)")
         expireIfSignedOut(error)
     }
@@ -418,7 +436,7 @@ final class MusicBrowseStore {
         waitingPages.removeAll()
         let covers = waitingCovers
         waitingCovers.removeAll()
-        for id in covers.sorted() { requestCover(id) }
+        for browseId in covers.sorted() { requestCover(browseId) }
         for browseId in waiting.sorted() where path.contains(where: { $0.browseId == browseId }) {
             switch pageState(browseId) {
             case .idle, .failed: reloadPage(browseId)

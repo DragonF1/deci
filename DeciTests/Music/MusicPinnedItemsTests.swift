@@ -693,4 +693,48 @@ struct MusicPinnedItemsTests {
         #expect(MusicPinnedItem(page: page("VLLM", title: "Liked music"), opener: MusicBrowseStore.likedMusic) == nil)
         #expect(MusicPinnedItem(page: page(""), opener: MusicSamples.collection("VLPL1")) == nil)
     }
+
+    // MARK: - A saved cover that stopped working
+
+    @Test("a playlist's and an album's cover belong to their own page; an artist's and a song's to none")
+    func coverOwner() {
+        #expect(item("VLPL1", kind: .playlist).coverOwner == "VLPL1")
+        #expect(item("MPRE1", kind: .album).coverOwner == "MPRE1")
+        #expect(item("UC1", kind: .artist).coverOwner == nil)
+        #expect(item("vid1", kind: .song).coverOwner == nil)
+    }
+
+    @Test("a page's cover as it is now replaces a pinned playlist's and album's stored one, and is saved")
+    func replaceCoverUpdatesPlaylistAndAlbum() {
+        let (pins, sink) = make([item("VLPL1", kind: .playlist), item("MPRE1", kind: .album), item("UC1")])
+        #expect(pins.replaceCover(of: "VLPL1", with: URL(string: Self.newPhoto)!))
+        #expect(pins.replaceCover(of: "MPRE1", with: URL(string: Self.newPhoto)!))
+        #expect(pins.items.map(\.thumbnailURL) == [Self.newPhoto, Self.newPhoto, Self.oldPhoto])
+        #expect(pins.items.map(\.title) == ["Title VLPL1", "Title MPRE1", "Title UC1"])
+        #expect(sink.saved.count == 2)
+        #expect(sink.saved.last == pins.items)
+    }
+
+    @Test("a pin with no photo is not given one by a cover nothing asked for, but one that failed is")
+    func replaceCoverFillsEmpty() {
+        let (pins, _) = make([item("VLPL1", kind: .playlist, photo: nil)])
+        #expect(pins.replaceCover(of: "VLPL1", with: URL(string: Self.newPhoto)!))
+        #expect(pins.items[0].thumbnailURL == Self.newPhoto)
+    }
+
+    @Test("the cover a pin already has changes nothing and saves nothing")
+    func replaceCoverSameIsNoOp() {
+        let (pins, sink) = make([item("VLPL1", kind: .playlist)])
+        #expect(!pins.replaceCover(of: "VLPL1", with: URL(string: Self.oldPhoto)!))
+        #expect(sink.saved.isEmpty)
+    }
+
+    @Test("an artist or a song with that id, and an id that is not pinned, keep what they have")
+    func replaceCoverLeavesOthers() {
+        let (pins, sink) = make([item("X1", kind: .artist), item("X1", kind: .song)])
+        #expect(!pins.replaceCover(of: "X1", with: URL(string: Self.newPhoto)!))
+        #expect(!pins.replaceCover(of: "VLPL9", with: URL(string: Self.newPhoto)!))
+        #expect(pins.items.map(\.thumbnailURL) == [Self.oldPhoto, Self.oldPhoto])
+        #expect(sink.saved.isEmpty)
+    }
 }

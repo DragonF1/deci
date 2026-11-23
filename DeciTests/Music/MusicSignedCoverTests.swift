@@ -1,6 +1,6 @@
 // DeciTests/Music/MusicSignedCoverTests.swift
-// The signed cover address of a playlist with an uploaded picture, and how the browse store asks for a new one when the
-// old address has expired.
+// The signed cover address of a playlist with an uploaded picture, and how the browse store asks a page for the cover it
+// has now when the old address has stopped working (an expired signed one, or a pin's mosaic YouTube has dropped).
 
 import Foundation
 import Testing
@@ -56,8 +56,15 @@ private final class ClockBox {
     var date = Date(timeIntervalSince1970: 1_000_000)
 }
 
+/// Every new address the store reports, with the page that gave it.
 @MainActor
-@Suite("MusicBrowseStore signed covers")
+private final class LandedCovers {
+    var pages: [String] = []
+    var covers: [URL] = []
+}
+
+@MainActor
+@Suite("MusicBrowseStore dead covers")
 struct MusicBrowseStoreSignedCoverTests {
     private let backend = FakeMusicBackend()
     private let clock = ClockBox()
@@ -67,10 +74,20 @@ struct MusicBrowseStoreSignedCoverTests {
         URL(string: "https://i.ytimg.com/pl_c/\(id)/studio_square_thumbnail.jpg?sqp=\(sqp)&rs=sig")!
     }
 
+    private let landed = LandedCovers()
+
     init() {
         let clock = self.clock
         store = MusicBrowseStore(backend: backend, now: { clock.date })
+        let landed = self.landed
+        store.onCoverLanded = { page, cover in
+            landed.pages.append(page)
+            landed.covers.append(cover)
+        }
     }
+
+    private static let oldMosaic = URL(string: "https://yt3.googleusercontent.com/old=s192")!
+    private static let newMosaic = URL(string: "https://yt3.googleusercontent.com/new=s576")!
 
     private func page(_ browseId: String, cover: URL?) -> MusicBrowsePage {
         MusicBrowsePage(
@@ -100,6 +117,8 @@ struct MusicBrowseStoreSignedCoverTests {
         #expect(await until { store.coverURL(for: old) != nil })
         #expect(store.coverURL(for: old) == fresh)
         #expect(await backend.pageCalls == ["VLPLa"])
+        #expect(landed.pages == ["VLPLa"])
+        #expect(landed.covers == [fresh])
     }
 
     @Test("A cover that is not signed never reaches the backend")
@@ -157,15 +176,18 @@ struct MusicBrowseStoreSignedCoverTests {
         #expect(await until { await backend.pageCalls.count == 1 })
         await settle()
         #expect(store.freshCovers.isEmpty)
+        #expect(landed.pages.isEmpty)
     }
 
-    @Test("A page whose cover is not signed stores nothing")
+    @Test("A page whose cover is not signed stores nothing for other covers but still reports it, for a pin")
     func unsignedAnswer() async {
-        await backend.setPage(page("VLPLa", cover: URL(string: "https://lh3.googleusercontent.com/abc=w60")))
+        await backend.setPage(page("VLPLa", cover: Self.newMosaic))
         store.coverFailed(Self.signed("PLa", "old"))
         #expect(await until { await backend.pageCalls.count == 1 })
         await settle()
         #expect(store.freshCovers.isEmpty)
+        #expect(landed.pages == ["VLPLa"])
+        #expect(landed.covers == [Self.newMosaic])
     }
 
     @Test("A page with no cover stores nothing")
@@ -175,6 +197,7 @@ struct MusicBrowseStoreSignedCoverTests {
         #expect(await until { await backend.pageCalls.count == 1 })
         await settle()
         #expect(store.freshCovers.isEmpty)
+        #expect(landed.pages.isEmpty)
     }
 
     @Test("Offline nothing is asked")
@@ -238,5 +261,90 @@ struct MusicBrowseStoreSignedCoverTests {
         #expect(await until { store.coverURL(for: old) != nil })
         store.reset()
         #expect(store.coverURL(for: old) == nil)
+    }
+
+    // MARK: - A cover that names its page
+
+    @Test("A failed cover with its page's id asks that page and reports the address it has now")
+    func ownerRefreshes() async {
+        await backend.setPage(page("VLPLp", cover: Self.newMosaic))
+        store.coverFailed(Self.oldMosaic, owner: "VLPLp")
+        #expect(await until { !landed.pages.isEmpty })
+        #expect(landed.pages == ["VLPLp"])
+        #expect(landed.covers == [Self.newMosaic])
+        #expect(await backend.pageCalls == ["VLPLp"])
+        // A mosaic needs no swap for other covers: the store's own lists got it with their page.
+        #expect(store.freshCovers.isEmpty)
+    }
+
+    @Test("An album's cover asks the album's page")
+    func ownerAlbum() async {
+        await backend.setPage(page("MPRE1", cover: Self.newMosaic))
+        store.coverFailed(Self.oldMosaic, owner: "MPRE1")
+        #expect(await until { landed.pages == ["MPRE1"] })
+    }
+
+    @Test("A cover with an owner but no address asks nothing")
+    func ownerNoAddress() async {
+        store.coverFailed(nil, owner: "VLPLp")
+        store.coverFailed(Self.oldMosaic, owner: "")
+        await settle()
+        #expect(await backend.pageCalls.isEmpty)
+    }
+
+    @Test("A signed cover names its playlist even when the owner given is another")
+    func signedBeatsOwner() async {
+        await backend.setPage(page("VLPLa", cover: Self.signed("PLa", "new")))
+        store.coverFailed(Self.signed("PLa", "old"), owner: "VLPLother")
+        #expect(await until { await backend.pageCalls == ["VLPLa"] })
+    }
+
+    @Test("A signed cover and a pin of the same playlist share one ask per ten minutes")
+    func signedAndOwnerShareAsk() async {
+        await backend.setPage(page("VLPLa", cover: Self.signed("PLa", "new")))
+        store.coverFailed(Self.signed("PLa", "old"))
+        #expect(await until { !landed.pages.isEmpty })
+        clock.date.addTimeInterval(5 * 60)
+        store.coverFailed(Self.oldMosaic, owner: "VLPLa")
+        await settle()
+        #expect(await backend.pageCalls.count == 1)
+    }
+
+    @Test("A failed fetch for an owner is not repeated in a loop")
+    func ownerErrorNotLooped() async {
+        await backend.setPageError("VLPLp", MusicError.rejected)
+        store.coverFailed(Self.oldMosaic, owner: "VLPLp")
+        #expect(await until { await backend.pageCalls.count == 1 })
+        await settle()
+        store.coverFailed(Self.oldMosaic, owner: "VLPLp")
+        await settle()
+        #expect(await backend.pageCalls.count == 1)
+        #expect(landed.pages.isEmpty)
+    }
+
+    @Test("A pin's cover that failed offline is asked for when the account returns")
+    func ownerOfflineAskedOnReturn() async {
+        await backend.setPage(page("VLPLp", cover: Self.newMosaic))
+        var gone = true
+        store.accountGone = { gone }
+        store.coverFailed(Self.oldMosaic, owner: "VLPLp")
+        await settle()
+        #expect(await backend.pageCalls.isEmpty)
+        gone = false
+        store.accountReturned()
+        #expect(await until { landed.pages == ["VLPLp"] })
+    }
+
+    @Test("An answer for an owner that lands after a reset is dropped")
+    func ownerResetMidFlight() async {
+        let gate = MusicTestGate()
+        await backend.setPageGate("VLPLp", gate)
+        await backend.setPage(page("VLPLp", cover: Self.newMosaic))
+        store.coverFailed(Self.oldMosaic, owner: "VLPLp")
+        #expect(await until { await backend.pageCalls.count == 1 })
+        store.reset()
+        await gate.open()
+        await settle()
+        #expect(landed.pages.isEmpty)
     }
 }

@@ -81,11 +81,15 @@ struct MusicThumbnail: View {
     var placeholder = "music.note"
     /// The corner radius of a square cover; the button radius when nil.
     var cornerRadius: CGFloat?
+    /// The browse id of the playlist or album this is the cover of, for a cover kept from earlier (a pin's), so a dead one
+    /// asks that page for the address it has now. A signed cover names its playlist itself.
+    var coverOwner: String?
 
     /// The picture saved with a download, which shows in place of the address whenever there is one, online or not.
     @Environment(\.musicLocalCover) private var localCover
 
-    /// Gives a playlist's uploaded cover a new address once its signed one has expired.
+    /// Gives a cover that stopped working the address it has now: a playlist's uploaded cover once its signed address expires,
+    /// a pin's saved cover once YouTube drops it.
     @Environment(\.musicCoverRefresh) private var coverRefresh
 
     var body: some View {
@@ -96,7 +100,7 @@ struct MusicThumbnail: View {
             case .failure:
                 // Reported once each time the cover appears; the store spaces out the asks for a new address.
                 MusicCoverPlaceholder(symbol: placeholder, size: size)
-                    .onAppear { coverRefresh?.failed(url) }
+                    .onAppear { coverRefresh?.failed(url, coverOwner) }
             default:
                 MusicCoverPlaceholder(symbol: placeholder, size: size)
             }

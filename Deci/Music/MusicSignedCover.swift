@@ -3,7 +3,7 @@ import Foundation
 
 /// The cover of a playlist with an uploaded picture. YouTube Music serves it from a signed address
 /// (`i.ytimg.com/pl_c/<playlist id>/...?sqp=...&rs=...`) that stops working after some days (one 11 days old was a 404), and no unsigned form of
-/// it exists. Every other cover address keeps working, so only these need asking for again.
+/// it exists. The address names its playlist, so a dead one can be asked for again from the playlist's page.
 nonisolated enum MusicSignedCover {
     /// The playlist id of a signed cover address, nil for any other address (a video thumbnail, a Google-hosted picture,
     /// nothing).

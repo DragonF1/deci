@@ -527,6 +527,7 @@ final class MusicService {
             self?.ratingRolledBack(videoId: videoId, shown: shown)
         }
         browse.onPageLoaded = { [weak self] page, opener in self?.pageLoaded(page, opener: opener) }
+        browse.onCoverLanded = { [weak self] browseId, cover in self?.pinnedItems.replaceCover(of: browseId, with: cover) }
         // Signed out the store shows the downloads only, like it does with the network down.
         browse.accountGone = { [weak self] in self?.authState == .signedOut }
         connectivity?.observe { [weak self] online in self?.connectivityChanged(online) }

@@ -225,12 +225,13 @@ private struct MusicActionsModifier: ViewModifier {
         return { service.browse.localCoverURL(for: $0) }
     }
 
-    /// A playlist's uploaded cover has a signed address that expires: a cover that fails to load asks the store for a new one.
+    /// A cover address can stop working (a playlist's uploaded cover expires, a pin keeps an old mosaic): a cover that fails
+    /// to load asks the store for the address it has now.
     private var coverRefresh: MusicCoverRefresh? {
         guard let service else { return nil }
         return MusicCoverRefresh(
             current: { service.browse.coverURL(for: $0) },
-            failed: { service.browse.coverFailed($0) }
+            failed: { service.browse.coverFailed($0, owner: $1) }
         )
     }
 

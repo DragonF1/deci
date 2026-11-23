@@ -306,6 +306,36 @@ struct MusicServicePinnedItemsTests {
         #expect(h.service.pinnedItems.items == [pin("MPRE1", kind: .album, title: "New album", photo: newPhoto)])
     }
 
+    @Test("a pinned playlist whose saved cover stopped working gets the one its page has now, and it is saved")
+    func deadPinCoverReplaced() async {
+        let h = PinHarness(pins: [pin("VLPLp", kind: .playlist, title: "Parties", photo: oldPhoto)])
+        await h.backend.setPage(artistPage("VLPLp", title: "Parties", photo: newPhoto))
+
+        h.service.browse.coverFailed(URL(string: oldPhoto), owner: "VLPLp")
+
+        #expect(await h.until { h.service.pinnedItems.items.first?.thumbnailURL == newPhoto })
+        #expect(h.service.pinnedItems.items == [pin("VLPLp", kind: .playlist, title: "Parties", photo: newPhoto)])
+        #expect(h.probe.saved == [h.service.pinnedItems.items])
+    }
+
+    @Test("a cover asked for again for a playlist that is not pinned pins nothing and saves nothing")
+    func deadCoverOfUnpinnedPlaylist() async {
+        let h = PinHarness(pins: [pin("VLPLp", kind: .playlist, photo: oldPhoto)])
+        await h.backend.setPage(artistPage("VLPLz", title: "Other", photo: newPhoto))
+
+        h.service.browse.coverFailed(URL(string: oldPhoto), owner: "VLPLz")
+
+        var tries = 0
+        while await h.backend.pageCalls.isEmpty, tries < 400 {
+            tries += 1
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(await h.backend.pageCalls == ["VLPLz"])
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(h.service.pinnedItems.items == [pin("VLPLp", kind: .playlist, photo: oldPhoto)])
+        #expect(h.probe.saved.isEmpty)
+    }
+
     @Test("a pinned song is not touched when a page with its id lands")
     func songIsNotRefreshedByPages() async {
         let h = PinHarness(pins: [pin("vid1", kind: .song, title: "Tune")])

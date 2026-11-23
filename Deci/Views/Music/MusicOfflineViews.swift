@@ -19,12 +19,13 @@ extension EnvironmentValues {
     }
 }
 
-/// How a cover gets a new address when its signed one has expired (a playlist's own uploaded picture). `current` is the newly
-/// signed address for an address, nil when there is none yet; `failed` reports an address that did not load, which asks
-/// for a new one. The Music tab sets it; outside the tab covers show their address as given.
+/// How a cover that stopped working gets the address it has now (see `MusicBrowseStore.coverFailed`). `current` is the newly
+/// signed address for a playlist's uploaded cover, nil when there is none yet; `failed` reports an address that did not
+/// load, with the browse id it is the cover of when the cover knows it, which asks that page for a new one. The Music tab
+/// sets it; outside the tab covers show their address as given.
 struct MusicCoverRefresh {
     let current: @MainActor (URL?) -> URL?
-    let failed: @MainActor (URL?) -> Void
+    let failed: @MainActor (URL?, String?) -> Void
 }
 
 private struct MusicCoverRefreshKey: EnvironmentKey {

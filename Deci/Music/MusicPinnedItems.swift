@@ -141,6 +141,10 @@ nonisolated struct MusicPinnedItem: Codable, Equatable, Sendable {
     static func key(kind: Kind, id: String) -> String { kind.rawValue + ":" + id }
 
     var photoURL: URL? { thumbnailURL.flatMap { URL(string: $0) } }
+
+    /// The page whose header has this pin's cover as it is now: a playlist's or an album's own id. Nil for an artist, whose
+    /// page shows a wide banner and not the avatar, and for a song, which has no page.
+    var coverOwner: String? { kind == .playlist || kind == .album ? id : nil }
 }
 
 /// One saved pin read on its own, so an entry this build cannot read (a kind it does not know, a missing id) costs
@@ -370,6 +374,21 @@ final class MusicPinnedItems {
         }
         guard updated != items[index] else { return false }
         items[index] = updated
+        save(items)
+        return true
+    }
+
+    /// The store asked a page for its cover again (see `MusicBrowseStore.coverFailed`) and got the address it has now. A
+    /// pinned playlist or album with that id keeps it: the cover a pin was made with does not last, as YouTube draws a
+    /// playlist's mosaic again when its songs change and drops the old picture, and an uploaded cover's signed address
+    /// expires. This is no page opened from a small row, so it beats what is stored, which `refresh` never replaces.
+    @discardableResult
+    func replaceCover(of browseId: String, with cover: URL) -> Bool {
+        let photo = cover.absoluteString
+        guard let index = items.firstIndex(where: { $0.coverOwner == browseId }), items[index].thumbnailURL != photo else {
+            return false
+        }
+        items[index].thumbnailURL = photo
         save(items)
         return true
     }

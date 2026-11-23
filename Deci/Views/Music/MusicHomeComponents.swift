@@ -397,7 +397,8 @@ struct MusicPinnedTile: View {
                     size: MusicStyle.Size.pinnedPhoto,
                     circular: circular,
                     placeholder: item.kind.placeholderSymbol,
-                    cornerRadius: circular ? nil : MusicStyle.Radius.small
+                    cornerRadius: circular ? nil : MusicStyle.Radius.small,
+                    coverOwner: item.coverOwner
                 )
                 Text(item.title)
                     .musicText(MusicStyle.Typeface.caption)
