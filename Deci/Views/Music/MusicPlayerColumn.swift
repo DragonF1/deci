@@ -301,9 +301,11 @@ private struct MusicTimesRow: View {
 
     /// The popup stays mounted while hidden: its times are read only while it is on screen.
     @Environment(\.musicPopupIsVisible) private var isPopupVisible
+    @Environment(\.musicAccent) private var accent
 
     /// The row under the spectrum. A song that plays reads "0:08 / 4:15" on the left and its view count on the right
-    /// ("1.2M views"); loading shows the spinner and nothing on the right; with no song it is a dimmed "0:00 / 0:00".
+    /// ("1.2M views"), or "Mixing" there while it is being mixed into the next song; loading shows the spinner and
+    /// nothing on the right; with no song it is a dimmed "0:00 / 0:00".
     var body: some View {
         let duration = player?.duration ?? 0
         let total = duration > 0 ? duration : TimeInterval(track?.durationSeconds ?? 0)
@@ -318,9 +320,14 @@ private struct MusicTimesRow: View {
                 }
                 Spacer(minLength: 0)
             case .playing, .paused:
-                playbackTimes(
-                    current: player?.readCurrentTime(observed: isPopupVisible) ?? 0, total: total, viewCount: player?.viewCount
-                )
+                let current = player?.readCurrentTime(observed: isPopupVisible) ?? 0
+                MusicMixCueReader(cue: player?.mixCue) { mixing in
+                    if mixing {
+                        mixingLine(current: current, total: total)
+                    } else {
+                        playbackTimes(current: current, total: total, viewCount: player?.viewCount)
+                    }
+                }
             case .signedOut, .empty:
                 timePair(current: 0, total: 0, currentOpacity: 0.30, totalOpacity: 0.30)
                 Spacer(minLength: 0)
@@ -354,6 +361,17 @@ private struct MusicTimesRow: View {
                     .lineLimit(1)
                     .help(tooltip ?? views)
             }
+        }
+    }
+
+    /// The playing row while the song is mixed into the next: the times, and "Mixing" where the view count was.
+    private func mixingLine(current: TimeInterval, total: TimeInterval) -> some View {
+        HStack(spacing: 0) {
+            timePair(current: current, total: total, currentOpacity: 0.70, totalOpacity: 0.40)
+                .layoutPriority(1)
+            Spacer(minLength: MusicPopupMetrics.timesRowGap)
+            MusicMixingLabel(color: accent.solid, isMoving: state == .playing)
+                .lineLimit(1)
         }
     }
 

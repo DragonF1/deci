@@ -12,6 +12,9 @@ enum PlaybackEngineEvent: Equatable {
     /// The active item ended and the preloaded one (this video id) plays on: no gap, no `ended`. The engine now holds
     /// the new item as its active one and nothing is preloaded any more.
     case advanced(videoId: String)
+    /// The "Mixing" cue changed: an overlap with the next song is scheduled (`upcoming`), is playing (`mixing`), or
+    /// neither (nil). Sent only on a change.
+    case mixCue(MusicMixCue?)
 }
 
 /// The AVPlayer seam: `MusicPlayer` drives it, tests replace it.
@@ -238,7 +241,11 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var active = Deck()
     private var standby = Deck()
     /// The deck whose item is fading out under the new one in a crossfade, nil outside one.
-    private var draining: Deck?
+    private var draining: Deck? {
+        didSet { refreshMixCue() }
+    }
+    /// The running drain is a scheduled mix (set by the flip), not a manual skip's short fade.
+    private var drainIsScheduledMix = false
     /// Counts the played seconds of the drain, so a pause holds it. Cancelled with the drain.
     private var drainTask: Task<Void, Never>?
     /// Fires the crossfade at its start time.
@@ -356,7 +363,20 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// The standby's item is ready and prerolled.
     private var preloadReady = false
     /// The host time the standby is scheduled to start at, nil while it is not scheduled.
-    private var scheduledHost: CMTime?
+    private var scheduledHost: CMTime? {
+        didSet {
+            // The overlap's start as a wall time, taken once per schedule so the cue only changes when the schedule does.
+            scheduledDate = scheduledHost.map { host in
+                let ahead = CMTimeSubtract(host, CMClockGetTime(CMClockGetHostTimeClock())).seconds
+                return Date().addingTimeInterval(ahead.isFinite ? ahead : 0)
+            }
+            refreshMixCue()
+        }
+    }
+    /// `scheduledHost` as a wall time.
+    private var scheduledDate: Date?
+    /// What the "Mixing" label shows, sent as `.mixCue` whenever it changes.
+    private(set) var mixCue: MusicMixCue?
     /// The standby was started by `startStandby(atHostTime:rate:)` (a beat-matched entry at a nudged rate). The gapless
     /// schedule leaves it alone while this is set, and every path that takes the standby back clears it.
     private(set) var alignedStart = false
@@ -1748,6 +1768,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         incoming.tap?.activate()
         incoming.tap?.fade(to: 1, over: fade, curve: .equalPower, fromSilence: true)
         active = incoming
+        drainIsScheduledMix = scheduled
         draining = outgoing
         let fresh = Deck()
         fresh.player.automaticallyWaitsToMinimizeStalling = false
@@ -1861,6 +1882,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         drainTask?.cancel()
         drainTask = nil
         guard let old = draining else { return }
+        drainIsScheduledMix = false
         draining = nil
         drainEchoing = false
         old.tap?.endEcho()
@@ -1884,6 +1906,22 @@ final class AVPlaybackEngine: PlaybackEngine {
             // The flip turned stalling-wait off for the synchronised start; the deck plays on its own from here.
             active.player.automaticallyWaitsToMinimizeStalling = true
         }
+    }
+
+    /// The "Mixing" cue from the schedule and the drain: a scheduled overlap with a fade is upcoming, a scheduled drain
+    /// is mixing, anything else (a gapless switch, a manual skip, nothing scheduled) is no cue. Sent only on a change.
+    private func refreshMixCue() {
+        let cue: MusicMixCue?
+        if draining != nil {
+            cue = drainIsScheduledMix ? .mixing : nil
+        } else if let scheduledDate, plannedFade > 0 {
+            cue = .upcoming(startsAt: scheduledDate)
+        } else {
+            cue = nil
+        }
+        guard cue != mixCue else { return }
+        mixCue = cue
+        onEvent?(.mixCue(cue))
     }
 
     // MARK: - Deck rate

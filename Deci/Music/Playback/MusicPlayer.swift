@@ -33,6 +33,8 @@ final class MusicPlayer {
     /// plays, and when the response did not carry one: never the previous song's.
     private(set) var viewCount: Int?
     private(set) var error: String?
+    /// The engine's "Mixing" cue: an overlap with the next song is coming or playing. Display state only.
+    private(set) var mixCue: MusicMixCue?
 
     /// Position ticks for the service's listening-time accounting.
     @ObservationIgnored var onTick: (@MainActor (_ position: TimeInterval, _ isPlaying: Bool) -> Void)?
@@ -445,8 +447,15 @@ final class MusicPlayer {
     }
 
     private func handle(_ event: PlaybackEngineEvent) {
+        // The cue is only for the label: nothing the service follows changes, so it is not a state change.
+        if case .mixCue(let cue) = event {
+            mixCue = cue
+            return
+        }
         defer { notifyStateChange() }
         switch event {
+        case .mixCue:
+            break
         case .ready(let engineDuration):
             if let engineDuration { duration = engineDuration }
             if !wantsPlay { isLoading = false }

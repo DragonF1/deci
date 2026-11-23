@@ -65,7 +65,8 @@ private struct MusicNowPlayingCardContent: View {
                 duration: duration,
                 canSeek: player.duration > 0 && !player.isLoading,
                 isPlaying: player.isPlaying,
-                tint: accent
+                tint: accent,
+                mixCue: player.mixCue
             ) { service.seek(to: $0) }
             Spacer().frame(height: Metrics.afterTimesRow)
             controls(service: service, track: track)
@@ -236,6 +237,8 @@ private struct MusicCardProgress: View {
     /// The ripple runs while this is true and holds where it is when it is not.
     let isPlaying: Bool
     let tint: MusicTint
+    /// "Mixing" shows between the times while the song is mixed into the next.
+    let mixCue: MusicMixCue?
     let onSeek: (TimeInterval) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -262,6 +265,11 @@ private struct MusicCardProgress: View {
                 time(elapsed)
                 Spacer(minLength: 0)
                 time(duration)
+            }
+            .overlay {
+                MusicMixCueReader(cue: mixCue) { mixing in
+                    if mixing { MusicMixingLabel(color: tint.solid, isMoving: isPlaying) }
+                }
             }
             .frame(height: MusicHoverCardMetrics.timesRowHeight)
         }
