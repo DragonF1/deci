@@ -112,8 +112,8 @@ struct MusicBeatPlannerTests {
         #expect(plan.incomingStartSec == mixIn)
     }
 
-    @Test("a beat of the incoming song at mixIn lands on a beat of the outgoing after rate scaling", arguments: [
-        (120.0, 120.0), (120.0, 128.0), (128.0, 120.0), (70.0, 140.0), (140.0, 71.0), (100.0, 107.0),
+    @Test("a beat of the incoming song near mixIn lands within the drift budget of a beat of the outgoing, at rate 1", arguments: [
+        (120.0, 120.0), (120.0, 120.1), (120.0, 119.9), (70.0, 140.0), (140.0, 70.1), (100.0, 100.2),
     ])
     func beatPhase(outBpm: Double, inBpm: Double) throws {
         let a = Self.grid(period: 60 / outBpm, anchor: 0.23)
@@ -123,15 +123,16 @@ struct MusicBeatPlannerTests {
         let mixOut = try #require(plan.mixOutSec), mixIn = try #require(plan.mixInSec)
         let multiple = try #require(B.tempoMatch(outBpm: outBpm, inBpm: inBpm)).multiple
         #expect(abs(mixOut - a.beatTime(a.nextBeat(atOrAfter: mixOut).index)) < 1e-6)
-        let kIn = b.nextBeat(atOrAfter: mixIn).index
-        #expect(abs(b.beatTime(kIn) - mixIn) < 1e-6)
-        // Every few incoming beats: its time in the outgoing timeline against the outgoing beat grid.
-        for step in [4, 8, 16, 32] {
-            let incomingTime = mixOut + (b.beatTime(kIn + step) - mixIn) / plan.incomingRate
+        // The start is a beat of the incoming grid moved by half the walk (a few ms), never more than the budget.
+        let kIn = Int(((mixIn - b.anchorSec) / b.periodSec).rounded())
+        #expect(abs(b.beatTime(kIn) - mixIn) <= B.maxBeatDriftSec + 1e-9)
+        #expect(plan.incomingRate == 1)
+        // Every few incoming beats: its time in the outgoing timeline (rate 1) against the outgoing beat grid.
+        for step in [0, 4, 8, 16, 32] {
+            let incomingTime = mixOut + (b.beatTime(kIn + step) - mixIn)
             let position = (incomingTime - a.anchorSec) / a.periodSec
-            #expect(abs(position - position.rounded()) * a.periodSec < 1e-6, "step \(step) off by \(position - position.rounded()) beats")
             let expected = (mixOut - a.anchorSec) / a.periodSec + Double(step) / multiple
-            #expect(abs(position - expected) * a.periodSec < 1e-6)
+            #expect(abs(position - expected) * a.periodSec <= B.maxBeatDriftSec + 1e-6, "step \(step) off by \((position - expected) * a.periodSec) s")
         }
     }
 
@@ -513,13 +514,13 @@ struct MusicBeatPlannerTests {
         }
     }
 
-    @Test("for random grids the overlap always fits and at least 20 s of the incoming song remains")
+    @Test("for random grids (within the drift budget) the overlap always fits and at least 20 s of the incoming song remains")
     func property() throws {
         var random = Lcg(state: 42)
         var beatPlans = 0
         for _ in 0..<600 {
             let bpm = 70 + random.next() * 110
-            let inBpm = bpm * (0.88 + random.next() * 0.24)
+            let inBpm = bpm * (0.9985 + random.next() * 0.003)
             let aDuration = 60 + random.next() * 340
             let bDuration = 60 + random.next() * 340
             let aEnd = aDuration - random.next() * 4
@@ -537,13 +538,14 @@ struct MusicBeatPlannerTests {
             let mixOut = try #require(plan.mixOutSec), mixIn = try #require(plan.mixInSec)
             #expect(mixOut >= 0)
             #expect(mixOut + plan.overlapSec <= aEnd + 1e-6)
-            #expect(bDuration - (mixIn + plan.overlapSec * plan.incomingRate) >= 20 - 1e-6)
+            #expect(bDuration - (mixIn + plan.overlapSec) >= 20 - 1e-6)
             #expect(plan.overlapBars == 8 || plan.overlapBars == 16)
-            #expect(abs(plan.incomingRate - 1) <= 0.08 + 1e-9)
-            #expect(plan.incomingRate > 0.9 && plan.incomingRate < 1.1)
+            #expect(plan.incomingRate == 1)
+            // The beats drift by no more than the budget anywhere in the overlap (centred: half the walk each way).
+            #expect(abs(a.bpm / b.bpm - 1) * plan.overlapSec / 2 <= B.maxBeatDriftSec + 1e-9)
             #expect(mixOut + plan.overlapSec <= a.spanEndSec + 2 * a.periodSec + 1e-6)
             #expect(mixIn >= b.spanStartSec - 2 * b.periodSec - 1e-6)
-            #expect(mixIn + plan.overlapSec * plan.incomingRate <= b.spanEndSec + 2 * b.periodSec + 1e-6)
+            #expect(mixIn + plan.overlapSec <= b.spanEndSec + 2 * b.periodSec + 1e-6)
             #expect(plan.overlapSec <= B.maxOverlapSec)
         }
         #expect(beatPlans > 100, "only \(beatPlans) of 600 random pairs got a beat plan")
@@ -780,9 +782,9 @@ extension MusicBeatPlannerTests {
         let items = Double(plan.overlapBars) * plan.barSec
         #expect(abs(plan.overlapSec - items / 1.05) < 1e-9 && plan.fadeSeconds == plan.overlapSec)
         #expect(abs((plan.outgoingEndSec ?? 0) - ((plan.mixOutSec ?? 0) + items)) < 1e-9)
-        // Without the deck rate the same pair is rate 120/126.
+        // Without the deck rate the same pair is 5 percent apart: no beat blend at rate 1.
         let plain = Self.plan(Self.inputs(b: Self.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, span: 0.1...236)))
-        #expect(abs(plain.incomingRate - 120.0 / 126) < 1e-9)
+        #expect(plain.mode != .beat && plain.fallbackReason == "tempoClash")
     }
 
     @Test("70 against 140 meets at double time with the deck rate counted")
@@ -793,20 +795,28 @@ extension MusicBeatPlannerTests {
         i.outgoing.deckRate = 1.04
         let held = try #require(B.tempoMatch(outBpm: 70 * 1.04, inBpm: 140))
         #expect(held.multiple == 2 && abs(held.rate - 1.04) < 1e-12)
+        // 140 is 4 percent off the held deck's double time: at rate 1 that drifts too far, so no beat blend.
         let plan = Self.plan(i)
-        #expect(plan.mode == .beat && abs(plan.incomingRate - 1.04) < 1e-9)
+        #expect(plan.mode != .beat && plan.fallbackReason == "tempoClash")
+        // A song at the held deck's double time (145.6 bpm) is a beat blend at rate 1.
+        i.incoming.grid = Self.grid(period: 60.0 / 145.6, anchor: 0.1, phase: 1, span: 0.1...236)
+        let exact = Self.plan(i)
+        #expect(exact.mode == .beat && exact.incomingRate == 1)
     }
 
-    @Test("the rate cap is 8 percent for the incoming song: 120 against 131 is refused, and a held 1.08 deck makes 130 fit")
+    @Test("the match window is 8 percent: 120 against 131 is refused, a held 1.08 deck against 131 is still too far apart to drift, and 129.6 fits")
     func rateCap() {
         #expect(B.maxRateError == 0.08 && B.tempoTolerance == B.maxRateError)
         let clash = Self.plan(Self.inputs(b: Self.grid(period: 60.0 / 131, anchor: 0.1, phase: 1, span: 0.1...236)))
         #expect(clash.mode != .beat && clash.fallbackReason == "tempoClash")
         var held = Self.inputs(b: Self.grid(period: 60.0 / 131, anchor: 0.1, phase: 1, span: 0.1...236))
         held.outgoing.deckRate = 1.08
+        // 129.6 against 131 is a 1.1 percent gap: inside the match window but over the drift budget.
+        let near = Self.plan(held)
+        #expect(near.mode != .beat && near.fallbackReason == "tempoClash")
+        held.incoming.grid = Self.grid(period: 60.0 / 129.6, anchor: 0.1, phase: 1, span: 0.1...236)
         let plan = Self.plan(held)
-        #expect(plan.mode == .beat)
-        #expect(abs(plan.incomingRate - 1) <= B.maxRateError + 1e-12)
+        #expect(plan.mode == .beat && plan.incomingRate == 1)
         // A garbage deck rate reads as 1.
         var bad = Self.inputs()
         bad.outgoing.deckRate = .nan

@@ -90,7 +90,7 @@ struct BeatSyncSpikeTests {
         var worst = 0.0
         var summary: [String] = []
         for run in 1...3 {
-            let record = try await rig.measureBeatMix(label: "beatmix-120-126-\(run)")
+            let record = try await rig.measureBeatMix(label: "beatmix-120-120-\(run)")
             try BeatSyncRig.append(record)
             #expect(record.failure == nil, "\(record.failure ?? "")")
             guard record.failure == nil else { continue }

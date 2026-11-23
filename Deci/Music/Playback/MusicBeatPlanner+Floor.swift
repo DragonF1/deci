@@ -1,10 +1,11 @@
 // Deci/Music/Playback/MusicBeatPlanner+Floor.swift
 // Tier 4c: the floor of every Mix transition. When no beat grid can be trusted (or the tempos, the phrase room or two singers
 // refuse a beat blend), the pair still gets a blend: a beat-mode plan at rate 1 with a 6 to 8 s overlap that starts at the
-// smart plan's start and hands the bass over mid-way, so the engine runs it through its beat path like any blend. When both
-// songs have a grid and the tempos meet within `maxRateError` (8%, the outgoing deck's own rate counted) the incoming song
-// starts at the matched rate, kept for the whole song, and its start is snapped beat on beat (downbeat on downbeat when both
-// are known); otherwise nothing can be aligned and the outgoing song is thinned instead (see `floorBlendPlan`). Pure.
+// smart plan's start and hands the bass over mid-way, so the engine runs it through its beat path like any blend. The
+// incoming song always plays at rate 1 (wjyijr). When both songs have a grid and the tempos meet within `floorTempoError`
+// (the outgoing deck's own rate counted) its start is snapped beat on beat (downbeat on downbeat when both are known) and
+// moved so the beats drift evenly around the outgoing ones; otherwise nothing can be aligned and the outgoing song is
+// thinned instead (see `floorBlendPlan`). Pure.
 
 import Foundation
 
@@ -14,16 +15,16 @@ extension MusicBeatPlanner {
     static let floorMinFadeSeconds = 6.0
     /// The bass hands over across this many seconds in a floor blend.
     static let floorBassHandoverSec = 2.0
-    /// Tempos closer than this (a fraction, half and double time folded in) count as matched: the incoming song is played at
-    /// the matching rate, so the kicks stay together for the whole overlap. The same 8% cap as every Mix rate.
-    static let floorTempoError = maxRateError
+    /// Tempos closer than this (a fraction, half and double time folded in) count as matched: the incoming song plays at rate 1,
+    /// and across the longest floor overlap its beats stay within `maxBeatDriftSec` of the outgoing ones (0.75%).
+    static let floorTempoError = 2 * maxBeatDriftSec / floorFadeSeconds
     /// The incoming song must still have this much left after the overlap.
     static let floorMinIncomingRemainingSec = 10.0
     /// How far (whole seconds, each way) a floor blend may move off the smart start to keep two singers apart.
     static let floorShiftSearchSec = 10
 
     /// The blend that is never refused: beat mode, rate 1, a 6 to 8 s fade from the smart start, the bass handing over at the
-    /// middle. When the tempos differ by more than 3% (or are unknown) two kick drums would pound out of time for the whole
+    /// middle. When the tempos differ by more than `floorTempoError` (or are unknown) two kick drums would pound out of time for the whole
     /// overlap, so the outgoing song is thinned instead, as a DJ's EQ would: the plan is a filter sweep (a high-pass on the
     /// outgoing song rising from `MusicSweepSettings`), and the incoming bass comes in where the sweep passes 80 Hz, about a
     /// quarter of the way in. nil only when a song is too short to hold the fade (then the plain smart fade stays).
@@ -54,7 +55,7 @@ extension MusicBeatPlanner {
     /// True when both songs have a tempo and they meet within `floorTempoError`.
     static func floorTempoMatched(_ inputs: MusicTransitionInputs) -> Bool { floorTempo(inputs) != nil }
 
-    /// The grids a floor blend can be snapped onto: both songs have one and their tempos meet within 3%. `bars` is true when both
+    /// The grids a floor blend can be snapped onto: both songs have one and their tempos meet within `floorTempoError`. `bars` is true when both
     /// have a downbeat and the tempos are the same speed (not half or double time), so a downbeat can land on a downbeat.
     static func floorAlignment(_ inputs: MusicTransitionInputs) -> (out: MusicBeatGrid, incoming: MusicBeatGrid, bars: Bool)? {
         guard floorTempoMatched(inputs),
@@ -86,9 +87,8 @@ extension MusicBeatPlanner {
         let bEnd = inputs.incoming.analysis.flatMap { MusicTransitionPlanner.trimmedEnd(of: $0, duration: bDuration) } ?? bDuration
         let alignment = floorAlignment(inputs)
         let outRate = outgoingRate(inputs)
-        // The rate the incoming song keeps for its whole song: the match when the tempos meet (3 to 8% included), else 1.
-        let matchRate = floorTempo(inputs)?.rate ?? 1
-        let inRate = abs(matchRate - 1) <= 1e-9 ? 1 : matchRate
+        // The incoming song always plays at its own tempo; a match only places its start.
+        let inRate = 1.0
         // The incoming start moves to its next beat (downbeat) so it can land on one of the outgoing song's.
         var inStart = smart.incomingStartSec
         var inSnapped = false
@@ -148,14 +148,24 @@ extension MusicBeatPlanner {
         plan.mode = .beat
         plan.reason = .ok
         plan.fallbackReason = nil
-        // Tier 4c: the matched rate (3 to 8% included) is the incoming song's rate for its whole song; no match keeps 1.
-        let sweeps = forceSweep || !floorTempoMatched(inputs)
+        var sweeps = forceSweep || !floorTempoMatched(inputs)
         plan.incomingRate = inRate
-        plan.mixOutSec = chosen.mixOut
-        plan.mixInSec = inStart
         plan.floorAligned = chosen.aligned && inSnapped
-        plan.fallbackIncomingStartSec = inStart
-        plan.incomingStartSec = inStart
+        // An aligned start moves so the beats sit exactly together half way and drift evenly before and after (wjyijr).
+        // A start too close to the top of the song to move far enough back would drift past `maxBeatDriftSec`: the sweep
+        // covers that pair instead of a blend with beats apart.
+        var start = inStart
+        if plan.floorAligned, let tempo = floorTempo(inputs) {
+            if let centred = unityStart(mixIn: inStart, rate: tempo.rate, wallLength: fade) {
+                start = centred
+            } else {
+                sweeps = true
+            }
+        }
+        plan.mixOutSec = chosen.mixOut
+        plan.mixInSec = start
+        plan.fallbackIncomingStartSec = start
+        plan.incomingStartSec = start
         plan.fadeStartSec = chosen.mixOut
         plan.fadeSeconds = fade
         plan.outgoingEndSec = chosen.mixOut + fade * outRate

@@ -16,10 +16,15 @@ enum MusicBeatPlanner {
         case gridMissing, gridLowConf, tempoClash, noPhraseRoom, tooLate, vocalClash
     }
 
-    /// Tier 4c: no song is ever played more than this far off its own natural tempo (the incoming rate of a plan). Beyond it
-    /// the pair meets at half or double time, else it gets the floor blend.
+    /// How far apart two tempos may be (half and double time folded in) for a match to be looked for at all. The incoming
+    /// song itself is never played off its own tempo (see `maxBeatDriftSec`): the match only places its start.
     static let maxRateError = 0.08
     static let tempoTolerance = maxRateError
+    /// Every plan plays the incoming song at rate 1, its own tempo (wjyijr): a rate other than 1 would have to stay for the
+    /// whole song, since a rate change on a playing deck opens a gap in the output. So two tempos that differ drift apart
+    /// across the overlap, and a beat blend is only planned where that drift stays within this many seconds of the
+    /// outgoing beats, anywhere in the overlap. Otherwise the pair falls to a shorter blend or the filter sweep.
+    static let maxBeatDriftSec = 0.030
     static let minConfidence: Float = 0.5
     /// intervalSpread is a fraction of the beat period. The floor 0.04 is the old flat limit; a faster song has a shorter
     /// period, so the same timing wobble in seconds is a larger fraction: the limit is `spreadSeconds` worth of period,
@@ -83,6 +88,19 @@ enum MusicBeatPlanner {
         return best
     }
 
+    /// Where the incoming song starts (item seconds) when it plays at rate 1 through an overlap of `wallLength` seconds
+    /// that a `rate` match would start at `mixIn`. At rate 1 its beats drift off the outgoing ones by `rate - 1` seconds
+    /// a second, so the start moves to put them exactly on the beat at `anchor` (a share of the overlap: 0.5 the middle,
+    /// 1 the end), ahead before it and behind after. The song never starts before 0, and the start is nil when the drift
+    /// would pass `maxBeatDriftSec` anywhere in the overlap.
+    static func unityStart(mixIn: Double, rate: Double, wallLength: Double, anchor: Double = 0.5) -> Double? {
+        guard mixIn.isFinite, rate.isFinite, rate > 0, wallLength.isFinite, wallLength >= 0, anchor.isFinite else { return nil }
+        let walk = (rate - 1) * wallLength
+        let shift = max(walk * min(max(anchor, 0), 1), -mixIn)
+        guard max(abs(shift), abs(shift - walk)) <= maxBeatDriftSec + 1e-9 else { return nil }
+        return mixIn + shift
+    }
+
     // MARK: Plan
 
     /// `smart` is the tier 2 plan for the same inputs. Returns it unchanged plus `fallbackReason` on any refusal.
@@ -121,6 +139,8 @@ enum MusicBeatPlanner {
         // Tier 3c: lengths skipped only because two singers would overlap, and the first and least of those collisions.
         var vocalSkipped = 0
         var firstCollision: Double?, leastCollision = Double.infinity
+        // Lengths skipped only because the two tempos would drift apart too far at rate 1.
+        var driftSkipped = 0
         // Tier 4c: the first blend whose end falls inside a sung line. It is kept only when no other length ends in a gap.
         var clipped: TransitionPlan?
 
@@ -151,15 +171,18 @@ enum MusicBeatPlanner {
                 if !guardTier { late = true }
                 continue
             }
-            // The incoming song advances `rate` item seconds per outgoing second.
-            let consumed = overlap * tempo.rate
-            guard bEnd - (mixIn + consumed) >= minIncomingRemainingSec,
-                  mixIn + consumed <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else {
+            // The incoming song plays at rate 1, started so its beats drift evenly around the outgoing ones.
+            guard let inStart = unityStart(mixIn: mixIn, rate: tempo.rate, wallLength: overlap) else {
+                driftSkipped += 1
+                continue
+            }
+            guard bEnd - (inStart + overlap) >= minIncomingRemainingSec,
+                  inStart + overlap <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else {
                 continue
             }
             var collision: Double?
             if inputs.vocalGuardEnabled {
-                collision = guardCollision(inputs, outStart: mixOut, inStart: mixIn, rate: tempo.rate, wallLength: overlap)
+                collision = guardCollision(inputs, outStart: mixOut, inStart: inStart, rate: 1, wallLength: overlap)
                 if let c = collision, c > MusicVocalGuard.budgetSec {
                     vocalSkipped += 1
                     if firstCollision == nil { firstCollision = c }
@@ -172,11 +195,11 @@ enum MusicBeatPlanner {
             plan.mode = .beat
             plan.reason = .ok
             plan.fallbackReason = nil
-            plan.incomingRate = tempo.rate
+            plan.incomingRate = 1
             plan.mixOutSec = mixOut
-            plan.mixInSec = mixIn
+            plan.mixInSec = inStart
             plan.fallbackIncomingStartSec = smart.incomingStartSec
-            plan.incomingStartSec = mixIn
+            plan.incomingStartSec = inStart
             plan.fadeStartSec = mixOut
             plan.fadeSeconds = overlap
             plan.outgoingEndSec = mixOut + overlapItem
@@ -205,6 +228,7 @@ enum MusicBeatPlanner {
             plan.vocalBeforeSec = leastCollision
             return plan
         }
+        if driftSkipped > 0 { return refuse(.tempoClash) }
         return refuse(late ? .tooLate : .noPhraseRoom)
     }
 

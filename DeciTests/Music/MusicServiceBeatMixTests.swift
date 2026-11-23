@@ -9,6 +9,9 @@ import Testing
 
 @MainActor
 struct BeatHarness {
+    /// The next song's beat period: 0.04 percent off the 0.5 s of the first song, so a beat mix has a real (tiny) tempo gap
+    /// to centre. The old 0.48 (4 percent) is a tempo clash since wjyijr: every song plays at its own tempo.
+    static let bPeriod = 0.4998
     let backend = FakeMusicBackend()
     let engine = FakePlaybackEngine()
     let surface = FakeNowPlayingSurface()
@@ -98,7 +101,7 @@ struct BeatHarness {
     var lastPlan: TransitionPlan? { engine.plans.last ?? nil }
 
     /// What the planner makes of the two standard rows, for the mix point to aim ticks at.
-    static func expectedBeatPlan(aPeriod: Double = 0.5, bPeriod: Double = 0.48, bassSwap: Bool = true) -> TransitionPlan {
+    static func expectedBeatPlan(aPeriod: Double = 0.5, bPeriod: Double = BeatHarness.bPeriod, bassSwap: Bool = true) -> TransitionPlan {
         var inputs = MusicBeatPlannerTests.inputs(
             a: MusicBeatPlannerTests.grid(period: aPeriod, anchor: 0.2, phase: 0),
             b: MusicBeatPlannerTests.grid(period: bPeriod, anchor: 0.1, phase: 1, span: 0.1...236)
@@ -114,7 +117,7 @@ struct BeatHarness {
 struct MusicServiceBeatMixTests {
     private func start(_ h: BeatHarness, bGrid: Bool = true) async {
         await h.reader.set(BeatHarness.row("a", period: 0.5))
-        await h.reader.set(BeatHarness.row("b", period: 0.48, grid: bGrid))
+        await h.reader.set(BeatHarness.row("b", period: BeatHarness.bPeriod, grid: bGrid))
         await h.startQueue(["a", "b"])
     }
 
@@ -127,7 +130,10 @@ struct MusicServiceBeatMixTests {
         #expect(h.engine.preloads.count == 1)
         let plan = try #require(h.lastPlan)
         #expect(plan.mode == .beat, "plan: \(plan) lines: \(h.service.transitionLines)")
-        #expect(plan.incomingRate < 1 && abs(plan.incomingRate - 0.96) < 0.001)
+        // wjyijr: the incoming song plays at its own tempo; the 0.04 percent gap only moves its start (by a few ms).
+        #expect(plan.incomingRate == 1)
+        let expected = BeatHarness.expectedBeatPlan()
+        #expect(plan.mixInSec == expected.mixInSec && plan.mixOutSec == expected.mixOutSec)
         #expect(plan.mixOutSec != nil && plan.mixInSec != nil)
         #expect(plan.fadeStartSec == plan.mixOutSec)
         #expect(plan.incomingStartSec == plan.mixInSec)
@@ -156,8 +162,8 @@ struct MusicServiceBeatMixTests {
         await h.tick(222)
         let plan = try #require(h.lastPlan)
         #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.fadeSeconds >= 6)
-        // Tier 4c C2: the pair is within 8%, so the floor blend starts the incoming at the matched rate.
-        #expect(abs(plan.incomingRate - 1) <= MusicBeatPlanner.maxRateError)
+        // wjyijr: the incoming song always plays at rate 1.
+        #expect(plan.incomingRate == 1)
     }
 
     @Test("a next song without a grid gives a gridless floor blend, never the plain smart fade")
@@ -216,7 +222,7 @@ struct MusicServiceBeatMixTests {
         // The first offer comes when the playhead is already within the preroll of the mix point.
         await h.tick(mixOut - 4)
         let plan = try #require(h.lastPlan)
-        #expect(plan.mode == .beat && plan.overlapBars == 0 && abs(plan.incomingRate - 1) <= MusicBeatPlanner.maxRateError)
+        #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.incomingRate == 1)
         #expect((plan.mixOutSec ?? 0) > mixOut - 4, "the blend starts after the playhead, from the earliest point the engine can meet")
     }
 
@@ -230,7 +236,7 @@ struct MusicServiceBeatMixTests {
         await h.engine.tickNoGate(h.service, clock: h.clock, at: 126)
         await h.engine.tickNoGate(h.service, clock: h.clock, at: 232)
         let before = try #require(h.lastPlan)
-        await h.reader.set(BeatHarness.row("b", period: 0.48))
+        await h.reader.set(BeatHarness.row("b", period: BeatHarness.bPeriod))
         await gate.open()
         await h.service.analysisTask?.value
         #expect(h.lastPlan == before)
@@ -299,7 +305,7 @@ struct MusicServiceDropSwapSkipTests {
     private func offered(_ h: BeatHarness) async -> TransitionPlan? {
         var a = BeatHarness.row("a", period: 0.5)
         a.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.4).encode()
-        var b = BeatHarness.row("b", period: 0.48)
+        var b = BeatHarness.row("b", period: BeatHarness.bPeriod)
         b.energy = DropFixtures.envelope(seconds: 240, steps: [40])
         b.keyInfo = MusicKeyInfo(tonic: 0, isMinor: false, confidence: 0.5, energy: 0.7).encode()
         await h.reader.set(a)

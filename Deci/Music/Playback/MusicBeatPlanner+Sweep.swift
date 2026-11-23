@@ -10,7 +10,7 @@ extension MusicBeatPlanner {
 
     // MARK: Filter sweep
 
-    /// The beat blend `beat` with a high-pass sweep on the outgoing song: same timing, rate nudge and overlap. nil when
+    /// The beat blend `beat` with a high-pass sweep on the outgoing song: same timing, rate and overlap. nil when
     /// `beat` is not a beat blend with an overlap (a floor blend has no bars, a cut has no overlap to speak of).
     static func filterSweepPlan(from beat: TransitionPlan) -> TransitionPlan? {
         guard beat.mode == .beat, beat.style == .longBlend, beat.overlapSec >= 1 else { return nil }
@@ -41,7 +41,7 @@ extension MusicBeatPlanner {
     // MARK: Drop swap
 
     /// The incoming song's drop lands exactly where the outgoing song's phrase ends. The overlap is `lead` bars before that
-    /// phrase end `P`: the incoming starts `lead` bars before its drop `D` (the rate nudge counted, so its beats sit on the
+    /// phrase end `P`: the incoming starts `lead` bars before its drop `D` (at rate 1, its beats within `maxBeatDriftSec` of the
     /// outgoing beats), fades in across the lead, and the outgoing song fades out so it is gone at `P`. nil when either grid
     /// is not trusted or has no downbeat, the tempos do not meet at the same bar length, there is no confident drop with
     /// 4 bars before it, or no phrase end has room.
@@ -73,12 +73,14 @@ extension MusicBeatPlanner {
             let overlapItem = Double(lead) * barOut
             let overlap = overlapItem / outRate
             let mixOut = phraseEnd - overlapItem
-            // The incoming song advances `rate` item seconds per wall second.
-            let mixIn = drop.timeSec - overlap * tempo.rate
+            // The incoming song plays at rate 1 and lands its drop exactly on the phrase end; its beats drift across the
+            // lead, by no more than `maxBeatDriftSec` at its quiet start.
+            guard let mixIn = unityStart(mixIn: drop.timeSec - overlap * tempo.rate, rate: tempo.rate, wallLength: overlap, anchor: 1)
+            else { continue }
             guard overlap <= maxOverlapSec, mixOut >= earliestOut - 1e-9, mixIn >= earliestIn - 1e-9 else { continue }
             if let earliest = inputs.earliestMixOutSec, mixOut < earliest { continue }
             if inputs.vocalGuardEnabled,
-               let collision = guardCollision(inputs, outStart: mixOut, inStart: mixIn, rate: tempo.rate, wallLength: overlap),
+               let collision = guardCollision(inputs, outStart: mixOut, inStart: mixIn, rate: 1, wallLength: overlap),
                collision > MusicVocalGuard.budgetSec {
                 continue
             }
@@ -87,7 +89,7 @@ extension MusicBeatPlanner {
             plan.reason = .ok
             plan.style = .dropSwap
             plan.fallbackReason = nil
-            plan.incomingRate = tempo.rate
+            plan.incomingRate = 1
             plan.mixOutSec = mixOut
             plan.mixInSec = mixIn
             plan.fallbackIncomingStartSec = smart.incomingStartSec

@@ -98,9 +98,9 @@ struct MusicStyleNoRepeatTests {
         var nonBlendRun = 0
         for _ in 0..<200 {
             let bpmA = Double.random(in: 85...135, using: &generator)
-            // A Mix queue is ranked by compatibility: most neighbours are close in tempo, some are far, some have no usable grid.
+            // A Mix queue is ranked by compatibility: most neighbours are within a beat blend's drift budget, some are far, some have no usable grid.
             let kind = Double.random(in: 0...1, using: &generator)
-            let bpmB = kind < 0.7 ? bpmA * Double.random(in: 0.95...1.05, using: &generator)
+            let bpmB = kind < 0.7 ? bpmA * Double.random(in: 0.9985...1.0015, using: &generator)
                 : bpmA * Double.random(in: 0.7...1.3, using: &generator)
             func grid(_ bpm: Double, anchor: Double, span: ClosedRange<Double>) -> MusicBeatGrid? {
                 let roll = Double.random(in: 0...1, using: &generator)
@@ -124,8 +124,9 @@ struct MusicStyleNoRepeatTests {
         }
         #expect(counts[.longBlend, default: 0] >= 100, "counts \(counts)")
         // Since 068677c a pair with an untrusted grid on either side sweeps (a rate-1 blend with an unknown phase would put two
-        // kicks out of step), so the sweep share is about 40 percent here; plain long blends must still be the most common style.
-        #expect(counts[.filterSweep, default: 0] <= 90, "counts \(counts)")
+        // kicks out of step), and since wjyijr a pair beyond the drift budget (the far 30 percent) sweeps too, so the sweep share
+        // is about half here; plain long blends must still be the most common style.
+        #expect(counts[.filterSweep, default: 0] <= 110, "counts \(counts)")
         #expect(counts[.longBlend, default: 0] > counts[.filterSweep, default: 0], "counts \(counts)")
     }
 

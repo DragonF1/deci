@@ -1,6 +1,6 @@
 // DeciTests/Music/MusicDropSwapPlanTests.swift
 // Tier 4b P2: the drop swap and filter sweep plans. The incoming song's drop lands on the outgoing phrase end, within a
-// millisecond, at equal tempo and with a rate nudge.
+// millisecond, at equal tempo and with a tiny tempo gap (every song plays at rate 1).
 
 import Foundation
 import Testing
@@ -59,20 +59,28 @@ struct MusicDropSwapPlanTests {
         #expect(phraseEnd <= 236 + 1e-9)
     }
 
-    @Test("with a rate nudge the drop still lands on the phrase end within a millisecond")
-    func withNudge() throws {
-        let b = BT.grid(period: 60 / 128, anchor: 0.1, phase: 1, span: 0.1...236)
+    @Test("with a tiny tempo gap the incoming plays at rate 1 and the drop still lands on the phrase end within a millisecond")
+    func withTinyGap() throws {
+        // 0.08 percent apart: 13 ms of drift over the 16 s lead, all of it at the quiet start. A 128 bpm song (6 percent) is no
+        // drop swap at all since wjyijr: it would drift by a second.
+        let b = BT.grid(period: 60 / 120.1, anchor: 0.1, phase: 1, span: 0.1...236)
         let i = Self.inputs(b: b, stepSec: 39.5)
         let analysis = try #require(i.incoming.analysis)
         let drop = try #require(MusicDropDetector.best(in: analysis, grid: b))
         let plan = try #require(Self.dropPlan(i))
-        #expect(abs(plan.incomingRate - 0.9375) < 1e-9)
+        #expect(plan.incomingRate == 1)
         let heard = try Self.dropOnTimeline(plan, drop: drop.timeSec)
         let phraseEnd = try #require(plan.outgoingEndSec)
         #expect(abs(heard - phraseEnd) < 0.001, "drop at \(heard) s, phrase end \(phraseEnd) s")
-        // The incoming start is the lead earlier in item time, scaled by the rate.
+        // The incoming start is the lead earlier in item time (rate 1).
         let mixIn = try #require(plan.mixInSec)
-        #expect(abs(mixIn - (drop.timeSec - plan.overlapSec * plan.incomingRate)) < 1e-9)
+        #expect(abs(mixIn - (drop.timeSec - plan.overlapSec)) < 1e-9)
+    }
+
+    @Test("a 6 percent tempo gap is no drop swap: at rate 1 the beats would drift by a second over the lead")
+    func wideGapIsNoDropSwap() {
+        let b = BT.grid(period: 60 / 128, anchor: 0.1, phase: 1, span: 0.1...236)
+        #expect(Self.dropPlan(Self.inputs(b: b, stepSec: 39.5)) == nil)
     }
 
     @Test("a drop with fewer than 8 bars of room before it gets a 4 bar lead")

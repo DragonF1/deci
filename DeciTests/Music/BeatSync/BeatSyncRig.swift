@@ -246,16 +246,17 @@ final class BeatSyncRig {
         return record
     }
 
-    /// Tier 3b P3: A (120 bpm) mixed into B (126 bpm) the way the app does it. B is preloaded with a beat plan (mix-in 0,
-    /// rate 120/126) and the engine itself schedules the start on A's beat at `rate`, with the calibration. The run stops
-    /// when the overlap ends, before the rate glide. Nothing is heard: the capture mutes this process.
+    /// Tier 3b P3: A mixed into B the way the app does it. B is preloaded with a beat plan (mix-in 0) and the engine itself
+    /// schedules the start on A's beat, with the calibration. Since wjyijr every song plays at rate 1, so B has A's tempo
+    /// (a nudged rate would no longer be scheduled). The run stops when the overlap ends. Nothing is heard: the capture
+    /// mutes this process.
     func measureBeatMix(label: String, overlapSeconds: Double = 16) async throws -> BeatSyncRunRecord {
-        let bBpm = 126.0
+        let bBpm = BeatSyncSignal.bpm
         let period = 60 / bBpm
-        let rate = BeatSyncSignal.bpm / bBpm
+        let rate = 1.0
         try FileManager.default.createDirectory(at: BeatSyncPaths.files, withIntermediateDirectories: true)
-        let urlB126 = BeatSyncPaths.files.appendingPathComponent("click-b-3200-126bpm.m4a")
-        if !FileManager.default.fileExists(atPath: urlB126.path) {
+        let urlBMix = BeatSyncPaths.files.appendingPathComponent("click-b-3200-\(Int(bBpm))bpm.m4a")
+        if !FileManager.default.fileExists(atPath: urlBMix.path) {
             let mono = BeatSyncSignal.clickTrack(
                 frequency: Self.bFrequency, sampleRate: 44_100, seconds: Self.fileSeconds, period: period
             )
@@ -264,7 +265,7 @@ final class BeatSyncRig {
                 stereo[index * 2] = value
                 stereo[index * 2 + 1] = value
             }
-            try await ToneFile.write(interleavedStereo: stereo, sampleRate: 44_100, to: urlB126)
+            try await ToneFile.write(interleavedStereo: stereo, sampleRate: 44_100, to: urlBMix)
         }
         let chain = MusicDSPChain(sampleRate: capture.sampleRate)
         chain.setTargetGain(1, snap: true)
@@ -300,7 +301,7 @@ final class BeatSyncRig {
         plan.barSec = 4 * BeatSyncSignal.beatPeriod
         engine.preload(
             ResolvedStream(
-                videoId: "b", url: urlB126, itag: 140, durationSeconds: Self.fileSeconds,
+                videoId: "b", url: urlBMix, itag: 140, durationSeconds: Self.fileSeconds,
                 expiresAt: .distantFuture, playbackTrackingURL: nil, httpHeaders: [:]
             ),
             plan: plan

@@ -40,7 +40,7 @@ struct MusicPlainFadeTests {
 
     @Test("trusted grids with matching tempo are a plain fade too when Mix is off")
     func plainFadeWithMatch() {
-        let plan = MusicTransitionPlanner.plan(inputs(bPeriod: 0.48, plain: true))
+        let plan = MusicTransitionPlanner.plan(inputs(bPeriod: BeatHarness.bPeriod, plain: true))
         #expect(plan.mode == .fixed)
         #expect(plan.incomingRate == 1)
         #expect(plan.style == .longBlend)
@@ -48,7 +48,7 @@ struct MusicPlainFadeTests {
 
     @Test("the same pair in Mix still plans a beat mix, and a clash gets a style")
     func mixKeepsBeatPlans() {
-        let match = MusicTransitionPlanner.plan(inputs(bPeriod: 0.48, plain: false))
+        let match = MusicTransitionPlanner.plan(inputs(bPeriod: BeatHarness.bPeriod, plain: false))
         #expect(match.mode == .beat)
         let clash = MusicTransitionPlanner.plan(inputs(plain: false))
         #expect(clash.mode == .beat || clash.mode == .smart)
@@ -107,7 +107,7 @@ struct MusicPlainFadeTests {
     func serviceOffersPlainFade() async throws {
         let h = BeatHarness(crossfade: true, beatMix: true, mix: false)
         await h.reader.set(BeatHarness.row("a", period: 0.5))
-        await h.reader.set(BeatHarness.row("b", period: 0.48))
+        await h.reader.set(BeatHarness.row("b", period: BeatHarness.bPeriod))
         await h.startQueue(["a", "b"])
         await h.tick(126)
         await h.tick(220)
@@ -124,7 +124,7 @@ struct MusicPlainFadeTests {
     func plainWindow() async {
         let h = BeatHarness(crossfade: true, beatMix: true, mix: false)
         await h.reader.set(BeatHarness.row("a", period: 0.5))
-        await h.reader.set(BeatHarness.row("b", period: 0.48))
+        await h.reader.set(BeatHarness.row("b", period: BeatHarness.bPeriod))
         await h.startQueue(["a", "b"])
         await h.tick(126)
         await h.tick(180)

@@ -287,13 +287,11 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// The standby is being re-parked on the smart start after a beat fallback; `reparkMixIn` is where it was.
     private var reparkPending = false
     private var reparkMixIn: TimeInterval = 0
-    /// The rate the scheduled standby start was planned at: the beat plan's nudge, 1 for every other transition.
+    /// The rate the scheduled standby start was planned at: 1 for every transition since wjyijr (`beatStartRate`).
     private var plannedRate: Float = 1
     /// The scheduled standby start is a beat mix on the grid (at `plannedRate`, which can be 1). False for every plain fade,
     /// including a beat plan that was given up, cut short by a seek into its end, or came late.
     private var plannedBeat = false
-    /// The most a beat mix's rate may drift the incoming deck over its overlap and still be run at exactly 1 (seconds).
-    nonisolated static let unityDriftBudget: TimeInterval = 0.002
     /// How long after the trimmed end's host time the gapless hand-over runs: the standby has started by then.
     nonisolated static let trimHandoverDelay: TimeInterval = 0.05
     /// A beat mix's overlap, from its flip until the outgoing deck has drained: what a resume needs to realign the decks.
@@ -1292,18 +1290,13 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard isBeat else { return (fade, lead, 1, false) }
         // A plan without a usable rate has no grid to keep: a plain fade.
         guard plan.incomingRate.isFinite, plan.incomingRate > 0 else { return (fade, lead, 1, false) }
-        return (fade, lead, Self.beatStartRate(plan.incomingRate, overlap: fade), true)
+        return (fade, lead, Self.beatStartRate, true)
     }
 
-    /// The rate a beat mix starts the incoming deck at. A rate that would drift the incoming song by no more than
-    /// `unityDriftBudget` over the overlap (equal tempos) is exactly 1: changing the rate of a playing player opens a gap of
-    /// about 125 ms in the output (30 to 55 ms even for a tiny change), which that little drift does not justify. Every other
-    /// rate is started as it is and kept for the song (no glide, no write). Decided once, on the Float that is really scheduled.
-    nonisolated static func beatStartRate(_ planned: Double, overlap: TimeInterval) -> Float {
-        let rate = Float(planned)
-        guard rate.isFinite else { return 1 }
-        return abs(Double(rate) - 1) * max(0, overlap) <= unityDriftBudget ? 1 : rate
-    }
+    /// The rate a beat mix starts the incoming deck at, whatever the plan says: always 1, the song's own tempo (wjyijr).
+    /// Any other rate would stay for the whole song, since changing the rate of a playing player opens a gap of about
+    /// 125 ms in the output (30 to 55 ms even for a tiny change). The planner places the start for rate 1 itself.
+    nonisolated static let beatStartRate: Float = 1
 
     /// Whether a rate read back from a player (or planned) is 1.
     nonisolated static func isUnityRate(_ rate: Float) -> Bool { abs(rate - 1) < 1e-6 }
@@ -1686,7 +1679,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         let outgoingEnd = active.player.currentItem.flatMap { endTime(of: $0) }?.seconds
         // The outgoing deck keeps the rate it has played at: it fades out at it.
         let outgoingRate = deckRate
-        // The incoming deck's rate: a scheduled beat mix keeps its matched rate for the whole song, a manual skip never does.
+        // The incoming deck's rate: a scheduled beat mix starts at `beatStartRate` (1, the song's own tempo).
         // It follows what was scheduled, not the plan: a plan that was given up, came late or was cut short by a seek runs as
         // a plain fade at rate 1. A beat mix at rate 1 (equal tempos) still keeps its overlap, so a
         // resume realigns both decks on one host time and the bass swap runs on the grid.
