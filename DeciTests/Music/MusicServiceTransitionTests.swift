@@ -48,7 +48,11 @@ private struct TransitionHarness {
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
-            preferences: MusicPlaybackPreferences(shuffle: mix, crossfade: crossfade, crossfadeSeconds: seconds, mixShuffle: mix),
+            preferences: MusicPlaybackPreferences(
+                shuffleMode: mix ? .systematic : .off,
+                transitionMode: MusicPlaybackPreferences.migratedTransitionMode(mixShuffle: mix, beatMix: true, crossfade: crossfade),
+                crossfadeSeconds: seconds
+            ),
             shuffleSeed: 1,
             queueRetryDelay: .seconds(60),
             connectivity: connectivity,
@@ -294,7 +298,7 @@ struct MusicServiceTransitionTests {
         #expect(h.engine.updatedPlans.isEmpty)
         #expect(h.service.transitionLines.last { $0.hasPrefix("transition_") }?.contains("reason=late") == true)
         // A toggle after that still re-plans from the frozen inputs: b stays unanalysed for this transition.
-        h.service.setCrossfade(false)
+        h.service.setTransitionMode(.off)
         h.service.setShuffleMode(.off)
         #expect(h.engine.updatedPlans.last??.incomingStartSec == 0)
     }
@@ -312,7 +316,7 @@ struct MusicServiceTransitionTests {
         let cancelsBefore = h.engine.cancelPreloadCount
 
         // Tier 4c: Mix's floor blend is a beat-mode plan; a ready beat preload still ahead is kept and re-planned in place.
-        h.service.setCrossfade(false)
+        h.service.setTransitionMode(.off)
         h.service.setShuffleMode(.off)
         let off = try #require(h.engine.updatedPlans.last ?? nil)
         #expect(off.mode == .gapless)
@@ -597,12 +601,12 @@ struct MusicServiceTransitionTests {
         await h.startQueue(["a", "b"])
         await h.tick(126)
         await h.tick(160)
-        h.service.setCrossfade(false)
+        h.service.setTransitionMode(.off)
         h.service.setShuffleMode(.off)
         #expect(h.engine.updatedPlans.count == 1)
         for position in stride(from: 165.0, to: 185, by: 5) { await h.tick(position) }
         #expect(h.engine.updatedPlans.count == 1)
-        h.service.setCrossfade(true)
+        h.service.setTransitionMode(.crossfade)
         #expect(h.engine.updatedPlans.count == 2)
     }
 }

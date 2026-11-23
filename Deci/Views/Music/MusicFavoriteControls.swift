@@ -10,7 +10,8 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
     case shuffle
     case loop
     case autoplay
-    case crossfade
+    /// Transitions: Off, Crossfade, Mixing. The raw value stays "crossfade" so a slot saved by an older build still loads.
+    case transitions = "crossfade"
     case like
 
     /// What a control is: one of the playback toggles Up next has too, or Like. Exhaustive, so a new case does not
@@ -32,7 +33,7 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
         case .shuffle: .toggle(.shuffle)
         case .loop: .toggle(.loop)
         case .autoplay: .toggle(.autoplay)
-        case .crossfade: .toggle(.crossfade)
+        case .transitions: .toggle(.transitions)
         case .like: .like
         }
     }
@@ -43,7 +44,7 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
         case .shuffle: self = .shuffle
         case .loop: self = .loop
         case .autoplay: self = .autoplay
-        case .crossfade: self = .crossfade
+        case .transitions: self = .transitions
         }
     }
 
@@ -53,24 +54,30 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
         case .shuffle: "Shuffle"
         case .loop: "Loop"
         case .autoplay: "Autoplay"
-        case .crossfade: "Crossfade"
+        case .transitions: "Transitions"
         case .like: "Like"
         }
     }
 
     /// The name in a slot, for VoiceOver: the control's name, except Loop, which says its mode.
-    func title(loop: MusicLoopMode = .off, shuffleMode: MusicShuffleMode = .shuffle) -> String {
+    func title(
+        loop: MusicLoopMode = .off, shuffleMode: MusicShuffleMode = .systematic, transitionMode: MusicTransitionMode = .off
+    ) -> String {
         switch self {
         case .loop: loop.label
         case .shuffle: shuffleMode.title
-        case .autoplay, .crossfade, .like: menuTitle
+        case .transitions: transitionMode.title
+        case .autoplay, .like: menuTitle
         }
     }
 
     /// The glyph: the Up next header's for the four toggles, the strip's thumbs up (filled once liked) for Like.
-    func symbol(loop: MusicLoopMode, isLiked: Bool, shuffleMode: MusicShuffleMode = .shuffle) -> String {
+    func symbol(
+        loop: MusicLoopMode, isLiked: Bool, shuffleMode: MusicShuffleMode = .systematic,
+        transitionMode: MusicTransitionMode = .off
+    ) -> String {
         switch kind {
-        case .toggle(let toggle): toggle.symbol(loop: loop, shuffleMode: shuffleMode)
+        case .toggle(let toggle): toggle.symbol(loop: loop, shuffleMode: shuffleMode, transitionMode: transitionMode)
         case .like: MusicRateButtonLook(kind: .like, status: isLiked ? .like : nil).symbolName
         }
     }
@@ -79,7 +86,7 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
     var hasTooltip: Bool {
         switch self {
         case .shuffle, .loop: true
-        case .autoplay, .crossfade, .like: false
+        case .autoplay, .transitions, .like: false
         }
     }
 }
@@ -166,10 +173,12 @@ extension AppSettings {
 /// checked. The row turns each entry into a native menu item.
 nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
     enum Entry: Equatable, Sendable {
-        /// Autoplay or Crossfade.
+        /// Autoplay.
         case toggle(MusicFavoriteControl, isOn: Bool)
-        /// Shuffle: Off, Shuffle, Mix.
+        /// Shuffle: Off, Systematic shuffle.
         case shuffle(selected: MusicShuffleMode)
+        /// Transitions: Off, Crossfade, Mixing.
+        case transitions(selected: MusicTransitionMode)
         /// Loop: Off, All, One.
         case loop(selected: MusicLoopMode)
         /// 1 to 12 s, the Settings range.
@@ -182,6 +191,7 @@ nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
             switch self {
             case .toggle(let control, _): control.menuTitle
             case .shuffle: "Shuffle"
+            case .transitions: "Transitions"
             case .loop: "Loop"
             case .fadeLength: "Fade length"
             case .divider: nil
@@ -202,21 +212,24 @@ nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
     let entries: [Entry]
 
     /// The choices of the Shuffle picker, in the order the button cycles through them.
-    static let shuffleChoices: [(mode: MusicShuffleMode, title: String)] = [(.off, "Off"), (.shuffle, "Shuffle"), (.mix, "Mix")]
+    static let shuffleChoices: [(mode: MusicShuffleMode, title: String)] = [(.off, "Off"), (.systematic, "Systematic shuffle")]
+
+    /// The choices of the Transitions picker, in the order the button cycles through them.
+    static let transitionChoices: [(mode: MusicTransitionMode, title: String)] = [(.off, "Off"), (.crossfade, "Crossfade"), (.mixing, "Mixing")]
 
     init(
-        shuffle: Bool, mix: Bool = false, loop: MusicLoopMode, autoplay: Bool, crossfade: Bool, fadeSeconds: Double,
+        shuffle: Bool, loop: MusicLoopMode, autoplay: Bool, transitions: MusicTransitionMode, fadeSeconds: Double,
         slotControl: MusicFavoriteControl
     ) {
-        // Settings' stepper stays live with Crossfade off, so Fade length is never greyed out here either.
+        // Settings' stepper stays live with Transitions off, so Fade length is never greyed out here either.
         let seconds = Int(MusicPlaybackPreferences.clampedCrossfade(fadeSeconds).rounded())
         // One entry per playback toggle, in toggle order, so a new toggle cannot be left out of the menu.
         let toggles: [Entry] = MusicPlaybackToggle.allCases.map { toggle in
             switch toggle {
-            case .shuffle: .shuffle(selected: mix ? .mix : MusicShuffleMode(shuffle: shuffle))
+            case .shuffle: .shuffle(selected: MusicShuffleMode(shuffle: shuffle))
             case .loop: .loop(selected: loop)
             case .autoplay: .toggle(.autoplay, isOn: autoplay)
-            case .crossfade: .toggle(.crossfade, isOn: crossfade)
+            case .transitions: .transitions(selected: transitions)
             }
         }
         entries = toggles + [

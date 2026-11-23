@@ -101,20 +101,18 @@ final class MusicService {
     }
     /// A queue page or a radio is loading, or about to be asked for again: Up next shows that more is on its way.
     private(set) var isFillingQueue = false
-    /// The queue plays in a shuffled order. Remembered across launches.
+    /// Systematic shuffle is on: the songs after the playing one are ordered to flow into each other by tempo, key and
+    /// energy, whatever Transitions is set to. Remembered across launches.
     private(set) var isShuffleOn: Bool {
         didSet { reconcilePreload() }
     }
-    /// The shuffle is Mix: the songs after the playing one are ordered to blend into each other. `isShuffleOn` is true
-    /// then too. Remembered across launches.
-    private(set) var isMixOn = false
     /// What the shuffle button is set to.
-    var shuffleMode: MusicShuffleMode { isMixOn ? .mix : MusicShuffleMode(shuffle: isShuffleOn) }
-    /// How each song in Up next is reached in Mix, by `MusicMixPairInfo.key(from:to:)`. Only pairs whose two songs have a
-    /// stored analysis row are here; empty outside Mix.
+    var shuffleMode: MusicShuffleMode { MusicShuffleMode(shuffle: isShuffleOn) }
+    /// How each song in Up next is reached, by `MusicMixPairInfo.key(from:to:)`. Only pairs whose two songs have a stored
+    /// analysis row are here; empty unless Systematic shuffle or Mixing is on (`showsMixInfo`).
     private(set) var mixPairs: [String: MusicMixPairInfo] = [:]
     /// Each shown song's own tempo and key line, by video id, from its stored row. Kept apart from `mixPairs`: a song whose
-    /// row lands after a song with none gets no pair, but its line still has to appear. Empty outside Mix.
+    /// row lands after a song with none gets no pair, but its line still has to appear. Empty unless `showsMixInfo`.
     private(set) var mixRowTexts: [String: String] = [:]
     /// Tier 4b: the style of the last transition that was applied. The picker never repeats it, and the first Up next glyph
     /// is chosen against it.
@@ -130,8 +128,9 @@ final class MusicService {
     private(set) var isAutoplayOn: Bool {
         didSet { reconcilePreload() }
     }
-    /// Fade the next song in over the end of the playing one; off is the gapless switch. Remembered across launches.
-    private(set) var isCrossfadeOn: Bool {
+    /// How the next song is handed over: Off is the gapless switch, Crossfade a plain fade, Mixing a beat-matched blend.
+    /// Independent of the play order. Remembered across launches.
+    private(set) var transitionMode: MusicTransitionMode {
         didSet { reconcilePreload() }
     }
     /// Told whenever Deci's own player starts or stops playing (not on every state change).
@@ -240,8 +239,6 @@ final class MusicService {
     @ObservationIgnored private let liveCrossfadeSeconds: (@MainActor () -> Double)?
     @ObservationIgnored private var startingCrossfadeSeconds: Double
     /// Settings' beat-matched transitions switch, read live when the service is wired to settings.
-    @ObservationIgnored private let liveBeatMix: (@MainActor () -> Bool)?
-    @ObservationIgnored private var startingBeatMix: Bool
     @ObservationIgnored private let liveVocalGuard: (@MainActor () -> Bool)?
     @ObservationIgnored private let startingVocalGuard: Bool
     /// Settings' DJ-length songs switch, read live when the service is wired to settings.
@@ -425,7 +422,6 @@ final class MusicService {
         preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(),
         savePreferences: @escaping @MainActor (MusicPlaybackPreferences) -> Void = { _ in },
         crossfadeSeconds: (@MainActor () -> Double)? = nil,
-        beatMix: (@MainActor () -> Bool)? = nil,
         vocalGuard: (@MainActor () -> Bool)? = nil,
         djLength: (@MainActor () -> Bool)? = nil,
         pinnedItems: [MusicPinnedItem] = [],
@@ -476,15 +472,12 @@ final class MusicService {
         self.sleep = sleep
         self.sessionStore = sessionStore
         self.listenerLevel = listenerLevel
-        self.isShuffleOn = preferences.shuffle
-        self.isMixOn = preferences.shuffle && preferences.mixShuffle
+        self.isShuffleOn = preferences.shuffleMode.isOn
         self.loopMode = preferences.loop
         self.isAutoplayOn = preferences.autoplay
-        self.isCrossfadeOn = preferences.crossfade
+        self.transitionMode = preferences.transitionMode
         self.startingCrossfadeSeconds = preferences.crossfadeSeconds
         self.liveCrossfadeSeconds = crossfadeSeconds
-        self.startingBeatMix = preferences.beatMix
-        self.liveBeatMix = beatMix
         self.startingVocalGuard = preferences.vocalGuard
         self.liveVocalGuard = vocalGuard
         self.startingDJLength = preferences.djLength
@@ -1330,16 +1323,12 @@ final class MusicService {
         resetRun()
     }
 
-    /// A queue that just started is put in the shuffled order: random in Shuffle, the page's own order in Mix until the
-    /// rows are read and the songs are ordered (`orderMix`).
+    /// A queue that just started under Systematic shuffle is shuffled randomly first, then the window after the current
+    /// song is put in flow order from the stored rows (`orderMix`). Songs with no row yet keep their random place.
     private func shuffleFreshQueue(mixingEarlier: Bool) {
         guard isShuffleOn else { return }
-        if isMixOn {
-            queue.beginMix(mixingEarlier: mixingEarlier)
-            startMixOrdering()
-        } else {
-            queue.shuffle(mixingEarlier: mixingEarlier, using: &shuffleGenerator)
-        }
+        queue.shuffle(mixingEarlier: mixingEarlier, using: &shuffleGenerator)
+        startMixOrdering()
     }
 
     /// "Play" on a playlist or album page: starts from its first song that can play. That is its first song, except offline
@@ -1362,7 +1351,7 @@ final class MusicService {
     func playShuffled(_ page: MusicBrowsePage) {
         guard let track = playableTracks(of: page).randomElement(using: &shuffleGenerator) else { return }
         if !isShuffleOn {
-            // Turned on as plain Shuffle; Mix, when on, stays on.
+            // The Shuffle pill turns Systematic shuffle on.
             isShuffleOn = true
             savePlaybackPreferences()
         }
@@ -1476,65 +1465,77 @@ final class MusicService {
 
     // MARK: - Playback modes
 
-    /// Turning shuffle on mixes a playlist or album whole, with the current track first, so Up next shows the entire
-    /// page in its shuffled order; on a radio only what comes after the current track is mixed. Turning it off puts the
+    /// Turning shuffle on orders a playlist or album whole, with the current track first, so Up next shows the entire
+    /// page in its systematic order; on a radio only what comes after the current track is ordered. Turning it off puts the
     /// whole queue back in its natural order and carries on from the current track. A page's recommendations follow its
     /// last song in the play order, so when the change moves that song they are asked again for the new one (see
     /// `topUpQueue`).
     func setShuffle(_ on: Bool) {
         guard on != isShuffleOn else { return }
-        setShuffleMode(on ? .shuffle : .off)
+        setShuffleMode(on ? .systematic : .off)
     }
 
-    /// The shuffle button's three states. Mix keeps the queue in the order Shuffle would have it (the natural order is
-    /// remembered the same way, so Off puts it back) and then orders the songs after the playing one by tempo, key and
-    /// energy as soon as their analysis rows are read (`orderMix`). Going from Mix to Shuffle leaves the order as it is.
+    /// The shuffle button's two states. Systematic shuffle shuffles the queue randomly at once (the natural order is
+    /// remembered, so Off puts it back) and then puts the window after the playing one in flow order by tempo, key and
+    /// energy as soon as the analysis rows are read (`orderMix`). It orders whatever Transitions is set to.
     func setShuffleMode(_ mode: MusicShuffleMode) {
         guard mode != shuffleMode else { return }
         touchSession()
         let wasShuffled = isShuffleOn
         isShuffleOn = mode.isOn
-        isMixOn = mode == .mix
-        if !isMixOn {
+        if !isShuffleOn {
+            // The ordering state is Systematic shuffle's: it goes with it. What Up next shows (the rows, pairs and texts)
+            // is Mixing's too, so it is dropped only when Mixing is off as well.
             mixTask?.cancel()
             mixTask = nil
-            mixPairs = [:]
-            mixRowTexts = [:]
-            lastAppliedStyle = nil
             mixOrderPending = false
             mixAvoid = []
             mixReplanPending = false
-            mixRows = [:]
             mixAsked = []
             stagedRadioTask?.cancel()
             radioPlacedKey = nil
+            if !showsMixInfo { clearMixInfo() }
         }
         if !queue.isEmpty {
             switch mode {
             case .off:
                 queue.unshuffle()
-            case .shuffle:
+            case .systematic:
                 if !wasShuffled { queue.shuffle(mixingEarlier: queue.isPage, using: &shuffleGenerator) }
-            case .mix:
-                if !wasShuffled { queue.beginMix(mixingEarlier: queue.isPage) }
                 startMixOrdering()
             }
         }
         savePlaybackPreferences()
-        // A parked beat plan or style is Mix's: leaving Mix (or entering it) plans the pair again.
+        // A parked plan is planned again in case the next song changed.
         replanOffered()
         topUpQueue()
         radioScanSoon()
+        // Turning it on reads the rows with the ordering; turning it off under Mixing keeps the info Up next shows.
+        if mode == .off { refreshMixPairsSoon() }
         saveSession()
     }
 
-    /// The shuffle button: Off, Shuffle, Mix, Off.
+    /// The shuffle button: Off, Systematic shuffle, Off.
     func cycleShuffleMode() {
         setShuffleMode(shuffleMode.next)
     }
 
-    // MARK: - Mix
+    /// Up next shows each song's tempo and key and how it is reached: Systematic shuffle orders by them, and Mixing blends
+    /// on them, in whatever order the songs play.
+    var showsMixInfo: Bool { isShuffleOn || isMixingOn }
 
+    /// What Up next shows and the rows behind it are dropped.
+    private func clearMixInfo() {
+        mixPairs = [:]
+        mixRowTexts = [:]
+        mixRows = [:]
+    }
+
+    // MARK: - Systematic shuffle and Mixing
+
+    // `mixRows`, `mixPairs` and `mixRowTexts` serve both: the ordering reads the rows, Up next shows the pairs and texts
+    // while Systematic shuffle or Mixing is on. The planner does not need them: it reads the rows of the playing and
+    // the next song itself (`transitionAnalyses`), so Mixing in a playlist's own order works with shuffle off.
     @ObservationIgnored private(set) var mixTask: Task<Void, Never>?
     /// The analysis rows Mix has read, for the songs it ordered or shows.
     @ObservationIgnored private var mixRows: [String: MusicAnalysis] = [:]
@@ -1563,7 +1564,7 @@ final class MusicService {
 
     /// The queue gained songs (a radio page landed): a Mix that had nothing to order yet orders them now.
     private func mixQueueGrew() {
-        guard isMixOn, mixOrderPending, !queue.unqueuedUpcoming.isEmpty else { return }
+        guard isShuffleOn, mixOrderPending, !queue.unqueuedUpcoming.isEmpty else { return }
         startMixOrdering()
     }
 
@@ -1582,7 +1583,7 @@ final class MusicService {
             return
         }
         await readMixRows(for: window + (anchor.map { [$0] } ?? []))
-        guard !Task.isCancelled, isMixOn else { return }
+        guard !Task.isCancelled, isShuffleOn else { return }
         let profiles = window.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
         let first = anchor.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
         var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
@@ -1607,7 +1608,7 @@ final class MusicService {
         var asked = 0
         for track in window where mixRows[track.videoId] == nil && !mixAsked.contains(track.videoId) {
             guard asked < Self.mixAnalysesPerRefresh else { return }
-            if Task.isCancelled || !isMixOn { return }
+            if Task.isCancelled || !isShuffleOn { return }
             asked += 1
             await MusicCancellableWait.wait(for: radioScanInFlight)
             if Task.isCancelled { return }
@@ -1644,7 +1645,7 @@ final class MusicService {
 
     /// A refresh of what Up next shows, after the queue or a setting changed. Runs behind the work already going.
     private func refreshMixPairsSoon() {
-        guard isMixOn else { return }
+        guard showsMixInfo else { return }
         let previous = mixTask
         mixTask = Task { [weak self] in
             await previous?.value
@@ -1652,9 +1653,9 @@ final class MusicService {
         }
     }
 
-    /// The tempo line of a song's own row ("128"), nil outside Mix or without a row.
+    /// The tempo line of a song's own row ("128"), nil unless Up next shows mix info or without a row.
     func mixRowText(for id: String) -> String? {
-        guard isMixOn else { return nil }
+        guard showsMixInfo else { return nil }
         return mixRowTexts[id]
     }
 
@@ -1662,10 +1663,10 @@ final class MusicService {
     /// a song Up next shows with no row yet reads it now and shows its tempo and key, instead of waiting for the next
     /// queue change.
     func analysisLanded(_ videoId: String) {
-        guard isMixOn, let reader = analysisReader, mixWantsRow(videoId) else { return }
+        guard showsMixInfo, let reader = analysisReader, mixWantsRow(videoId) else { return }
         mixLandedTask = Task { [weak self] in
             // A song read before may have been measured again (an older format or version): its new row replaces the old.
-            guard let row = await reader.analysis(for: videoId), let self, self.isMixOn, self.mixWantsRow(videoId),
+            guard let row = await reader.analysis(for: videoId), let self, self.showsMixInfo, self.mixWantsRow(videoId),
                   row != self.mixRows[videoId] else { return }
             self.mixRows[videoId] = row
             self.publishMixPairs()
@@ -1759,10 +1760,10 @@ final class MusicService {
 
     /// Works out how each of the next songs is reached, from the rows read so far.
     private func refreshMixPairs() async {
-        guard isMixOn, let current = queue.current else { return }
+        guard showsMixInfo, let current = queue.current else { return }
         let chain = [current] + Array(queue.upcoming.prefix(Self.mixShownCount))
         await readMixRows(for: chain)
-        guard !Task.isCancelled, isMixOn else { return }
+        guard !Task.isCancelled, showsMixInfo else { return }
         // Keep the rows of what Mix can still use: the shown chain, the next two windows, the staged radio, the avoided.
         var keep = Set(chain.map(\.videoId))
         keep.formUnion(queue.unqueuedUpcoming.prefix(MusicMixWindow.size * 2).map(\.videoId))
@@ -1789,7 +1790,7 @@ final class MusicService {
     /// Works out the pairs of the shown chain from the rows already read, with no reads, so a row that just landed
     /// shows in Up next at once.
     private func publishMixPairs() {
-        guard isMixOn else { return }
+        guard showsMixInfo else { return }
         let chain = mixShownChain
         guard !chain.isEmpty else {
             if !mixPairs.isEmpty { mixPairs = [:] }
@@ -1824,9 +1825,9 @@ final class MusicService {
         )
     }
 
-    /// The song that came after `previousId` in Up next, as Mix reaches it: nil outside Mix.
+    /// The song that came after `previousId` in Up next, as it is reached: nil unless Up next shows mix info.
     func mixInfo(from previousId: String, to id: String) -> MusicMixPairInfo? {
-        isMixOn ? mixPairs[MusicMixPairInfo.key(from: previousId, to: id)] : nil
+        showsMixInfo ? mixPairs[MusicMixPairInfo.key(from: previousId, to: id)] : nil
     }
 
     /// The songs a manual skip left, newest last (at most `mixAvoidKept`): the re-plan after a skip pushes them and their
@@ -1839,7 +1840,7 @@ final class MusicService {
     /// Records a manual skip (Next, or a tap in Up next): the song left goes on the avoid list and the next songs are
     /// re-planned once the new song has started. A song that ended by itself never comes here.
     private func noteMixSkip(of leaving: MusicTrack?) {
-        guard isMixOn, let leaving else { return }
+        guard isShuffleOn, let leaving else { return }
         mixAvoid.append(MusicMixProfile(videoId: leaving.videoId, artist: leaving.artist, analysis: mixRows[leaving.videoId]))
         if mixAvoid.count > Self.mixAvoidKept { mixAvoid.removeFirst(mixAvoid.count - Self.mixAvoidKept) }
         mixReplanPending = true
@@ -1849,10 +1850,10 @@ final class MusicService {
     /// just skipped. A next song that is already offered for preload stays first: the change goes through the queue, so
     /// `reconcilePreload` sees it like any other edit.
     private func replanAfterSkip() async {
-        guard isMixOn, let current = queue.current else { return }
+        guard isShuffleOn, let current = queue.current else { return }
         // One read covers the fixed song and the window; what is fixed is decided after it, from the queue as it is then.
         await readMixRows(for: Array(queue.unqueuedUpcoming.prefix(MusicMixOrderer.tailCount + 1)) + [current])
-        guard !Task.isCancelled, isMixOn, let current = queue.current else { return }
+        guard !Task.isCancelled, isShuffleOn, let current = queue.current else { return }
         let unqueued = queue.unqueuedUpcoming
         let first = unqueued.first?.videoId
         let fixedCount = first != nil && (first == preloadOffered || first == prefetchAttempt) ? 1 : 0
@@ -1893,13 +1894,13 @@ final class MusicService {
         stagedRadioTask = Task { [weak self] in await self?.placeStagedRadio() }
     }
 
-    /// Under Mix the staged radio is laid out when it is staged, out of the song it hands over from (the queue's last
+    /// Under Systematic shuffle the staged radio is laid out when it is staged, out of the song it hands over from (the queue's last
     /// song): the song that mixes best first (a seeded random one when nothing is known), the known songs in the slots
     /// that cost their neighbours least, and the songs with no row after them in the radio's order. It reorders
     /// `queue.autoplay` itself, so the hand-over takes it as it is. Nothing is analysed for the radio: only the first
     /// pick is, once it plays.
     private func placeStagedRadio() async {
-        guard isMixOn, let anchor = queue.tracks.last, queue.autoplay.count > 1 else { return }
+        guard isShuffleOn, let anchor = queue.tracks.last, queue.autoplay.count > 1 else { return }
         func orderKey(_ staged: [MusicTrack]) -> String {
             anchor.videoId + "|" + staged.prefix(MusicMixWindow.size).map(\.videoId).joined(separator: ",")
         }
@@ -1912,7 +1913,7 @@ final class MusicService {
         // The next song is locked once it is being prepared: a late row never moves it.
         guard !isNextSongLocked(staged.first) else { return }
         await readMixRows(for: Array(staged.prefix(MusicMixWindow.size)) + [anchor])
-        guard !Task.isCancelled, isMixOn, queue.tracks.last?.videoId == anchor.videoId,
+        guard !Task.isCancelled, isShuffleOn, queue.tracks.last?.videoId == anchor.videoId,
               orderKey(queue.autoplay) == orderKey(staged), !isNextSongLocked(queue.autoplay.first) else { return }
         let placed = Self.placement(
             of: staged, after: anchor, rows: mixRows, seed: shuffleGenerator.next(), pickFromFirst: MusicRadioPick.candidateCount
@@ -1950,10 +1951,10 @@ final class MusicService {
 
     // MARK: - Radio pick
 
-    /// While songs blend (Crossfade or Mix), the radio's first `MusicRadioPick.candidateCount` songs are analysed one at a
+    /// While songs blend (Crossfade or Mixing), the radio's first `MusicRadioPick.candidateCount` songs are analysed one at a
     /// time behind the playing song, and the one that mixes best out of it becomes the next song. It goes into the first
     /// radio slot, the other radio songs keep their order, and the songs the listener queued stay ahead of all of them.
-    /// Without a blend the radio's order is never touched.
+    /// With neither a blend nor Systematic shuffle on, the radio's order is never touched.
 
     /// A scan is planned or running: the early prefetch of the next song waits for it.
     @ObservationIgnored private(set) var radioScanRunning = false
@@ -1988,10 +1989,10 @@ final class MusicService {
     /// The scan's plan for the queue as it is now; nil when no scan is wanted: songs do not blend, nothing can be analysed
     /// (no provider, offline, signed out, Loop song), the playing song has not loaded, or the next song is not a radio song.
     private func radioScanPlan() -> RadioScanPlan? {
-        guard mixesTransitions, analysis != nil, analysisReader != nil, !isOffline, authState != .signedOut, loopMode != .song,
+        guard mixesTransitions || isShuffleOn, analysis != nil, analysisReader != nil, !isOffline, authState != .signedOut, loopMode != .song,
               let current = queue.current, player.currentStream?.videoId == current.videoId else { return nil }
         // Mix has not laid out the songs ahead yet: the first ten are not known until it has (it asks for a scan after).
-        guard !(isMixOn && mixOrderPending && !queue.upcoming.isEmpty) else { return nil }
+        guard !(isShuffleOn && mixOrderPending && !queue.upcoming.isEmpty) else { return nil }
         let count = MusicRadioPick.candidateCount
         if queue.upcoming.isEmpty {
             guard playsAutoplay, !queue.autoplay.isEmpty else { return nil }
@@ -2126,15 +2127,15 @@ final class MusicService {
         }
     }
 
-    /// Puts the best candidate in the first radio slot, from the rows known now. Mix places a page's staged radio the way
-    /// it always does (the best first and the other known songs by cost); a radio queue in Mix is re-ordered once the scan
-    /// has stored a row (the best first, the others by Mix's own orderer out of it); under Crossfade only the best song
+    /// Puts the best candidate in the first radio slot, from the rows known now. Systematic shuffle places a page's staged radio the way
+    /// it always does (the best first and the other known songs by cost); a radio queue in Systematic shuffle is re-ordered once the scan
+    /// has stored a row (the best first, the others by Mix's own orderer out of it); otherwise only the best song
     /// moves. A radio with nothing to score keeps the order it had. The queue is only assigned when the order changed.
     private func pickRadioNext(_ plan: RadioScanPlan, analysed: Int) async {
         func profile(_ track: MusicTrack) -> MusicMixProfile {
             MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
         }
-        if plan.staged, isMixOn {
+        if plan.staged, isShuffleOn {
             guard plan.tracks.contains(where: { MusicRadioPick.isKnown(profile($0)) }) else { return }
             await placeStagedRadio()
             return
@@ -2144,7 +2145,7 @@ final class MusicService {
         if plan.staged {
             let others = queue.autoplay.map(\.videoId).filter { $0 != choice.videoId }
             guard reorderStaged([choice.videoId] + others) else { return }
-        } else if isMixOn {
+        } else if isShuffleOn {
             // Rows that were there when Mix ordered the songs are in its order already; the ones this scan stored are not.
             guard analysed > 0 else { return }
             let rest = plan.tracks.filter { $0.videoId != choice.videoId }.map(profile)
@@ -2191,10 +2192,16 @@ final class MusicService {
         ))
     }
 
-    /// The playing song changed: in Mix, what Up next shows is worked out again for the songs after it.
-    /// After `MusicMixWindow.topUpAfter` songs the next window is ordered too, behind the songs the listener can see.
+    /// The playing song changed: what Up next shows is worked out again for the songs after it. With Systematic shuffle on,
+    /// after `MusicMixWindow.topUpAfter` songs the next window is ordered too, behind the songs the listener can see.
     private func mixTrackChanged() {
-        guard isMixOn else { return }
+        guard showsMixInfo else { return }
+        guard isShuffleOn else {
+            // Mixing alone orders nothing: only what Up next shows is worked out again.
+            mixTask?.cancel()
+            mixTask = Task { [weak self] in await self?.refreshMixPairs() }
+            return
+        }
         mixPlayed += 1
         let order = mixOrderPending || MusicMixWindow.needsTopUp(playedSinceOrdering: mixPlayed)
         let kept = mixOrderPending ? 0 : Self.mixVisibleKept
@@ -2247,28 +2254,40 @@ final class MusicService {
         saveSession()
     }
 
-    /// The Crossfade toggle in Up next. Off is the gapless switch; a fade already running finishes, and the next
-    /// transition follows the new setting.
-    func setCrossfade(_ on: Bool) {
-        guard on != isCrossfadeOn else { return }
-        isCrossfadeOn = on
+    /// The Transitions button in Up next. Off is the gapless switch; a fade already running finishes, and the next
+    /// transition follows the new mode. Leaving Mixing drops what only Mixing keeps (the last applied style); the parked
+    /// plan is built again for the new mode.
+    func setTransitionMode(_ mode: MusicTransitionMode) {
+        guard mode != transitionMode else { return }
+        transitionMode = mode
+        if !isMixingOn {
+            lastAppliedStyle = nil
+            if !showsMixInfo { clearMixInfo() }
+        }
         savePlaybackPreferences()
+        replanOffered()
         radioScanSoon()
+        refreshMixPairsSoon()
     }
 
-    /// How long a crossfade lasts, 1 to 12 seconds: Settings' value when the service reads it live.
+    /// The Transitions button: Off, Crossfade, Mixing, Off.
+    func cycleTransitionMode() {
+        setTransitionMode(transitionMode.next)
+    }
+
+    /// How long a crossfade or a mix lasts, 1 to 12 seconds: Settings' value when the service reads it live.
     var crossfadeSeconds: Double {
         MusicPlaybackPreferences.clampedCrossfade(liveCrossfadeSeconds?() ?? startingCrossfadeSeconds)
     }
 
-    /// Beat-matched transitions and the style picker are on. They apply only in Mix (a plain Crossfade is a plain fade), and
-    /// also need Crossfade or Mix to mix at all, which the planner checks.
-    var isBeatMixOn: Bool { isMixOn && beatMixSetting }
-    /// The Settings switch itself, whatever the shuffle mode is (what is saved).
-    private var beatMixSetting: Bool { liveBeatMix?() ?? startingBeatMix }
+    /// Transitions is Mixing: beat-matched blends and the style picker, in whatever order the songs play.
+    var isMixingOn: Bool { transitionMode == .mixing }
+    /// Beat-matched transitions and the style picker are on: exactly when Transitions is Mixing (a plain Crossfade is a
+    /// plain fade). The planner also needs the fade itself, which `mixesTransitions` is.
+    var isBeatMixOn: Bool { isMixingOn }
     var isVocalGuardOn: Bool { liveVocalGuard?() ?? startingVocalGuard }
-    /// DJ-length songs is on (it only acts in Mix with Crossfade and Beat mix on, which the planner checks).
-    var isDJLengthOn: Bool { isMixOn && (liveDJLength?() ?? startingDJLength) }
+    /// DJ-length songs is on (it only acts with Transitions on Mixing, which the planner checks).
+    var isDJLengthOn: Bool { isMixingOn && (liveDJLength?() ?? startingDJLength) }
 
     /// A song that was heard long enough (the play-count point) joins the run; a skipped or failed one never does.
     private func noteRunSong(_ videoId: String, heard: TimeInterval, duration: TimeInterval?) {
@@ -2302,9 +2321,9 @@ final class MusicService {
         return browseId.hasPrefix("MPRE") || browseId.contains("OLAK")
     }
 
-    /// Songs are handed over with a fade: Crossfade is on, or Mix is (Mix mixes whatever the Crossfade toggle says, with
-    /// the length from Settings). Off and plain Shuffle follow Crossfade alone.
-    var mixesTransitions: Bool { isCrossfadeOn || isMixOn }
+    /// Songs are handed over with a fade: Transitions is Crossfade or Mixing, with the length from Settings. The play order
+    /// has no say.
+    var mixesTransitions: Bool { transitionMode.isOn }
 
     /// The fade the next transition gets: 0 (gapless) with Crossfade off, under Loop song (a track does not fade into
     /// itself) and on an album in order.
@@ -2341,9 +2360,9 @@ final class MusicService {
     private func savePlaybackPreferences() {
         guard !holdsPreferences else { return }
         savePreferences(MusicPlaybackPreferences(
-            shuffle: isShuffleOn, loop: loopMode, autoplay: isAutoplayOn,
-            crossfade: isCrossfadeOn, crossfadeSeconds: crossfadeSeconds, beatMix: beatMixSetting,
-            vocalGuard: isVocalGuardOn, mixShuffle: isMixOn, djLength: liveDJLength?() ?? startingDJLength
+            shuffleMode: shuffleMode, loop: loopMode, autoplay: isAutoplayOn,
+            transitionMode: transitionMode, crossfadeSeconds: crossfadeSeconds,
+            vocalGuard: isVocalGuardOn, djLength: liveDJLength?() ?? startingDJLength
         ))
     }
 
@@ -2357,7 +2376,7 @@ final class MusicService {
         setShuffleMode(defaults.shuffleMode)
         setLoopMode(defaults.loop)
         setAutoplay(defaults.autoplay)
-        setCrossfade(defaults.crossfade)
+        setTransitionMode(defaults.transitionMode)
         pinnedItems.settingsDidReset()
     }
 
@@ -2754,7 +2773,7 @@ final class MusicService {
         }
         guard player.crossfadeToPreloaded(seconds: Self.quickFadeSeconds) else { return false }
         // The skip played a quick plain fade.
-        lastAppliedStyle = player.lastTransitionStyle ?? .longBlend
+        lastAppliedStyle = isBeatMixOn ? (player.lastTransitionStyle ?? .longBlend) : nil
         preloadOffered = nil
         offeredPlan = nil
         startAdvancedSession(stream: stream, adopting: { self.player.adoptPreloaded() })
@@ -2817,10 +2836,10 @@ final class MusicService {
         // at the last downloaded song.
         if isOffline { return queue.advance(where: canPlayNow) }
         if let track = queue.advance() { return track }
-        // Under Mix the staged radio was already placed when it was staged (see `placeStagedRadio`), so Up next, the
+        // Under Systematic shuffle the staged radio was already placed when it was staged (see `placeStagedRadio`), so Up next, the
         // prefetch, the preload and this hand-over all name the same first song.
         guard playsAutoplay, queue.takeAutoplay() else { return nil }
-        if isMixOn { mixAnalyseCurrent = true }
+        if isShuffleOn { mixAnalyseCurrent = true }
         return queue.advance()
     }
 
@@ -3153,7 +3172,7 @@ final class MusicService {
         if case .radio(let seed) = source, continuation == nil, queue.isPage, mixId == nil {
             // The radio that follows a page waits beside it until the page runs out.
             added = queue.stageAutoplay(page.tracks, continuation: page.continuation, seed: seed)
-            if added > 0, isMixOn { placeStagedRadioSoon() }
+            if added > 0, isShuffleOn { placeStagedRadioSoon() }
             if added > 0 { radioScanSoon() }
         } else {
             // The radio has answered: from here the queue is the radio's, even if it had nothing new to add. A mix's
@@ -3170,7 +3189,7 @@ final class MusicService {
                 if radioTask == nil, queueRetryTask == nil { settlePendingAdvance() }
                 return
             }
-            added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator, inOrder: isMixOn)
+            added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator, inOrder: isShuffleOn)
             if added > 0 { mixQueueGrew() }
             if added > 0 { radioScanSoon() }
         }
@@ -3512,7 +3531,7 @@ final class MusicService {
            freshRow(for: next)?.usableGrid != nil || isAwaitingRow(for: next), duration > Self.beatLead * 2 {
             return (Self.beatLead, end - djShift(toward: next.videoId))
         }
-        guard mixesTransitions, isMixOn, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
+        guard isMixingOn, let next, freshRow(for: next) != nil || isAwaitingRow(for: next), duration > smart * 2 else {
             return (leadTime, end)
         }
         return (smart, end)
@@ -3662,7 +3681,7 @@ final class MusicService {
             incomingLocal: MusicLoopExtend.isLocal(preloadStream(for: next).origin),
             djLength: isDJLengthOn, runEnergy: runEnergy
         )
-        inputs.plainFade = !isMixOn
+        inputs.plainFade = !isMixingOn
         // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
         inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead * activeDeckRate
         let plan = MusicTransitionPlanner.plan(inputs)
@@ -3722,7 +3741,7 @@ final class MusicService {
         inputs.beatMixEnabled = isBeatMixOn && beatFallbackFor != inputs.incoming.videoId
         inputs.vocalGuardEnabled = isVocalGuardOn
         inputs.djLength = isDJLengthOn
-        inputs.plainFade = !isMixOn
+        inputs.plainFade = !isMixingOn
         // earliestMixOutSec stays what it was at the offer: moving it with the playhead would turn a ready beat plan
         // into a smart one inside the last seconds.
         let flags = transitionFlags(from: inputs.outgoing.videoId, to: inputs.incoming.videoId)
@@ -3742,7 +3761,7 @@ final class MusicService {
             cancelPreload()
             return
         }
-        // Outside Mix the incoming song starts at its plain trim-in. A standby parked anywhere else (a beat plan's mix-in, a drop
+        // Outside Mixing the incoming song starts at its plain trim-in. A standby parked anywhere else (a beat plan's mix-in, a drop
         // swap's drop) would start mid-song under the plain fade: it is withdrawn and offered again, parked at the trim-in.
         if inputs.plainFade, offered.plan.incomingStartSec != plan.incomingStartSec {
             cancelPreload()

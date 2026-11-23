@@ -19,7 +19,7 @@ extension LiveChecks {
     ) async -> RunOutcome {
         let (engine, chain) = audio.makeEngine()
         let backend = await world.makeBackend()
-        let prefs = MusicPlaybackPreferences(crossfade: false, crossfadeSeconds: 7, beatMix: beatMix, vocalGuard: true)
+        let prefs = MusicPlaybackPreferences(transitionMode: beatMix ? .mixing : .crossfade, crossfadeSeconds: 7, vocalGuard: true)
         let rig = world.makeRig(engine: engine, preferences: prefs, backend: backend)
         let service = rig.service
         for entry in scriptAutomix { await backend.setAutomix(afterVideoId: entry.after, tracks: entry.tracks) }
@@ -30,7 +30,7 @@ extension LiveChecks {
             service.play(tracks[0])
         }
         await world.settle(service)
-        service.setShuffleMode(.mix)
+        service.setShuffleMode(.systematic)
         await world.settle(service)
         let runner = LiveRunner(world: world, rig: rig, engine: engine, chain: chain, audio: audio)
         runner.captureHook = capture

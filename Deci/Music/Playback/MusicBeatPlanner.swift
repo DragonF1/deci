@@ -2,8 +2,8 @@
 // Tier 3b P2: upgrades a tier 2 smart plan to a beat-matched mix, or refuses and hands the smart plan back with the
 // reason. Pure: value types in, value type out, no clock and no I/O.
 //
-// Tempo: the incoming song may play up to 8% faster or slower (pitch kept), also against half or double the outgoing
-// tempo. The overlap is 8 bars (16 once the bass swap exists and both songs have room) of the outgoing song, starting on
+// Tempo: every song plays at its own tempo (rate 1); beats are matched by where the incoming song starts, also against
+// half or double the outgoing tempo. The overlap is 8 bars (16 once the bass swap exists and both songs have room) of the outgoing song, starting on
 // one of its phrase boundaries (8-bar multiples counted from its first downbeat). The incoming song starts on one of its
 // own bar boundaries at or after its leading silence, so its beats land on the outgoing beats.
 

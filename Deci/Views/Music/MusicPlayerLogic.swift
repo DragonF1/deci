@@ -94,38 +94,43 @@ struct MusicQueueListing {
     }
 }
 
-/// The four toggles of the Up next header, in the order they sit.
+/// The four toggles of the Up next header, in the order they sit. Shuffle cycles Off and Systematic shuffle; Transitions
+/// cycles Off, Crossfade and Mixing, like Loop cycles its modes.
 nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
     case shuffle
     case loop
     case autoplay
-    case crossfade
+    case transitions
 
     /// What the toggle is called for VoiceOver and the tooltip; the loop's own wording says its mode.
-    func title(loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .shuffle) -> String {
+    func title(
+        loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .systematic, transitionMode: MusicTransitionMode = .off
+    ) -> String {
         switch self {
         case .shuffle: shuffleMode.title
         case .loop: loop.label
         case .autoplay: "Autoplay"
-        case .crossfade: "Crossfade"
+        case .transitions: transitionMode.title
         }
     }
 
-    func symbol(loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .shuffle) -> String {
+    func symbol(
+        loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .systematic, transitionMode: MusicTransitionMode = .off
+    ) -> String {
         switch self {
         case .shuffle: shuffleMode.symbol
         case .loop: loop.systemImage
         case .autoplay: "infinity"
-        case .crossfade: "arrow.triangle.merge"
+        case .transitions: transitionMode.symbol
         }
     }
 
-    func isOn(shuffle: Bool, loop: MusicLoopMode, autoplay: Bool, crossfade: Bool = false) -> Bool {
+    func isOn(shuffle: Bool, loop: MusicLoopMode, autoplay: Bool, transitions: MusicTransitionMode = .off) -> Bool {
         switch self {
         case .shuffle: shuffle
         case .loop: loop != .off
         case .autoplay: autoplay
-        case .crossfade: crossfade
+        case .transitions: transitions.isOn
         }
     }
 }
@@ -137,7 +142,7 @@ extension MusicService {
         case .shuffle: cycleShuffleMode()
         case .loop: cycleLoopMode()
         case .autoplay: setAutoplay(!isAutoplayOn)
-        case .crossfade: setCrossfade(!isCrossfadeOn)
+        case .transitions: cycleTransitionMode()
         }
     }
 }

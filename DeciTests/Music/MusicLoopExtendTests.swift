@@ -321,7 +321,7 @@ struct MusicLoopExtendTests {
         await h.tick(mixOut - 20)
         #expect(h.engine.preloadIsReady)
         let cancels = h.engine.cancelPreloadCount
-        h.service.setShuffleMode(.off)
+        h.service.setTransitionMode(.crossfade)
         #expect(h.engine.cancelPreloadCount == cancels + 1, "ready, with the mix-out still ahead: it is withdrawn all the same")
     }
 }

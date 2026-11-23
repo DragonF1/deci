@@ -202,7 +202,7 @@ struct MusicQueueHeader: View {
     }
 }
 
-/// Shuffle, Loop, Autoplay and Crossfade in one rounded group. A toggle that is on has the accent for its icon and a soft accent fill.
+/// Shuffle, Loop, Autoplay and Transitions in one rounded group. A toggle that is on has the accent for its icon and a soft accent fill.
 struct MusicPlaybackToggles: View {
     let service: MusicService
 
@@ -210,9 +210,9 @@ struct MusicPlaybackToggles: View {
         HStack(spacing: 2) {
             ForEach(MusicPlaybackToggle.allCases, id: \.self) { toggle in
                 MusicPlaybackToggleButton(
-                    title: toggle.title(loop: service.loopMode, shuffleMode: service.shuffleMode),
-                    symbol: toggle.symbol(loop: service.loopMode, shuffleMode: service.shuffleMode),
-                    isOn: toggle.isOn(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn, crossfade: service.isCrossfadeOn)
+                    title: toggle.title(loop: service.loopMode, shuffleMode: service.shuffleMode, transitionMode: service.transitionMode),
+                    symbol: toggle.symbol(loop: service.loopMode, shuffleMode: service.shuffleMode, transitionMode: service.transitionMode),
+                    isOn: toggle.isOn(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn, transitions: service.transitionMode)
                 ) { service.perform(toggle) }
             }
         }

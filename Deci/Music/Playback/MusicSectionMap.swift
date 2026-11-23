@@ -181,7 +181,7 @@ private nonisolated final class SectionCache: @unchecked Sendable {
     }
 }
 
-/// DJ-length songs: in Mix, an energetic run moves on after a song's second chorus. Off by default.
+/// DJ-length songs: on Mixing, an energetic run moves on after a song's second chorus. Off by default.
 nonisolated enum MusicDJLength {
     /// "High" run energy. The energy rating (0...1, `MusicEnergyRating`) of the 54 songs of the live corpus runs from 0.35 to
     /// 0.72 with the median 0.58, the 75th percentile 0.65 and the 90th 0.69. A run's energy is the mean of 1 to 3 songs, so it

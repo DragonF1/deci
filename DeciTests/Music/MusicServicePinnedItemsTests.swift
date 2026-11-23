@@ -353,7 +353,7 @@ struct MusicServicePinnedItemsTests {
     func settingsReset() {
         let h = PinHarness(
             pins: [pin("UCa"), pin("UCb")],
-            preferences: MusicPlaybackPreferences(shuffle: true, loop: .song, autoplay: false)
+            preferences: MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
         )
 
         h.service.settingsDidReset()
@@ -370,7 +370,7 @@ struct MusicServicePinnedItemsTests {
     func changeAfterSettingsReset() {
         let h = PinHarness(
             pins: [pin("UCa"), pin("UCb")],
-            preferences: MusicPlaybackPreferences(shuffle: true, loop: .song, autoplay: false)
+            preferences: MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
         )
         h.service.settingsDidReset()
 
@@ -378,7 +378,7 @@ struct MusicServicePinnedItemsTests {
         h.service.cycleLoopMode()
 
         #expect(h.probe.saved.map { $0.map(\.id) } == [["UCc"]])
-        #expect(h.probe.savedPreferences == [MusicPlaybackPreferences(shuffle: false, loop: .playlist, autoplay: true)])
+        #expect(h.probe.savedPreferences == [MusicPlaybackPreferences(shuffleMode: .off, loop: .playlist, autoplay: true)])
     }
 
     @Test("a pin made from the artist page just opened carries the page's title and the opener's photo")

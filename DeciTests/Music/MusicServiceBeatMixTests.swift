@@ -40,7 +40,9 @@ struct BeatHarness {
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
             preferences: preferences ?? MusicPlaybackPreferences(
-                shuffle: mix, crossfade: crossfade, crossfadeSeconds: 6, beatMix: beatMix, mixShuffle: mix
+                shuffleMode: mix ? .systematic : .off,
+                transitionMode: MusicPlaybackPreferences.migratedTransitionMode(mixShuffle: mix, beatMix: beatMix, crossfade: crossfade),
+                crossfadeSeconds: 6
             ),
             djLength: djLength,
             queueRetryDelay: .seconds(60),
@@ -147,7 +149,7 @@ struct MusicServiceBeatMixTests {
         let h = BeatHarness(beatMix: false)
         await start(h)
         await h.tick(126)
-        await h.tick(205)
+        await h.tick(220)
         let plan = try #require(h.lastPlan)
         #expect(plan.mode != .beat)
         #expect(plan.incomingRate == 1)
@@ -241,7 +243,7 @@ struct MusicServiceBeatMixTests {
         await h.service.analysisTask?.value
         #expect(h.lastPlan == before)
         #expect(h.engine.updatedPlans.isEmpty)
-        h.service.setCrossfade(false)
+        h.service.setTransitionMode(.off)
         if let updated = h.engine.updatedPlans.last ?? nil {
             #expect(updated.incomingStartSec == before.incomingStartSec)
             #expect(updated.incomingRate == 1)
@@ -257,8 +259,8 @@ struct MusicServiceBeatMixTests {
         #expect(h.lastPlan?.mode == .beat)
         h.engine.preloadReady = false
         let cancels = h.engine.cancelPreloadCount
-        // Leaving Mix takes the beat plan away (Crossfade stays on: the pair is a plain fade now).
-        h.service.setShuffleMode(.off)
+        // Leaving Mixing takes the beat plan away (Crossfade: the pair is a plain fade now).
+        h.service.setTransitionMode(.crossfade)
         #expect(h.engine.cancelPreloadCount == cancels + 1)
         #expect(h.engine.updatedPlans.isEmpty)
     }
@@ -276,7 +278,7 @@ struct MusicServiceBeatMixTests {
         let mixOut = try #require(beat.mixOutSec)
         await h.tick(mixOut - 7.5)
         let cancels = h.engine.cancelPreloadCount
-        h.service.setShuffleMode(.off)
+        h.service.setTransitionMode(.crossfade)
         #expect(h.engine.cancelPreloadCount == cancels + 1, "withdrawn, to be parked again at the plain trim-in")
         #expect(h.engine.updatedPlans.isEmpty, "no plan is pushed at the mix-in offset")
     }

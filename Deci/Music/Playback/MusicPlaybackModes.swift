@@ -31,52 +31,43 @@ struct MusicPlaybackPreferences: Equatable, Sendable {
         return min(max(seconds, crossfadeRange.lowerBound), crossfadeRange.upperBound)
     }
 
-    var shuffle = false
-    /// Shuffle plays as Mix: songs ordered to blend into each other. Mix always carries `shuffle` too, so a build that
-    /// does not know Mix still shuffles.
-    var mixShuffle = false
+    /// How the queue is ordered: its own order, or Systematic shuffle.
+    var shuffleMode = MusicShuffleMode.off
     var loop = MusicLoopMode.off
     /// Keep playing recommended songs after a playlist or an album has finished.
     var autoplay = true
-    /// Fade the next song in over the end of the playing one. Off is the gapless switch.
-    var crossfade = false
-    /// How long that fade lasts, 1 to 12 seconds.
+    /// How songs hand over: gapless, a plain crossfade, or beat-matched Mixing.
+    var transitionMode = MusicTransitionMode.off
+    /// How long a crossfade or a mix lasts, 1 to 12 seconds.
     var crossfadeSeconds = MusicPlaybackPreferences.defaultCrossfadeSeconds {
         didSet { crossfadeSeconds = Self.clampedCrossfade(crossfadeSeconds) }
     }
 
-    /// What the shuffle button is set to.
-    var shuffleMode: MusicShuffleMode {
-        get { mixShuffle ? .mix : (shuffle ? .shuffle : .off) }
-        set {
-            shuffle = newValue.isOn
-            mixShuffle = newValue == .mix
-        }
-    }
-
-    /// Line songs of matching tempo up on the beat while they crossfade (only with Crossfade on).
-    var beatMix = true
-
-    /// Keep two singers from overlapping in a mix (only with Crossfade on).
+    /// Keep two singers from overlapping in a mix (only with Transitions on Mixing).
     var vocalGuard = true
 
-    /// In Mix, an energetic run moves on after a song's second chorus (needs Crossfade on). Off by default.
+    /// With Transitions on Mixing, an energetic run moves on after a song's second chorus. Off by default.
     var djLength = false
 
     init(
-        shuffle: Bool = false, loop: MusicLoopMode = .off, autoplay: Bool = true, crossfade: Bool = false,
-        crossfadeSeconds: Double = defaultCrossfadeSeconds, beatMix: Bool = true, vocalGuard: Bool = true,
-        mixShuffle: Bool = false, djLength: Bool = false
+        shuffleMode: MusicShuffleMode = .off, loop: MusicLoopMode = .off, autoplay: Bool = true,
+        transitionMode: MusicTransitionMode = .off, crossfadeSeconds: Double = defaultCrossfadeSeconds,
+        vocalGuard: Bool = true, djLength: Bool = false
     ) {
-        self.mixShuffle = mixShuffle
+        self.shuffleMode = shuffleMode
         self.djLength = djLength
-        self.beatMix = beatMix
         self.vocalGuard = vocalGuard
-        self.shuffle = shuffle || mixShuffle
         self.loop = loop
         self.autoplay = autoplay
-        self.crossfade = crossfade
+        self.transitionMode = transitionMode
         self.crossfadeSeconds = Self.clampedCrossfade(crossfadeSeconds)
+    }
+
+    /// The transitions the four settings of older builds meant: Mix always faded (with beat matching when that was on),
+    /// otherwise the Crossfade switch decided.
+    static func migratedTransitionMode(mixShuffle: Bool, beatMix: Bool, crossfade: Bool) -> MusicTransitionMode {
+        if mixShuffle { return beatMix ? .mixing : .crossfade }
+        return crossfade ? .crossfade : .off
     }
 }
 

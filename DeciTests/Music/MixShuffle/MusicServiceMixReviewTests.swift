@@ -12,23 +12,23 @@ import Testing
 struct MusicServiceMixReviewTests {
     private static func ids(_ count: Int) -> [String] { (0..<count).map { "m\(String(format: "%03d", $0))" } }
 
-    @Test("Crossfade off with Mix on still fades; Off and Shuffle stay gapless")
-    func mixMixesWithoutCrossfade() async {
-        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(crossfade: false))
+    @Test("Transitions decide the fade, not the order: Systematic shuffle with Transitions Off stays gapless")
+    func transitionsDecideTheFade() async {
+        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(transitionMode: .off))
         await h.startQueue(Self.ids(8))
         #expect(h.service.effectiveCrossfadeSeconds == 0)
-        h.service.setShuffleMode(.shuffle)
+        h.service.setShuffleMode(.systematic)
         await h.settle()
         #expect(h.service.effectiveCrossfadeSeconds == 0)
-        h.service.setShuffleMode(.mix)
-        await h.settle()
+        h.service.setTransitionMode(.mixing)
         #expect(h.service.mixesTransitions)
         #expect(h.service.effectiveCrossfadeSeconds > 0)
         #expect(h.player.crossfadeSeconds > 0)
-        h.service.setShuffleMode(.off)
-        await h.settle()
+        h.service.setTransitionMode(.off)
         #expect(h.service.effectiveCrossfadeSeconds == 0)
-        #expect(h.player.crossfadeSeconds == 0)
+        h.service.setShuffleMode(.off)
+        h.service.setTransitionMode(.crossfade)
+        #expect(h.service.effectiveCrossfadeSeconds > 0, "a fade in playlist order")
     }
 
     @Test("pages that land in Mix go behind the ordered window and keep the page order")
@@ -80,12 +80,15 @@ struct MusicServiceMixReviewTests {
                 (Int(pair.0.dropFirst()) ?? 0) % 2 != (Int(pair.1.dropFirst()) ?? 0) % 2
             }.count
         }
+        h.service.setShuffleMode(.systematic)
+        // The random shuffle came first; orderMix then lays the window out from the rows.
         let natural = Array(h.order[1...MusicMixWindow.size])
-        h.service.setShuffleMode(.mix)
         await h.settle()
         let mixed = Array(h.order[1...MusicMixWindow.size])
         #expect(Set(mixed) == Set(natural))
-        #expect(jumps(mixed) < jumps(natural) / 2)
+        // A random order of two tempos jumps about every other step; the laid-out window groups them.
+        #expect(jumps(mixed) < jumps(natural))
+        #expect(jumps(mixed) <= MusicMixWindow.size / 3)
     }
 
     @Test("Play next in Mix gives the queued song a pair entry")
@@ -94,7 +97,7 @@ struct MusicServiceMixReviewTests {
         let h = MixShuffleHarness()
         for id in ids + ["qq"] { await h.reader.set(MixRows.row(id)) }
         await h.startQueue(ids)
-        h.service.setShuffleMode(.mix)
+        h.service.setShuffleMode(.systematic)
         await h.settle()
         h.service.playNext(MusicSamples.track("qq", title: "Song qq", artist: "Artist qq"))
         await h.settle()
@@ -112,7 +115,7 @@ struct MusicServiceMixReviewTests {
         // The playing song has no row; every other song has one.
         for id in ids.dropFirst() { await h.reader.set(MixRows.row(id, bpm: 120, tonic: 9, minor: true)) }
         await h.startQueue(ids)
-        h.service.setShuffleMode(.mix)
+        h.service.setShuffleMode(.systematic)
         await h.settle()
         let next = try #require(h.service.queue.upcoming.first)
         let text = try #require(h.service.mixRowText(for: next.videoId))
@@ -127,7 +130,7 @@ struct MusicServiceMixReviewTests {
         let ids = Self.ids(6)
         let h = MixShuffleHarness()
         await h.startQueue(ids)
-        h.service.setShuffleMode(.mix)
+        h.service.setShuffleMode(.systematic)
         await h.settle()
         let next = try #require(h.service.queue.upcoming.first)
         #expect(h.service.mixRowText(for: next.videoId) == nil)
@@ -152,7 +155,7 @@ struct MusicServiceMixReviewTests {
         await h.startQueue(ids)
         h.service.analysisLanded(ids[1])
         #expect(h.service.mixLandedTask == nil, "Mix is off")
-        h.service.setShuffleMode(.mix)
+        h.service.setShuffleMode(.systematic)
         await h.settle()
         h.service.analysisLanded("not-queued")
         #expect(h.service.mixLandedTask == nil, "not a song Up next shows")
@@ -166,7 +169,7 @@ struct MusicServiceMixReviewTests {
         await h.startQueue(ids)
         for id in ids { await h.provider.setOutcome(id, .rateLimited) }
         let before = await h.provider.ensures.count
-        h.service.setShuffleMode(.mix)
+        h.service.setShuffleMode(.systematic)
         await h.settle()
         let asked = await h.provider.ensures.dropFirst(before).filter { $0.id != ids[0] }
         #expect(asked.count == 1)

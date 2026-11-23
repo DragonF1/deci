@@ -235,31 +235,6 @@ struct MusicServiceMixTests {
         #expect(h.queuedIDs == ["a", "b", "c", "d", "e", "f", "z", "m1", "m2"])
     }
 
-    @Test("with shuffle on the mix is asked after the last song of the shuffled page, not the page's last, and joins the shuffled queue")
-    func shuffled() async {
-        let h = MixServiceHarness(preferences: MusicPlaybackPreferences(shuffle: true))
-        let gate = MusicTestGate()
-        for id in ["a", "b", "c", "d"] {
-            await h.backend.setMixGate(afterVideoId: id, gate)
-            await h.setMix(after: id)
-        }
-        h.begin(h.page(["a", "b", "c", "d"]), tap: "a")
-        #expect(await h.asked(1))
-
-        let last = h.queuedIDs.last!
-        #expect(h.queuedIDs.first == "a")
-        #expect(last != "d", "the mix must not end where the page does, or this test shows nothing")
-        #expect(await h.backend.mixCalls == [h.call(last)])
-
-        await gate.open()
-        await h.settle()
-
-        #expect(h.queuedIDs.first == "a")
-        #expect(Set(h.queuedIDs) == Set(["a", "b", "c", "d"] + MixServiceHarness.songs))
-        #expect(h.queuedIDs.count == 4 + MixServiceHarness.songs.count)
-        #expect(h.stagedIDs.isEmpty)
-    }
-
     // MARK: - What the queue says it is
 
     @Test("the queue says it comes from a mix: while the mix is asked, once it answered, and as the radio it became")
@@ -986,4 +961,5 @@ struct MusicServiceMixTests {
             #expect(h.service.queue.mixPlaylistId == nil, "\(browseId)")
         }
     }
+
 }

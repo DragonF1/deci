@@ -34,7 +34,7 @@ struct MusicFavoriteRowRenderTests {
     func rows() throws {
         let defaults = try render(row(.default, snapshot: MusicFavoriteSnapshot()), name: "row-1-defaults.png")
         let crossfadeLike = try render(
-            row(MusicFavoriteSlots(left: .crossfade, right: .like), snapshot: MusicFavoriteSnapshot(crossfade: true, isLiked: true, canLike: true)),
+            row(MusicFavoriteSlots(left: .transitions, right: .like), snapshot: MusicFavoriteSnapshot(transitions: .crossfade, isLiked: true, canLike: true)),
             name: "row-2-crossfade-like.png"
         )
         let autoplay = try render(

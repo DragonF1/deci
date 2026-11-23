@@ -49,7 +49,7 @@ private struct MixHarness {
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
-            preferences: MusicPlaybackPreferences(shuffle: true, crossfade: true, crossfadeSeconds: 6, mixShuffle: true),
+            preferences: MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .mixing, crossfadeSeconds: 6),
             shuffleSeed: 1,
             queueRetryDelay: .seconds(60),
             connectivity: connectivity,

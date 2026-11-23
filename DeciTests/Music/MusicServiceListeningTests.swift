@@ -50,7 +50,7 @@ private struct ListeningHarness {
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
-            preferences: MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: 6),
+            preferences: MusicPlaybackPreferences(transitionMode: crossfade ? .crossfade : .off, crossfadeSeconds: 6),
             queueRetryDelay: .seconds(60),
             refreshOnCreate: false,
             listening: log

@@ -212,8 +212,8 @@ struct MusicPlayerColumn: View {
         let service = service
         let slots = settings.appSettings.musicFavoriteSlots
         let snapshot = MusicFavoriteSnapshot(
-            shuffle: service?.isShuffleOn ?? false, mix: service?.isMixOn ?? false, loop: service?.loopMode ?? .off,
-            autoplay: service?.isAutoplayOn ?? true, crossfade: service?.isCrossfadeOn ?? false,
+            shuffle: service?.isShuffleOn ?? false, loop: service?.loopMode ?? .off,
+            autoplay: service?.isAutoplayOn ?? true, transitions: service?.transitionMode ?? .off,
             isLiked: service?.likeStatus == .like, canLike: service?.canRate == true,
             fadeSeconds: service?.crossfadeSeconds ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
         )
@@ -230,6 +230,7 @@ struct MusicPlayerColumn: View {
             },
             setLoop: { service?.setLoopMode($0) },
             setShuffleMode: { service?.setShuffleMode($0) },
+            setTransitionMode: { service?.setTransitionMode($0) },
             setFadeSeconds: { seconds in
                 var appSettings = settings.appSettings
                 appSettings.musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(Double(seconds))

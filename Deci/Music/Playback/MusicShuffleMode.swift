@@ -1,43 +1,33 @@
 // Deci/Music/Playback/MusicShuffleMode.swift
 import Foundation
 
-/// What the shuffle button does, in the order it cycles through them: Off, Shuffle (random), Mix (songs ordered to blend
-/// into each other by tempo, key and energy).
+/// What the shuffle button does, in the order it cycles through them: Off (the queue plays in its own order) and
+/// Systematic shuffle (songs ordered to flow into each other by tempo, key and energy). Plain random shuffle is gone.
+/// How songs hand over is a separate choice (`MusicTransitionMode`).
 nonisolated enum MusicShuffleMode: String, CaseIterable, Sendable {
     case off
-    case shuffle
-    case mix
+    case systematic
 
-    /// Off, then Shuffle, then Mix, then Off again.
+    /// Off, then Systematic shuffle, then Off again.
     var next: MusicShuffleMode {
         switch self {
-        case .off: .shuffle
-        case .shuffle: .mix
-        case .mix: .off
+        case .off: .systematic
+        case .systematic: .off
         }
     }
 
-    /// The glyph Mix has of its own, so the button tells it from plain Shuffle.
-    static let mixSymbol = "waveform.path"
-    static let shuffleSymbol = "shuffle"
+    static let symbol = "shuffle"
 
     /// What the button is called for VoiceOver and the tooltip.
-    var title: String {
-        switch self {
-        case .off, .shuffle: "Shuffle"
-        case .mix: "Mix"
-        }
-    }
+    var title: String { "Systematic shuffle" }
 
-    var symbol: String {
-        self == .mix ? Self.mixSymbol : Self.shuffleSymbol
-    }
+    var symbol: String { Self.symbol }
 
-    /// Shuffle and Mix both play in a changed order.
+    /// Systematic shuffle plays in a changed order.
     var isOn: Bool { self != .off }
 
-    /// The mode a plain on or off setting means, for a caller that knows nothing of Mix.
+    /// The mode a plain on or off setting means.
     init(shuffle: Bool) {
-        self = shuffle ? .shuffle : .off
+        self = shuffle ? .systematic : .off
     }
 }

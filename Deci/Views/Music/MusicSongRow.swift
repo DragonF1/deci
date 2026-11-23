@@ -130,7 +130,7 @@ struct MusicSongRow: View {
     /// The row's place among the songs of its list (`musicSelectionScope`), which tells it from another copy of the same
     /// song. Nil for a row that cannot be picked.
     var selectionIndex: Int?
-    /// Up next in Mix: the song's tempo ("128"), in the accent beside the length; nil everywhere else.
+    /// Up next under Systematic shuffle or Mixing: the song's tempo ("128"), in the accent beside the length; nil everywhere else.
     var mixText: String?
     let action: () -> Void
 

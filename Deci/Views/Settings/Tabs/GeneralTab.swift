@@ -187,8 +187,8 @@ struct GeneralTab: View {
     private var musicSection: some View {
         SettingsSection("Music") {
             SettingsRow(
-                "Crossfade length",
-                description: "How long one song fades into the next when Crossfade is on in Up next. Albums played in order stay gapless."
+                "Transition length",
+                description: "How long one song fades into the next when Transitions in Up next is Crossfade or Mixing. Albums played in order stay gapless."
             ) {
                 HStack(spacing: 8) {
                     Text("\(Int(MusicPlaybackPreferences.clampedCrossfade(settings.appSettings.musicCrossfadeSeconds).rounded())) s")
@@ -210,19 +210,8 @@ struct GeneralTab: View {
             }
             SettingsRowDivider()
             SettingsRow(
-                "Beat-matched transitions",
-                description: "In Mix shuffle, songs of matching tempo are lined up on the beat over eight bars. The next song speeds up or slows down a little (up to 8%) and relaxes back to normal after the fade. Other songs keep the usual fade."
-            ) {
-                Toggle("", isOn: $settings.appSettings.musicBeatMix)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .labelsHidden()
-            }
-            // Never locked: Mix blends songs whatever Crossfade says, so this acts in Mix even with Crossfade off.
-            SettingsRowDivider()
-            SettingsRow(
                 "Vocal guard",
-                description: "Keeps two singers from overlapping in a mix"
+                description: "With Transitions on Mixing, keeps two singers from overlapping in a mix"
             ) {
                 Toggle("", isOn: $settings.appSettings.musicVocalGuard)
                     .toggleStyle(.switch)
@@ -232,15 +221,15 @@ struct GeneralTab: View {
             SettingsRowDivider()
             SettingsRow(
                 "DJ-length songs",
-                description: "In Mix with Beat-matched transitions on, energetic runs move on after the second chorus."
+                description: "With Transitions on Mixing, energetic runs move on after the second chorus."
             ) {
                 Toggle("", isOn: $settings.appSettings.musicDJLength)
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .labelsHidden()
             }
-            // Never locked by the shuffle mode or Beat mix: the planner only cuts in Mix with Beat mix on, so the switch can
-            // be set ahead of time from any mode.
+            // Never locked by Transitions: the planner only acts on these with Transitions on Mixing, so the switches can be set
+            // ahead of time from any mode.
             SettingsRowDivider()
             SettingsRow(
                 "Analyse songs in the background",

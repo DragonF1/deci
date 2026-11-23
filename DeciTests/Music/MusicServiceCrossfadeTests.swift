@@ -39,7 +39,7 @@ private struct CrossfadeHarness {
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
-            preferences: MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: seconds),
+            preferences: MusicPlaybackPreferences(transitionMode: crossfade ? .crossfade : .off, crossfadeSeconds: seconds),
             savePreferences: { saved.all.append($0) },
             crossfadeSeconds: live,
             queueRetryDelay: .seconds(60),
@@ -106,10 +106,10 @@ struct MusicServiceCrossfadeTests {
         await h.startQueue(["a", "b", "c"])
         await h.enterWindow()
         #expect(h.engine.crossfadeSeconds == 0)
-        h.service.setCrossfade(true)
+        h.service.setTransitionMode(.crossfade)
         #expect(h.engine.crossfadeSeconds == 6)
         #expect(h.engine.preloadedVideoId == "b", "no preload is lost to the toggle")
-        h.service.setCrossfade(false)
+        h.service.setTransitionMode(.off)
         #expect(h.engine.crossfadeSeconds == 0)
     }
 
@@ -288,12 +288,12 @@ struct MusicServiceCrossfadeTests {
     @Test("the toggle is saved with the length, and the reset puts it back off")
     func toggleIsSaved() async {
         let h = CrossfadeHarness(crossfade: false, seconds: 9)
-        h.service.setCrossfade(true)
-        #expect(h.saved.all.last == MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 9))
-        h.service.setCrossfade(true)
+        h.service.setTransitionMode(.crossfade)
+        #expect(h.saved.all.last == MusicPlaybackPreferences(transitionMode: .crossfade, crossfadeSeconds: 9))
+        h.service.setTransitionMode(.crossfade)
         #expect(h.saved.all.count == 1, "no change, no write")
         h.service.settingsDidReset()
-        #expect(h.service.isCrossfadeOn == false)
+        #expect(h.service.transitionMode == .off)
     }
 }
 

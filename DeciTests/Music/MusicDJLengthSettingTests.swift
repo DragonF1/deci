@@ -28,7 +28,7 @@ struct MusicDJLengthSettingTests {
         #expect(try decode(#"{"musicDJLength": true}"#).musicDJLength)
         // The rest of an old file still decodes.
         let old = try decode(#"{"musicCrossfadeEnabled": true, "musicCrossfadeSeconds": 8}"#)
-        #expect(old.musicCrossfadeEnabled && old.musicCrossfadeSeconds == 8 && old.musicBeatMix)
+        #expect(old.musicTransitions == .crossfade && old.musicCrossfadeSeconds == 8)
     }
 
     @Test("a stored true survives an encode and decode")
@@ -69,7 +69,7 @@ struct MusicServiceDJLengthTests {
 
     private func harness(djLength: Bool, mix: Bool, vocalGuard: Bool = false, live: (@MainActor () -> Bool)? = nil) -> BeatHarness {
         BeatHarness(preferences: MusicPlaybackPreferences(
-            shuffle: mix, crossfade: true, crossfadeSeconds: 6, beatMix: true, vocalGuard: vocalGuard, mixShuffle: mix, djLength: djLength
+            shuffleMode: mix ? .systematic : .off, transitionMode: mix ? .mixing : .crossfade, crossfadeSeconds: 6, vocalGuard: vocalGuard, djLength: djLength
         ), djLength: live)
     }
 
@@ -104,7 +104,7 @@ struct MusicServiceDJLengthTests {
         await h.tick(40)
         await h.tick(60)
         await h.tick(72)
-        #expect(h.engine.preloads.count == 1, "mix \(h.service.isMixOn) preloads \(h.engine.preloads.count) lines \(h.service.transitionLines) queue \(h.service.queue.tracks.map(\.videoId))")
+        #expect(h.engine.preloads.count == 1, "shuffle \(h.service.isShuffleOn) preloads \(h.engine.preloads.count) lines \(h.service.transitionLines) queue \(h.service.queue.tracks.map(\.videoId))")
         let plan = try #require(h.lastPlan, "lines: \(h.service.transitionLines)")
         #expect(plan.djSection == .chorus2, "plan \(plan) lines \(h.service.transitionLines)")
         #expect(abs((plan.mixOutSec ?? 0) - 96.2) < 0.001)
@@ -134,7 +134,7 @@ struct MusicServiceDJLengthTests {
         #expect((plan.mixOutSec ?? 200) > 150, "the usual mix-out, near the end of the song: \(plan)")
     }
 
-    @Test("outside Mix the setting does nothing")
+    @Test("outside Mixing the setting does nothing")
     func needsMix() async {
         let h = harness(djLength: true, mix: false)
         #expect(h.service.isDJLengthOn == false)

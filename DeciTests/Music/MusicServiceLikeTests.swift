@@ -460,7 +460,7 @@ struct MusicServiceLikeTests {
 
     @Test("Dislike on the last song with nothing to follow rates it and keeps it playing")
     func dislikeWithNowhereToGo() async {
-        let h = await LikeServiceHarness.signedIn(preferences: MusicPlaybackPreferences(shuffle: false, loop: .off, autoplay: false))
+        let h = await LikeServiceHarness.signedIn(preferences: MusicPlaybackPreferences(shuffleMode: .off, loop: .off, autoplay: false))
         await h.startAlone("a")
         #expect(!h.service.canGoNext)
 
@@ -700,7 +700,7 @@ struct MusicServiceLikeTests {
 
     @Test("Disliking the playing song with nothing to follow still sends it and keeps it playing")
     func dislikeOfThePlayingSongWithNowhereToGo() async {
-        let h = await LikeServiceHarness.signedIn(preferences: MusicPlaybackPreferences(shuffle: false, loop: .off, autoplay: false))
+        let h = await LikeServiceHarness.signedIn(preferences: MusicPlaybackPreferences(shuffleMode: .off, loop: .off, autoplay: false))
         await h.startAlone("a")
 
         #expect(await h.service.setLike(.dislike, of: h.song("a")) == .disliked)

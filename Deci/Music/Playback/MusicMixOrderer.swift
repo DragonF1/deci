@@ -54,8 +54,9 @@ nonisolated struct MusicMixOrderer: Sendable {
     static let nearestMinPool = 2
     static let nearestSlack = nearestSlackSteps[nearestSlackSteps.count - 1]
     /// A step whose tempos differ by more than this (half and double time folded in) is a jump: a tempo jump ranks lower
-    /// than any step inside the line, whatever its pair score (a Mix plays each song at most 8% off its own tempo, so a
-    /// jump past 15% cannot be matched and gets the thinned sweep).
+    /// than any step inside the line, whatever its pair score (every song plays at its own tempo, so Mixing matches the
+    /// beats by timing the overlap, not by changing a tempo: a jump past 15% has no shared beat grid worth matching and
+    /// gets the thinned sweep).
     static let tempoJumpError = 0.15
     static let tempoJumpPenalty = 0.25
 

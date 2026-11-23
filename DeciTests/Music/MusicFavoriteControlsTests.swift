@@ -14,9 +14,9 @@ struct MusicFavoriteControlsTests {
 
     // MARK: - The enum
 
-    @Test("the list is shuffle, loop, autoplay, crossfade, like, in that order")
+    @Test("the list is shuffle, loop, autoplay, transitions (raw value crossfade), like, in that order")
     func order() {
-        #expect(MusicFavoriteControl.allCases == [.shuffle, .loop, .autoplay, .crossfade, .like])
+        #expect(MusicFavoriteControl.allCases == [.shuffle, .loop, .autoplay, .transitions, .like])
     }
 
     @Test("every control survives its raw value")
@@ -40,7 +40,7 @@ struct MusicFavoriteControlsTests {
         #expect(MusicFavoriteControl.loop.symbol(loop: .off, isLiked: false) == "repeat")
         #expect(MusicFavoriteControl.loop.symbol(loop: .song, isLiked: false) == "repeat.1")
         #expect(MusicFavoriteControl.autoplay.symbol(loop: .off, isLiked: false) == "infinity")
-        #expect(MusicFavoriteControl.crossfade.symbol(loop: .off, isLiked: false) == "arrow.triangle.merge")
+        #expect(MusicFavoriteControl.transitions.symbol(loop: .off, isLiked: false) == "arrow.triangle.merge")
         #expect(MusicFavoriteControl.like.symbol(loop: .off, isLiked: false) == "hand.thumbsup")
         #expect(MusicFavoriteControl.like.symbol(loop: .off, isLiked: true) == "hand.thumbsup.fill")
     }
@@ -64,7 +64,7 @@ struct MusicFavoriteControlsTests {
     @Test("an unknown or missing raw value is that slot's default")
     func fallback() {
         #expect(MusicFavoriteSlots(leftRaw: "teleport", rightRaw: "like") == MusicFavoriteSlots(left: .shuffle, right: .like))
-        #expect(MusicFavoriteSlots(leftRaw: "crossfade", rightRaw: "teleport") == MusicFavoriteSlots(left: .crossfade, right: .loop))
+        #expect(MusicFavoriteSlots(leftRaw: "crossfade", rightRaw: "teleport") == MusicFavoriteSlots(left: .transitions, right: .loop))
         #expect(MusicFavoriteSlots(leftRaw: nil, rightRaw: nil) == .default)
         #expect(MusicFavoriteSlots(leftRaw: "", rightRaw: "") == .default)
     }
@@ -83,10 +83,10 @@ struct MusicFavoriteControlsTests {
     @Test("choosing a control puts it in the slot")
     func choose() {
         var slots = MusicFavoriteSlots.default
-        slots.choose(.crossfade, for: .left)
-        #expect(slots == MusicFavoriteSlots(left: .crossfade, right: .loop))
+        slots.choose(.transitions, for: .left)
+        #expect(slots == MusicFavoriteSlots(left: .transitions, right: .loop))
         slots.choose(.like, for: .right)
-        #expect(slots == MusicFavoriteSlots(left: .crossfade, right: .like))
+        #expect(slots == MusicFavoriteSlots(left: .transitions, right: .like))
     }
 
     @Test("choosing the control a slot already holds changes nothing")
@@ -132,7 +132,7 @@ struct MusicFavoriteControlsTests {
     @Test("the slots are stored as raw strings under their two keys")
     func storedKeys() throws {
         var settings = AppSettings()
-        settings.musicFavoriteSlots = MusicFavoriteSlots(left: .crossfade, right: .shuffle)
+        settings.musicFavoriteSlots = MusicFavoriteSlots(left: .transitions, right: .shuffle)
         let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any]
         #expect(object?["musicFavoriteLeft"] as? String == "crossfade")
         #expect(object?["musicFavoriteRight"] as? String == "shuffle")
@@ -164,24 +164,24 @@ struct MusicFavoriteControlsTests {
     // MARK: - The menu
 
     private func menu(
-        shuffle: Bool = false, loop: MusicLoopMode = .off, autoplay: Bool = true, crossfade: Bool = false,
+        shuffle: Bool = false, loop: MusicLoopMode = .off, autoplay: Bool = true, transitions: MusicTransitionMode = .off,
         fade: Double = 6, slot: MusicFavoriteControl = .shuffle
     ) -> MusicFavoriteMenuModel {
-        MusicFavoriteMenuModel(shuffle: shuffle, loop: loop, autoplay: autoplay, crossfade: crossfade, fadeSeconds: fade, slotControl: slot)
+        MusicFavoriteMenuModel(shuffle: shuffle, loop: loop, autoplay: autoplay, transitions: transitions, fadeSeconds: fade, slotControl: slot)
     }
 
-    @Test("the menu lists Shuffle, Loop, Autoplay, Crossfade, Fade length, then Show here after a divider")
+    @Test("the menu lists Shuffle, Loop, Autoplay, Transitions, Fade length, then Show here after a divider")
     func menuStructure() {
-        #expect(menu().entries.map(\.title) == ["Shuffle", "Loop", "Autoplay", "Crossfade", "Fade length", nil, "Show here"])
+        #expect(menu().entries.map(\.title) == ["Shuffle", "Loop", "Autoplay", "Transitions", "Fade length", nil, "Show here"])
         #expect(menu().entries.last?.title == "Show here")
     }
 
     @Test("the toggles carry the state they are in")
     func menuToggles() {
-        let entries = menu(shuffle: true, autoplay: false, crossfade: true).entries
-        #expect(entries[0] == .shuffle(selected: .shuffle))
+        let entries = menu(shuffle: true, autoplay: false, transitions: .mixing).entries
+        #expect(entries[0] == .shuffle(selected: .systematic))
         #expect(entries[2] == .toggle(.autoplay, isOn: false))
-        #expect(entries[3] == .toggle(.crossfade, isOn: true))
+        #expect(entries[3] == .transitions(selected: .mixing))
     }
 
     @Test("Loop offers Off, All and One, with the current mode selected")
@@ -191,10 +191,10 @@ struct MusicFavoriteControlsTests {
         #expect(menu(loop: .song).entries[1] == .loop(selected: .song))
     }
 
-    @Test("Fade length is 1 to 12 s with the current value checked, and is not greyed out with Crossfade off")
+    @Test("Fade length is 1 to 12 s with the current value checked, and is not greyed out with Transitions off")
     func menuFade() {
         #expect(MusicFavoriteMenuModel.fadeOptions == Array(1...12))
-        #expect(menu(crossfade: false, fade: 9).entries[4] == .fadeLength(selected: 9, options: Array(1...12)))
+        #expect(menu(transitions: .off, fade: 9).entries[4] == .fadeLength(selected: 9, options: Array(1...12)))
         #expect(menu(fade: 99).entries[4] == .fadeLength(selected: 12, options: Array(1...12)))
         #expect(menu(fade: .nan).entries[4] == .fadeLength(selected: 6, options: Array(1...12)))
         #expect(MusicFavoriteMenuModel.fadeTitle(6) == "6 s")
@@ -203,7 +203,7 @@ struct MusicFavoriteControlsTests {
     @Test("Show here lists every control in enum order and checks the one in this slot")
     func menuShowHere() {
         #expect(menu(slot: .like).entries.last == .showHere(selected: .like, options: MusicFavoriteControl.allCases))
-        #expect(menu(slot: .shuffle).entries.last == .showHere(selected: .shuffle, options: [.shuffle, .loop, .autoplay, .crossfade, .like]))
+        #expect(menu(slot: .shuffle).entries.last == .showHere(selected: .shuffle, options: [.shuffle, .loop, .autoplay, .transitions, .like]))
     }
 }
 
@@ -227,6 +227,7 @@ extension MusicFavoriteControlsTests {
             switch $0 {
             case .toggle(let control, _): control
             case .shuffle: .shuffle
+            case .transitions: .transitions
             case .loop: .loop
             default: nil
             }
@@ -237,9 +238,10 @@ extension MusicFavoriteControlsTests {
 
     @Test("a control's menu name is its slot title except Loop, which says its mode")
     func oneNameSource() {
-        for control in MusicFavoriteControl.allCases where control != .loop {
+        for control in MusicFavoriteControl.allCases where control != .loop && control != .shuffle {
             #expect(control.title() == control.menuTitle)
         }
+        #expect(MusicFavoriteControl.shuffle.title() == "Systematic shuffle", "the slot says the mode, the menu names the group")
         #expect(MusicFavoriteControl.loop.title(loop: .song) == "Loop song")
     }
 
@@ -272,9 +274,7 @@ extension MusicFavoriteControlsTests {
             refreshOnCreate: false
         )
         service.perform(.shuffle)
-        #expect(service.shuffleMode == .shuffle)
-        service.perform(.shuffle)
-        #expect(service.shuffleMode == .mix)
+        #expect(service.shuffleMode == .systematic)
         #expect(service.isShuffleOn)
         service.perform(.shuffle)
         #expect(service.shuffleMode == .off)
@@ -284,7 +284,7 @@ extension MusicFavoriteControlsTests {
         let autoplay = service.isAutoplayOn
         service.perform(.autoplay)
         #expect(service.isAutoplayOn == !autoplay)
-        service.perform(.crossfade)
-        #expect(service.isCrossfadeOn)
+        service.perform(.transitions)
+        #expect(service.transitionMode == .crossfade)
     }
 }

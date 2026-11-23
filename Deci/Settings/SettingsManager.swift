@@ -65,15 +65,27 @@ nonisolated struct AppSettings: Codable, Equatable {
     var chromeYTMusicAutoSwitch: Bool = true       // Click "Switch" when YouTube Music asks to listen on this device
 
     // Music playback
-    var musicShuffle: Bool = false                 // Shuffle the Music tab's queue
-    var musicMixShuffle: Bool = false              // Shuffle as Mix (musicShuffle is on too, so an older build still shuffles)
+    // Systematic shuffle (songs ordered by tempo, key and energy). Older builds wrote true for plain shuffle too, and it
+    // still reads as Systematic. The mirror below keeps an older build's Mix shuffle on.
+    var musicShuffle: Bool = false {
+        didSet { musicMixShuffle = musicShuffle }
+    }
+    var musicMixShuffle: Bool = false              // Old key, written only for older builds: always the same as musicShuffle
     var musicLoopMode: MusicLoopMode = .off        // Off, loop the playlist or loop the song
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
-    var musicCrossfadeEnabled: Bool = false        // Fade the next song in over the end of the playing one (off is gapless)
-    var musicCrossfadeSeconds: Double = 6          // How long that fade lasts, 1 to 12 seconds
-    var musicDJLength: Bool = false                // In Mix, energetic runs move on after the second chorus (off by default)
-    var musicVocalGuard: Bool = true               // Keep two singers from overlapping in a crossfade (needs crossfade on)
-    var musicBeatMix: Bool = true                  // Line matching-tempo songs up on the beat during a crossfade (applies in Mix shuffle only)
+    // How songs hand over: Off (gapless), Crossfade or Mixing. The three old keys below are written from it for older
+    // builds, which read them as the Crossfade switch and the Beat mix switch, and only read from it as a fallback.
+    var musicTransitions: MusicTransitionMode = .off {
+        didSet {
+            musicCrossfadeEnabled = musicTransitions.isOn
+            musicBeatMix = musicTransitions == .mixing
+        }
+    }
+    var musicCrossfadeEnabled: Bool = false        // Old key, written only for older builds: Transitions is not Off
+    var musicCrossfadeSeconds: Double = 6          // How long a crossfade or a mix lasts, 1 to 12 seconds
+    var musicDJLength: Bool = false                // With Transitions on Mixing, energetic runs move on after the second chorus (off by default)
+    var musicVocalGuard: Bool = true               // Keep two singers from overlapping in a mix (needs Transitions on Mixing)
+    var musicBeatMix: Bool = false                 // Old key, written only for older builds: Transitions is Mixing
     var musicFavoriteLeft: String = MusicFavoriteControl.shuffle.rawValue  // What the player's left favorite slot holds (a MusicFavoriteControl raw value)
     var musicFavoriteRight: String = MusicFavoriteControl.loop.rawValue    // Same for the right slot
     var musicAnalyzeInBackground: Bool = true      // Analyse liked songs and playlists one at a time while Music is idle
@@ -114,15 +126,25 @@ nonisolated struct AppSettings: Codable, Equatable {
         chromeIncognitoEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeIncognitoEnabled) ?? false
         chromeYTMusicAutoSwitch = try c.decodeIfPresent(Bool.self, forKey: .chromeYTMusicAutoSwitch) ?? true
         musicShuffle = try c.decodeIfPresent(Bool.self, forKey: .musicShuffle) ?? false
-        musicMixShuffle = (try? c.decodeIfPresent(Bool.self, forKey: .musicMixShuffle)) ?? false
         // A loop mode this build does not know must not cost the listener the rest of their settings.
         musicLoopMode = (try? c.decodeIfPresent(MusicLoopMode.self, forKey: .musicLoopMode)) ?? .off
         musicAutoplay = try c.decodeIfPresent(Bool.self, forKey: .musicAutoplay) ?? true
-        musicCrossfadeEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .musicCrossfadeEnabled)) ?? false
         musicCrossfadeSeconds = MusicPlaybackPreferences.clampedCrossfade(
             (try? c.decodeIfPresent(Double.self, forKey: .musicCrossfadeSeconds)) ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
         )
-        musicBeatMix = (try? c.decodeIfPresent(Bool.self, forKey: .musicBeatMix)) ?? true
+        // A file from before Transitions has only the three old switches: they say what it was. The new key wins when it
+        // is there, and a value this build does not know falls back to the old switches too.
+        let oldMix = (try? c.decodeIfPresent(Bool.self, forKey: .musicMixShuffle)) ?? false
+        let oldCrossfade = (try? c.decodeIfPresent(Bool.self, forKey: .musicCrossfadeEnabled)) ?? false
+        let oldBeatMix = (try? c.decodeIfPresent(Bool.self, forKey: .musicBeatMix)) ?? true
+        musicTransitions = (try? c.decodeIfPresent(MusicTransitionMode.self, forKey: .musicTransitions))
+            ?? MusicPlaybackPreferences.migratedTransitionMode(
+                mixShuffle: musicShuffle && oldMix, beatMix: oldBeatMix, crossfade: oldCrossfade
+            )
+        // The properties' observers do not run inside init: the old keys are put in line with the resolved values here.
+        musicMixShuffle = musicShuffle
+        musicCrossfadeEnabled = musicTransitions.isOn
+        musicBeatMix = musicTransitions == .mixing
         musicVocalGuard = (try? c.decodeIfPresent(Bool.self, forKey: .musicVocalGuard)) ?? true
         musicDJLength = (try? c.decodeIfPresent(Bool.self, forKey: .musicDJLength)) ?? false
         // Kept as the raw strings: a control a later build added or dropped reads as the slot's default
@@ -218,19 +240,18 @@ extension AppSettings {
     var musicPlayback: MusicPlaybackPreferences {
         get {
             MusicPlaybackPreferences(
-                shuffle: musicShuffle, loop: musicLoopMode, autoplay: musicAutoplay,
-                crossfade: musicCrossfadeEnabled, crossfadeSeconds: musicCrossfadeSeconds, beatMix: musicBeatMix,
-                vocalGuard: musicVocalGuard, mixShuffle: musicMixShuffle, djLength: musicDJLength
+                shuffleMode: MusicShuffleMode(shuffle: musicShuffle), loop: musicLoopMode, autoplay: musicAutoplay,
+                transitionMode: musicTransitions, crossfadeSeconds: musicCrossfadeSeconds,
+                vocalGuard: musicVocalGuard, djLength: musicDJLength
             )
         }
         set {
-            musicShuffle = newValue.shuffle
-            musicMixShuffle = newValue.mixShuffle
+            // The old keys follow these two through their observers.
+            musicShuffle = newValue.shuffleMode.isOn
+            musicTransitions = newValue.transitionMode
             musicLoopMode = newValue.loop
             musicAutoplay = newValue.autoplay
-            musicCrossfadeEnabled = newValue.crossfade
             musicCrossfadeSeconds = newValue.crossfadeSeconds
-            musicBeatMix = newValue.beatMix
             musicVocalGuard = newValue.vocalGuard
             musicDJLength = newValue.djLength
         }

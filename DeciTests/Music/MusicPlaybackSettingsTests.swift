@@ -46,16 +46,16 @@ struct MusicPlaybackSettingsTests {
     @Test("the three options survive an encode and decode")
     func roundTrip() throws {
         var settings = AppSettings()
-        settings.musicPlayback = MusicPlaybackPreferences(shuffle: true, loop: .song, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
         let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
         #expect(decoded == settings)
-        #expect(decoded.musicPlayback == MusicPlaybackPreferences(shuffle: true, loop: .song, autoplay: false))
+        #expect(decoded.musicPlayback == MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false))
     }
 
     @Test("the preferences view reads and writes the three fields")
     func preferencesView() {
         var settings = AppSettings()
-        settings.musicPlayback = MusicPlaybackPreferences(shuffle: true, loop: .playlist, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .playlist, autoplay: false)
         #expect(settings.musicShuffle)
         #expect(settings.musicLoopMode == .playlist)
         #expect(settings.musicAutoplay == false)
@@ -73,12 +73,12 @@ struct MusicPlaybackSettingsTests {
 
         let first = SettingsManager(directory: directory)
         var settings = first.appSettings
-        settings.musicPlayback = MusicPlaybackPreferences(shuffle: true, loop: .playlist, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .playlist, autoplay: false)
         first.updateAppSettings(settings)
         first.flushSync()
 
         let second = SettingsManager(directory: directory)
-        #expect(second.appSettings.musicPlayback == MusicPlaybackPreferences(shuffle: true, loop: .playlist, autoplay: false))
+        #expect(second.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .systematic, loop: .playlist, autoplay: false))
     }
 
     @Test("Reset all settings puts the three options back to their defaults")
@@ -88,7 +88,7 @@ struct MusicPlaybackSettingsTests {
 
         let manager = SettingsManager(directory: directory)
         var settings = manager.appSettings
-        settings.musicPlayback = MusicPlaybackPreferences(shuffle: true, loop: .song, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
         manager.updateAppSettings(settings)
 
         manager.resetAllSettings()
@@ -106,15 +106,15 @@ struct MusicPlaybackSettingsTests {
         manager.updateAppSettings(settings)
 
         let save = MusicServiceHost.savePreferences(to: manager)
-        save(MusicPlaybackPreferences(shuffle: true, loop: .song, autoplay: false))
+        save(MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false))
 
-        #expect(manager.appSettings.musicPlayback == MusicPlaybackPreferences(shuffle: true, loop: .song, autoplay: false))
+        #expect(manager.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false))
         #expect(manager.appSettings.launchAtLogin)
     }
 
     @Test("with no settings behind it the save hook does nothing")
     func hostSaveWithoutSettings() {
-        MusicServiceHost.savePreferences(to: nil)(MusicPlaybackPreferences(shuffle: true, loop: .playlist, autoplay: false))
+        MusicServiceHost.savePreferences(to: nil)(MusicPlaybackPreferences(shuffleMode: .systematic, loop: .playlist, autoplay: false))
     }
 
     @Test("a change made in the player is saved, and the next service starts from it")
@@ -160,7 +160,7 @@ struct MusicPlaybackSettingsTests {
     @Test("Crossfade and its length survive an encode and decode")
     func crossfadeRoundTrip() throws {
         var settings = AppSettings()
-        settings.musicCrossfadeEnabled = true
+        settings.musicTransitions = .crossfade
         settings.musicCrossfadeSeconds = 9
         let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
         #expect(decoded == settings)
@@ -173,8 +173,8 @@ struct MusicPlaybackSettingsTests {
         #expect(try decode(#"{"musicCrossfadeSeconds": 99}"#).musicCrossfadeSeconds == 12)
         #expect(try decode(#"{"musicCrossfadeSeconds": 0}"#).musicCrossfadeSeconds == 1)
         #expect(try decode(#"{"musicCrossfadeSeconds": -4}"#).musicCrossfadeSeconds == 1)
-        #expect(MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 50).crossfadeSeconds == 12)
-        #expect(MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: .nan).crossfadeSeconds == 6)
+        #expect(MusicPlaybackPreferences(transitionMode: .crossfade, crossfadeSeconds: 50).crossfadeSeconds == 12)
+        #expect(MusicPlaybackPreferences(transitionMode: .crossfade, crossfadeSeconds: .nan).crossfadeSeconds == 6)
         var prefs = MusicPlaybackPreferences()
         prefs.crossfadeSeconds = 0.2
         #expect(prefs.crossfadeSeconds == 1)
@@ -183,12 +183,12 @@ struct MusicPlaybackSettingsTests {
     @Test("the preferences bridge carries Crossfade both ways")
     func crossfadeBridge() {
         var settings = AppSettings()
-        settings.musicPlayback = MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 3)
+        settings.musicPlayback = MusicPlaybackPreferences(transitionMode: .crossfade, crossfadeSeconds: 3)
         #expect(settings.musicCrossfadeEnabled)
         #expect(settings.musicCrossfadeSeconds == 3)
         settings.musicCrossfadeSeconds = 11
         #expect(settings.musicPlayback.crossfadeSeconds == 11)
-        #expect(settings.musicPlayback.crossfade)
+        #expect(settings.musicPlayback.transitionMode == .crossfade)
     }
 
     @Test("a Crossfade set through the service is written to settings.json")
@@ -196,10 +196,10 @@ struct MusicPlaybackSettingsTests {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         var settings = AppSettings()
-        settings.musicPlayback = MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 7)
+        settings.musicPlayback = MusicPlaybackPreferences(transitionMode: .crossfade, crossfadeSeconds: 7)
         let data = try JSONEncoder().encode(settings)
         let reread = try JSONDecoder().decode(AppSettings.self, from: data)
-        #expect(reread.musicPlayback == MusicPlaybackPreferences(crossfade: true, crossfadeSeconds: 7))
+        #expect(reread.musicPlayback == MusicPlaybackPreferences(transitionMode: .crossfade, crossfadeSeconds: 7))
     }
 
     @Test("a wrongly typed Crossfade value costs nothing else in the file")

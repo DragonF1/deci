@@ -19,7 +19,7 @@ struct MusicServiceMixSkipTests {
         }
         await h.startQueue(Self.ids)
         if mix {
-            h.service.setShuffleMode(.mix)
+            h.service.setShuffleMode(.systematic)
             await h.settle()
         }
         return h
@@ -43,17 +43,6 @@ struct MusicServiceMixSkipTests {
     @Test("Mix off leaves Next exactly as it was")
     func offUnchanged() async {
         let h = await started(mix: false)
-        let before = upcoming(h)
-        h.service.next()
-        await h.settle()
-        #expect(upcoming(h) == Array(before.dropFirst()))
-    }
-
-    @Test("plain Shuffle leaves Next exactly as it was")
-    func shuffleUnchanged() async {
-        let h = await started(mix: false)
-        h.service.setShuffleMode(.shuffle)
-        await h.settle()
         let before = upcoming(h)
         h.service.next()
         await h.settle()
@@ -103,7 +92,7 @@ struct MusicServiceMixSkipTests {
     func leavingMixClears() async {
         let h = await started(mix: true)
         h.service.next()
-        h.service.setShuffleMode(.shuffle)
+        h.service.setShuffleMode(.off)
         await h.settle()
         let before = upcoming(h)
         h.service.next()
@@ -123,7 +112,7 @@ struct MusicServiceMixSkipTests {
         // Rows only exist after Mix ordered the queue, so that order knows nothing about tempo.
         let h = MixShuffleHarness(seed: 3)
         await h.startQueue(Self.ids)
-        h.service.setShuffleMode(.mix)
+        h.service.setShuffleMode(.systematic)
         await h.settle()
         for (index, id) in Self.ids.enumerated() {
             await h.reader.set(MixRows.row(id, bpm: [80, 120, 160][index % 3], tonic: 0, minor: false))
@@ -145,7 +134,7 @@ struct MusicServiceMixSkipTests {
     func preloadedNextStaysFixed() async throws {
         let h = MixShuffleHarness(seed: 3)
         await h.startQueue(Self.ids)
-        h.service.setShuffleMode(.mix)
+        h.service.setShuffleMode(.systematic)
         await h.settle()
         for (index, id) in Self.ids.enumerated() {
             await h.reader.set(MixRows.row(id, bpm: [80, 120, 160][index % 3], tonic: 0, minor: false))
@@ -157,4 +146,5 @@ struct MusicServiceMixSkipTests {
         #expect(upcoming(h).first == first)
         #expect(Set(upcoming(h).dropFirst().prefix(5)) == others)
     }
+
 }

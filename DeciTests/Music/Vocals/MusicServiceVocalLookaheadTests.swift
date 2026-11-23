@@ -39,7 +39,10 @@ struct MusicServiceVocalLookaheadTests {
                 backend: backend, player: player, presentSignIn: { _ in }, presentChannelPicker: { _, _ in },
                 closeSignInWindow: {}, raiseSignInWindow: {},
                 nowPlaying: NowPlayingController(surface: FakeNowPlayingSurface(), fetchArtwork: { _ in nil }),
-                preferences: MusicPlaybackPreferences(crossfade: crossfade, crossfadeSeconds: 6, beatMix: beatMix, vocalGuard: vocalGuard),
+                preferences: MusicPlaybackPreferences(
+                    transitionMode: MusicPlaybackPreferences.migratedTransitionMode(mixShuffle: mix, beatMix: beatMix, crossfade: crossfade),
+                    crossfadeSeconds: 6, vocalGuard: vocalGuard
+                ),
                 queueRetryDelay: .seconds(60), connectivity: MusicConnectivity(isOnline: online),
                 refreshOnCreate: false, vocalLookahead: lookahead
             )
@@ -51,7 +54,7 @@ struct MusicServiceVocalLookaheadTests {
             let tracks = ["a", "b"].map { MusicSamples.track($0, title: "Song \($0)") }
             await backend.setRadio(seed: "a", tracks: tracks, continuation: nil)
             // Beat mix only acts in Mix (since a1c993a), so the gates under test are only reached with Mix on.
-            if wantsMix { service.setShuffleMode(.mix) }
+            if wantsMix { service.setShuffleMode(.systematic) }
             service.play(tracks[0])
             while let t = service.playTask { await t.value; if service.playTask == t { break } }
             engine.emit(.playingChanged(true))
