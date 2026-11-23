@@ -85,11 +85,18 @@ struct MusicThumbnail: View {
     /// The picture saved with a download, which shows in place of the address whenever there is one, online or not.
     @Environment(\.musicLocalCover) private var localCover
 
+    /// Gives a playlist's uploaded cover a new address once its signed one has expired.
+    @Environment(\.musicCoverRefresh) private var coverRefresh
+
     var body: some View {
-        AsyncImage(url: localCover?(url) ?? url) { phase in
+        AsyncImage(url: localCover?(url) ?? coverRefresh?.current(url) ?? url) { phase in
             switch phase {
             case .success(let image):
                 image.resizable().scaledToFill()
+            case .failure:
+                // Reported once each time the cover appears; the store spaces out the asks for a new address.
+                MusicCoverPlaceholder(symbol: placeholder, size: size)
+                    .onAppear { coverRefresh?.failed(url) }
             default:
                 MusicCoverPlaceholder(symbol: placeholder, size: size)
             }

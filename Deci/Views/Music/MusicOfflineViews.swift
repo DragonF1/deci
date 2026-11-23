@@ -19,6 +19,25 @@ extension EnvironmentValues {
     }
 }
 
+/// How a cover gets a new address when its signed one has expired (a playlist's own uploaded picture). `current` is the newly
+/// signed address for an address, nil when there is none yet; `failed` reports an address that did not load, which asks
+/// for a new one. The Music tab sets it; outside the tab covers show their address as given.
+struct MusicCoverRefresh {
+    let current: @MainActor (URL?) -> URL?
+    let failed: @MainActor (URL?) -> Void
+}
+
+private struct MusicCoverRefreshKey: EnvironmentKey {
+    static let defaultValue: MusicCoverRefresh? = nil
+}
+
+extension EnvironmentValues {
+    var musicCoverRefresh: MusicCoverRefresh? {
+        get { self[MusicCoverRefreshKey.self] }
+        set { self[MusicCoverRefreshKey.self] = newValue }
+    }
+}
+
 /// What stands in for Home, History, a search or a page the network would fill while there is none: one line of plain
 /// centred text, no spinner and no Retry. For a signed-out listener (`signInService`) the Sign in button sits under the
 /// line, so the way back is one click; the downloads are reachable either way.

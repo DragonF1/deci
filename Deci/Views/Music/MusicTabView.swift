@@ -225,6 +225,15 @@ private struct MusicActionsModifier: ViewModifier {
         return { service.browse.localCoverURL(for: $0) }
     }
 
+    /// A playlist's uploaded cover has a signed address that expires: a cover that fails to load asks the store for a new one.
+    private var coverRefresh: MusicCoverRefresh? {
+        guard let service else { return nil }
+        return MusicCoverRefresh(
+            current: { service.browse.coverURL(for: $0) },
+            failed: { service.browse.coverFailed($0) }
+        )
+    }
+
     /// Also which tiles and rows wear the pin badge: those pinned to Home.
     private var collectionPin: MusicCollectionPinHandler? {
         guard let service, let navigation else { return nil }
@@ -242,5 +251,6 @@ private struct MusicActionsModifier: ViewModifier {
             .environment(\.musicCollectionPin, collectionPin)
             .environment(\.musicSelection, selectionHandler)
             .environment(\.musicLocalCover, localCover)
+            .environment(\.musicCoverRefresh, coverRefresh)
     }
 }

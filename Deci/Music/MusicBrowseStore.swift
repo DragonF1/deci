@@ -105,6 +105,8 @@ final class MusicBrowseStore {
     @ObservationIgnored private let connectivity: MusicConnectivity?
     /// Where the Downloads tab, the Downloaded songs page and the pages of downloaded collections are read from.
     @ObservationIgnored private let downloads: MusicDownloadService?
+    /// The time, so a test can move it. Spaces out the asks for a signed cover again.
+    @ObservationIgnored private let now: () -> Date
     /// Loads asked for while offline, or cut by the network going: each runs once when it returns. A request skipped offline
     /// leaves its list idle, so nothing shows a spinner that cannot end.
     @ObservationIgnored private var waitingHome = false
@@ -140,8 +142,14 @@ final class MusicBrowseStore {
     /// pinned item's name and photo current. Not told for a page that was closed, reloaded or reset before it landed.
     @ObservationIgnored var onPageLoaded: (@MainActor (MusicBrowsePage, MusicCollection?) -> Void)?
 
-    init(backend: any MusicBackend, connectivity: MusicConnectivity? = nil, downloads: MusicDownloadService? = nil) {
+    init(
+        backend: any MusicBackend,
+        connectivity: MusicConnectivity? = nil,
+        downloads: MusicDownloadService? = nil,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.backend = backend
+        self.now = now
         self.connectivity = connectivity
         self.downloads = downloads
         connectivity?.observe { [weak self] online in self?.connectivityChanged(online) }
@@ -287,6 +295,73 @@ final class MusicBrowseStore {
         downloads?.localCoverURL(for: address)
     }
 
+    // MARK: - Signed covers
+
+    /// A signed cover address expires (see `MusicSignedCover`), and this store keeps its lists for the whole run of the app,
+    /// so a custom playlist cover that loaded days ago can be a dead address now. A cover that fails to load is
+    /// asked for again here: the playlist's page carries a newly signed address, kept by playlist id.
+    private(set) var freshCovers: [String: URL] = [:]
+    /// Playlists whose page is being asked for a new cover right now, with the run that asked.
+    @ObservationIgnored private var coverRuns: [String: Int] = [:]
+    /// When each playlist's cover was last asked for. A deleted playlist or a real 404 fails again at once, so a playlist is
+    /// asked for once per `coverRetryInterval`, never in a loop.
+    @ObservationIgnored private var coverAttempts: [String: Date] = [:]
+    /// Playlists whose cover failed while offline, asked for when the network returns.
+    @ObservationIgnored private var waitingCovers: Set<String> = []
+
+    /// The least time between two asks for the same playlist's cover.
+    static let coverRetryInterval: TimeInterval = 10 * 60
+
+    /// The newly signed address for a signed cover, nil when `address` is not one or none was fetched yet. Observable, so a
+    /// cover that reads it redraws when the new address lands.
+    func coverURL(for address: URL?) -> URL? {
+        MusicSignedCover.playlistId(in: address).flatMap { freshCovers[$0] }
+    }
+
+    /// A cover failed to load. A signed cover gets a new address from its playlist's page, unless an ask for it is out or one
+    /// went out within `coverRetryInterval`. Offline the ask waits for the network: the failed cover stays on screen as a
+    /// placeholder and nothing else would ask again. Any failure is logged and leaves the placeholder up.
+    func coverFailed(_ address: URL?) {
+        guard let id = MusicSignedCover.playlistId(in: address) else { return }
+        guard !isOffline else {
+            waitingCovers.insert(id)
+            return
+        }
+        requestCover(id)
+    }
+
+    private func requestCover(_ id: String) {
+        guard coverRuns[id] == nil else { return }
+        let asked = now()
+        if let last = coverAttempts[id], asked.timeIntervalSince(last) < Self.coverRetryInterval { return }
+        coverAttempts[id] = asked
+        let run = newRun()
+        coverRuns[id] = run
+        launch("cover:\(id)") { [weak self, backend] in
+            do {
+                let page = try await backend.page(browseId: "VL" + id)
+                self?.landCover(page.thumbnailURL, id: id, run: run)
+            } catch {
+                self?.failCover(error, id: id, run: run)
+            }
+        }
+    }
+
+    private func landCover(_ address: URL?, id: String, run: Int) {
+        guard coverRuns[id] == run else { return }
+        coverRuns[id] = nil
+        // Only a signed cover of the same playlist counts: another address would show another picture or a dead one again.
+        guard let address, MusicSignedCover.playlistId(in: address) == id else { return }
+        freshCovers[id] = address
+    }
+
+    private func failCover(_ error: any Error, id: String, run: Int) {
+        guard coverRuns[id] == run else { return }
+        coverRuns[id] = nil
+        logger.info("cover refresh failed: \(MusicService.logDescription(of: error), privacy: .public)")
+        expireIfSignedOut(error)
+    }
+
     /// The Downloaded songs page, read from the index each time (nothing of it is stored here, so it is current).
     private func downloadedSongsPage() -> MusicBrowsePage {
         downloads?.downloadedSongsPage() ?? MusicBrowsePage(
@@ -341,6 +416,9 @@ final class MusicBrowseStore {
         for browseId in stored.sorted() where pages[browseId] != nil { refreshStoredPage(browseId) }
         let waiting = waitingPages
         waitingPages.removeAll()
+        let covers = waitingCovers
+        waitingCovers.removeAll()
+        for id in covers.sorted() { requestCover(id) }
         for browseId in waiting.sorted() where path.contains(where: { $0.browseId == browseId }) {
             switch pageState(browseId) {
             case .idle, .failed: reloadPage(browseId)
@@ -1228,6 +1306,10 @@ final class MusicBrowseStore {
         sortedPages.removeAll()
         releaseYears.removeAll()
         loadingReleaseYears.removeAll()
+        freshCovers.removeAll()
+        coverRuns.removeAll()
+        coverAttempts.removeAll()
+        waitingCovers.removeAll()
     }
 
     // MARK: - Helpers
