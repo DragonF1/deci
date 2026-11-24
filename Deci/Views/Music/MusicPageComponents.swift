@@ -251,7 +251,7 @@ private struct MusicSortMenuItems: View {
 }
 
 /// A playlist's sort chip, on the right of its "SONGS" kicker: the sort and, for a key with a direction, an arrow that
-/// tells it, like "Sort: Date added" with a down arrow for a playlist at rest, or "Sort: Playlist order" with none.
+/// tells it, like "Sort: Date added" with a down arrow, or "Sort: Playlist order" with none, which is where it rests.
 struct MusicSortChipView: View {
     let sort: MusicPlaylistSort
     /// Whether the page is an artist's songs list, whose menu has Popular, Album and Plays.
@@ -292,7 +292,8 @@ struct MusicSortChipView: View {
     }
 }
 
-/// Liked music's small sort, on the right of its "SONGS" kicker: "Recently liked" at rest, else the picked key.
+/// Liked music's small sort, on the right of its "SONGS" kicker: "Playlist order" at rest, "Recently liked" for Date
+/// added newest first, else the picked key.
 struct MusicLikedSortView: View {
     let sort: MusicPlaylistSort
     let onPick: (MusicSortField) -> Void

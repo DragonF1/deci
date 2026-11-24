@@ -84,7 +84,7 @@ final class MusicBrowseStore {
     private(set) var loadingMoreTracks: Set<String> = []
     /// Playlists whose sort is loading every remaining page of songs first.
     private(set) var loadingAllTracks: Set<String> = []
-    /// The sort picked for each playlist this session. A playlist missing here is at rest, where `sort(for:)` says.
+    /// The sort picked for each playlist this session. A playlist missing here is at rest, on Playlist order.
     private(set) var sorts: [String: MusicPlaylistSort] = [:]
     /// The release years of an artist's songs list, by its browse id, once Release date has read them. A page missing here
     /// has not read them yet.
@@ -1009,31 +1009,22 @@ final class MusicBrowseStore {
         browseId.hasPrefix("VL")
     }
 
-    /// The sort of a playlist that has none picked: Date added with the newest song first on a playlist the user made
-    /// and on Liked music, else Playlist order. Whether a playlist is the user's is told by its page, so one that has
-    /// not landed yet rests on Playlist order, except Liked music, which is known by its browse id.
-    private func restingSort(for browseId: String) -> MusicPlaylistSort {
-        guard Self.canSort(browseId) else { return .playlistOrder }
-        if listsNewestFirst(browseId) { return .dateAddedNewestFirst }
-        if case .loaded(let page)? = pages[browseId], page.isEditable { return .dateAddedNewestFirst }
-        return .playlistOrder
-    }
-
     /// Whether YouTube lists the playlist with its newest song first. Liked music is the one that does; every other
     /// playlist adds a new song at its end.
     private func listsNewestFirst(_ browseId: String) -> Bool {
         browseId == Self.likedMusic.browseId
     }
 
-    /// The sort of this playlist: the one picked, else where it rests. A pick the page's menu does not offer rests
-    /// instead, so Plays picked on an artist's songs never follows the same id opened as a plain playlist.
+    /// The sort of this playlist: the one picked, else Playlist order, where every playlist rests (Liked music, a
+    /// playlist the user made and an artist's songs list included). A pick the page's menu does not offer rests instead,
+    /// so Plays picked on an artist's songs never follows the same id opened as a plain playlist.
     func sort(for browseId: String) -> MusicPlaylistSort {
         if let picked = sorts[browseId], sortOptions(for: browseId).contains(picked.field) { return picked }
-        return restingSort(for: browseId)
+        return .playlistOrder
     }
 
     /// Whether the sort puts the songs in another order than YouTube lists them. Only then do all the songs have to be
-    /// loaded before the list shows them in order; a playlist in YouTube's order, Liked music at rest among them,
+    /// loaded before the list shows them in order; a playlist in YouTube's order, every playlist at rest among them,
     /// shows its songs as they come.
     func needsReorder(_ browseId: String) -> Bool {
         sort(for: browseId).reorders(newestFirst: listsNewestFirst(browseId))
@@ -1063,9 +1054,8 @@ final class MusicBrowseStore {
     }
 
     /// Picks a sort option for a playlist: a new option sorts ascending (Date added, newest first; Plays, most played
-    /// first), the same one again flips the direction, and Playlist order is stored as a pick too, so a playlist that
-    /// rests on Date added stays in YouTube's order once the user asks for it. An option the page's menu does not offer
-    /// is ignored. A sort that reorders first loads every remaining page of songs (up to `sortTrackCap`), and the
+    /// first), the same one again flips the direction, and Playlist order is stored as a pick too. An option the page's
+    /// menu does not offer is ignored. A sort that reorders first loads every remaining page of songs (up to `sortTrackCap`), and the
     /// list waits for them.
     func pickSort(_ field: MusicSortField, for browseId: String) {
         guard Self.canSort(browseId), sortOptions(for: browseId).contains(field) else { return }
@@ -1165,13 +1155,6 @@ final class MusicBrowseStore {
             }
         }
         guard pageRuns[browseId] == run else { return }
-        // A playlist at rest on Date added that stopped short would show its oldest songs as its newest: it goes back
-        // to Playlist order, where the footer still reaches every song.
-        if sorts[browseId] == nil, case .loaded(let page)? = pages[browseId],
-           page.continuation != nil || page.tracks.count > Self.sortTrackCap {
-            sorts[browseId] = .playlistOrder
-            sortedPages[browseId] = nil
-        }
         loadingAllTracks.remove(browseId)
     }
 

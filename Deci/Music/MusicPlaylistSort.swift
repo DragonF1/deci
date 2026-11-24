@@ -58,7 +58,7 @@ struct MusicPlaylistSort: Equatable, Sendable {
 
     /// The order the playlist has on YouTube Music.
     static let playlistOrder = MusicPlaylistSort()
-    /// Date added with the newest song first: where a playlist the user made and Liked music rest.
+    /// Date added with the newest song first: what picking Date added gives first.
     static let dateAddedNewestFirst = MusicPlaylistSort(field: .dateAdded, ascending: false)
 
     init(field: MusicSortField = .playlistOrder, ascending: Bool = true) {

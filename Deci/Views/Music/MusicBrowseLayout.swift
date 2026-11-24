@@ -99,7 +99,7 @@ nonisolated enum MusicQuickPicks {
 
 /// What a page's sort chip and Liked music's small sort say.
 nonisolated struct MusicSortChip: Equatable {
-    /// "Sort: Title", and "Sort: Date added" on a playlist the user made at rest.
+    /// "Sort: Title", and "Sort: Playlist order" on any playlist at rest.
     let label: String
     /// An arrow for a key with a direction, to tell which way it runs; nil for Playlist order, which has none.
     let directionSymbol: String?

@@ -122,15 +122,15 @@ struct MusicSortChipTests {
     private let duration = MusicPlaylistSort(field: .duration, ascending: false)
     private let oldestFirst = MusicPlaylistSort(field: .dateAdded, ascending: true)
 
-    @Test("the chip says Playlist order for a playlist that is not the user's at rest, with no arrow")
+    @Test("the chip says Playlist order for any playlist at rest, with no arrow")
     func atRest() {
         let chip = MusicSortChip.resolve(.playlistOrder)
         #expect(chip.label == "Sort: Playlist order")
         #expect(chip.directionSymbol == nil)
     }
 
-    @Test("the chip of a playlist the user made at rest says Date added with the arrow down")
-    func ownedAtRest() {
+    @Test("the chip of a playlist with Date added newest first picked says Date added with the arrow down")
+    func dateAddedPicked() {
         #expect(MusicSortChip.resolve(.dateAddedNewestFirst) == MusicSortChip(label: "Sort: Date added", directionSymbol: "arrow.down"))
     }
 
@@ -145,8 +145,9 @@ struct MusicSortChipTests {
         #expect(MusicSortChip.resolve(duration) == MusicSortChip(label: "Sort: Duration", directionSymbol: "arrow.down"))
     }
 
-    @Test("Liked music says Recently liked at rest, which is Date added newest first, else the key")
+    @Test("Liked music says Playlist order at rest, Recently liked for Date added newest first, else the key")
     func liked() {
+        #expect(MusicSortChip.likedLabel(.playlistOrder) == "Playlist order")
         #expect(MusicSortChip.likedLabel(.dateAddedNewestFirst) == "Recently liked")
         #expect(MusicSortChip.likedLabel(title) == "Title")
         #expect(MusicSortChip.likedLabel(duration) == "Duration")
