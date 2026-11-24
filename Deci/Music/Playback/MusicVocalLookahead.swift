@@ -21,6 +21,7 @@ final class MusicVocalLookahead {
     private let store: CacheStore
     private let timeoutSec: Double
     private var resolved: [String: [ClosedRange<Double>]] = [:]
+    private var lyricCues: [String: MusicLyricCues] = [:]
     private var requested: Set<String> = []
 
     init(
@@ -45,6 +46,9 @@ final class MusicVocalLookahead {
 
     /// Intervals already known for a song; nil when unknown (use the proxy).
     func intervals(for videoId: String) -> [ClosedRange<Double>]? { resolved[videoId] }
+
+    /// Where the song's hook and first words are; nil when its synced lyrics are unknown.
+    func cues(for videoId: String) -> MusicLyricCues? { lyricCues[videoId] }
 
     /// True when a lookup for the song was already started or finished.
     func hasRequested(_ videoId: String) -> Bool { requested.contains(videoId) }
@@ -84,8 +88,12 @@ final class MusicVocalLookahead {
 
     private func record(_ result: LyricsResult, for videoId: String, duration: Double) {
         switch result {
-        case .synced(let lines): resolved[videoId] = MusicVocalIntervals.from(lines: lines, duration: duration)
-        case .instrumental: resolved[videoId] = []
+        case .synced(let lines):
+            resolved[videoId] = MusicVocalIntervals.from(lines: lines, duration: duration)
+            lyricCues[videoId] = MusicLyricCues.from(lines: lines, duration: duration)
+        case .instrumental:
+            resolved[videoId] = []
+            lyricCues[videoId] = MusicLyricCues()
         case .plain, .notFound: break
         }
     }

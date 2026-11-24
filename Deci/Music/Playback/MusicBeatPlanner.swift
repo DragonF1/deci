@@ -192,7 +192,9 @@ enum MusicBeatPlanner {
             let overlap = overlapItem / outRate
             guard overlap <= maxOverlapSec,
                   let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: bars, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
-                  let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else {
+                  let mixIn = mixInTime(
+                      grid: bGrid, start: entryBarStart(inputs, smart: smart, lead: overlap * tempo.rate, grid: bGrid)
+                  ) else {
                 continue
             }
             if let earliest = inputs.earliestMixOutSec, mixOut < earliest {
@@ -304,7 +306,8 @@ enum MusicBeatPlanner {
             return nil
         }
         let bEnd = inputs.incoming.analysis.flatMap { MusicTransitionPlanner.trimmedEnd(of: $0, duration: bDuration) } ?? bDuration
-        guard bEnd - smart.incomingStartSec >= minIncomingRemainingSec else { return nil }
+        let mixIn = entryStart(inputs, smart: smart, lead: 0)
+        guard bEnd - mixIn >= minIncomingRemainingSec else { return nil }
         let aEnd = smart.outgoingEndSec ?? aDuration
         var plan = smart
         plan.mode = .beat
@@ -312,8 +315,9 @@ enum MusicBeatPlanner {
         plan.style = style
         plan.incomingRate = 1
         plan.mixOutSec = cut
-        plan.mixInSec = smart.incomingStartSec
+        plan.mixInSec = mixIn
         plan.fallbackIncomingStartSec = smart.incomingStartSec
+        plan.incomingStartSec = mixIn
         plan.fadeStartSec = cut
         plan.fadeSeconds = cutFadeSeconds
         plan.overlapBars = 0
@@ -347,7 +351,7 @@ enum MusicBeatPlanner {
         let aEnd = smart.outgoingEndSec ?? aDuration
         let barSec = 4 * aGrid.periodSec
         guard let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: 1, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
-              let mixIn = mixInTime(grid: bGrid, start: smart.incomingStartSec) else { return nil }
+              let mixIn = mixInTime(grid: bGrid, start: entryBarStart(inputs, smart: smart, lead: 0, grid: bGrid)) else { return nil }
         if let earliest = inputs.earliestMixOutSec, mixOut < earliest { return nil }
         if inputs.vocalGuardEnabled,
            MusicVocalGuard.cutsOutgoingSinger(outgoing: a, intervals: inputs.outgoing.vocalIntervals, endSec: mixOut) {
@@ -445,7 +449,7 @@ enum MusicBeatPlanner {
     /// grid anchor) where `bars` bars fit before `end`, inside the validated span and not before the outro start minus
     /// `outroSlackBars` bars.
     ///
-    /// `preferred` (DJ-length songs) is a mix-out the caller wants instead: it is returned when `bars` bars still fit after it
+    /// `preferred` (a DJ exit) is a mix-out the caller wants instead: it is returned when `bars` bars still fit after it
     /// inside the span (the outro limit does not apply to it), and nil when they do not.
     static func mixOutTime(
         grid: MusicBeatGrid, analysis: MusicAnalysis, bars: Int, barSec: Double, end: Double, preferred: Double? = nil
@@ -478,6 +482,18 @@ enum MusicBeatPlanner {
         }
         guard let time = candidate, time >= earliest - 1e-9, time <= latest + 1e-9 else { return nil }
         return time
+    }
+
+    /// Where the incoming song starts so that `lead` seconds of it are over as it gets going; the plain start without an entry.
+    static func entryStart(_ inputs: MusicTransitionInputs, smart: TransitionPlan, lead: Double) -> Double {
+        inputs.djEntry?.start(lead: lead, notBefore: smart.incomingStartSec) ?? smart.incomingStartSec
+    }
+
+    /// The same for `mixInTime`, which then finds the bar line at or before the entry.
+    static func entryBarStart(_ inputs: MusicTransitionInputs, smart: TransitionPlan, lead: Double, grid: MusicBeatGrid) -> Double {
+        // Without a downbeat `mixInTime` takes any beat, so a beat is as early as it has to look.
+        let unit = grid.downbeatPhase == nil ? grid.periodSec : 4 * grid.periodSec
+        return inputs.djEntry?.barStart(lead: lead, barSec: unit, notBefore: smart.incomingStartSec) ?? smart.incomingStartSec
     }
 
     /// The first incoming bar boundary (any beat when the downbeat is unknown) at or after `start`.

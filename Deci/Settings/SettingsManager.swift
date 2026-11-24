@@ -81,7 +81,6 @@ nonisolated struct AppSettings: Codable, Equatable {
     }
     var musicCrossfadeEnabled: Bool = false        // Old key, written only for older builds: Transitions is not Off
     var musicCrossfadeSeconds: Double = 6          // How long a crossfade or a mix lasts, 1 to 12 seconds
-    var musicDJLength: Bool = false                // With Transitions on Mixing, energetic runs move on after the second chorus (off by default)
     var musicVocalGuard: Bool = true               // Keep two singers from overlapping in a mix (needs Transitions on Mixing)
     var musicBeatMix: Bool = false                 // Old key, written only for older builds: Transitions is Mixing
     var musicFavoriteLeft: String = MusicFavoriteControl.shuffle.rawValue  // What the player's left favorite slot holds (a MusicFavoriteControl raw value)
@@ -145,7 +144,6 @@ nonisolated struct AppSettings: Codable, Equatable {
         musicCrossfadeEnabled = musicTransitions.isOn
         musicBeatMix = musicTransitions == .mixing
         musicVocalGuard = (try? c.decodeIfPresent(Bool.self, forKey: .musicVocalGuard)) ?? true
-        musicDJLength = (try? c.decodeIfPresent(Bool.self, forKey: .musicDJLength)) ?? false
         // Kept as the raw strings: a control a later build added or dropped reads as the slot's default
         // (`MusicFavoriteSlots`) without this build overwriting what the file says.
         musicFavoriteLeft = (try? c.decodeIfPresent(String.self, forKey: .musicFavoriteLeft)) ?? MusicFavoriteControl.shuffle.rawValue
@@ -243,7 +241,7 @@ extension AppSettings {
             MusicPlaybackPreferences(
                 shuffleMode: !musicShuffle ? .off : (musicMixShuffle ? .flow : .shuffle), loop: musicLoopMode, autoplay: musicAutoplay,
                 transitionMode: musicTransitions, crossfadeSeconds: musicCrossfadeSeconds,
-                vocalGuard: musicVocalGuard, djLength: musicDJLength
+                vocalGuard: musicVocalGuard
             )
         }
         set {
@@ -255,7 +253,6 @@ extension AppSettings {
             musicAutoplay = newValue.autoplay
             musicCrossfadeSeconds = newValue.crossfadeSeconds
             musicVocalGuard = newValue.vocalGuard
-            musicDJLength = newValue.djLength
         }
     }
 }

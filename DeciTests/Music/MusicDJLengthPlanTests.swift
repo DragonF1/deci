@@ -1,7 +1,7 @@
 // DeciTests/Music/MusicDJLengthPlanTests.swift
-// Tier 4b P3: DJ-length songs in the planner. Off by default and for calm runs the plan is untouched; on with an energetic run
-// the mix-out moves to the outgoing song's second chorus end (within 1 ms of the bar), held back by the floor, by a sung line
-// at the cut and by a cut that would not be earlier than the usual one.
+// Where a DJ leaves a song, in the planner: the mix-out moves to the outgoing song's second chorus end (within 1 ms of the bar),
+// held back by the minute that must have played, by the window, by a sung line at the exit and by an exit that would not be
+// earlier than the usual mix-out. Off (no Mixing) the plan is untouched. The sources are covered in MusicDJExitTests.
 
 import Foundation
 import Testing
@@ -12,19 +12,20 @@ struct MusicDJLengthPlanTests {
     typealias BT = MusicBeatPlannerTests
 
     /// Outgoing 240 s song at 120 bpm (bars of 2 s, phrases of 16 s) with choruses in `high` phrases. Its usual mix-out is
-    /// 208.2 (the 8 bar overlap at the last phrase boundary that fits).
+    /// 208.2 (the 8 bar overlap at the last phrase boundary that fits). The second chorus of the default ends at 112.2. Nothing
+    /// is sung in the incoming song and its level never moves, so it is brought in as it always was.
     private func inputs(
-        high: Set<Int> = [2, 5, 8], period: Double = 0.5, bPeriod: Double = 0.5, djLength: Bool = true,
-        runEnergy: Float? = 0.7, intervals: [ClosedRange<Double>]? = nil, vocalGuard: Bool = false
+        high: Set<Int> = [2, 6, 9], period: Double = 0.5, bPeriod: Double = 0.5, djLength: Bool = true,
+        intervals: [ClosedRange<Double>]? = nil, vocalGuard: Bool = false
     ) -> MusicTransitionInputs {
         var i = BT.inputs(
             a: BT.grid(period: period), b: BT.grid(period: bPeriod, anchor: 0.1, phase: 1, span: 0.1...236)
         )
         i.outgoing.analysis?.energy = SectionFixtures.envelope(seconds: 240, phraseSec: 32 * period, high: high)
         i.djLength = djLength
-        i.runEnergy = runEnergy
         i.vocalGuardEnabled = vocalGuard
         i.outgoing.vocalIntervals = intervals
+        i.incoming.vocalIntervals = []
         return i
     }
 
@@ -36,20 +37,19 @@ struct MusicDJLengthPlanTests {
         #expect(baseline.djSection == nil)
     }
 
-    @Test("off by default: nothing changes, however energetic the run")
+    @Test("off by default")
     func offByDefault() {
         #expect(MusicTransitionInputs(
             outgoing: BT.inputs().outgoing, incoming: BT.inputs().incoming, crossfadeOn: true, settingSeconds: 6
         ).djLength == false)
-        #expect(MusicTransitionPlanner.plan(inputs(djLength: false, runEnergy: 0.95)) == baseline)
     }
 
-    @Test("on with an energetic run: the mix-out is the second chorus end, within 1 ms of the bar")
+    @Test("on: the mix-out is the second chorus end, within 1 ms of the bar")
     func cutsAtSecondChorus() throws {
         let plan = MusicTransitionPlanner.plan(inputs())
         #expect(plan.mode == .beat)
         let out = try #require(plan.mixOutSec)
-        #expect(abs(out - 96.2) < 0.001, "mixOut \(out)")
+        #expect(abs(out - 112.2) < 0.001, "mixOut \(out)")
         let bars = (out - 0.2) / 2
         #expect(abs(bars - bars.rounded()) * 2 < 0.001, "on a downbeat")
         #expect(plan.djSection == .chorus2)
@@ -63,17 +63,9 @@ struct MusicDJLengthPlanTests {
         for style in [MusicTransitionStyle.quickCut, .echoOut] {
             let plan = MusicTransitionStylePicker.$debugScopedStyle.withValue(style) { MusicTransitionPlanner.plan(inputs()) }
             #expect(plan.style == style, "\(style)")
-            #expect(abs((plan.mixOutSec ?? 0) - 96.2) < 0.001, "\(style)")
+            #expect(abs((plan.mixOutSec ?? 0) - 112.2) < 0.001, "\(style)")
             #expect(plan.djSection == .chorus2)
         }
-    }
-
-    @Test("on with a calm run, no run energy or an unknown one: the song plays out")
-    func calmPlaysOut() {
-        #expect(MusicTransitionPlanner.plan(inputs(runEnergy: 0.5)) == baseline)
-        #expect(MusicTransitionPlanner.plan(inputs(runEnergy: nil)) == baseline)
-        #expect(MusicTransitionPlanner.plan(inputs(runEnergy: MusicDJLength.highEnergy - 0.001)) == baseline)
-        #expect(MusicTransitionPlanner.plan(inputs(runEnergy: MusicDJLength.highEnergy)).djSection == .chorus2, "the threshold itself is high")
     }
 
     @Test("no sections: the normal plan")
@@ -87,31 +79,41 @@ struct MusicDJLengthPlanTests {
 
     @Test("a sung line over the cut moves it to the next clean bar")
     func vocalShifts() throws {
-        // The singer holds a line from 90 s to 97.5 s, across the chorus end at 96.2: the next bar line is 98.2.
-        let plan = MusicTransitionPlanner.plan(inputs(intervals: [90...97.5], vocalGuard: true))
+        // The singer holds a line from 106 s to 113.5 s, across the chorus end at 112.2: the next bar line is 114.2.
+        let plan = MusicTransitionPlanner.plan(inputs(intervals: [106...113.5], vocalGuard: true))
         #expect(plan.djSection == .chorus2)
-        #expect(abs((plan.mixOutSec ?? 0) - 98.2) < 0.001, "mixOut \(plan.mixOutSec ?? -1)")
+        #expect(abs((plan.mixOutSec ?? 0) - 114.2) < 0.001, "mixOut \(plan.mixOutSec ?? -1)")
         // With the guard off the line does not matter.
-        let unguarded = MusicTransitionPlanner.plan(inputs(intervals: [90...97.5], vocalGuard: false))
-        #expect(abs((unguarded.mixOutSec ?? 0) - 96.2) < 0.001)
+        let unguarded = MusicTransitionPlanner.plan(inputs(intervals: [106...113.5], vocalGuard: false))
+        #expect(abs((unguarded.mixOutSec ?? 0) - 112.2) < 0.001)
     }
 
-    @Test("a singer who never stops keeps the normal plan")
+    @Test("a singer who never stops moves the exit to the next chorus, and with none clear keeps the normal plan")
     func vocalFallsBack() {
-        let plan = MusicTransitionPlanner.plan(inputs(intervals: [60...150], vocalGuard: true))
-        #expect(plan.djSection == nil)
-        #expect(abs((plan.mixOutSec ?? 0) - 208.2) < 0.001)
+        // Every bar line the second chorus could be left at is sung over; the third one ends at 160.2.
+        let third = MusicTransitionPlanner.plan(inputs(intervals: [60...150], vocalGuard: true))
+        #expect(third.djSection == .chorus2)
+        #expect(abs((third.mixOutSec ?? 0) - 160.2) < 0.001, "mixOut \(third.mixOutSec ?? -1)")
+        let none = MusicTransitionPlanner.plan(inputs(intervals: [60...200], vocalGuard: true))
+        #expect(none.djSection == nil)
+        #expect(abs((none.mixOutSec ?? 0) - 208.2) < 0.001)
     }
 
-    @Test("a second chorus that ends before a minute has played is left alone")
+    @Test("a second chorus outside the middle of the song is left alone")
+    func window() {
+        // It ends at 96.2, 40% in: not the one a DJ leaves on. The third ends at 144.2 and is.
+        #expect(abs((MusicTransitionPlanner.plan(inputs(high: [2, 5, 8])).mixOutSec ?? 0) - 144.2) < 0.001)
+        #expect(MusicTransitionPlanner.plan(inputs(high: [2, 5])) == MusicTransitionPlanner.plan(inputs(high: [2, 5], djLength: false)))
+    }
+
+    @Test("a song is never left before it has played for a minute, counted from where it was brought in")
     func floor() {
-        // 160 bpm: bars of 1.5 s, phrases of 12 s. Choruses at phrases 1 and 3 end at 24.2 and 48.2: under the 60 s floor.
-        let early = inputs(high: [1, 3], period: 0.375, bPeriod: 0.375)
-        #expect(MusicTransitionPlanner.plan(early).djSection == nil)
-        #expect(MusicTransitionPlanner.plan(early) == MusicTransitionPlanner.plan({ var i = early; i.djLength = false; return i }()))
-        // The same shape one phrase later ends at 60.2 and is allowed.
-        let later = inputs(high: [2, 4], period: 0.375, bPeriod: 0.375)
-        #expect(MusicTransitionPlanner.plan(later).djSection == .chorus2)
+        // The outgoing song's first words are in the bar at 54.2, so it was brought in there: the first bar line a minute later
+        // is 114.2, one after the chorus end.
+        var i = inputs(high: [4, 6, 9], intervals: [56...58])
+        #expect(abs((MusicTransitionPlanner.plan(i).mixOutSec ?? 0) - 114.2) < 0.001, "mixOut \(MusicTransitionPlanner.plan(i).mixOutSec ?? -1)")
+        i.outgoing.vocalIntervals = [20...22]
+        #expect(abs((MusicTransitionPlanner.plan(i).mixOutSec ?? 0) - 112.2) < 0.001, "92 s of it")
     }
 
     @Test("a second chorus no earlier than the usual mix-out changes nothing")
@@ -123,7 +125,11 @@ struct MusicDJLengthPlanTests {
     @Test("a cut the playhead has already passed is left alone")
     func tooLate() {
         var i = inputs()
-        i.earliestMixOutSec = 100
+        i.earliestMixOutSec = 113
+        #expect(abs((MusicTransitionPlanner.plan(i).mixOutSec ?? 0) - 114.2) < 0.001, "the next bar line is still ahead")
+        i.earliestMixOutSec = 120
+        #expect(abs((MusicTransitionPlanner.plan(i).mixOutSec ?? 0) - 160.2) < 0.001, "the next chorus is")
+        i.earliestMixOutSec = 170
         #expect(MusicTransitionPlanner.plan(i).djSection == nil)
     }
 
@@ -139,35 +145,20 @@ struct MusicDJLengthPlanTests {
         }
     }
 
-    @Test("run energy is the mean of what is known; nothing known is nil")
-    func runEnergy() {
-        #expect(abs((MusicDJLength.runEnergy([0.6, 0.8, nil]) ?? 0) - 0.7) < 1e-6)
-        #expect(MusicDJLength.runEnergy([nil, nil]) == nil)
-        #expect(MusicDJLength.runEnergy([]) == nil)
-        #expect(MusicDJLength.runEnergy([.nan, 0.5]) == 0.5)
-        #expect(MusicDJLength.isHigh(0.9) && !MusicDJLength.isHigh(0.3) && !MusicDJLength.isHigh(nil))
-    }
-
     @Test("the log line carries ids and numbers only")
     func logLine() {
         #expect(MusicTransitionLog.djLine(from: "a", to: "b", section: .chorus2, outAt: 96.2)
             == "transition_dj from=a to=b section=chorus2 outAt=96.20")
+        #expect(MusicTransitionLog.djLine(from: "a", to: "b", section: .drop2, outAt: 96.2, entry: .verse, inAt: 12.3)
+            == "transition_dj from=a to=b section=drop2 outAt=96.20 entry=verse inAt=12.30")
+        #expect(MusicTransitionLog.djLine(from: "a", to: "b", section: nil, outAt: 208.2, entry: .hook, inAt: 12.3)
+            == "transition_dj from=a to=b section=end outAt=208.20 entry=hook inAt=12.30", "left at its end, brought in late")
     }
 
-    @Test("with the vocal guard on and no lyric timings for the outgoing song there is no DJ point, whatever the style")
-    func unknownLyricsKeepNormalPlan() {
-        let normal = MusicTransitionPlanner.plan(inputs(intervals: nil, vocalGuard: true).with { $0.djLength = false })
-        #expect(MusicTransitionPlanner.plan(inputs(intervals: nil, vocalGuard: true)) == normal)
-        for style in [MusicTransitionStyle.quickCut, .echoOut] {
-            let plan = MusicTransitionStylePicker.$debugScopedStyle.withValue(style) {
-                MusicTransitionPlanner.plan(inputs(intervals: nil, vocalGuard: true))
-            }
-            #expect(plan.djSection == nil, "\(style)")
-            #expect((plan.mixOutSec ?? 0) > 150, "\(style) keeps the usual mix-out: \(plan.mixOutSec ?? -1)")
-        }
-        // Timings that say nothing is sung (an empty list) are known timings: the cut stands.
+    @Test("a song whose words are not known is left there too, with the vocal guard on")
+    func unknownLyricsStillLeave() {
+        #expect(MusicTransitionPlanner.plan(inputs(intervals: nil, vocalGuard: true)).djSection == .chorus2)
         #expect(MusicTransitionPlanner.plan(inputs(intervals: [], vocalGuard: true)).djSection == .chorus2)
-        // The guard off does not need timings.
         #expect(MusicTransitionPlanner.plan(inputs(intervals: nil, vocalGuard: false)).djSection == .chorus2)
     }
 
@@ -184,13 +175,5 @@ struct MusicDJLengthPlanTests {
         let withSwapNormal = plan(swap: true, dj: false)
         #expect(abs((withSwapNormal.mixOutSec ?? 0) - 192.2) < 0.001, "usual mix-out \(withSwapNormal.mixOutSec ?? -1)")
         #expect(plan(swap: true, dj: true) == withSwapNormal)
-    }
-}
-
-private extension MusicTransitionInputs {
-    func with(_ edit: (inout MusicTransitionInputs) -> Void) -> MusicTransitionInputs {
-        var copy = self
-        edit(&copy)
-        return copy
     }
 }

@@ -123,9 +123,13 @@ enum MusicTransitionLog {
         "transition_style from=\(from) to=\(to) style=\(style.rawValue) reason=\(reason ?? "none") prev=\(previous?.rawValue ?? "none")"
     }
 
-    /// Tier 4b P3: transition_dj from=<id> to=<id> section=chorus2 outAt=123.40. A DJ-length mix-out was planned at the
-    /// outgoing song's second chorus end. Ids and numbers only.
-    static func djLine(from: String, to: String, section: DJSection, outAt: Double) -> String {
-        "transition_dj from=\(from) to=\(to) section=\(section.rawValue) outAt=\(fixed(outAt, 2))"
+    /// transition_dj from=<id> to=<id> section=chorus2 outAt=123.40, and entry=verse inAt=12.30 when the incoming song came in
+    /// past its intro. The section is the one the outgoing song was left after, `end` for its usual mix-out. Ids and numbers only.
+    static func djLine(
+        from: String, to: String, section: DJSection?, outAt: Double, entry: MusicDJEntry.Kind? = nil, inAt: Double? = nil
+    ) -> String {
+        let line = "transition_dj from=\(from) to=\(to) section=\(section?.rawValue ?? "end") outAt=\(fixed(outAt, 2))"
+        guard let entry, let inAt else { return line }
+        return line + " entry=\(entry.rawValue) inAt=\(fixed(inAt, 2))"
     }
 }

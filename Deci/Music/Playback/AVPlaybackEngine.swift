@@ -1020,9 +1020,10 @@ final class AVPlaybackEngine: PlaybackEngine {
         // The plan says what is real: this item no longer ends at the trimmed end.
         transitionPlan?.outgoingEndSec = nil
         // What follows is a plain fade from where the standby is parked. A drop swap parks it deep in the song (its drop less
-        // the lead), so it goes back to the song's normal start first, with the schedule held until the seek has landed. A loop
-        // or a tempo match has nothing to play under any more: the standby is the plain song again.
-        if plan.style == .dropSwap || plan.style == .loopExtend || MusicItemEdit.edit(from: plan) != nil, preloadStream != nil {
+        // the lead) and so does an entry past the intro, so it goes back to the song's normal start first, with the schedule held
+        // until the seek has landed. A loop or a tempo match has nothing to play under any more: the standby is the plain song again.
+        if plan.style == .dropSwap || plan.entersDeep || plan.style == .loopExtend || MusicItemEdit.edit(from: plan) != nil,
+           preloadStream != nil {
             reparkStandbyOnSmartStart(plan)
         }
     }
@@ -1558,12 +1559,13 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         let incoming = standby
         let outgoing = active
-        let dropSwap = transitionPlan?.style == .dropSwap
+        // A drop swap's mix-in, and a DJ entry's, is deep in the song (the repark may have replaced the plan's own start already).
+        let deep = transitionPlan.map { $0.style == .dropSwap || $0.entersDeep } ?? false
         if reparkPending {
             reparkPending = false
-            // A drop swap's mix-in is deep in the song, so it stays on the smart start the seek is already going to (a start
-            // from there waits for that seek). Any other plan starts from the mix-in as before, and says so.
-            if !dropSwap {
+            // Such a song stays on the smart start the seek is already going to (a start from there waits for that seek). Any
+            // other plan starts from the mix-in as before, and says so.
+            if !deep {
                 // The item ended before the seek to the smart start landed: start from the mix-in as before, and say so.
                 standby.startOffset = reparkMixIn
                 transitionPlan?.incomingStartSec = reparkMixIn
@@ -1571,8 +1573,8 @@ final class AVPlaybackEngine: PlaybackEngine {
                 standby.player.seek(to: CMTime(seconds: reparkMixIn, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
             }
         }
-        // An end that came before anything re-parked a drop swap: the song starts at its normal start, not at the lead.
-        if dropSwap, let smart = transitionPlan?.fallbackIncomingStartSec, smart.isFinite, smart >= 0,
+        // An end that came before anything re-parked it: the song starts at its normal start, not at the mix-in.
+        if deep, let smart = transitionPlan?.fallbackIncomingStartSec, smart.isFinite, smart >= 0,
            abs(smart - standby.startOffset) > 0.01, !(standby.naturalEnd.map { smart >= $0 - 1 } ?? false) {
             standby.startOffset = smart
             transitionPlan?.incomingStartSec = smart

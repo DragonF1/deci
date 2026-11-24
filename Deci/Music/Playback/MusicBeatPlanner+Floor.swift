@@ -90,7 +90,8 @@ extension MusicBeatPlanner {
         // The incoming song always plays at its own tempo; a match only places its start.
         let inRate = 1.0
         // The incoming start moves to its next beat (downbeat) so it can land on one of the outgoing song's.
-        var inStart = smart.incomingStartSec
+        let entryUnit = alignment.map { ($0.bars ? 4 : 1) * $0.incoming.periodSec } ?? 0
+        var inStart = entryStart(inputs, smart: smart, lead: floorFadeSeconds + entryUnit)
         var inSnapped = false
         if let alignment {
             let snapped = snap(alignment.incoming, inStart, bars: alignment.bars, atOrAfter: true).time
@@ -164,7 +165,8 @@ extension MusicBeatPlanner {
         }
         plan.mixOutSec = chosen.mixOut
         plan.mixInSec = start
-        plan.fallbackIncomingStartSec = start
+        // An entry skipped part of the song: a plain start still begins at its top.
+        plan.fallbackIncomingStartSec = inputs.djEntry == nil ? start : min(start, smart.incomingStartSec)
         plan.incomingStartSec = start
         plan.fadeStartSec = chosen.mixOut
         plan.fadeSeconds = fade

@@ -59,14 +59,14 @@ struct MusicTransitionsServiceTests {
         #expect(on.service.effectiveCrossfadeSeconds == 6)
     }
 
-    @Test("DJ length needs Mixing, whatever the order")
+    @Test("DJ exits and entries are part of Mixing, whatever the order, and of nothing else")
     func djLengthNeedsMixing() {
         let on = BeatHarness(
-            preferences: MusicPlaybackPreferences(shuffleMode: .off, transitionMode: .mixing, crossfadeSeconds: 6, djLength: true)
+            preferences: MusicPlaybackPreferences(shuffleMode: .off, transitionMode: .mixing, crossfadeSeconds: 6)
         )
         #expect(on.service.isDJLengthOn)
         let crossfade = BeatHarness(
-            preferences: MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .crossfade, crossfadeSeconds: 6, djLength: true)
+            preferences: MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .crossfade, crossfadeSeconds: 6)
         )
         #expect(!crossfade.service.isDJLengthOn)
     }

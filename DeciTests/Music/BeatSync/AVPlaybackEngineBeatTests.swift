@@ -458,14 +458,68 @@ struct AVPlaybackEngineBeatTests {
         engine.unload()
     }
 
-    private func lateEngineHeld() async throws -> AVPlaybackEngine {
+    @Test("an end before the mix-out starts a song that was parked past its intro from its plain start")
+    func endBeforeDeepEntryStartsPlain() async throws {
+        let first = try await writeTone("de1", seconds: 14)
+        let second = try await writeTone("de2", seconds: 16)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("de1", duration: 14, url: first), startAt: 0, autoplay: true)
+        let plan = beatPlan(mixIn: 8, mixOut: 11, overlap: 2, smartStart: 0.5)
+        #expect(plan.entersDeep)
+        engine.preload(stream("de2", duration: 16, url: second), plan: plan)
+        let parked = await waitUntil(timeout: .seconds(30)) { engine.preloadIsReady && abs(engine.standbyAvPlayer.currentTime().seconds - 8) < 0.1 }
+        #expect(parked, "standby at \(engine.standbyAvPlayer.currentTime().seconds)")
+        engine.debugActiveItemEnded()
+        let there = await waitUntil(timeout: .seconds(10)) {
+            let now = engine.avPlayer.currentTime().seconds
+            return engine.avPlayer.rate > 0 && now >= 0.4 && now < 4
+        }
+        #expect(there, "next song at \(engine.avPlayer.currentTime().seconds)")
+        engine.unload()
+    }
+
+    @Test("an end while the re-park of such a song is on its way starts it from its plain start too")
+    func endBeforeDeepReseekStartsPlain() async throws {
+        let engine = try await lateEngineHeld(mixIn: 8)
+        let held = await waitUntil(timeout: .seconds(30)) { engine.debugBeatGivenUp && engine.debugReparkPending && engine.preloadIsReady }
+        #expect(held)
+        engine.debugActiveItemEnded()
+        #expect(!engine.debugReparkPending)
+        let there = await waitUntil(timeout: .seconds(10)) {
+            let now = engine.avPlayer.currentTime().seconds
+            return engine.avPlayer.rate > 0 && now >= 0.4 && now < 4
+        }
+        #expect(there, "next song at \(engine.avPlayer.currentTime().seconds)")
+        engine.unload()
+    }
+
+    @Test("a seek near the trimmed end takes a song that was parked past its intro back to its plain start")
+    func seekNearEndReparksDeepEntry() async throws {
+        let first = try await writeTone("ds1", seconds: 30)
+        let second = try await writeTone("ds2", seconds: 20)
+        let engine = makeEngine()
+        engine.crossfadeSeconds = 2
+        engine.load(stream("ds1", duration: 30, url: first), startAt: 0, autoplay: true)
+        let plan = beatPlan(mixIn: 8, mixOut: 17, overlap: 3, smartStart: 0.5)
+        #expect(plan.entersDeep && plan.djSection == nil)
+        engine.preload(stream("ds2", duration: 20, url: second), plan: plan)
+        let parked = await waitUntil(timeout: .seconds(30)) { engine.preloadIsReady && abs(engine.standbyAvPlayer.currentTime().seconds - 8) < 0.1 }
+        #expect(parked, "standby at \(engine.standbyAvPlayer.currentTime().seconds)")
+        engine.seek(to: 18.5)
+        let plain = await waitUntil(timeout: .seconds(10)) { abs(engine.standbyAvPlayer.currentTime().seconds - 0.5) < 0.1 }
+        #expect(plain, "standby at \(engine.standbyAvPlayer.currentTime().seconds)")
+        engine.unload()
+    }
+
+    private func lateEngineHeld(mixIn: Double = 2) async throws -> AVPlaybackEngine {
         let first = try await writeTone("h1", seconds: 4)
         let second = try await writeTone("h2", seconds: 12)
         let engine = makeEngine()
         engine.crossfadeSeconds = 2
         engine.debugHoldReseek = true
         engine.load(stream("h1", duration: 4, url: first), startAt: 0, autoplay: true)
-        engine.preload(stream("h2", duration: 12, url: second), plan: beatPlan(mixIn: 2, mixOut: 3, overlap: 4, smartStart: 0.5))
+        engine.preload(stream("h2", duration: 12, url: second), plan: beatPlan(mixIn: mixIn, mixOut: 3, overlap: 4, smartStart: 0.5))
         return engine
     }
 

@@ -1,5 +1,5 @@
 // Deci/Music/Playback/MusicSectionMap.swift
-// Tier 4b P3: song sections from the stored energy curve and the beat grid, and the DJ-length rule built on them. Pure and
+// Tier 4b P3: song sections from the stored energy curve and the beat grid (`MusicDJLength` is built on them). Pure and
 // derived on demand: nothing is stored, the analysis version stays 5. A song whose grid is not trusted, whose envelope is flat
 // or whose shape is ambiguous has NO sections, and a song without sections is planned exactly as before.
 //
@@ -178,80 +178,5 @@ private nonisolated final class SectionCache: @unchecked Sendable {
         if maps[key] == nil { order.append(key) }
         maps[key] = map
         while order.count > 8 { maps[order.removeFirst()] = nil }
-    }
-}
-
-/// DJ-length songs: on Mixing, an energetic run moves on after a song's second chorus. Off by default.
-nonisolated enum MusicDJLength {
-    /// "High" run energy. The energy rating (0...1, `MusicEnergyRating`) of the 54 songs of the live corpus runs from 0.35 to
-    /// 0.72 with the median 0.58, the 75th percentile 0.65 and the 90th 0.69. A run's energy is the mean of 1 to 3 songs, so it
-    /// is tighter than a single song; 0.62 is about the 65th percentile of single songs: a run above it is clearly driving,
-    /// and a calm or mixed run stays under it.
-    static let highEnergy: Float = 0.62
-    /// Never cut a song before this many seconds have played: a song cut at its second chorus must still be a song.
-    static let minPlayedSec = 60.0
-    /// The songs that make a run: the playing one and this many before it.
-    static let runSongs = 3
-    /// A sung line that spans the cut moves it later by whole bars, at most this many.
-    static let maxVocalShiftBars = 3
-
-    /// The mean energy rating of the songs of the run, nil when none is known.
-    static func runEnergy(_ ratings: [Float?]) -> Float? {
-        let known = ratings.compactMap { $0 }.filter { $0.isFinite && (0...1).contains($0) }
-        guard !known.isEmpty else { return nil }
-        return known.reduce(0, +) / Float(known.count)
-    }
-
-    static func isHigh(_ runEnergy: Float?) -> Bool {
-        guard let runEnergy, runEnergy.isFinite else { return false }
-        return runEnergy >= highEnergy
-    }
-
-    /// The outgoing item time of the second chorus end for this pair, or nil when the plan must stay as it is: the setting is
-    /// off, the run is not energetic, a rule keeps the pair from mixing, the song has no sections, the cut would leave less
-    /// than `minPlayedSec` played, it would not be earlier than the normal mix-out by a bar, or no clean bar can be found.
-    static func mixOutSec(_ inputs: MusicTransitionInputs, smartEnd: Double?, normal: Double? = nil) -> Double? {
-        cut(inputs, smartEnd: smartEnd, normal: normal)?.point
-    }
-
-    /// `mixOutSec` with the mix-out the planner would have used instead (`normal`), so a caller can see how much earlier it is.
-    static func cut(_ inputs: MusicTransitionInputs, smartEnd: Double?, normal known: Double? = nil) -> (point: Double, normal: Double)? {
-        guard inputs.djLength, isHigh(inputs.runEnergy), inputs.beatMixEnabled, inputs.crossfadeOn,
-              !inputs.albumInOrder, !inputs.loopSong, !inputs.manualSkip, !inputs.cleanStartFlag, !inputs.cleanPairFlag,
-              inputs.outgoing.videoId != inputs.incoming.videoId,
-              let duration = MusicBeatPlanner.valid(inputs.outgoing.durationSeconds),
-              let a = inputs.outgoing.analysis,
-              let grid = inputs.outgoing.grid ?? a.usableGrid, MusicBeatPlanner.trusted(grid), grid.downbeatPhase != nil
-        else { return nil }
-        let map = MusicSectionMap.derive(analysis: a, grid: grid)
-        let ends = map.chorusEnds
-        guard ends.count >= 2 else { return nil }
-        let barSec = 4 * grid.periodSec
-        let end = smartEnd ?? duration
-        // The mix-out the plan would have anyway: the cut must beat it by a bar. The planner passes the real one; without it
-        // it is estimated at the overlap the beat planner tries first (16 bars with bass swap and a known downbeat, else 8).
-        let estimateBars = inputs.bassSwapAvailable ? 16 : MusicBeatPlanner.phraseBars
-        guard let normal = known ?? MusicBeatPlanner.mixOutTime(grid: grid, analysis: a, bars: estimateBars, barSec: barSec, end: end)
-        else { return nil }
-        // With the vocal guard on, a sung line may hold the cut back, and a song whose lyric timings are unknown gets no cut
-        // at all (the same caution the guard shows elsewhere).
-        var intervals: [ClosedRange<Double>]?
-        if inputs.vocalGuardEnabled {
-            guard let lyric = inputs.outgoing.vocalIntervals else { return nil }
-            intervals = lyric
-        }
-        for shift in 0...maxVocalShiftBars {
-            let point = ends[1] + Double(shift) * barSec
-            guard point >= minPlayedSec, point <= normal - barSec + 1e-9 else { return nil }
-            if let earliest = inputs.earliestMixOutSec, point < earliest { return nil }
-            if !sung(intervals, at: point) { return (point, normal) }
-        }
-        return nil
-    }
-
-    /// A lyric line spans `time` (a margin of 50 ms either side keeps a line that ends on the bar from counting).
-    static func sung(_ intervals: [ClosedRange<Double>]?, at time: Double) -> Bool {
-        guard let intervals else { return false }
-        return intervals.contains { $0.lowerBound < time - 0.05 && $0.upperBound > time + 0.05 }
     }
 }

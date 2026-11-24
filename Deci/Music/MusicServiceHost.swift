@@ -104,7 +104,6 @@ final class MusicServiceHost {
                 savePreferences: MusicServiceHost.savePreferences(to: settings),
                 crossfadeSeconds: { settings?.appSettings.musicCrossfadeSeconds ?? MusicPlaybackPreferences.defaultCrossfadeSeconds },
                 vocalGuard: { settings?.appSettings.musicVocalGuard ?? true },
-                djLength: { settings?.appSettings.musicDJLength ?? false },
                 // The items pinned to Home are remembered in settings.json too.
                 pinnedItems: settings?.appSettings.musicPinnedItems ?? [],
                 savePinnedItems: MusicServiceHost.savePinnedItems(to: settings),

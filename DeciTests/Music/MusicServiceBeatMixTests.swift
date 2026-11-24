@@ -395,12 +395,12 @@ struct MusicServiceDropSwapSkipTests {
         let plan = try #require(await offered(h))
         #expect(plan.style == .dropSwap, "plan: \(plan) lines: \(h.service.transitionLines)")
         #expect((plan.mixInSec ?? 0) > 10, "the standby is parked deep: \(plan.mixInSec ?? -1)")
-        #expect(MusicService.parksDeepForDropSwap(plan))
+        #expect(plan.entersDeep)
         h.service.next()
         #expect(h.engine.manualCrossfades.isEmpty, "a skip must not start the song at its drop lead")
     }
 
-    @Test("only a drop swap parked more than a bar from the normal start counts as deep")
+    @Test("a standby parked more than a bar (and 2.5 s, a drop swap half a second) from the normal start counts as deep")
     func deepRule() {
         var plan = TransitionPlan(
             mode: .beat, incomingStartSec: 30, outgoingEndSec: nil, fadeStartSec: 100,
@@ -410,12 +410,17 @@ struct MusicServiceDropSwapSkipTests {
         plan.barSec = 2
         plan.fallbackIncomingStartSec = 1
         plan.style = .dropSwap
-        #expect(MusicService.parksDeepForDropSwap(plan))
+        #expect(plan.entersDeep)
         plan.mixInSec = 2.5
-        #expect(!MusicService.parksDeepForDropSwap(plan))
+        #expect(!plan.entersDeep)
         plan.mixInSec = 30
         plan.style = .longBlend
-        #expect(!MusicService.parksDeepForDropSwap(plan))
+        #expect(plan.entersDeep, "a DJ entry past the intro")
+        plan.mixInSec = 3.4
+        #expect(!plan.entersDeep, "the first bar line after the trim")
+        plan.mixInSec = 30
+        plan.mode = .smart
+        #expect(!plan.entersDeep, "only a beat plan is parked at its mix-in")
     }
 }
 

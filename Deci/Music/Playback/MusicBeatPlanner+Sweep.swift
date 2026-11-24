@@ -61,8 +61,11 @@ extension MusicBeatPlanner {
         let barOut = 4 * aGrid.periodSec
         let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration
         // The outgoing phrase end: the latest phrase boundary the existing mix-out logic accepts (no overlap yet).
-        guard let phraseEnd = mixOutTime(grid: aGrid, analysis: a, bars: 0, barSec: barOut, end: aEnd) else { return nil }
-        let earliestOut = max(0, aGrid.spanStartSec, a.outroStart - Double(outroSlackBars) * barOut)
+        // A DJ exit is the phrase end itself: the song is gone where its chorus, hook or drop is.
+        guard let phraseEnd = mixOutTime(grid: aGrid, analysis: a, bars: 0, barSec: barOut, end: aEnd, preferred: inputs.djMixOutSec)
+        else { return nil }
+        let earliestOut = inputs.djMixOutSec == nil
+            ? max(0, aGrid.spanStartSec, a.outroStart - Double(outroSlackBars) * barOut) : max(0, aGrid.spanStartSec)
         let earliestIn = max(0, smart.incomingStartSec, bGrid.spanStartSec - spanSlackBeats * bGrid.periodSec)
         // After the drop the incoming song still has to play, inside the part of the grid that was validated.
         guard bEnd - drop.timeSec >= minIncomingRemainingSec,

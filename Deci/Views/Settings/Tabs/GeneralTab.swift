@@ -218,16 +218,6 @@ struct GeneralTab: View {
                     .controlSize(.small)
                     .labelsHidden()
             }
-            SettingsRowDivider()
-            SettingsRow(
-                "DJ-length songs",
-                description: "With Transitions on Mixing, energetic runs move on after the second chorus."
-            ) {
-                Toggle("", isOn: $settings.appSettings.musicDJLength)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .labelsHidden()
-            }
             // Never locked by Transitions: the planner only acts on these with Transitions on Mixing, so the switches can be set
             // ahead of time from any mode.
             SettingsRowDivider()

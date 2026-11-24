@@ -247,6 +247,8 @@ final class LiveRunner {
         var fadeStart: UInt64
         var fadeEnd: UInt64
     }
+    /// Where the first song is expected to be left, when that is well before its end (a DJ exit); nil for its end.
+    var leavesAt: Double?
     var captureHook: ((Capture) -> Void)?
 
     init(world: LiveWorld, rig: LiveWorld.Rig, engine: AVPlaybackEngine, chain: MusicDSPChain, audio: LiveAudio) {
@@ -281,7 +283,7 @@ final class LiveRunner {
             }
             let next = record.to
             // 1. Into the preload window.
-            let windowStart = max(0, player.duration - MusicService.beatLead + 3)
+            let windowStart = max(0, (leavesAt ?? player.duration) - MusicService.beatLead + 3)
             if engine.position < windowStart - 2 { service.seek(to: windowStart) }
             // 2. Wait for the plan the service offers.
             let planned = await waitUntil(timeout: .seconds(60)) {

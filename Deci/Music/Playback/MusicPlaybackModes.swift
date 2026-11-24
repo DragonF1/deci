@@ -46,16 +46,12 @@ struct MusicPlaybackPreferences: Equatable, Sendable {
     /// Keep two singers from overlapping in a mix (only with Transitions on Mixing).
     var vocalGuard = true
 
-    /// With Transitions on Mixing, an energetic run moves on after a song's second chorus. Off by default.
-    var djLength = false
-
     init(
         shuffleMode: MusicShuffleMode = .off, loop: MusicLoopMode = .off, autoplay: Bool = true,
         transitionMode: MusicTransitionMode = .off, crossfadeSeconds: Double = defaultCrossfadeSeconds,
-        vocalGuard: Bool = true, djLength: Bool = false
+        vocalGuard: Bool = true
     ) {
         self.shuffleMode = shuffleMode
-        self.djLength = djLength
         self.vocalGuard = vocalGuard
         self.loop = loop
         self.autoplay = autoplay

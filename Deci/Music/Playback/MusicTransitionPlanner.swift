@@ -4,9 +4,6 @@
 
 import Foundation
 
-/// The song section a DJ-length cut was made at.
-nonisolated enum DJSection: String, Sendable { case chorus2 }
-
 struct TransitionPlan: Equatable, Sendable {
     enum Mode: String, Sendable { case smart, fixed, gapless, clean, beat }
     enum Reason: String, Sendable {
@@ -90,9 +87,11 @@ struct TransitionPlan: Equatable, Sendable {
     /// One bar (4 beats) of the incoming song in song seconds. 0 = no tempo match.
     var stretchBarSec: Double = 0
 
-    // Tier 4b P3 (DJ-length songs). nil on every plan the rule did not shape.
-    /// "chorus2" when the mix-out was moved to the outgoing song's second chorus end (`mixOutSec` is that point).
+    // DJ exit and entry (`MusicDJLength`, `MusicDJEntry`). nil on every plan they did not shape.
+    /// The section the outgoing song is left after, when the mix-out was moved to its end.
     var djSection: DJSection? = nil
+    /// What the incoming song gets going with, when it starts past its intro.
+    var djEntry: MusicDJEntry.Kind? = nil
 
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(
@@ -118,6 +117,8 @@ struct MusicTransitionSide: Equatable, Sendable {
     /// Tier 4c: the rate this song's deck plays at for its whole song (a Mix nudged it), item seconds per wall second. Only
     /// meaningful on the outgoing side. 1 for a song that was started plainly.
     var deckRate: Double = 1
+    /// Where the song's hook and first words are, from synced lyrics. nil = unknown.
+    var lyricCues: MusicLyricCues? = nil
 }
 
 struct MusicTransitionInputs: Equatable, Sendable {
@@ -147,12 +148,12 @@ struct MusicTransitionInputs: Equatable, Sendable {
     /// Tier 4b P2b: the incoming song plays from a file on this Mac (the track cache or a download), so its intro may be
     /// looped and its tempo matched.
     var incomingLocal: Bool = false
-    /// Tier 4b P3: DJ-length songs is on. Off keeps every plan exactly as it was.
+    /// The DJ picks where a song is left and where the next one comes in (Mixing). Off keeps every plan exactly as it was.
     var djLength: Bool = false
-    /// Tier 4b P3: mean energy rating (0...1) of the playing song and the ones before it; nil = unknown.
-    var runEnergy: Float? = nil
     /// Set by the planner for the beat planners (never by a caller): the outgoing mix-out to use instead of the usual one.
     var djMixOutSec: Double? = nil
+    /// Set by the planner for the beat planners (never by a caller): what the incoming song's start is aimed at.
+    var djEntry: MusicDJEntry? = nil
     /// Crossfade without Mix: a plain equal-power fade of the Settings length at the song's real end (or its trailing digital
     /// silence). No beat plan, style, smart fade start, DJ length or vocal guard; the loudness match stays. Off keeps every
     /// plan exactly as it was.
@@ -165,10 +166,9 @@ struct MusicTransitionInputs: Equatable, Sendable {
         cleanStartFlag: Bool = false, cleanPairFlag: Bool = false, manualSkip: Bool = false,
         beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false, vocalGuardEnabled: Bool = false,
         previousStyle: MusicTransitionStyle? = nil, incomingLocal: Bool = false,
-        djLength: Bool = false, runEnergy: Float? = nil
+        djLength: Bool = false
     ) {
         self.djLength = djLength
-        self.runEnergy = runEnergy
         self.previousStyle = previousStyle
         self.incomingLocal = incomingLocal
         self.outgoing = outgoing
@@ -209,22 +209,36 @@ enum MusicTransitionPlanner {
     /// applies only to the smart plan that comes back on a refusal.
     static func plan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
         let inputs = plainFaded(inputs)
-        // Tier 4b P3: DJ-length songs. The pair is planned with the mix-out moved to the second chorus end; the result counts
-        // only when it really mixes out there, anything else is the plan the pair would have had.
-        let normal = basePlan(inputs, smart: smart)
-        // The cut must beat the mix-out the pair would really have (a beat plan's), not a guess at it.
-        if let point = MusicDJLength.mixOutSec(
-            inputs, smartEnd: smart.outgoingEndSec, normal: normal.mode == .beat ? normal.mixOutSec : nil
-        ) {
+        // The pair is planned with the mix-out moved to the end of the outgoing song's second chorus, hook or drop; the result
+        // counts only when it really leaves there, anything else is the plan the pair would have had.
+        let normal = enteredPlan(inputs, smart: smart)
+        // The exit must beat the mix-out the pair would really have, not a guess at it.
+        let normalOut = normal.mode == .beat ? normal.mixOutSec : normal.fadeStartSec
+        for exit in MusicDJLength.exits(inputs, smartEnd: smart.outgoingEndSec, normal: normalOut) {
             var dj = inputs
-            dj.djMixOutSec = point
-            var planned = basePlan(dj, smart: smart)
-            if planned.mode == .beat, let out = planned.mixOutSec, abs(out - point) < 1e-6 {
-                planned.djSection = .chorus2
-                return planned
-            }
+            dj.djMixOutSec = exit.point
+            var djSmart = smart
+            djSmart.fadeStartSec = exit.point
+            var planned = enteredPlan(dj, smart: djSmart)
+            guard MusicDJLength.leaves(planned, at: exit) else { continue }
+            planned.djSection = exit.section
+            return planned
         }
         return normal
+    }
+
+    /// The plan with the incoming song brought in where it gets going (`MusicDJEntry`), or without an entry when there is none or
+    /// nothing can be built with it.
+    private static func enteredPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
+        guard inputs.djLength, inputs.beatMixEnabled, smart.mode == .smart,
+              let entry = MusicDJEntry.pick(inputs.incoming, start: smart.incomingStartSec) else { return basePlan(inputs, smart: smart) }
+        var dj = inputs
+        dj.djEntry = entry
+        var planned = basePlan(dj, smart: smart)
+        guard planned.mode == .beat else { return basePlan(inputs, smart: smart) }
+        // A drop swap places itself on the drop.
+        if planned.style != .dropSwap, planned.entersDeep { planned.djEntry = entry.kind }
+        return planned
     }
 
     /// A plain fade takes no part in anything that reshapes a mix.

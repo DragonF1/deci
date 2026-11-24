@@ -15,7 +15,8 @@ extension LiveChecks {
 
     func realRun(
         _ audio: LiveAudio, beatMix: Bool, count: Int, tracks: [MusicTrack], page: MusicBrowsePage? = nil,
-        scriptAutomix: [(after: String, tracks: [MusicTrack])] = [], capture: ((LiveRunner.Capture) -> Void)? = nil
+        scriptAutomix: [(after: String, tracks: [MusicTrack])] = [], leavesAt: Double? = nil,
+        capture: ((LiveRunner.Capture) -> Void)? = nil
     ) async -> RunOutcome {
         let (engine, chain) = audio.makeEngine()
         let backend = await world.makeBackend()
@@ -34,6 +35,7 @@ extension LiveChecks {
         await world.settle(service)
         let runner = LiveRunner(world: world, rig: rig, engine: engine, chain: chain, audio: audio)
         runner.captureHook = capture
+        runner.leavesAt = leavesAt
         let out = await runner.run(count: count)
         engine.unload()
         return RunOutcome(transitions: out, played: runner.played)
