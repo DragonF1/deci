@@ -164,7 +164,7 @@ struct MusicFavoriteControlsTests {
     // MARK: - The menu
 
     private func menu(
-        shuffle: Bool = false, loop: MusicLoopMode = .off, autoplay: Bool = true, transitions: MusicTransitionMode = .off,
+        shuffle: MusicShuffleMode = .off, loop: MusicLoopMode = .off, autoplay: Bool = true, transitions: MusicTransitionMode = .off,
         fade: Double = 6, slot: MusicFavoriteControl = .shuffle
     ) -> MusicFavoriteMenuModel {
         MusicFavoriteMenuModel(shuffle: shuffle, loop: loop, autoplay: autoplay, transitions: transitions, fadeSeconds: fade, slotControl: slot)
@@ -178,8 +178,8 @@ struct MusicFavoriteControlsTests {
 
     @Test("the toggles carry the state they are in")
     func menuToggles() {
-        let entries = menu(shuffle: true, autoplay: false, transitions: .mixing).entries
-        #expect(entries[0] == .shuffle(selected: .systematic))
+        let entries = menu(shuffle: .flow, autoplay: false, transitions: .mixing).entries
+        #expect(entries[0] == .shuffle(selected: .flow))
         #expect(entries[2] == .toggle(.autoplay, isOn: false))
         #expect(entries[3] == .transitions(selected: .mixing))
     }
@@ -241,7 +241,7 @@ extension MusicFavoriteControlsTests {
         for control in MusicFavoriteControl.allCases where control != .loop && control != .shuffle {
             #expect(control.title() == control.menuTitle)
         }
-        #expect(MusicFavoriteControl.shuffle.title() == "Systematic shuffle", "the slot says the mode, the menu names the group")
+        #expect(MusicFavoriteControl.shuffle.title() == "Shuffle", "the slot says the mode, the menu names the group")
         #expect(MusicFavoriteControl.loop.title(loop: .song) == "Loop song")
     }
 
@@ -254,7 +254,7 @@ extension MusicFavoriteControlsTests {
         }
         #expect(MusicFavoriteSnapshot(canLike: true).isAvailable(.like))
         #expect(MusicFavoriteSnapshot(isLiked: true).isOn(.like))
-        #expect(MusicFavoriteSnapshot(shuffle: true).isOn(.shuffle))
+        #expect(MusicFavoriteSnapshot(shuffle: .shuffle).isOn(.shuffle))
     }
 
     @Test("MusicService.perform drives each toggle")
@@ -274,8 +274,10 @@ extension MusicFavoriteControlsTests {
             refreshOnCreate: false
         )
         service.perform(.shuffle)
-        #expect(service.shuffleMode == .systematic)
+        #expect(service.shuffleMode == .shuffle)
         #expect(service.isShuffleOn)
+        service.perform(.shuffle)
+        #expect(service.shuffleMode == .flow)
         service.perform(.shuffle)
         #expect(service.shuffleMode == .off)
         #expect(service.isShuffleOn == false)

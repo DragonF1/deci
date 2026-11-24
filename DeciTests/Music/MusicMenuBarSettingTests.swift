@@ -88,14 +88,14 @@ struct MusicMenuBarSettingTests {
 
         let manager = SettingsManager(directory: directory)
         var settings = manager.appSettings
-        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false)
         manager.updateAppSettings(settings)
 
         var hidden = manager.appSettings
         hidden.showMusicInMenuBar = false
         manager.updateAppSettings(hidden)
 
-        #expect(manager.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false))
+        #expect(manager.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false))
     }
 
     // MARK: - Change hook

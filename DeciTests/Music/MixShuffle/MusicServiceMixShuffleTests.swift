@@ -1,5 +1,5 @@
 // DeciTests/Music/MixShuffle/MusicServiceMixShuffleTests.swift
-// Tier 4 P3: Systematic shuffle on the service. The two-state cycle, the queue ordered from the stored rows, Off
+// Tier 4 P3: Flow Shuffle on the service. The three-state cycle, the queue ordered from the stored rows, Off
 // restoring the playlist order, the pairs Up next reads, and the choice remembered across launches.
 
 import Foundation
@@ -95,20 +95,28 @@ struct MixShuffleHarness {
 }
 
 @MainActor
-@Suite("MusicService Mix shuffle")
+@Suite("MusicService Flow Shuffle")
 struct MusicServiceMixShuffleTests {
-    @Test("the button cycles Off, Systematic shuffle, Off and each step is saved")
+    @Test("the button cycles Off, Shuffle, Flow Shuffle, Off and each step is saved")
     func cycle() async {
         let h = MixShuffleHarness()
         #expect(h.service.shuffleMode == .off)
+        #expect(!h.service.isShuffleOn && !h.service.isFlowShuffleOn)
         h.service.cycleShuffleMode()
-        #expect(h.service.shuffleMode == .systematic)
+        #expect(h.service.shuffleMode == .shuffle)
         #expect(h.service.isShuffleOn)
-        #expect(h.saved.last?.shuffleMode == .systematic)
+        #expect(!h.service.isFlowShuffleOn)
+        #expect(h.saved.last?.shuffleMode == .shuffle)
+        h.service.cycleShuffleMode()
+        #expect(h.service.shuffleMode == .flow)
+        #expect(h.service.isShuffleOn, "Flow Shuffle is a shuffled queue too")
+        #expect(h.service.isFlowShuffleOn)
+        #expect(h.saved.last?.shuffleMode == .flow)
         h.service.cycleShuffleMode()
         #expect(h.service.shuffleMode == .off)
-        #expect(!h.service.isShuffleOn)
+        #expect(!h.service.isShuffleOn && !h.service.isFlowShuffleOn)
         #expect(h.saved.last?.shuffleMode == .off)
+        #expect(h.saved.count == 3)
     }
 
     @Test("setting the mode already set saves nothing")
@@ -116,45 +124,123 @@ struct MusicServiceMixShuffleTests {
         let h = MixShuffleHarness()
         h.service.setShuffleMode(.off)
         #expect(h.saved.count == 0)
-        h.service.setShuffleMode(.systematic)
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.shuffle)
+        h.service.setShuffleMode(.shuffle)
         #expect(h.saved.count == 1)
+        h.service.setShuffleMode(.flow)
+        h.service.setShuffleMode(.flow)
+        #expect(h.saved.count == 2)
     }
 
-    @Test("a launch with Mix saved comes up in Mix")
-    func restoredMix() {
-        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .mixing))
-        #expect(h.service.shuffleMode == .systematic)
-        #expect(h.service.isShuffleOn)
+    @Test("a launch with Flow Shuffle or Shuffle saved comes up in it")
+    func restoredModes() {
+        let flow = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .mixing))
+        #expect(flow.service.shuffleMode == .flow)
+        #expect(flow.service.isShuffleOn && flow.service.isFlowShuffleOn)
+        let plain = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .shuffle))
+        #expect(plain.service.shuffleMode == .shuffle)
+        #expect(plain.service.isShuffleOn && !plain.service.isFlowShuffleOn)
     }
 
-    @Test("Mix keeps the playing song, every song and the natural order for Off")
-    func mixPermutesUpcoming() async {
+    @Test("plain Shuffle shuffles at once and never orders by the rows: no pairs, no texts, no reading of rows")
+    func plainShuffleOrdersNothing() async {
+        let h = MixShuffleHarness(seed: 21)
+        await h.storeRows()
+        await h.startQueue()
+        let natural = h.order
+        let readsBefore = await h.reader.reads.count
+        h.service.setShuffleMode(.shuffle)
+        let shuffled = h.order
+        await h.settle()
+        #expect(h.order == shuffled, "nothing re-ordered it after the shuffle")
+        #expect(await h.reader.reads.count == readsBefore, "plain Shuffle reads no analysis rows")
+        #expect(shuffled != natural)
+        #expect(shuffled.first == natural.first)
+        #expect(!h.service.showsMixInfo)
+        #expect(h.service.mixPairs.isEmpty)
+        h.service.next()
+        await h.settle()
+        #expect(h.order == shuffled, "a manual Next re-plans nothing either")
+        h.service.setShuffleMode(.off)
+        #expect(h.order == natural)
+    }
+
+    @Test("Up next shows tempo and key for Flow Shuffle, and drops them when Flow is left with Mixing off")
+    func flowShowsMixInfoOnlyWhileOn() async {
+        let h = MixShuffleHarness()
+        await h.storeRows()
+        await h.startQueue()
+        h.service.setShuffleMode(.shuffle)
+        #expect(!h.service.showsMixInfo)
+        h.service.setShuffleMode(.flow)
+        await h.settle()
+        #expect(h.service.showsMixInfo)
+        #expect(!h.service.mixPairs.isEmpty)
+        h.service.setShuffleMode(.shuffle)
+        await h.settle()
+        #expect(!h.service.showsMixInfo)
+        #expect(h.service.mixPairs.isEmpty)
+    }
+
+    @Test("Flow keeps the playing song, every song and the natural order for Off")
+    func flowPermutesUpcoming() async {
         let h = MixShuffleHarness()
         await h.storeRows()
         await h.startQueue()
         let natural = h.order
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         #expect(h.service.queue.isShuffled)
         #expect(h.order.first == "a")
         #expect(Set(h.order) == Set(natural))
         #expect(h.order.count == natural.count)
-        // Rows are known, so Mix lays the songs out by tempo: fewer jumps than the alternating natural order.
+        // Rows are known, so Flow lays the songs out by tempo: fewer jumps than the alternating natural order.
         #expect(MixShuffleHarness.tempoJumps(h.order) < MixShuffleHarness.tempoJumps(natural))
         h.service.setShuffleMode(.off)
         #expect(h.order == natural)
         #expect(!h.service.queue.isShuffled)
     }
 
-    @Test("the same seed and the same rows give the same Mix order")
+    @Test("Shuffle to Flow orders the queue from where it stands and Flow to Shuffle leaves it alone")
+    func shuffleToFlowToShuffle() async {
+        let h = MixShuffleHarness()
+        await h.storeRows()
+        await h.startQueue()
+        h.service.setShuffleMode(.shuffle)
+        let shuffled = h.order
+        #expect(Set(shuffled) == Set(MixShuffleHarness.ids))
+        h.service.setShuffleMode(.flow)
+        await h.settle()
+        #expect(Set(h.order) == Set(shuffled))
+        #expect(h.order.first == shuffled.first)
+        let mixed = h.order
+        h.service.setShuffleMode(.shuffle)
+        #expect(h.order == mixed)
+        #expect(h.service.mixPairs.isEmpty)
+    }
+
+    @Test("plain Shuffle is the seeded random shuffle of the queue and nothing more")
+    func plainShuffleUnchanged() async {
+        let h = MixShuffleHarness(seed: 21)
+        await h.storeRows()
+        await h.startQueue()
+        var expected = h.service.queue
+        var generator = MusicShuffleGenerator(seed: 21)
+        expected.shuffle(mixingEarlier: expected.isPage, using: &generator)
+        h.service.setShuffleMode(.shuffle)
+        #expect(h.order == expected.tracks.map(\.videoId))
+        #expect(h.service.mixPairs.isEmpty)
+        #expect(h.service.mixInfo(from: "a", to: "b") == nil)
+    }
+
+    @Test("the same seed and the same rows give the same Flow order")
     func deterministic() async {
         var orders: [[String]] = []
         for _ in 0..<2 {
             let h = MixShuffleHarness(seed: 5)
             await h.storeRows()
             await h.startQueue()
-            h.service.setShuffleMode(.systematic)
+            h.service.setShuffleMode(.flow)
             await h.settle()
             orders.append(h.order)
         }
@@ -168,14 +254,14 @@ struct MusicServiceMixShuffleTests {
         await h.startQueue()
         h.service.playNext(MusicSamples.track("e", title: "Song e", artist: "Artist e"))
         let before = h.service.queue.upcoming.first?.videoId
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         #expect(before == "e")
         #expect(h.service.queue.upcoming.first?.videoId == "e")
         #expect(Set(h.order) == Set(MixShuffleHarness.ids))
     }
 
-    @Test("songs that arrived without a length get the one their analysis row knows once Mix reads it")
+    @Test("songs that arrived without a length get the one their analysis row knows once Flow reads it")
     func fillsMissingLengths() async {
         let h = MixShuffleHarness()
         await h.storeRows()
@@ -185,20 +271,20 @@ struct MusicServiceMixShuffleTests {
         await h.backend.setRadio(seed: ids[0], tracks: tracks, continuation: nil)
         h.service.play(tracks[0])
         await h.settle()
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         let queued = h.service.queue.tracks.dropFirst()
         #expect(!queued.isEmpty)
         #expect(queued.allSatisfy { $0.durationSeconds == 240 })
     }
 
-    @Test("Mix fills the pairs Up next reads: tempo, key and how each song is reached")
+    @Test("Flow fills the pairs Up next reads: tempo, key and how each song is reached")
     func pairsFilled() async throws {
         let h = MixShuffleHarness()
         await h.storeRows()
         await h.startQueue()
         #expect(h.service.mixInfo(from: "a", to: "b") == nil)
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         let chain = h.order
         for (before, after) in zip(chain, chain.dropFirst()) {
@@ -213,12 +299,12 @@ struct MusicServiceMixShuffleTests {
         #expect(first.mode != .beat || sameTempo)
     }
 
-    @Test("leaving Mix clears the pairs and the info reads nil")
+    @Test("leaving Flow clears the pairs and the info reads nil")
     func leavingMixClears() async {
         let h = MixShuffleHarness()
         await h.storeRows()
         await h.startQueue()
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         #expect(!h.service.mixPairs.isEmpty)
         h.service.setShuffleMode(.off)
@@ -233,7 +319,7 @@ struct MusicServiceMixShuffleTests {
         let h2 = MixShuffleHarness()
         for id in ids where id != "c" { await h2.reader.set(MixRows.row(id)) }
         await h2.startQueue()
-        h2.service.setShuffleMode(.systematic)
+        h2.service.setShuffleMode(.flow)
         await h2.settle()
         #expect(Set(h2.order) == Set(ids))
         let chain = h2.order
@@ -242,32 +328,32 @@ struct MusicServiceMixShuffleTests {
         }
     }
 
-    @Test("without a row reader Mix still orders and shows nothing")
+    @Test("without a row reader Flow still orders and shows nothing")
     func noReader() async {
         let h = MixShuffleHarness(withReader: false)
         await h.startQueue()
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         #expect(Set(h.order) == Set(MixShuffleHarness.ids))
         #expect(h.order.first == "a")
         #expect(h.service.mixPairs.isEmpty)
     }
 
-    @Test("starting a song in Mix keeps the shuffle mode and orders the radio behind it")
-    func playInMix() async {
-        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .mixing))
+    @Test("starting a song in Flow keeps the shuffle mode and orders the radio behind it")
+    func playInFlow() async {
+        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .mixing))
         await h.storeRows()
         await h.startQueue()
-        #expect(h.service.shuffleMode == .systematic)
+        #expect(h.service.shuffleMode == .flow)
         #expect(h.order.first == "a")
         #expect(Set(h.order) == Set(MixShuffleHarness.ids))
         #expect(h.service.queue.isShuffled)
         #expect(MixShuffleHarness.tempoJumps(h.order) < MixShuffleHarness.tempoJumps(MixShuffleHarness.ids))
     }
 
-    @Test("with Mix on, a song picked from the middle of a list is what plays, and it stays current and first after the ordering")
-    func pickedSongStaysCurrentInMix() async {
-        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .mixing))
+    @Test("with Flow on, a song picked from the middle of a list is what plays, and it stays current and first after the ordering")
+    func pickedSongStaysCurrentInFlow() async {
+        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .mixing))
         await h.storeRows()
         for id in MixShuffleHarness.ids { await h.backend.setStream(MusicSamples.stream(videoId: id, duration: 240)) }
         let page = MusicSamples.page(
@@ -281,7 +367,7 @@ struct MusicServiceMixShuffleTests {
         h.engine.emit(.playingChanged(true))
         await h.settle()
 
-        #expect(h.service.shuffleMode == .systematic)
+        #expect(h.service.shuffleMode == .flow)
         #expect(h.player.nowPlaying?.videoId == "c")
         #expect(h.order.first == "c")
         #expect(h.service.queue.current?.videoId == "c")
@@ -289,9 +375,9 @@ struct MusicServiceMixShuffleTests {
         #expect(h.engine.loads.first?.stream.videoId == "c")
     }
 
-    @Test("resetting settings puts the button back to Off, Mix included")
+    @Test("resetting settings puts the button back to Off, Flow included")
     func reset() {
-        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .mixing))
+        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .mixing))
         h.service.settingsDidReset()
         #expect(h.service.shuffleMode == .off)
     }
@@ -301,7 +387,7 @@ struct MusicServiceMixShuffleTests {
         let h = MixShuffleHarness()
         await h.storeRows()
         await h.startQueue()
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         let next = try #require(h.service.queue.upcoming.first)
         h.service.jump(to: next)
@@ -313,12 +399,12 @@ struct MusicServiceMixShuffleTests {
         }
     }
 
-    @Test("Systematic shuffle shuffles randomly at once, before any row is read, and Off puts the order back")
+    @Test("Flow Shuffle shuffles randomly at once, before any row is read, and Off puts the order back")
     func shufflesRandomlyFirst() async {
         let h = MixShuffleHarness(seed: 21)
         await h.startQueue()
         let natural = h.order
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         let shuffled = h.order
         #expect(Set(shuffled) == Set(natural))
         #expect(shuffled != natural, "pressing shuffle must visibly move songs")

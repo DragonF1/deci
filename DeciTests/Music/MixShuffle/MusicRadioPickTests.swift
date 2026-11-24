@@ -254,7 +254,7 @@ struct MusicRadioPickTests {
             let h = PickHarness(crossfade: false, seed: seed)
             await h.script(matching: ["r7"])
             await h.startPage()
-            h.service.setShuffleMode(.systematic)
+            h.service.setShuffleMode(.flow)
             await h.settleScan()
             #expect(h.staged.first == "r7")
             #expect(Set(h.staged) == Set(PickHarness.radio))
@@ -306,6 +306,17 @@ struct MusicRadioPickTests {
         await tapped.settleScan()
         #expect(tapped.order == ["s"] + PickHarness.radio)
         #expect(await tapped.radioEnsures().isEmpty)
+    }
+
+    @Test("plain Shuffle is no blend either: nothing is analysed")
+    func shuffleKeepsOrder() async {
+        let h = PickHarness(crossfade: false)
+        await h.script(matching: ["r7"])
+        await h.startPage()
+        h.service.setShuffleMode(.shuffle)
+        await h.settleScan()
+        #expect(h.staged == PickHarness.radio)
+        #expect(await h.radioEnsures().isEmpty)
     }
 
     @Test("with no row for any candidate the radio order stays, in Crossfade")
@@ -456,7 +467,7 @@ struct MusicRadioPickTests {
         let hold = MusicTestGate()
         await h.provider.hold("r1", hold)
         await h.startRadio()
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await resolve.open()
         await h.provider.arrived("r1")
         await hold.open()
@@ -585,7 +596,7 @@ struct MusicRadioPickTests {
     func mixTappedRadioPicksBest() async {
         let h = PickHarness(crossfade: false)
         await h.script(matching: ["r7"])
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.startRadio()
         await h.settleScan()
         let asked = await h.radioEnsures()

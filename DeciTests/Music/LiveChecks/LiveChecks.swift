@@ -73,7 +73,7 @@ final class LiveChecks {
     }
 
     func check1() async {
-        let title = "Shuffle button cycles Off, Systematic shuffle, Off"
+        let title = "Shuffle button cycles Off, Shuffle, Flow Shuffle, Off"
         let rig = world.makeRig(engine: FakePlaybackEngine(), preferences: MusicPlaybackPreferences(), backend: await world.makeBackend())
         let service = rig.service
         var modes: [MusicShuffleMode] = [service.shuffleMode]
@@ -81,21 +81,21 @@ final class LiveChecks {
         var shots: [String] = []
         let navigation = MusicSearchNavigation(service: service)
         var shotOK = true
-        for step in 0..<3 {
-            let label = ["off", "systematic", "off-again"][step]
+        for step in 0..<4 {
+            let label = ["off", "shuffle", "flow", "off-again"][step]
             if let shot = LiveRender.rendered(MusicQueueHeader(service: service, navigation: navigation), width: 380, height: 44, name: "check1-header-\(label).png") {
                 shots.append("\(shot.url.path) (ink \(liveF(shot.inkFraction * 100, 1))%, ocr: \(shot.text.joined(separator: ", ")))")
                 if shot.inkFraction < 0.01 { shotOK = false }
             } else { shotOK = false }
-            if step < 2 {
+            if step < 3 {
                 service.cycleShuffleMode()
                 modes.append(service.shuffleMode)
                 symbols.append(MusicPlaybackToggle.shuffle.symbol(loop: service.loopMode, shuffleMode: service.shuffleMode))
             }
         }
-        let expectedModes: [MusicShuffleMode] = [.off, .systematic, .off]
-        let pass = modes == expectedModes && symbols.allSatisfy { $0 == "shuffle" } && shotOK
-            && rig.saved.last?.shuffleMode == .off && rig.saved.count == 2
+        let expectedModes: [MusicShuffleMode] = [.off, .shuffle, .flow, .off]
+        let pass = modes == expectedModes && symbols == ["shuffle", "shuffle", MusicShuffleMode.flowSymbol, "shuffle"] && shotOK
+            && rig.saved.last?.shuffleMode == .off && rig.saved.count == 3
         finish(1, title, pass: pass, [
             "modes: \(modes.map(\.rawValue).joined(separator: " > "))",
             "button symbols: \(symbols.joined(separator: " | "))",
@@ -109,7 +109,7 @@ final class LiveChecks {
         let title = "Up next shows the BPM number (no key, no glyph) only in Mix"
         let (rig, _) = await startFake(count: world.songs.count)
         let service = rig.service
-        service.setShuffleMode(.systematic)
+        service.setShuffleMode(.flow)
         await world.settle(service)
         let first = service.queue.upcoming.first?.videoId
         let got = await waitUntil(timeout: .seconds(60)) {
@@ -144,7 +144,7 @@ final class LiveChecks {
         // More Mix chains (other seeds) so check 7 sees more than a handful of beat plans.
         for seed in [23, 37, 51, 77] as [UInt64] {
             let (other, _) = await startFake(count: world.songs.count, seed: seed)
-            other.service.setShuffleMode(.systematic)
+            other.service.setShuffleMode(.flow)
             await world.settle(other.service)
             let head = other.service.queue.upcoming.first?.videoId
             _ = await waitUntil(timeout: .seconds(60)) { head.map { other.service.mixRowText(for: $0) != nil } ?? false }
@@ -154,7 +154,7 @@ final class LiveChecks {
         }
         let mixShot = LiveRender.shot(MusicQueueView(service: service, navigation: navigation(service)), width: 380, height: 520, name: "check2-upnext-mix.png")
         let mixOCR = mixShot?.text.filter { LiveChecks.hasBpm($0) }.count ?? 0
-        service.setShuffleMode(.systematic)
+        service.setShuffleMode(.flow)
         await world.settle(service)
         let shuffleTexts = service.queue.upcoming.prefix(12).compactMap { service.mixRowText(for: $0.videoId) }.count
         let shuffleGlyphs = zip([service.queue.current].compactMap { $0 } + Array(service.queue.upcoming.prefix(11)), service.queue.upcoming.prefix(12))
@@ -210,7 +210,7 @@ final class LiveChecks {
         service.play(chunks[0][0], in: page)
         _ = await waitUntil(timeout: .seconds(20)) { service.queue.current != nil }
         engine.emit(.playingChanged(true))
-        service.setShuffleMode(.systematic)
+        service.setShuffleMode(.flow)
         _ = await waitUntil(timeout: .seconds(60)) { service.queue.upcoming.first.flatMap { service.mixRowText(for: $0.videoId) } != nil }
         try? await Task.sleep(for: .milliseconds(300))
         func head() -> [String] { service.queue.upcoming.prefix(3).map(\.videoId) }
@@ -243,7 +243,7 @@ final class LiveChecks {
         let band: (LiveSong) -> String = { $0.index % 3 == 0 ? "Same Band" : $0.artist }
         let (rig, _) = await startFake(count: world.songs.count, artists: band)
         let service = rig.service
-        service.setShuffleMode(.systematic)
+        service.setShuffleMode(.flow)
         _ = await waitUntil(timeout: .seconds(60)) { service.queue.upcoming.first.flatMap { service.mixRowText(for: $0.videoId) } != nil }
         await world.settle(service)
         var lines = ["labelling: every third song (index % 3 == 0) is tagged artist \"Same Band\" so the artist avoidance can show; the real titles are unchanged"]
@@ -290,19 +290,19 @@ final class LiveChecks {
     // MARK: 9. Favorite slot menu
 
     func check9() async {
-        let title = "Favorite slot Shuffle entry offers Off, Systematic shuffle and marks the current one"
+        let title = "Favorite slot Shuffle entry offers Off, Shuffle, Flow Shuffle and marks the current one"
         let rig = world.makeRig(engine: FakePlaybackEngine(), preferences: MusicPlaybackPreferences(), backend: await world.makeBackend())
         let service = rig.service
         var lines: [String] = []
         var ok = true
         let titles = MusicFavoriteMenuModel.shuffleChoices.map(\.title)
         lines.append("choices: \(titles.joined(separator: ", "))")
-        if titles != ["Off", "Systematic shuffle"] { ok = false }
-        for step in 0..<2 {
-            let expected: MusicShuffleMode = [.off, .systematic][step]
+        if titles != ["Off", "Shuffle", "Flow Shuffle"] { ok = false }
+        for step in 0..<3 {
+            let expected: MusicShuffleMode = [.off, .shuffle, .flow][step]
             if step > 0 { service.cycleShuffleMode() }
             let model = MusicFavoriteMenuModel(
-                shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn,
+                shuffle: service.shuffleMode, loop: service.loopMode, autoplay: service.isAutoplayOn,
                 transitions: service.transitionMode, fadeSeconds: service.crossfadeSeconds, slotControl: .shuffle
             )
             var marked: MusicShuffleMode?

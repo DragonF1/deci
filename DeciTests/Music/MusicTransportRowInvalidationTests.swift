@@ -26,7 +26,7 @@ private struct TickHost: View {
     var body: some View {
         let _ = model.position
         let row = MusicTransportRow(
-            slots: .default, snapshot: MusicFavoriteSnapshot(shuffle: model.shuffle), canGoNext: true, state: .playing,
+            slots: .default, snapshot: MusicFavoriteSnapshot(shuffle: model.shuffle ? .shuffle : .off), canGoNext: true, state: .playing,
             actions: MusicTransportActions(previous: {}, next: {}, perform: { _ in }, setLoop: { _ in }, setFadeSeconds: { _ in }, show: { _, _ in }),
             debugOnBody: { model.bodies += 1 }, debugOnMenuBuild: { model.menus += 1 }
         )
@@ -81,7 +81,7 @@ struct MusicTransportRowInvalidationTests {
         }
         let base = row(MusicFavoriteSnapshot())
         #expect(base == row(MusicFavoriteSnapshot(), onPrevious: { print("other") }))
-        #expect(base != row(MusicFavoriteSnapshot(shuffle: true)))
+        #expect(base != row(MusicFavoriteSnapshot(shuffle: .shuffle)))
         #expect(base != row(MusicFavoriteSnapshot(fadeSeconds: 3)))
         #expect(base != row(MusicFavoriteSnapshot(), slots: MusicFavoriteSlots(left: .like, right: .loop)))
         #expect(base != row(MusicFavoriteSnapshot(), next: false))

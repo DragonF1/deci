@@ -3,8 +3,8 @@ import SwiftUI
 
 /// What the favorite slots show of the player: the state of each control a slot can hold.
 struct MusicFavoriteSnapshot: Equatable {
-    /// Systematic shuffle is on.
-    var shuffle = false
+    /// What the shuffle button is set to.
+    var shuffle = MusicShuffleMode.off
     var loop = MusicLoopMode.off
     var autoplay = true
     var transitions = MusicTransitionMode.off
@@ -15,7 +15,7 @@ struct MusicFavoriteSnapshot: Equatable {
     /// The crossfade length in seconds, as Settings has it.
     var fadeSeconds = MusicPlaybackPreferences.defaultCrossfadeSeconds
 
-    var shuffleMode: MusicShuffleMode { MusicShuffleMode(shuffle: shuffle) }
+    var shuffleMode: MusicShuffleMode { shuffle }
 
     func isOn(_ control: MusicFavoriteControl) -> Bool {
         switch control.kind {

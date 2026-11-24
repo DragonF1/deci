@@ -212,7 +212,7 @@ struct MusicPlaybackToggles: View {
                 MusicPlaybackToggleButton(
                     title: toggle.title(loop: service.loopMode, shuffleMode: service.shuffleMode, transitionMode: service.transitionMode),
                     symbol: toggle.symbol(loop: service.loopMode, shuffleMode: service.shuffleMode, transitionMode: service.transitionMode),
-                    isOn: toggle.isOn(shuffle: service.isShuffleOn, loop: service.loopMode, autoplay: service.isAutoplayOn, transitions: service.transitionMode)
+                    isOn: toggle.isOn(shuffle: service.shuffleMode, loop: service.loopMode, autoplay: service.isAutoplayOn, transitions: service.transitionMode)
                 ) { service.perform(toggle) }
             }
         }

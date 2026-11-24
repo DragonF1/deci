@@ -1,5 +1,5 @@
 // DeciTests/Music/MixShuffle/MusicServiceMixWindowTests.swift
-// Tier 4 P6: Systematic shuffle on big playlists and unanalysed songs. Only the next window of unqueued songs is ordered, the tail keeps
+// Tier 4 P6: Flow Shuffle on big playlists and unanalysed songs. Only the next window of unqueued songs is ordered, the tail keeps
 // the order the random shuffle gave it, a top-up orders the next window after a few songs without moving the ones the listener can see, and songs
 // with no stored row are analysed a few at a time through the foreground path.
 
@@ -27,7 +27,7 @@ struct MusicServiceMixWindowTests {
     func bigQueueOrdersOneWindow() async {
         let ids = Self.ids(500)
         let h = await harness(ids)
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         // The queue is shuffled at once; orderMix then orders only the window after the playing song.
         let natural = h.order
         await h.settle()
@@ -43,7 +43,7 @@ struct MusicServiceMixWindowTests {
     func readsStayBounded() async {
         let ids = Self.ids(500)
         let h = await harness(ids)
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         let reads = await h.reader.reads
         #expect(reads.count < 120)
@@ -58,7 +58,7 @@ struct MusicServiceMixWindowTests {
         h.service.playNext(second)
         h.service.playNext(first)
         #expect(Array(h.order[1...2]) == ["s010", "s020"])
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         let natural = h.order
         await h.settle()
         #expect(Array(h.order[1...2]) == ["s010", "s020"])
@@ -75,7 +75,7 @@ struct MusicServiceMixWindowTests {
         for id in ids { await h.backend.setStream(MusicSamples.stream(videoId: id, duration: 240)) }
         await h.startQueue(ids)
         let before = await h.provider.ensures.count
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         let natural = h.order
         await h.settle()
         let ensures = await h.provider.ensures
@@ -96,7 +96,7 @@ struct MusicServiceMixWindowTests {
         }
         await h.startQueue(ids)
         let before = await h.provider.ensures.count
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         let added = await h.provider.ensures.dropFirst(before).filter { $0.id != ids[0] }
         #expect(added.isEmpty)
@@ -106,7 +106,7 @@ struct MusicServiceMixWindowTests {
     func topUpKeepsVisibleSongs() async throws {
         let ids = Self.ids(80)
         let h = await harness(ids, rows: true)
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         // Songs that end by themselves: a manual jump would re-plan the next five (P8), which this test is not about.
         for _ in 0..<(MusicMixWindow.topUpAfter - 1) {
@@ -131,7 +131,7 @@ struct MusicServiceMixWindowTests {
     @Test("a radio page that lands after Mix started is ordered too")
     func radioLandsInMix() async {
         let ids = Self.ids(12)
-        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .mixing))
+        let h = MixShuffleHarness(preferences: MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .mixing))
         for id in ids { await h.reader.set(MixRows.row(id)) }
         await h.startQueue(ids)
         let reads = await h.reader.reads
@@ -145,7 +145,7 @@ struct MusicServiceMixWindowTests {
         let ids = Self.ids(100)
         let h = await harness(ids)
         let natural = h.order
-        h.service.setShuffleMode(.systematic)
+        h.service.setShuffleMode(.flow)
         await h.settle()
         h.service.setShuffleMode(.off)
         #expect(h.order == natural)

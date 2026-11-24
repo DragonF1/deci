@@ -40,7 +40,7 @@ struct BeatHarness {
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
             preferences: preferences ?? MusicPlaybackPreferences(
-                shuffleMode: mix ? .systematic : .off,
+                shuffleMode: mix ? .flow : .off,
                 transitionMode: MusicPlaybackPreferences.migratedTransitionMode(mixShuffle: mix, beatMix: beatMix, crossfade: crossfade),
                 crossfadeSeconds: 6
             ),

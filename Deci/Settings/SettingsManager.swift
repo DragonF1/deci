@@ -65,12 +65,10 @@ nonisolated struct AppSettings: Codable, Equatable {
     var chromeYTMusicAutoSwitch: Bool = true       // Click "Switch" when YouTube Music asks to listen on this device
 
     // Music playback
-    // Systematic shuffle (songs ordered by tempo, key and energy). Older builds wrote true for plain shuffle too, and it
-    // still reads as Systematic. The mirror below keeps an older build's Mix shuffle on.
-    var musicShuffle: Bool = false {
-        didSet { musicMixShuffle = musicShuffle }
-    }
-    var musicMixShuffle: Bool = false              // Old key, written only for older builds: always the same as musicShuffle
+    // Shuffle is on or off; Mix shuffle says which kind: with both on it is Flow Shuffle (songs ordered by tempo, key and
+    // energy), with only Shuffle on it is plain Shuffle. That is how older builds read the two keys too.
+    var musicShuffle: Bool = false
+    var musicMixShuffle: Bool = false              // Flow Shuffle when musicShuffle is on too
     var musicLoopMode: MusicLoopMode = .off        // Off, loop the playlist or loop the song
     var musicAutoplay: Bool = true                 // Keep playing recommendations after a playlist or album ends
     // How songs hand over: Off (gapless), Crossfade or Mixing. The three old keys below are written from it for older
@@ -126,6 +124,7 @@ nonisolated struct AppSettings: Codable, Equatable {
         chromeIncognitoEnabled = try c.decodeIfPresent(Bool.self, forKey: .chromeIncognitoEnabled) ?? false
         chromeYTMusicAutoSwitch = try c.decodeIfPresent(Bool.self, forKey: .chromeYTMusicAutoSwitch) ?? true
         musicShuffle = try c.decodeIfPresent(Bool.self, forKey: .musicShuffle) ?? false
+        musicMixShuffle = (try? c.decodeIfPresent(Bool.self, forKey: .musicMixShuffle)) ?? false
         // A loop mode this build does not know must not cost the listener the rest of their settings.
         musicLoopMode = (try? c.decodeIfPresent(MusicLoopMode.self, forKey: .musicLoopMode)) ?? .off
         musicAutoplay = try c.decodeIfPresent(Bool.self, forKey: .musicAutoplay) ?? true
@@ -134,15 +133,13 @@ nonisolated struct AppSettings: Codable, Equatable {
         )
         // A file from before Transitions has only the three old switches: they say what it was. The new key wins when it
         // is there, and a value this build does not know falls back to the old switches too.
-        let oldMix = (try? c.decodeIfPresent(Bool.self, forKey: .musicMixShuffle)) ?? false
         let oldCrossfade = (try? c.decodeIfPresent(Bool.self, forKey: .musicCrossfadeEnabled)) ?? false
         let oldBeatMix = (try? c.decodeIfPresent(Bool.self, forKey: .musicBeatMix)) ?? true
         musicTransitions = (try? c.decodeIfPresent(MusicTransitionMode.self, forKey: .musicTransitions))
             ?? MusicPlaybackPreferences.migratedTransitionMode(
-                mixShuffle: musicShuffle && oldMix, beatMix: oldBeatMix, crossfade: oldCrossfade
+                mixShuffle: musicShuffle && musicMixShuffle, beatMix: oldBeatMix, crossfade: oldCrossfade
             )
         // The properties' observers do not run inside init: the old keys are put in line with the resolved values here.
-        musicMixShuffle = musicShuffle
         musicCrossfadeEnabled = musicTransitions.isOn
         musicBeatMix = musicTransitions == .mixing
         musicVocalGuard = (try? c.decodeIfPresent(Bool.self, forKey: .musicVocalGuard)) ?? true
@@ -240,14 +237,15 @@ extension AppSettings {
     var musicPlayback: MusicPlaybackPreferences {
         get {
             MusicPlaybackPreferences(
-                shuffleMode: MusicShuffleMode(shuffle: musicShuffle), loop: musicLoopMode, autoplay: musicAutoplay,
+                shuffleMode: !musicShuffle ? .off : (musicMixShuffle ? .flow : .shuffle), loop: musicLoopMode, autoplay: musicAutoplay,
                 transitionMode: musicTransitions, crossfadeSeconds: musicCrossfadeSeconds,
                 vocalGuard: musicVocalGuard, djLength: musicDJLength
             )
         }
         set {
-            // The old keys follow these two through their observers.
+            // The old Crossfade and Beat mix keys follow Transitions through its observer.
             musicShuffle = newValue.shuffleMode.isOn
+            musicMixShuffle = newValue.shuffleMode == .flow
             musicTransitions = newValue.transitionMode
             musicLoopMode = newValue.loop
             musicAutoplay = newValue.autoplay

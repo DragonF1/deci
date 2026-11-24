@@ -54,7 +54,7 @@ struct MusicServiceVocalLookaheadTests {
             let tracks = ["a", "b"].map { MusicSamples.track($0, title: "Song \($0)") }
             await backend.setRadio(seed: "a", tracks: tracks, continuation: nil)
             // Beat mix only acts in Mix (since a1c993a), so the gates under test are only reached with Mix on.
-            if wantsMix { service.setShuffleMode(.systematic) }
+            if wantsMix { service.setShuffleMode(.flow) }
             service.play(tracks[0])
             while let t = service.playTask { await t.value; if service.playTask == t { break } }
             engine.emit(.playingChanged(true))

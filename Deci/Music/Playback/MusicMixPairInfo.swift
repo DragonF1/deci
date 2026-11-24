@@ -1,7 +1,7 @@
 // Deci/Music/Playback/MusicMixPairInfo.swift
 import Foundation
 
-/// What Up next knows about a song under Systematic shuffle or Mixing: its tempo and key, and how the song before it hands over (on the beat or with
+/// What Up next knows about a song under Flow Shuffle or Mixing: its tempo and key, and how the song before it hands over (on the beat or with
 /// a fade). The row itself shows only the tempo. Built from the stored analysis rows of the two songs; a song with no
 /// row has neither number.
 nonisolated struct MusicMixPairInfo: Equatable, Sendable {

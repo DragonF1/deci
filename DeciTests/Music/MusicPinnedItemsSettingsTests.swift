@@ -337,14 +337,14 @@ struct MusicPinnedItemsSettingsTests {
         let manager = SettingsManager(directory: directory)
         var settings = manager.appSettings
         settings.launchAtLogin = true
-        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false)
         manager.updateAppSettings(settings)
 
         MusicServiceHost.savePinnedItems(to: manager)(sample)
 
         #expect(manager.appSettings.musicPinnedItems == sample)
         #expect(manager.appSettings.launchAtLogin)
-        #expect(manager.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false))
+        #expect(manager.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false))
     }
 
     @Test("the playback options' save hook leaves the pins alone")
@@ -354,7 +354,7 @@ struct MusicPinnedItemsSettingsTests {
         let manager = SettingsManager(directory: directory)
         MusicServiceHost.savePinnedItems(to: manager)(sample)
 
-        MusicServiceHost.savePreferences(to: manager)(MusicPlaybackPreferences(shuffleMode: .systematic, loop: .off, autoplay: true))
+        MusicServiceHost.savePreferences(to: manager)(MusicPlaybackPreferences(shuffleMode: .flow, loop: .off, autoplay: true))
 
         #expect(manager.appSettings.musicPinnedItems == sample)
     }

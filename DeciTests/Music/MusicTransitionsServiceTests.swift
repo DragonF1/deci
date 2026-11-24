@@ -1,6 +1,6 @@
 // DeciTests/Music/MusicTransitionsServiceTests.swift
 // Shuffle only decides the order and Transitions only decides how songs hand over: Mixing works in playlist order, and
-// Systematic shuffle with Crossfade orders the queue without a beat mix.
+// Flow Shuffle with Crossfade orders the queue without a beat mix.
 
 import Foundation
 import Testing
@@ -32,9 +32,9 @@ struct MusicTransitionsServiceTests {
         #expect(h.service.queue.tracks.map(\.videoId) == ["a", "b"], "the order is the playlist's")
     }
 
-    @Test("Systematic shuffle with Crossfade orders the queue but never mixes beats")
-    func systematicWithCrossfade() async throws {
-        let h = BeatHarness(preferences: prefs(.systematic, .crossfade))
+    @Test("Flow Shuffle with Crossfade orders the queue but never mixes beats")
+    func flowWithCrossfade() async throws {
+        let h = BeatHarness(preferences: prefs(.flow, .crossfade))
         #expect(h.service.isShuffleOn)
         #expect(!h.service.isBeatMixOn)
         #expect(!h.service.isDJLengthOn)
@@ -48,7 +48,7 @@ struct MusicTransitionsServiceTests {
         #expect(!h.service.transitionLines.contains { $0.hasPrefix("transition_beat") })
     }
 
-    @Test("Transitions Off is gapless, with or without Systematic shuffle")
+    @Test("Transitions Off is gapless, with or without Flow Shuffle")
     func transitionsOffIsGapless() {
         for shuffle in MusicShuffleMode.allCases {
             let h = BeatHarness(preferences: prefs(shuffle, .off))
@@ -66,14 +66,14 @@ struct MusicTransitionsServiceTests {
         )
         #expect(on.service.isDJLengthOn)
         let crossfade = BeatHarness(
-            preferences: MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .crossfade, crossfadeSeconds: 6, djLength: true)
+            preferences: MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .crossfade, crossfadeSeconds: 6, djLength: true)
         )
         #expect(!crossfade.service.isDJLengthOn)
     }
 
-    @Test("Up next tempo and key texts show in Systematic shuffle or in Mixing, not otherwise")
+    @Test("Up next tempo and key texts show in Flow Shuffle or in Mixing, not otherwise")
     func infoShows() {
-        #expect(BeatHarness(preferences: prefs(.systematic, .off)).service.showsMixInfo)
+        #expect(BeatHarness(preferences: prefs(.flow, .off)).service.showsMixInfo)
         #expect(BeatHarness(preferences: prefs(.off, .mixing)).service.showsMixInfo)
         #expect(!BeatHarness(preferences: prefs(.off, .crossfade)).service.showsMixInfo)
         #expect(!BeatHarness(preferences: prefs(.off, .off)).service.showsMixInfo)
@@ -81,7 +81,7 @@ struct MusicTransitionsServiceTests {
 
     @Test("changing Transitions cycles Off, Crossfade, Mixing and leaves the order alone")
     func changeLeavesOrder() async {
-        let h = BeatHarness(preferences: prefs(.systematic, .mixing))
+        let h = BeatHarness(preferences: prefs(.flow, .mixing))
         h.service.setTransitionMode(.crossfade)
         #expect(h.service.transitionMode == .crossfade)
         #expect(h.service.isShuffleOn, "the order is Shuffle's business")
@@ -120,16 +120,16 @@ struct MusicTransitionsServiceTests {
 @MainActor
 @Suite("MusicService Transitions and Up next info")
 struct MusicTransitionsInfoTests {
-    @Test("leaving Mixing drops the Up next pairs with shuffle Off and keeps them with Systematic shuffle on")
+    @Test("leaving Mixing drops the Up next pairs with shuffle Off and keeps them with Flow Shuffle on")
     func pairsFollowTheOrderAndMixing() async {
         let kept = MixShuffleHarness(preferences: MusicPlaybackPreferences(
-            shuffleMode: .systematic, transitionMode: .mixing, crossfadeSeconds: 6))
+            shuffleMode: .flow, transitionMode: .mixing, crossfadeSeconds: 6))
         await kept.storeRows()
         await kept.startQueue()
         await kept.settle()
         #expect(!kept.service.mixPairs.isEmpty)
         kept.service.setTransitionMode(.crossfade)
-        #expect(!kept.service.mixPairs.isEmpty, "Systematic shuffle still shows them")
+        #expect(!kept.service.mixPairs.isEmpty, "Flow Shuffle still shows them")
 
         let dropped = MixShuffleHarness()
         await dropped.storeRows()

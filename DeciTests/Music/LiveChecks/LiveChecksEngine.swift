@@ -30,7 +30,7 @@ extension LiveChecks {
             service.play(tracks[0])
         }
         await world.settle(service)
-        service.setShuffleMode(.systematic)
+        service.setShuffleMode(.flow)
         await world.settle(service)
         let runner = LiveRunner(world: world, rig: rig, engine: engine, chain: chain, audio: audio)
         runner.captureHook = capture

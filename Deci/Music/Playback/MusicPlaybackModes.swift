@@ -31,7 +31,7 @@ struct MusicPlaybackPreferences: Equatable, Sendable {
         return min(max(seconds, crossfadeRange.lowerBound), crossfadeRange.upperBound)
     }
 
-    /// How the queue is ordered: its own order, or Systematic shuffle.
+    /// How the queue is ordered: its own order, shuffled, or shuffled and put in flow order.
     var shuffleMode = MusicShuffleMode.off
     var loop = MusicLoopMode.off
     /// Keep playing recommended songs after a playlist or an album has finished.

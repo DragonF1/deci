@@ -353,7 +353,7 @@ struct MusicServicePinnedItemsTests {
     func settingsReset() {
         let h = PinHarness(
             pins: [pin("UCa"), pin("UCb")],
-            preferences: MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
+            preferences: MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false)
         )
 
         h.service.settingsDidReset()
@@ -370,7 +370,7 @@ struct MusicServicePinnedItemsTests {
     func changeAfterSettingsReset() {
         let h = PinHarness(
             pins: [pin("UCa"), pin("UCb")],
-            preferences: MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
+            preferences: MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false)
         )
         h.service.settingsDidReset()
 

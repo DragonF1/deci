@@ -46,16 +46,16 @@ struct MusicPlaybackSettingsTests {
     @Test("the three options survive an encode and decode")
     func roundTrip() throws {
         var settings = AppSettings()
-        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false)
         let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
         #expect(decoded == settings)
-        #expect(decoded.musicPlayback == MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false))
+        #expect(decoded.musicPlayback == MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false))
     }
 
     @Test("the preferences view reads and writes the three fields")
     func preferencesView() {
         var settings = AppSettings()
-        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .playlist, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .flow, loop: .playlist, autoplay: false)
         #expect(settings.musicShuffle)
         #expect(settings.musicLoopMode == .playlist)
         #expect(settings.musicAutoplay == false)
@@ -73,12 +73,12 @@ struct MusicPlaybackSettingsTests {
 
         let first = SettingsManager(directory: directory)
         var settings = first.appSettings
-        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .playlist, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .flow, loop: .playlist, autoplay: false)
         first.updateAppSettings(settings)
         first.flushSync()
 
         let second = SettingsManager(directory: directory)
-        #expect(second.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .systematic, loop: .playlist, autoplay: false))
+        #expect(second.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .flow, loop: .playlist, autoplay: false))
     }
 
     @Test("Reset all settings puts the three options back to their defaults")
@@ -88,7 +88,7 @@ struct MusicPlaybackSettingsTests {
 
         let manager = SettingsManager(directory: directory)
         var settings = manager.appSettings
-        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false)
         manager.updateAppSettings(settings)
 
         manager.resetAllSettings()
@@ -106,15 +106,15 @@ struct MusicPlaybackSettingsTests {
         manager.updateAppSettings(settings)
 
         let save = MusicServiceHost.savePreferences(to: manager)
-        save(MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false))
+        save(MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false))
 
-        #expect(manager.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .systematic, loop: .song, autoplay: false))
+        #expect(manager.appSettings.musicPlayback == MusicPlaybackPreferences(shuffleMode: .flow, loop: .song, autoplay: false))
         #expect(manager.appSettings.launchAtLogin)
     }
 
     @Test("with no settings behind it the save hook does nothing")
     func hostSaveWithoutSettings() {
-        MusicServiceHost.savePreferences(to: nil)(MusicPlaybackPreferences(shuffleMode: .systematic, loop: .playlist, autoplay: false))
+        MusicServiceHost.savePreferences(to: nil)(MusicPlaybackPreferences(shuffleMode: .flow, loop: .playlist, autoplay: false))
     }
 
     @Test("a change made in the player is saved, and the next service starts from it")

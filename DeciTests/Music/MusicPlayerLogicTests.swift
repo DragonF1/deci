@@ -373,21 +373,21 @@ struct MusicPlaybackToggleTests {
 
     @Test("each toggle is on by its own setting, and any loop mode but off lights the loop")
     func isOn() {
-        #expect(MusicPlaybackToggle.shuffle.isOn(shuffle: true, loop: .off, autoplay: false))
-        #expect(!MusicPlaybackToggle.shuffle.isOn(shuffle: false, loop: .song, autoplay: true))
-        #expect(MusicPlaybackToggle.autoplay.isOn(shuffle: false, loop: .off, autoplay: true))
-        #expect(!MusicPlaybackToggle.autoplay.isOn(shuffle: true, loop: .song, autoplay: false))
-        #expect(!MusicPlaybackToggle.loop.isOn(shuffle: true, loop: .off, autoplay: true))
-        #expect(MusicPlaybackToggle.loop.isOn(shuffle: false, loop: .playlist, autoplay: false))
-        #expect(MusicPlaybackToggle.loop.isOn(shuffle: false, loop: .song, autoplay: false))
-        #expect(MusicPlaybackToggle.transitions.isOn(shuffle: false, loop: .off, autoplay: false, transitions: .mixing))
-        #expect(!MusicPlaybackToggle.transitions.isOn(shuffle: true, loop: .song, autoplay: true))
-        #expect(!MusicPlaybackToggle.shuffle.isOn(shuffle: false, loop: .off, autoplay: false, transitions: .crossfade))
+        #expect(MusicPlaybackToggle.shuffle.isOn(shuffle: .flow, loop: .off, autoplay: false))
+        #expect(!MusicPlaybackToggle.shuffle.isOn(shuffle: .off, loop: .song, autoplay: true))
+        #expect(MusicPlaybackToggle.autoplay.isOn(shuffle: .off, loop: .off, autoplay: true))
+        #expect(!MusicPlaybackToggle.autoplay.isOn(shuffle: .flow, loop: .song, autoplay: false))
+        #expect(!MusicPlaybackToggle.loop.isOn(shuffle: .flow, loop: .off, autoplay: true))
+        #expect(MusicPlaybackToggle.loop.isOn(shuffle: .off, loop: .playlist, autoplay: false))
+        #expect(MusicPlaybackToggle.loop.isOn(shuffle: .off, loop: .song, autoplay: false))
+        #expect(MusicPlaybackToggle.transitions.isOn(shuffle: .off, loop: .off, autoplay: false, transitions: .mixing))
+        #expect(!MusicPlaybackToggle.transitions.isOn(shuffle: .flow, loop: .song, autoplay: true))
+        #expect(!MusicPlaybackToggle.shuffle.isOn(shuffle: .off, loop: .off, autoplay: false, transitions: .crossfade))
     }
 
     @Test("the names are what VoiceOver says, and the loop's says its mode")
     func titles() {
-        #expect(MusicPlaybackToggle.shuffle.title(loop: .song) == "Systematic shuffle")
+        #expect(MusicPlaybackToggle.shuffle.title(loop: .song) == "Shuffle")
         #expect(MusicPlaybackToggle.autoplay.title(loop: .song) == "Autoplay")
         #expect(MusicPlaybackToggle.transitions.title(loop: .song) == "Transitions")
         #expect(MusicPlaybackToggle.loop.title(loop: .off) == "Loop off")

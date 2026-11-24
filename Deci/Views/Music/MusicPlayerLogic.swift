@@ -94,7 +94,7 @@ struct MusicQueueListing {
     }
 }
 
-/// The four toggles of the Up next header, in the order they sit. Shuffle cycles Off and Systematic shuffle; Transitions
+/// The four toggles of the Up next header, in the order they sit. Shuffle cycles Off, Shuffle and Flow Shuffle; Transitions
 /// cycles Off, Crossfade and Mixing, like Loop cycles its modes.
 nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
     case shuffle
@@ -104,7 +104,7 @@ nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
 
     /// What the toggle is called for VoiceOver and the tooltip; the loop's own wording says its mode.
     func title(
-        loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .systematic, transitionMode: MusicTransitionMode = .off
+        loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .shuffle, transitionMode: MusicTransitionMode = .off
     ) -> String {
         switch self {
         case .shuffle: shuffleMode.title
@@ -115,7 +115,7 @@ nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
     }
 
     func symbol(
-        loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .systematic, transitionMode: MusicTransitionMode = .off
+        loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .shuffle, transitionMode: MusicTransitionMode = .off
     ) -> String {
         switch self {
         case .shuffle: shuffleMode.symbol
@@ -125,9 +125,9 @@ nonisolated enum MusicPlaybackToggle: CaseIterable, Equatable {
         }
     }
 
-    func isOn(shuffle: Bool, loop: MusicLoopMode, autoplay: Bool, transitions: MusicTransitionMode = .off) -> Bool {
+    func isOn(shuffle: MusicShuffleMode, loop: MusicLoopMode, autoplay: Bool, transitions: MusicTransitionMode = .off) -> Bool {
         switch self {
-        case .shuffle: shuffle
+        case .shuffle: shuffle.isOn
         case .loop: loop != .off
         case .autoplay: autoplay
         case .transitions: transitions.isOn

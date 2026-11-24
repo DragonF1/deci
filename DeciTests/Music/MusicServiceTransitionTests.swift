@@ -49,7 +49,7 @@ private struct TransitionHarness {
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
             preferences: MusicPlaybackPreferences(
-                shuffleMode: mix ? .systematic : .off,
+                shuffleMode: mix ? .flow : .off,
                 transitionMode: MusicPlaybackPreferences.migratedTransitionMode(mixShuffle: mix, beatMix: true, crossfade: crossfade),
                 crossfadeSeconds: seconds
             ),

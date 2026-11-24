@@ -220,7 +220,7 @@ struct MusicServiceBulkQueueTests {
 
     @Test("Play next in shuffle keeps the songs in the order given")
     func playNextWhileShuffled() async {
-        let h = BulkQueueHarness(preferences: MusicPlaybackPreferences(shuffleMode: .systematic))
+        let h = BulkQueueHarness(preferences: MusicPlaybackPreferences(shuffleMode: .flow))
         await h.startPage(["a", "b", "c", "d", "e"])
         h.service.playNext(h.songs("x", "y", "z"))
 

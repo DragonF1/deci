@@ -1,7 +1,7 @@
 // DeciTests/Music/MixShuffle/MusicMixAutoplayTests.swift
 // Tier 4 P7: Autoplay under Mix. The staged radio still joins behind everything queued, but in an order Mix picks: the
 // song that mixes best out of the playing one first, the rest in the slots that cost their neighbours least. With
-// Systematic shuffle off the radio is appended exactly as it came.
+// Flow Shuffle off the radio is appended exactly as it came.
 
 import Foundation
 import Testing
@@ -112,7 +112,7 @@ struct MusicServiceMixAutoplayTests {
         await h.settle()
         h.engine.emit(.playingChanged(true))
         if mix {
-            h.service.setShuffleMode(.systematic)
+            h.service.setShuffleMode(.flow)
             await h.settle()
         }
     }
@@ -144,6 +144,16 @@ struct MusicServiceMixAutoplayTests {
         #expect(h.service.queue.current?.videoId == "r1")
     }
 
+    @Test("plain Shuffle appends the radio as it came")
+    func shuffleAppends() async {
+        let h = MixShuffleHarness()
+        await start(h, mix: false)
+        h.service.setShuffleMode(.shuffle)
+        await h.settle()
+        await playThrough(h)
+        #expect(h.order.suffix(5).map { $0 } == Self.radio)
+    }
+
     @Test("the song the engine crossfades into is the song the queue hands over to (no cut, no skipped song)")
     func handOverMatchesPreload() async {
         for seed in [1, 2, 3, 4] as [UInt64] {
@@ -155,7 +165,7 @@ struct MusicServiceMixAutoplayTests {
             h.service.play(MusicSamples.track("a", title: "Song a"), in: page)
             await h.settle()
             h.engine.emit(.playingChanged(true))
-            h.service.setShuffleMode(.systematic)
+            h.service.setShuffleMode(.flow)
             await h.settle()
             for _ in 0..<(Self.page.count - 1) {
                 h.service.next()
@@ -217,7 +227,7 @@ struct MusicServiceMixAutoplayTests {
             h.service.play(MusicSamples.track("a", title: "Song a"), in: page)
             await h.settle()
             h.engine.emit(.playingChanged(true))
-            h.service.setShuffleMode(.systematic)
+            h.service.setShuffleMode(.flow)
             await h.settle()
             await playThrough(h)
             firsts.append(h.service.queue.current?.videoId)

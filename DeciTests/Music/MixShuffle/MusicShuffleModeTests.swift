@@ -1,5 +1,5 @@
 // DeciTests/Music/MixShuffle/MusicShuffleModeTests.swift
-// The shuffle button's two states (Off, Systematic shuffle) and the Transitions button's three (Off, Crossfade, Mixing):
+// The shuffle button's three states (Off, Shuffle, Flow Shuffle) and the Transitions button's three (Off, Crossfade, Mixing):
 // the cycles, the names and glyphs, and the settings that carry them, with the migration from the older keys.
 
 import AppKit
@@ -8,18 +8,41 @@ import Testing
 @testable import Deci
 
 @Suite struct MusicShuffleModeTests {
-    @Test("the button cycles Off, Systematic shuffle, Off")
+    @Test("the button cycles Off, Shuffle, Flow Shuffle, Off")
     func cycle() {
-        #expect(MusicShuffleMode.off.next == .systematic)
-        #expect(MusicShuffleMode.systematic.next == .off)
-        #expect(MusicShuffleMode.allCases == [.off, .systematic])
+        #expect(MusicShuffleMode.off.next == .shuffle)
+        #expect(MusicShuffleMode.shuffle.next == .flow)
+        #expect(MusicShuffleMode.flow.next == .off)
+        #expect(MusicShuffleMode.allCases == [.off, .shuffle, .flow])
+        #expect(MusicShuffleMode.allCases.map(\.rawValue) == ["off", "shuffle", "flow"])
     }
 
-    @Test("both modes share the shuffle glyph; the title says Systematic shuffle")
+    @Test("Off and Shuffle share the shuffle glyph and title; Flow Shuffle has its own")
     func lookOfEachMode() {
         #expect(MusicShuffleMode.off.symbol == "shuffle")
-        #expect(MusicShuffleMode.systematic.symbol == "shuffle")
-        #expect(MusicShuffleMode.systematic.title == "Systematic shuffle")
+        #expect(MusicShuffleMode.shuffle.symbol == "shuffle")
+        #expect(MusicShuffleMode.flow.symbol == MusicShuffleMode.flowSymbol)
+        #expect(MusicShuffleMode.off.title == "Shuffle")
+        #expect(MusicShuffleMode.shuffle.title == "Shuffle")
+        #expect(MusicShuffleMode.flow.title == "Flow Shuffle")
+    }
+
+    @Test("Flow Shuffle's glyph is the curved path and exists on this system")
+    func flowGlyph() {
+        #expect(MusicShuffleMode.flowSymbol == "point.topleft.down.to.point.bottomright.curvepath")
+        #expect(NSImage(systemSymbolName: MusicShuffleMode.flowSymbol, accessibilityDescription: nil) != nil)
+    }
+
+    @Test("every shuffle glyph fits the transport row's shuffle box at the row's size")
+    func shuffleGlyphsFitTheBox() throws {
+        let box = MusicTransportMetrics.box(.shuffle)
+        for mode in MusicShuffleMode.allCases {
+            let base = try #require(NSImage(systemSymbolName: mode.symbol, accessibilityDescription: nil))
+            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+            let sized = try #require(base.withSymbolConfiguration(config))
+            #expect(sized.size.width <= box + 3, "\(mode) is \(sized.size.width) pt wide in a \(box) pt box")
+            #expect(sized.size.height <= MusicTransportMetrics.height)
+        }
     }
 
     @Test("the Transitions button cycles Off, Crossfade, Mixing, Off")
@@ -46,7 +69,7 @@ import Testing
 
     @Test("every glyph the shuffle and Transitions UI draws exists on this system")
     func glyphsExist() {
-        let names = [MusicShuffleMode.symbol, MusicTransitionMode.crossfadeSymbol, MusicTransitionMode.mixingSymbol]
+        let names = [MusicShuffleMode.symbol, MusicShuffleMode.flowSymbol, MusicTransitionMode.crossfadeSymbol, MusicTransitionMode.mixingSymbol]
         for name in names {
             #expect(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil, "\(name) is not an SF Symbol")
         }
@@ -78,15 +101,16 @@ import Testing
     @Test("only Off is off")
     func isOn() {
         #expect(!MusicShuffleMode.off.isOn)
-        #expect(MusicShuffleMode.systematic.isOn)
-        #expect(MusicShuffleMode(shuffle: true) == .systematic)
-        #expect(MusicShuffleMode(shuffle: false) == .off)
+        #expect(MusicShuffleMode.shuffle.isOn)
+        #expect(MusicShuffleMode.flow.isOn)
     }
 
     @Test("the toggles take their title and glyph from the modes")
     func toggleLook() {
         #expect(MusicPlaybackToggle.shuffle.symbol(loop: .off) == "shuffle")
-        #expect(MusicPlaybackToggle.shuffle.title(loop: .off, shuffleMode: .systematic) == "Systematic shuffle")
+        #expect(MusicPlaybackToggle.shuffle.title(loop: .off, shuffleMode: .flow) == "Flow Shuffle")
+        #expect(MusicPlaybackToggle.shuffle.title(loop: .off, shuffleMode: .shuffle) == "Shuffle")
+        #expect(MusicPlaybackToggle.shuffle.symbol(loop: .off, shuffleMode: .flow) == MusicShuffleMode.flowSymbol)
         #expect(MusicPlaybackToggle.transitions.title(loop: .off, transitionMode: .mixing) == "Mixing")
         #expect(MusicPlaybackToggle.transitions.symbol(loop: .off, transitionMode: .mixing) == "waveform.path")
         #expect(MusicPlaybackToggle.transitions.symbol(loop: .off, transitionMode: .crossfade) == "arrow.triangle.merge")
@@ -94,13 +118,14 @@ import Testing
         #expect(MusicFavoriteControl.transitions.symbol(loop: .off, isLiked: false, transitionMode: .mixing) == "waveform.path")
         #expect(MusicFavoriteControl.transitions.title(transitionMode: .crossfade) == "Crossfade")
         #expect(MusicFavoriteControl.transitions.menuTitle == "Transitions")
-        #expect(MusicFavoriteControl.shuffle.title() == "Systematic shuffle")
+        #expect(MusicFavoriteControl.shuffle.title() == "Shuffle")
     }
 
-    @Test("the favorite snapshot reads Systematic shuffle and Transitions, and either counts as on")
+    @Test("the favorite snapshot reads the shuffle mode and Transitions, and any mode but Off counts as on")
     func snapshot() {
-        let snapshot = MusicFavoriteSnapshot(shuffle: true, transitions: .mixing)
-        #expect(snapshot.shuffleMode == .systematic)
+        let snapshot = MusicFavoriteSnapshot(shuffle: .flow, transitions: .mixing)
+        #expect(snapshot.shuffleMode == .flow)
+        #expect(MusicFavoriteSnapshot(shuffle: .shuffle).isOn(.shuffle))
         #expect(snapshot.isOn(.shuffle))
         #expect(snapshot.isOn(.transitions))
         #expect(MusicFavoriteSnapshot().shuffleMode == .off)
@@ -109,19 +134,20 @@ import Testing
 
     @Test("the Shuffle and Transitions menu entries name the mode and offer their choices in cycle order")
     func menuEntries() {
-        func model(shuffle: Bool, transitions: MusicTransitionMode) -> MusicFavoriteMenuModel {
+        func model(shuffle: MusicShuffleMode, transitions: MusicTransitionMode) -> MusicFavoriteMenuModel {
             MusicFavoriteMenuModel(
                 shuffle: shuffle, loop: .off, autoplay: true, transitions: transitions, fadeSeconds: 6, slotControl: .shuffle
             )
         }
-        #expect(MusicFavoriteMenuModel.shuffleChoices.map(\.title) == ["Off", "Systematic shuffle"])
-        #expect(MusicFavoriteMenuModel.shuffleChoices.map(\.mode) == [.off, .systematic])
+        #expect(MusicFavoriteMenuModel.shuffleChoices.map(\.title) == ["Off", "Shuffle", "Flow Shuffle"])
+        #expect(MusicFavoriteMenuModel.shuffleChoices.map(\.mode) == [.off, .shuffle, .flow])
         #expect(MusicFavoriteMenuModel.transitionChoices.map(\.title) == ["Off", "Crossfade", "Mixing"])
         #expect(MusicFavoriteMenuModel.transitionChoices.map(\.mode) == [.off, .crossfade, .mixing])
-        #expect(model(shuffle: false, transitions: .off).entries[0] == .shuffle(selected: .off))
-        #expect(model(shuffle: true, transitions: .off).entries[0] == .shuffle(selected: .systematic))
-        #expect(model(shuffle: true, transitions: .off).entries[0].title == "Shuffle")
-        let entries = model(shuffle: false, transitions: .mixing).entries
+        #expect(model(shuffle: .off, transitions: .off).entries[0] == .shuffle(selected: .off))
+        #expect(model(shuffle: .shuffle, transitions: .off).entries[0] == .shuffle(selected: .shuffle))
+        #expect(model(shuffle: .flow, transitions: .off).entries[0] == .shuffle(selected: .flow))
+        #expect(model(shuffle: .flow, transitions: .off).entries[0].title == "Shuffle")
+        let entries = model(shuffle: .off, transitions: .mixing).entries
         #expect(entries.contains(.transitions(selected: .mixing)))
         #expect(entries.contains { $0.title == "Transitions" })
     }
@@ -131,9 +157,9 @@ import Testing
         var prefs = MusicPlaybackPreferences()
         #expect(prefs.shuffleMode == .off)
         #expect(prefs.transitionMode == .off)
-        prefs.shuffleMode = .systematic
+        prefs.shuffleMode = .flow
         prefs.transitionMode = .mixing
-        #expect(prefs == MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .mixing))
+        #expect(prefs == MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .mixing))
     }
 }
 
@@ -146,7 +172,7 @@ import Testing
     func oldMixWithBeat() throws {
         let s = try decode(#"{"musicShuffle": true, "musicMixShuffle": true, "musicBeatMix": true, "musicCrossfadeEnabled": false}"#)
         #expect(s.musicTransitions == .mixing)
-        #expect(s.musicPlayback.shuffleMode == .systematic)
+        #expect(s.musicPlayback.shuffleMode == .flow)
     }
 
     @Test("Mix without beat matching always faded: it is Crossfade")
@@ -178,11 +204,45 @@ import Testing
         #expect(s.musicTransitions == .mixing)
     }
 
-    @Test("plain shuffle written by an older build reads as Systematic shuffle")
-    func oldPlainShuffle() throws {
-        let s = try decode(#"{"musicShuffle": true}"#)
-        #expect(s.musicPlayback.shuffleMode == .systematic)
+    @Test("the two shuffle keys read as Off, Shuffle and Flow Shuffle, and write back the same")
+    func threeShuffleStates() throws {
         #expect(try decode(#"{"musicShuffle": false}"#).musicPlayback.shuffleMode == .off)
+        #expect(try decode(#"{"musicShuffle": false, "musicMixShuffle": true}"#).musicPlayback.shuffleMode == .off)
+        #expect(try decode(#"{"musicShuffle": true, "musicMixShuffle": false}"#).musicPlayback.shuffleMode == .shuffle)
+        #expect(try decode(#"{"musicShuffle": true, "musicMixShuffle": true}"#).musicPlayback.shuffleMode == .flow)
+        #expect(try decode(#"{}"#).musicPlayback.shuffleMode == .off)
+        for mode in MusicShuffleMode.allCases {
+            var settings = AppSettings()
+            settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: mode)
+            #expect(settings.musicShuffle == mode.isOn)
+            #expect(settings.musicMixShuffle == (mode == .flow))
+            let again = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+            #expect(again.musicPlayback.shuffleMode == mode)
+        }
+    }
+
+    @Test("data from before Transitions: plain shuffle stays Shuffle, Mix shuffle stays Flow Shuffle with its transitions")
+    func oldKeysKeepTheirShuffle() throws {
+        let plain = try decode(#"{"musicShuffle": true}"#)
+        #expect(plain.musicPlayback.shuffleMode == .shuffle)
+        #expect(plain.musicTransitions == .off)
+        let mix = try decode(#"{"musicShuffle": true, "musicMixShuffle": true, "musicBeatMix": true}"#)
+        #expect(mix.musicPlayback.shuffleMode == .flow)
+        #expect(mix.musicTransitions == .mixing)
+        let mixOnly = try decode(#"{"musicShuffle": true, "musicMixShuffle": true, "musicBeatMix": false}"#)
+        #expect(mixOnly.musicPlayback.shuffleMode == .flow)
+        #expect(mixOnly.musicTransitions == .crossfade)
+    }
+
+    @Test("data the Systematic build wrote (Mix shuffle mirrors shuffle) reads as Flow Shuffle, and only with shuffle on")
+    func systematicBuildData() throws {
+        let on = try decode(#"{"musicShuffle": true, "musicMixShuffle": true, "musicTransitions": "crossfade"}"#)
+        #expect(on.musicPlayback.shuffleMode == .flow)
+        #expect(on.musicTransitions == .crossfade)
+        let off = try decode(#"{"musicShuffle": false, "musicMixShuffle": false, "musicTransitions": "mixing"}"#)
+        #expect(off.musicPlayback.shuffleMode == .off)
+        #expect(off.musicTransitions == .mixing)
+        #expect(MusicShuffleMode(rawValue: "systematic") == nil, "the old name was never a stored value")
     }
 
     @Test("the new key wins over the old ones")
@@ -211,7 +271,7 @@ import Testing
             let data = try JSONEncoder().encode(settings)
             return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         }
-        let mixed = try written(.systematic, .mixing)
+        let mixed = try written(.flow, .mixing)
         #expect(mixed["musicTransitions"] as? String == "mixing")
         #expect(mixed["musicShuffle"] as? Bool == true)
         #expect(mixed["musicMixShuffle"] as? Bool == true)
@@ -222,7 +282,10 @@ import Testing
         #expect(faded["musicMixShuffle"] as? Bool == false)
         #expect(faded["musicCrossfadeEnabled"] as? Bool == true)
         #expect(faded["musicBeatMix"] as? Bool == false)
-        let off = try written(.systematic, .off)
+        let plain = try written(.shuffle, .off)
+        #expect(plain["musicShuffle"] as? Bool == true)
+        #expect(plain["musicMixShuffle"] as? Bool == false)
+        let off = try written(.flow, .off)
         #expect(off["musicShuffle"] as? Bool == true)
         #expect(off["musicCrossfadeEnabled"] as? Bool == false)
         #expect(off["musicBeatMix"] as? Bool == false)
@@ -231,15 +294,13 @@ import Testing
     @Test("the modes survive a round trip and flow through the playback preferences")
     func roundTrip() throws {
         var settings = AppSettings()
-        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .systematic, transitionMode: .mixing)
+        settings.musicPlayback = MusicPlaybackPreferences(shuffleMode: .flow, transitionMode: .mixing)
         let again = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
         #expect(again == settings)
-        #expect(again.musicPlayback.shuffleMode == .systematic)
+        #expect(again.musicPlayback.shuffleMode == .flow)
         #expect(again.musicPlayback.transitionMode == .mixing)
         settings.musicTransitions = .off
         #expect(!settings.musicBeatMix && !settings.musicCrossfadeEnabled)
-        settings.musicShuffle = false
-        #expect(!settings.musicMixShuffle)
     }
 
     @Test("the migration table is the one the settings use")

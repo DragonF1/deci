@@ -69,7 +69,7 @@ struct MusicServiceDJLengthTests {
 
     private func harness(djLength: Bool, mix: Bool, vocalGuard: Bool = false, live: (@MainActor () -> Bool)? = nil) -> BeatHarness {
         BeatHarness(preferences: MusicPlaybackPreferences(
-            shuffleMode: mix ? .systematic : .off, transitionMode: mix ? .mixing : .crossfade, crossfadeSeconds: 6, vocalGuard: vocalGuard, djLength: djLength
+            shuffleMode: mix ? .flow : .off, transitionMode: mix ? .mixing : .crossfade, crossfadeSeconds: 6, vocalGuard: vocalGuard, djLength: djLength
         ), djLength: live)
     }
 

@@ -61,7 +61,7 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
 
     /// The name in a slot, for VoiceOver: the control's name, except Loop, which says its mode.
     func title(
-        loop: MusicLoopMode = .off, shuffleMode: MusicShuffleMode = .systematic, transitionMode: MusicTransitionMode = .off
+        loop: MusicLoopMode = .off, shuffleMode: MusicShuffleMode = .shuffle, transitionMode: MusicTransitionMode = .off
     ) -> String {
         switch self {
         case .loop: loop.label
@@ -73,7 +73,7 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
 
     /// The glyph: the Up next header's for the four toggles, the strip's thumbs up (filled once liked) for Like.
     func symbol(
-        loop: MusicLoopMode, isLiked: Bool, shuffleMode: MusicShuffleMode = .systematic,
+        loop: MusicLoopMode, isLiked: Bool, shuffleMode: MusicShuffleMode = .shuffle,
         transitionMode: MusicTransitionMode = .off
     ) -> String {
         switch kind {
@@ -175,7 +175,7 @@ nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
     enum Entry: Equatable, Sendable {
         /// Autoplay.
         case toggle(MusicFavoriteControl, isOn: Bool)
-        /// Shuffle: Off, Systematic shuffle.
+        /// Shuffle: Off, Shuffle, Flow Shuffle.
         case shuffle(selected: MusicShuffleMode)
         /// Transitions: Off, Crossfade, Mixing.
         case transitions(selected: MusicTransitionMode)
@@ -212,13 +212,13 @@ nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
     let entries: [Entry]
 
     /// The choices of the Shuffle picker, in the order the button cycles through them.
-    static let shuffleChoices: [(mode: MusicShuffleMode, title: String)] = [(.off, "Off"), (.systematic, "Systematic shuffle")]
+    static let shuffleChoices: [(mode: MusicShuffleMode, title: String)] = [(.off, "Off"), (.shuffle, "Shuffle"), (.flow, "Flow Shuffle")]
 
     /// The choices of the Transitions picker, in the order the button cycles through them.
     static let transitionChoices: [(mode: MusicTransitionMode, title: String)] = [(.off, "Off"), (.crossfade, "Crossfade"), (.mixing, "Mixing")]
 
     init(
-        shuffle: Bool, loop: MusicLoopMode, autoplay: Bool, transitions: MusicTransitionMode, fadeSeconds: Double,
+        shuffle: MusicShuffleMode, loop: MusicLoopMode, autoplay: Bool, transitions: MusicTransitionMode, fadeSeconds: Double,
         slotControl: MusicFavoriteControl
     ) {
         // Settings' stepper stays live with Transitions off, so Fade length is never greyed out here either.
@@ -226,7 +226,7 @@ nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
         // One entry per playback toggle, in toggle order, so a new toggle cannot be left out of the menu.
         let toggles: [Entry] = MusicPlaybackToggle.allCases.map { toggle in
             switch toggle {
-            case .shuffle: .shuffle(selected: MusicShuffleMode(shuffle: shuffle))
+            case .shuffle: .shuffle(selected: shuffle)
             case .loop: .loop(selected: loop)
             case .autoplay: .toggle(.autoplay, isOn: autoplay)
             case .transitions: .transitions(selected: transitions)
