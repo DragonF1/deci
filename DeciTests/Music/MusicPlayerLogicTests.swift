@@ -364,7 +364,7 @@ struct MusicPlaybackToggleTests {
     func symbols() {
         #expect(MusicPlaybackToggle.shuffle.symbol(loop: .off) == "shuffle")
         #expect(MusicPlaybackToggle.autoplay.symbol(loop: .off) == "infinity")
-        #expect(MusicPlaybackToggle.transitions.symbol(loop: .off) == "arrow.triangle.merge")
+        #expect(MusicPlaybackToggle.transitions.symbol(loop: .off) == MusicTransitionMode.crossfadeSymbol)
         #expect(MusicPlaybackToggle.transitions.symbol(loop: .off, transitionMode: .mixing) == "waveform.path")
         #expect(MusicPlaybackToggle.loop.symbol(loop: .off) == "repeat")
         #expect(MusicPlaybackToggle.loop.symbol(loop: .playlist) == "repeat")

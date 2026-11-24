@@ -446,8 +446,7 @@ struct MusicColumnGlyphButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: fontSize, weight: .medium))
+            MusicGlyph(name: systemImage, fontSize: fontSize, weight: .medium)
                 .foregroundStyle(color)
                 .frame(width: box, height: height)
                 .padding(.horizontal, reachX)

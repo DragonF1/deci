@@ -40,7 +40,7 @@ struct MusicFavoriteControlsTests {
         #expect(MusicFavoriteControl.loop.symbol(loop: .off) == "repeat")
         #expect(MusicFavoriteControl.loop.symbol(loop: .song) == "repeat.1")
         #expect(MusicFavoriteControl.autoplay.symbol(loop: .off) == "infinity")
-        #expect(MusicFavoriteControl.transitions.symbol(loop: .off) == "arrow.triangle.merge")
+        #expect(MusicFavoriteControl.transitions.symbol(loop: .off) == MusicTransitionMode.crossfadeSymbol)
     }
 
     @Test("only the two buttons the row always had keep a tooltip")

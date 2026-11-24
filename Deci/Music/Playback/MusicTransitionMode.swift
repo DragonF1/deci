@@ -27,7 +27,8 @@ nonisolated enum MusicTransitionMode: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    static let crossfadeSymbol = "arrow.triangle.merge"
+    /// Not an SF Symbol: `MusicGlyph` draws its own icon for this name.
+    static let crossfadeSymbol = "deci.crossfade"
     static let mixingSymbol = "waveform.path"
 
     var symbol: String { self == .mixing ? Self.mixingSymbol : Self.crossfadeSymbol }

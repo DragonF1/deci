@@ -68,17 +68,17 @@ import Testing
         #expect(MusicTransitionMode.off.title == "Transitions")
         #expect(MusicTransitionMode.crossfade.title == "Crossfade")
         #expect(MusicTransitionMode.mixing.title == "Mixing")
-        #expect(MusicTransitionMode.off.symbol == "arrow.triangle.merge")
-        #expect(MusicTransitionMode.crossfade.symbol == "arrow.triangle.merge")
+        #expect(MusicTransitionMode.off.symbol == MusicTransitionMode.crossfadeSymbol)
+        #expect(MusicTransitionMode.crossfade.symbol == MusicTransitionMode.crossfadeSymbol)
         #expect(MusicTransitionMode.mixing.symbol == "waveform.path")
         #expect(!MusicTransitionMode.off.isOn)
         #expect(MusicTransitionMode.crossfade.isOn)
         #expect(MusicTransitionMode.mixing.isOn)
     }
 
-    @Test("every glyph the shuffle and Transitions UI draws exists on this system")
+    @Test("every SF Symbol the shuffle and Transitions UI draws exists on this system")
     func glyphsExist() {
-        let names = [MusicShuffleMode.symbol, MusicShuffleMode.flowSymbol, MusicTransitionMode.crossfadeSymbol, MusicTransitionMode.mixingSymbol]
+        let names = [MusicShuffleMode.symbol, MusicShuffleMode.flowSymbol, MusicTransitionMode.mixingSymbol]
         for name in names {
             #expect(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil, "\(name) is not an SF Symbol")
         }
@@ -122,7 +122,7 @@ import Testing
         #expect(MusicPlaybackToggle.shuffle.symbol(loop: .off, shuffleMode: .flow) == MusicShuffleMode.flowSymbol)
         #expect(MusicPlaybackToggle.transitions.title(loop: .off, transitionMode: .mixing) == "Mixing")
         #expect(MusicPlaybackToggle.transitions.symbol(loop: .off, transitionMode: .mixing) == "waveform.path")
-        #expect(MusicPlaybackToggle.transitions.symbol(loop: .off, transitionMode: .crossfade) == "arrow.triangle.merge")
+        #expect(MusicPlaybackToggle.transitions.symbol(loop: .off, transitionMode: .crossfade) == MusicTransitionMode.crossfadeSymbol)
         #expect(MusicPlaybackToggle.loop.symbol(loop: .song, transitionMode: .mixing) == MusicLoopMode.song.systemImage)
         #expect(MusicFavoriteControl.transitions.symbol(loop: .off, transitionMode: .mixing) == "waveform.path")
         #expect(MusicFavoriteControl.transitions.title(transitionMode: .crossfade) == "Crossfade")
