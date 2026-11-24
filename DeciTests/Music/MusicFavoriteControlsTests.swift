@@ -52,24 +52,33 @@ struct MusicFavoriteControlsTests {
 
     // MARK: - The slots
 
-    @Test("the default slots are shuffle on the left and loop on the right")
+    @Test("the default slots are shuffle, loop, transitions and autoplay")
     func defaults() {
         #expect(MusicFavoriteSlots.default.left == .shuffle)
         #expect(MusicFavoriteSlots.default.right == .loop)
+        #expect(MusicFavoriteSlots.default.topLeft == .transitions)
+        #expect(MusicFavoriteSlots.default.topRight == .autoplay)
+        #expect(MusicFavoriteSlots(left: .shuffle, right: .loop) == .default)
         #expect(AppSettings().musicFavoriteSlots == .default)
         #expect(AppSettings().musicFavoriteLeft == "shuffle")
         #expect(AppSettings().musicFavoriteRight == "loop")
+        #expect(AppSettings().musicFavoriteTopLeft == "crossfade")
+        #expect(AppSettings().musicFavoriteTopRight == "autoplay")
     }
 
     @Test("an unknown or missing raw value is that slot's default")
     func fallback() {
         #expect(MusicFavoriteSlots(leftRaw: "teleport", rightRaw: "like") == MusicFavoriteSlots(left: .shuffle, right: .like))
-        #expect(MusicFavoriteSlots(leftRaw: "crossfade", rightRaw: "teleport") == MusicFavoriteSlots(left: .transitions, right: .loop))
+        #expect(MusicFavoriteSlots(leftRaw: "crossfade", rightRaw: "teleport") == MusicFavoriteSlots(left: .transitions, right: .loop, topLeft: .shuffle, topRight: .autoplay))
         #expect(MusicFavoriteSlots(leftRaw: nil, rightRaw: nil) == .default)
-        #expect(MusicFavoriteSlots(leftRaw: "", rightRaw: "") == .default)
+        #expect(MusicFavoriteSlots(leftRaw: "", rightRaw: "", topLeftRaw: "", topRightRaw: "") == .default)
+        #expect(MusicFavoriteSlots(leftRaw: nil, rightRaw: nil, topLeftRaw: "teleport", topRightRaw: "like")
+            == MusicFavoriteSlots(left: .shuffle, right: .loop, topLeft: .transitions, topRight: .like))
+        #expect(MusicFavoriteSlots(leftRaw: nil, rightRaw: nil, topLeftRaw: "like", topRightRaw: nil)
+            == MusicFavoriteSlots(left: .shuffle, right: .loop, topLeft: .like, topRight: .autoplay))
     }
 
-    @Test("two slots that name one control never end up equal")
+    @Test("slots that name one control never end up equal")
     func duplicatesAreRepaired() {
         let same = MusicFavoriteSlots(left: .like, right: .like)
         #expect(same.left == .like)
@@ -80,62 +89,105 @@ struct MusicFavoriteControlsTests {
         #expect(MusicFavoriteSlots(leftRaw: "like", rightRaw: "like").left != MusicFavoriteSlots(leftRaw: "like", rightRaw: "like").right)
     }
 
+    @Test("a slot that repeats an earlier control takes its own default if free, else the first free control")
+    func normalisationRule() {
+        // Top slots repeat the transport's: each falls to its own default.
+        let own = MusicFavoriteSlots(left: .like, right: .like, topLeft: .like, topRight: .like)
+        #expect(own == MusicFavoriteSlots(left: .like, right: .loop, topLeft: .transitions, topRight: .autoplay))
+        // The own default is taken too: the first free in allCases order (shuffle, loop, autoplay, transitions, like).
+        let taken = MusicFavoriteSlots(left: .transitions, right: .autoplay, topLeft: .transitions, topRight: .autoplay)
+        #expect(taken == MusicFavoriteSlots(left: .transitions, right: .autoplay, topLeft: .shuffle, topRight: .loop))
+        let all = MusicFavoriteSlots(left: .loop, right: .loop, topLeft: .loop, topRight: .loop)
+        #expect(all == MusicFavoriteSlots(left: .loop, right: .shuffle, topLeft: .transitions, topRight: .autoplay))
+        // Old transport choice of Transitions pushes the top left to the next free control.
+        #expect(MusicFavoriteSlots(left: .transitions, right: .loop) == MusicFavoriteSlots(left: .transitions, right: .loop, topLeft: .shuffle, topRight: .autoplay))
+        #expect(MusicFavoriteSlots(left: .autoplay, right: .loop).topRight == .shuffle)
+    }
+
+    @Test("every combination of four controls comes out filled and distinct")
+    func normalisationExhaustive() {
+        let all = MusicFavoriteControl.allCases
+        for a in all { for b in all { for c in all { for d in all {
+            let slots = MusicFavoriteSlots(left: a, right: b, topLeft: c, topRight: d)
+            let held = MusicFavoriteSide.allCases.map { slots[$0] }
+            #expect(Set(held).count == 4)
+            #expect(slots.left == a)
+            if a != b { #expect(slots.right == b) }
+        } } } }
+    }
+
     @Test("choosing a control puts it in the slot")
     func choose() {
         var slots = MusicFavoriteSlots.default
-        slots.choose(.transitions, for: .left)
-        #expect(slots == MusicFavoriteSlots(left: .transitions, right: .loop))
-        slots.choose(.like, for: .right)
-        #expect(slots == MusicFavoriteSlots(left: .transitions, right: .like))
+        slots.choose(.like, for: .left)
+        #expect(slots == MusicFavoriteSlots(left: .like, right: .loop, topLeft: .transitions, topRight: .autoplay))
+        slots.choose(.shuffle, for: .topRight)
+        #expect(slots == MusicFavoriteSlots(left: .like, right: .loop, topLeft: .transitions, topRight: .shuffle))
     }
 
     @Test("choosing the control a slot already holds changes nothing")
     func chooseSame() {
-        #expect(MusicFavoriteSlots.default.choosing(.shuffle, for: .left) == .default)
-        #expect(MusicFavoriteSlots.default.choosing(.loop, for: .right) == .default)
+        for side in MusicFavoriteSide.allCases {
+            #expect(MusicFavoriteSlots.default.choosing(MusicFavoriteSlots.default[side], for: side) == .default)
+        }
     }
 
-    @Test("choosing the other slot's control swaps the two slots")
+    @Test("choosing another slot's control swaps the two slots")
     func chooseSwaps() {
-        #expect(MusicFavoriteSlots.default.choosing(.loop, for: .left) == MusicFavoriteSlots(left: .loop, right: .shuffle))
-        #expect(MusicFavoriteSlots.default.choosing(.shuffle, for: .right) == MusicFavoriteSlots(left: .loop, right: .shuffle))
+        #expect(MusicFavoriteSlots.default.choosing(.loop, for: .left) == MusicFavoriteSlots(left: .loop, right: .shuffle, topLeft: .transitions, topRight: .autoplay))
+        #expect(MusicFavoriteSlots.default.choosing(.autoplay, for: .topLeft) == MusicFavoriteSlots(left: .shuffle, right: .loop, topLeft: .autoplay, topRight: .transitions))
+        #expect(MusicFavoriteSlots.default.choosing(.shuffle, for: .topRight) == MusicFavoriteSlots(left: .autoplay, right: .loop, topLeft: .transitions, topRight: .shuffle))
+        #expect(MusicFavoriteSlots.default.choosing(.transitions, for: .right) == MusicFavoriteSlots(left: .shuffle, right: .transitions, topLeft: .loop, topRight: .autoplay))
     }
 
-    @Test("every choice in every slot leaves two distinct controls")
+    @Test("every choice in every slot leaves four distinct controls")
     func neverDuplicated() {
-        for start in MusicFavoriteControl.allCases {
-            for other in MusicFavoriteControl.allCases where other != start {
-                for side in MusicFavoriteSide.allCases {
-                    for pick in MusicFavoriteControl.allCases {
-                        let slots = MusicFavoriteSlots(left: start, right: other).choosing(pick, for: side)
-                        #expect(slots[side] == pick)
-                        #expect(slots.left != slots.right)
+        let all = MusicFavoriteControl.allCases
+        // Every start the normaliser can produce: each ordered pick of four distinct controls.
+        var starts: [MusicFavoriteSlots] = []
+        for a in all { for b in all { for c in all { for d in all {
+            let slots = MusicFavoriteSlots(left: a, right: b, topLeft: c, topRight: d)
+            if !starts.contains(slots) { starts.append(slots) }
+        } } } }
+        #expect(starts.count == 120)
+        for start in starts {
+            for side in MusicFavoriteSide.allCases {
+                for pick in all {
+                    let slots = start.choosing(pick, for: side)
+                    #expect(slots[side] == pick)
+                    #expect(Set(MusicFavoriteSide.allCases.map { slots[$0] }).count == 4)
+                    // Only the chosen slot and the one that held `pick` change.
+                    for other in MusicFavoriteSide.allCases where other != side && start[other] != pick {
+                        #expect(slots[other] == start[other])
                     }
                 }
             }
         }
     }
 
-    // MARK: - Persistence
-
     @Test("the slots survive an encode and decode of AppSettings")
     func roundTrip() throws {
         var settings = AppSettings()
-        settings.musicFavoriteSlots = MusicFavoriteSlots(left: .autoplay, right: .like)
+        let slots = MusicFavoriteSlots(left: .autoplay, right: .like, topLeft: .loop, topRight: .shuffle)
+        settings.musicFavoriteSlots = slots
         let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
         #expect(decoded == settings)
-        #expect(decoded.musicFavoriteSlots == MusicFavoriteSlots(left: .autoplay, right: .like))
+        #expect(decoded.musicFavoriteSlots == slots)
         #expect(decoded.musicFavoriteLeft == "autoplay")
         #expect(decoded.musicFavoriteRight == "like")
+        #expect(decoded.musicFavoriteTopLeft == "loop")
+        #expect(decoded.musicFavoriteTopRight == "shuffle")
     }
 
-    @Test("the slots are stored as raw strings under their two keys")
+    @Test("the slots are stored as raw strings under their four keys")
     func storedKeys() throws {
         var settings = AppSettings()
-        settings.musicFavoriteSlots = MusicFavoriteSlots(left: .transitions, right: .shuffle)
+        settings.musicFavoriteSlots = MusicFavoriteSlots(left: .transitions, right: .shuffle, topLeft: .like, topRight: .loop)
         let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any]
         #expect(object?["musicFavoriteLeft"] as? String == "crossfade")
         #expect(object?["musicFavoriteRight"] as? String == "shuffle")
+        #expect(object?["musicFavoriteTopLeft"] as? String == "like")
+        #expect(object?["musicFavoriteTopRight"] as? String == "loop")
     }
 
     @Test("a file from before the slots existed decodes to the defaults")
@@ -143,6 +195,27 @@ struct MusicFavoriteControlsTests {
         let settings = try decode(#"{"launchAtLogin": true, "musicShuffle": true}"#)
         #expect(settings.launchAtLogin)
         #expect(settings.musicFavoriteSlots == .default)
+    }
+
+    @Test("a file with only the two old slot keys gives the top slots their defaults, then normalises")
+    func oldTwoKeyFile() throws {
+        let plain = try decode(#"{"musicFavoriteLeft": "autoplay", "musicFavoriteRight": "like", "launchAtLogin": true}"#)
+        #expect(plain.launchAtLogin)
+        #expect(plain.musicFavoriteTopLeft == "crossfade")
+        #expect(plain.musicFavoriteTopRight == "autoplay")
+        #expect(plain.musicFavoriteSlots == MusicFavoriteSlots(left: .autoplay, right: .like, topLeft: .transitions, topRight: .shuffle))
+        let clash = try decode(#"{"musicFavoriteLeft": "crossfade", "musicFavoriteRight": "loop"}"#)
+        #expect(clash.musicFavoriteSlots == MusicFavoriteSlots(left: .transitions, right: .loop, topLeft: .shuffle, topRight: .autoplay))
+    }
+
+    @Test("a bad top slot value falls back and costs no other setting")
+    func badTopValue() throws {
+        let settings = try decode(#"{"musicFavoriteTopLeft": 3, "musicFavoriteTopRight": "teleport", "musicAutoplay": false}"#)
+        #expect(settings.musicFavoriteTopLeft == "crossfade")
+        // An unknown string is kept as the file says (like the old two keys); the slot reads as its default.
+        #expect(settings.musicFavoriteTopRight == "teleport")
+        #expect(settings.musicFavoriteSlots == .default)
+        #expect(settings.musicAutoplay == false)
     }
 
     @Test("an unknown or mistyped value falls back and costs no other setting")

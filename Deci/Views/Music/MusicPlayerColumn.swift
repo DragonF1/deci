@@ -2,9 +2,10 @@
 import SwiftUI
 
 /// The left column of the Music popup: what is playing and everything to control it, always on screen. A stack 142 pt
-/// wide (kicker, cover, title and artist, the spectrum that is also the progress bar, the times, a strip with Like and
-/// Dislike and "Mixing" between them while a mix is due, the transport, the three words that open Lyrics, Related and Up next in the right column). Volume and
-/// output live in the Mixer popover. It takes the song's colour (`musicAccent`) for its wash and for everything that is
+/// wide (kicker with two favorite toggles at its right end, cover, title and artist, the spectrum that is also the
+/// progress bar, the times, a strip with Like and Dislike and "Mixing" between them while a mix is due, the transport
+/// with a favorite slot at each end, the three words that open Lyrics, Related and Up next in the right column). Volume
+/// and output live in the Mixer popover. It takes the song's colour (`musicAccent`) for its wash and for everything that is
 /// on or played.
 ///
 /// It stays whatever the right column shows. `service` and `navigation` are nil before the service exists; the column
@@ -15,7 +16,7 @@ struct MusicPlayerColumn: View {
     let spectrum: MusicSpectrumDriver
     /// The like animation the strip's Like or Dislike icon is playing; nil when there is none.
     let burst: MusicRateBurstCenter.Event?
-    /// Settings, where the favorite slots and the fade length live.
+    /// Settings, where the four favorite slots (two on the kicker line, two in the transport) and the fade length live.
     let settings: SettingsManager
 
     @Environment(\.musicAccent) private var accent
@@ -81,12 +82,23 @@ struct MusicPlayerColumn: View {
 
     // MARK: - Song
 
+    /// "NOW PLAYING" with the two kicker toggles right-aligned on the same 12 pt line. The text truncates before them,
+    /// keeping `minTextClearance` clear. The line is the height it always was.
     private func kicker(_ state: MusicPlayerColumnState) -> some View {
-        Text(state.kicker)
-            .musicText(MusicStyle.Typeface.kicker)
-            .foregroundStyle(Color.white.opacity(state.kickerOpacity))
-            .lineLimit(1)
-            .frame(height: 12, alignment: .leading)
+        let inputs = favoriteInputs()
+        return HStack(spacing: 0) {
+            Text(state.kicker)
+                .musicText(MusicStyle.Typeface.kicker)
+                .foregroundStyle(Color.white.opacity(state.kickerOpacity))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            // Equatable on what it shows, like the transport row: a tick of the playhead leaves an open menu alone.
+            MusicKickerToggles(slots: inputs.slots, snapshot: inputs.snapshot, state: state, actions: inputs.actions)
+                .equatable()
+                .padding(.leading, MusicKickerToggleMetrics.minTextClearance)
+        }
+        .frame(width: MusicPopupMetrics.playerColumnContentWidth, height: MusicKickerToggleMetrics.lineHeight)
     }
 
     @ViewBuilder
@@ -208,7 +220,8 @@ struct MusicPlayerColumn: View {
 
     // MARK: - Transport
 
-    private func transport(_ state: MusicPlayerColumnState) -> some View {
+    /// What the four favorite slots show and do: the transport row and the kicker toggles are built from the same one.
+    private func favoriteInputs() -> (slots: MusicFavoriteSlots, snapshot: MusicFavoriteSnapshot, actions: MusicTransportActions) {
         let service = service
         let slots = settings.appSettings.musicFavoriteSlots
         let snapshot = MusicFavoriteSnapshot(
@@ -242,10 +255,16 @@ struct MusicPlayerColumn: View {
                 settings.updateAppSettings(appSettings)
             }
         )
+        return (slots, snapshot, actions)
+    }
+
+    private func transport(_ state: MusicPlayerColumnState) -> some View {
+        let inputs = favoriteInputs()
         // Equatable on what the row shows, so a tick of the playhead (which re-runs this body) leaves the row, and the
         // menu a right click has open, alone.
         return MusicTransportRow(
-            slots: slots, snapshot: snapshot, canGoNext: service?.canGoNext ?? false, state: state, actions: actions
+            slots: inputs.slots, snapshot: inputs.snapshot, canGoNext: service?.canGoNext ?? false, state: state,
+            actions: inputs.actions
         )
         .equatable()
         .opacity(state.controlsOpacity)
@@ -410,32 +429,37 @@ private struct MusicTimesRow: View {
     }
 }
 
-/// One glyph of the transport, bare. Its hit area reaches past the glyph (the glyphs are small and spaced apart) and
-/// stays out of the layout.
+/// One glyph of the transport or the kicker line, bare. Its hit area reaches past the glyph (the glyphs are small and
+/// spaced apart) and stays out of the layout.
 struct MusicColumnGlyphButton: View {
     let title: String
     let systemImage: String
     let fontSize: CGFloat
-    /// The width the design draws the glyph in.
-    let box: CGFloat
+    /// The width the design draws the glyph in; nil lets the glyph take its own.
+    let box: CGFloat?
     let color: Color
     var isSelected = false
     var isDisabled = false
     /// Off for a control that was never in the row: nothing added later carries a tooltip.
     var showsHelp = true
+    /// The height the glyph is centred in: the transport's by default.
+    var height: CGFloat = MusicTransportMetrics.height
+    /// How far the hit area reaches past the box sideways and up and down.
+    var reachX: CGFloat = 6
+    var reachY: CGFloat = 0
     let action: () -> Void
-
-    private static let reach: CGFloat = 6
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: fontSize, weight: .medium))
                 .foregroundStyle(color)
-                .frame(width: box, height: MusicTransportMetrics.height)
-                .padding(.horizontal, Self.reach)
+                .frame(width: box, height: height)
+                .padding(.horizontal, reachX)
+                .padding(.vertical, reachY)
                 .contentShape(Rectangle())
-                .padding(.horizontal, -Self.reach)
+                .padding(.horizontal, -reachX)
+                .padding(.vertical, -reachY)
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)

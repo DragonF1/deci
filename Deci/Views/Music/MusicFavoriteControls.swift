@@ -1,8 +1,9 @@
 // Deci/Views/Music/MusicFavoriteControls.swift
 import Foundation
 
-// The two slots beside Previous and Next in the player column's transport. Shuffle and Loop are what they hold until
-// the listener swaps them. Pure, so it is unit tested; the row that draws it is `MusicTransportRow`.
+// The four favorite slots of the player column: two beside Previous and Next in the transport (Shuffle and Loop until
+// the listener swaps them) and two on the kicker line (Transitions and Autoplay). Pure, so it is unit tested; the views
+// that draw them are `MusicTransportRow` and `MusicKickerToggles`.
 
 /// What a favorite slot can hold. The slot list, the "Show here" submenu and the settings' raw values all come from
 /// this enum, so a new case is the only step a new control needs (plus its look and action in the `switch`es below).
@@ -91,58 +92,102 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
     }
 }
 
-/// Where a favorite slot stands.
+/// Where a favorite slot stands: the two beside Previous and Next in the transport, and the two on the kicker line.
 nonisolated enum MusicFavoriteSide: CaseIterable, Sendable {
+    /// The transport's slot left of Previous.
     case left
+    /// The transport's slot right of Next.
     case right
-
-    var opposite: MusicFavoriteSide {
-        self == .left ? .right : .left
-    }
+    /// The kicker line's first toggle (the left one of the two, right-aligned on the "NOW PLAYING" line).
+    case topLeft
+    /// The kicker line's second toggle (the right-most one).
+    case topRight
 }
 
-/// The controls in the left and right slot. Never the same control twice.
+/// The controls in the four slots: left and right in the transport, topLeft and topRight on the kicker line. Never the
+/// same control twice.
 nonisolated struct MusicFavoriteSlots: Equatable, Sendable {
     static let defaultLeft = MusicFavoriteControl.shuffle
     static let defaultRight = MusicFavoriteControl.loop
-    static let `default` = MusicFavoriteSlots(left: defaultLeft, right: defaultRight)
+    static let defaultTopLeft = MusicFavoriteControl.transitions
+    static let defaultTopRight = MusicFavoriteControl.autoplay
+    static let `default` = MusicFavoriteSlots(
+        left: defaultLeft, right: defaultRight, topLeft: defaultTopLeft, topRight: defaultTopRight
+    )
+
+    /// The control a slot holds when nothing else says.
+    static func defaultControl(for side: MusicFavoriteSide) -> MusicFavoriteControl {
+        switch side {
+        case .left: defaultLeft
+        case .right: defaultRight
+        case .topLeft: defaultTopLeft
+        case .topRight: defaultTopRight
+        }
+    }
 
     private(set) var left: MusicFavoriteControl
     private(set) var right: MusicFavoriteControl
+    private(set) var topLeft: MusicFavoriteControl
+    private(set) var topRight: MusicFavoriteControl
 
-    /// Two slots; when both name one control the right slot gives it up for a control the left one does not hold.
-    init(left: MusicFavoriteControl, right: MusicFavoriteControl) {
-        self.left = left
-        if left == right {
-            self.right = left == Self.defaultRight ? Self.defaultLeft : Self.defaultRight
-        } else {
-            self.right = right
+    /// Four slots. They are taken in the order left, right, topLeft, topRight; a slot whose control an earlier one holds
+    /// takes its own default if that is still free, else the first free control in `allCases` order. So left Loop and
+    /// right Loop give right Shuffle, as the two-slot rule always did.
+    init(left: MusicFavoriteControl, right: MusicFavoriteControl, topLeft: MusicFavoriteControl, topRight: MusicFavoriteControl) {
+        var taken: [MusicFavoriteControl] = []
+        func settle(_ control: MusicFavoriteControl, _ side: MusicFavoriteSide) -> MusicFavoriteControl {
+            var result = control
+            if taken.contains(result) {
+                let own = MusicFavoriteSlots.defaultControl(for: side)
+                result = !taken.contains(own) ? own : (MusicFavoriteControl.allCases.first { !taken.contains($0) } ?? own)
+            }
+            taken.append(result)
+            return result
         }
+        self.left = settle(left, .left)
+        self.right = settle(right, .right)
+        self.topLeft = settle(topLeft, .topLeft)
+        self.topRight = settle(topRight, .topRight)
+    }
+
+    /// The transport's two slots; the kicker's two stay on their defaults (or the first free controls when these take them).
+    init(left: MusicFavoriteControl, right: MusicFavoriteControl) {
+        self.init(left: left, right: right, topLeft: Self.defaultTopLeft, topRight: Self.defaultTopRight)
     }
 
     /// The slots as settings.json holds them. A missing or unknown raw value (a control a later build dropped) is that
     /// slot's default.
-    init(leftRaw: String?, rightRaw: String?) {
+    init(leftRaw: String?, rightRaw: String?, topLeftRaw: String? = nil, topRightRaw: String? = nil) {
+        func control(_ raw: String?, _ side: MusicFavoriteSide) -> MusicFavoriteControl {
+            raw.flatMap(MusicFavoriteControl.init(rawValue:)) ?? Self.defaultControl(for: side)
+        }
         self.init(
-            left: leftRaw.flatMap(MusicFavoriteControl.init(rawValue:)) ?? Self.defaultLeft,
-            right: rightRaw.flatMap(MusicFavoriteControl.init(rawValue:)) ?? Self.defaultRight
+            left: control(leftRaw, .left), right: control(rightRaw, .right),
+            topLeft: control(topLeftRaw, .topLeft), topRight: control(topRightRaw, .topRight)
         )
     }
 
     var leftRaw: String { left.rawValue }
     var rightRaw: String { right.rawValue }
+    var topLeftRaw: String { topLeft.rawValue }
+    var topRightRaw: String { topRight.rawValue }
 
     subscript(side: MusicFavoriteSide) -> MusicFavoriteControl {
-        side == .left ? left : right
+        switch side {
+        case .left: left
+        case .right: right
+        case .topLeft: topLeft
+        case .topRight: topRight
+        }
     }
 
-    /// Puts `control` in `side`. One that the other slot holds trades places with this slot's control, so both stay filled
-    /// and distinct.
+    /// Puts `control` in `side`. One that another slot holds trades places with this slot's control, so all four stay
+    /// filled and distinct.
     mutating func choose(_ control: MusicFavoriteControl, for side: MusicFavoriteSide) {
         let previous = self[side]
         guard control != previous else { return }
-        if control == self[side.opposite] {
-            set(previous, for: side.opposite)
+        if let holder = MusicFavoriteSide.allCases.first(where: { self[$0] == control }) {
+            set(previous, for: holder)
         }
         set(control, for: side)
     }
@@ -154,22 +199,34 @@ nonisolated struct MusicFavoriteSlots: Equatable, Sendable {
     }
 
     private mutating func set(_ control: MusicFavoriteControl, for side: MusicFavoriteSide) {
-        if side == .left { left = control } else { right = control }
-    }
-}
-
-extension AppSettings {
-    /// The two favorite slots as the transport row takes them.
-    var musicFavoriteSlots: MusicFavoriteSlots {
-        get { MusicFavoriteSlots(leftRaw: musicFavoriteLeft, rightRaw: musicFavoriteRight) }
-        set {
-            musicFavoriteLeft = newValue.leftRaw
-            musicFavoriteRight = newValue.rightRaw
+        switch side {
+        case .left: left = control
+        case .right: right = control
+        case .topLeft: topLeft = control
+        case .topRight: topRight = control
         }
     }
 }
 
-/// The full Playback menu a right click on either slot opens, as data: what is in it, in order, and what is on or
+extension AppSettings {
+    /// The four favorite slots as the transport row and the kicker toggles take them.
+    var musicFavoriteSlots: MusicFavoriteSlots {
+        get {
+            MusicFavoriteSlots(
+                leftRaw: musicFavoriteLeft, rightRaw: musicFavoriteRight,
+                topLeftRaw: musicFavoriteTopLeft, topRightRaw: musicFavoriteTopRight
+            )
+        }
+        set {
+            musicFavoriteLeft = newValue.leftRaw
+            musicFavoriteRight = newValue.rightRaw
+            musicFavoriteTopLeft = newValue.topLeftRaw
+            musicFavoriteTopRight = newValue.topRightRaw
+        }
+    }
+}
+
+/// The full Playback menu a right click on any slot opens, as data: what is in it, in order, and what is on or
 /// checked. The row turns each entry into a native menu item.
 nonisolated struct MusicFavoriteMenuModel: Equatable, Sendable {
     enum Entry: Equatable, Sendable {

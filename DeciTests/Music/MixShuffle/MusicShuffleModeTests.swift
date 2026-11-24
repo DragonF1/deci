@@ -33,15 +33,24 @@ import Testing
         #expect(NSImage(systemSymbolName: MusicShuffleMode.flowSymbol, accessibilityDescription: nil) != nil)
     }
 
-    @Test("every shuffle glyph fits the transport row's shuffle box at the row's size")
-    func shuffleGlyphsFitTheBox() throws {
+    /// The plain shuffle glyph has always been wider than its 13 pt box (about 17 pt at the slot's 12 pt medium) and
+    /// spills a little into the gaps on either side, so the bound is that room: no mode's glyph is wider than the plain
+    /// one, and its spill stays well short of the button next to it.
+    @Test("every shuffle glyph fits the room the shuffle slot has at the row's size")
+    func shuffleGlyphsFitTheSlot() throws {
         let box = MusicTransportMetrics.box(.shuffle)
+        let gap = MusicTransportMetrics.gap()
+        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        func size(_ symbol: String) throws -> NSSize {
+            let base = try #require(NSImage(systemSymbolName: symbol, accessibilityDescription: nil))
+            return try #require(base.withSymbolConfiguration(config)).size
+        }
+        let plain = try size(MusicShuffleMode.symbol)
         for mode in MusicShuffleMode.allCases {
-            let base = try #require(NSImage(systemSymbolName: mode.symbol, accessibilityDescription: nil))
-            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-            let sized = try #require(base.withSymbolConfiguration(config))
-            #expect(sized.size.width <= box + 3, "\(mode) is \(sized.size.width) pt wide in a \(box) pt box")
-            #expect(sized.size.height <= MusicTransportMetrics.height)
+            let glyph = try size(mode.symbol)
+            #expect(glyph.width <= plain.width + 1, "\(mode) is \(glyph.width) pt wide, the shuffle glyph \(plain.width) pt")
+            #expect((glyph.width - box) / 2 <= gap / 2, "\(mode) spills past half the \(gap) pt gap")
+            #expect(glyph.height <= MusicTransportMetrics.height)
         }
     }
 

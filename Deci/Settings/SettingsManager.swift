@@ -86,6 +86,8 @@ nonisolated struct AppSettings: Codable, Equatable {
     var musicBeatMix: Bool = false                 // Old key, written only for older builds: Transitions is Mixing
     var musicFavoriteLeft: String = MusicFavoriteControl.shuffle.rawValue  // What the player's left favorite slot holds (a MusicFavoriteControl raw value)
     var musicFavoriteRight: String = MusicFavoriteControl.loop.rawValue    // Same for the right slot
+    var musicFavoriteTopLeft: String = MusicFavoriteControl.transitions.rawValue  // Same for the kicker line's first toggle ("crossfade")
+    var musicFavoriteTopRight: String = MusicFavoriteControl.autoplay.rawValue    // Same for the kicker line's second toggle
     var musicAnalyzeInBackground: Bool = true      // Analyse liked songs and playlists one at a time while Music is idle
 
     // Music Home
@@ -148,6 +150,8 @@ nonisolated struct AppSettings: Codable, Equatable {
         // (`MusicFavoriteSlots`) without this build overwriting what the file says.
         musicFavoriteLeft = (try? c.decodeIfPresent(String.self, forKey: .musicFavoriteLeft)) ?? MusicFavoriteControl.shuffle.rawValue
         musicFavoriteRight = (try? c.decodeIfPresent(String.self, forKey: .musicFavoriteRight)) ?? MusicFavoriteControl.loop.rawValue
+        musicFavoriteTopLeft = (try? c.decodeIfPresent(String.self, forKey: .musicFavoriteTopLeft)) ?? MusicFavoriteControl.transitions.rawValue
+        musicFavoriteTopRight = (try? c.decodeIfPresent(String.self, forKey: .musicFavoriteTopRight)) ?? MusicFavoriteControl.autoplay.rawValue
         musicAnalyzeInBackground = (try? c.decodeIfPresent(Bool.self, forKey: .musicAnalyzeInBackground)) ?? true
         // Pins this build cannot read must not cost the listener the rest of their settings either, and one
         // unreadable pin costs only itself. A file from before Home held more than artists has only the old key,

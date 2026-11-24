@@ -174,6 +174,22 @@ nonisolated enum MusicPopupMetrics {
     static var accountCardTrailing: CGFloat { borderWidth + rightPaddingSide }
 }
 
+/// The two favorite toggles on the kicker line ("NOW PLAYING"), right-aligned: small glyphs 8 pt apart, the right one's
+/// edge on the column's content edge and both centred on the 12 pt line. The kicker text gives way before them and stops
+/// at least `minTextClearance` short of the first. Each glyph's hit area is `hitSize` square at least, centred on it and
+/// out of the layout. Pure.
+nonisolated enum MusicKickerToggleMetrics {
+    static let glyphSize: CGFloat = 10
+    static let gap: CGFloat = 8
+    static let minTextClearance: CGFloat = 8
+    /// The kicker line's height, which the toggles are centred on.
+    static let lineHeight: CGFloat = 12
+    /// The least a glyph's hit area is wide and high. A reach of half the gap each side keeps neighbours from overlapping.
+    static let hitSize: CGFloat = 18
+    static let reachX: CGFloat = gap / 2
+    static var reachY: CGFloat { (hitSize - lineHeight) / 2 }
+}
+
 /// The transport row's layout rule. Five boxes stand in a row (Shuffle, Previous, play and pause, Next and Loop), with
 /// the row's spare width shared equally by the four Spacers between them. The row is built from these measures, and so
 /// is what is placed against its glyphs (the strip of Like and Dislike above it), so the two cannot drift apart. Pure.

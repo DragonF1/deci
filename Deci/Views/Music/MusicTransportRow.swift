@@ -136,6 +136,40 @@ struct MusicTransportRow: View, Equatable {
     }
 
     private func slot(_ side: MusicFavoriteSide) -> some View {
+        #if DEBUG
+        let onMenuBuild = debugOnMenuBuild
+        #else
+        let onMenuBuild: () -> Void = {}
+        #endif
+        return MusicFavoriteSlotButton(
+            side: side, slots: slots, snapshot: snapshot, actions: actions, fontSize: 12,
+            box: MusicTransportMetrics.box(side == .left ? .shuffle : .loop), onMenuBuild: onMenuBuild
+        )
+    }
+}
+
+/// One favorite slot: the glyph button of the control the slot holds, and the Playback menu (`MusicFavoriteMenuModel`) a
+/// right click on it opens. The transport's two slots and the kicker line's two toggles are this one view, so they look,
+/// act and open the same menu; only the glyph size, box and reach differ. A left click does what the control does.
+/// It has no equality of its own: the Equatable view that holds it (`MusicTransportRow`, `MusicKickerToggles`) decides
+/// when its body runs, which is what keeps an open menu from being rebuilt.
+struct MusicFavoriteSlotButton: View {
+    let side: MusicFavoriteSide
+    let slots: MusicFavoriteSlots
+    let snapshot: MusicFavoriteSnapshot
+    let actions: MusicTransportActions
+    let fontSize: CGFloat
+    /// The width the glyph is drawn in; nil lets it take its own.
+    var box: CGFloat?
+    var height: CGFloat = MusicTransportMetrics.height
+    var reachX: CGFloat = 6
+    var reachY: CGFloat = 0
+    /// Test seam, told each time the menu is built.
+    var onMenuBuild: () -> Void = {}
+
+    @Environment(\.musicAccent) private var accent
+
+    var body: some View {
         let control = slots[side]
         let isOn = snapshot.isOn(control)
         let unavailable = !snapshot.isAvailable(control)
@@ -145,14 +179,17 @@ struct MusicTransportRow: View, Equatable {
             systemImage: control.symbol(
                 loop: snapshot.loop, isLiked: snapshot.isLiked, shuffleMode: snapshot.shuffleMode, transitionMode: snapshot.transitions
             ),
-            fontSize: 12,
-            box: MusicTransportMetrics.box(side == .left ? .shuffle : .loop),
+            fontSize: fontSize,
+            box: box,
             color: isOn ? accent.solid : Color.white.opacity(unavailable ? 0.30 : rest),
             isSelected: isOn,
             isDisabled: unavailable,
-            showsHelp: control.hasTooltip
+            showsHelp: control.hasTooltip,
+            height: height,
+            reachX: reachX,
+            reachY: reachY
         ) { actions.perform(control) }
-        .contextMenu { menu(for: side) }
+        .contextMenu { menu }
     }
 
     // MARK: - Menu
@@ -167,10 +204,8 @@ struct MusicTransportRow: View, Equatable {
     }
 
     @ViewBuilder
-    private func menu(for side: MusicFavoriteSide) -> some View {
-        #if DEBUG
-        let _ = debugOnMenuBuild()
-        #endif
+    private var menu: some View {
+        let _ = onMenuBuild()
         let model = MusicFavoriteMenuModel(
             shuffle: snapshot.shuffle, loop: snapshot.loop, autoplay: snapshot.autoplay, transitions: snapshot.transitions,
             fadeSeconds: snapshot.fadeSeconds, slotControl: slots[side]

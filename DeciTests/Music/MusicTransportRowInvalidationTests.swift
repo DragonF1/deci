@@ -34,6 +34,21 @@ private struct TickHost: View {
     }
 }
 
+/// The kicker toggles under a body that reads the playhead and builds them with fresh closures every time.
+private struct KickerTickHost: View {
+    let model: TickModel
+
+    var body: some View {
+        let _ = model.position
+        let toggles = MusicKickerToggles(
+            slots: .default, snapshot: MusicFavoriteSnapshot(autoplay: !model.shuffle), state: .playing,
+            actions: MusicTransportActions(perform: { _ in }),
+            debugOnBody: { model.bodies += 1 }, debugOnMenuBuild: { model.menus += 1 }
+        )
+        toggles.equatable()
+    }
+}
+
 @MainActor
 @Suite("Music transport row invalidation")
 struct MusicTransportRowInvalidationTests {
@@ -84,7 +99,48 @@ struct MusicTransportRowInvalidationTests {
         #expect(base != row(MusicFavoriteSnapshot(shuffle: .shuffle)))
         #expect(base != row(MusicFavoriteSnapshot(fadeSeconds: 3)))
         #expect(base != row(MusicFavoriteSnapshot(), slots: MusicFavoriteSlots(left: .like, right: .loop)))
+        #expect(base != row(MusicFavoriteSnapshot(), slots: MusicFavoriteSlots(left: .shuffle, right: .loop, topLeft: .like, topRight: .autoplay)))
         #expect(base != row(MusicFavoriteSnapshot(), next: false))
         #expect(base != row(MusicFavoriteSnapshot(), state: .paused))
+    }
+
+    @Test("the kicker toggles are equal whatever their closures do, and differ on slots, snapshot or state")
+    func kickerEquality() {
+        func toggles(
+            _ snapshot: MusicFavoriteSnapshot, slots: MusicFavoriteSlots = .default, state: MusicPlayerColumnState = .playing,
+            onPerform: @escaping (MusicFavoriteControl) -> Void = { _ in }
+        ) -> MusicKickerToggles {
+            MusicKickerToggles(slots: slots, snapshot: snapshot, state: state, actions: MusicTransportActions(perform: onPerform))
+        }
+        let base = toggles(MusicFavoriteSnapshot())
+        #expect(base == toggles(MusicFavoriteSnapshot(), onPerform: { _ in print("other") }))
+        #expect(base != toggles(MusicFavoriteSnapshot(transitions: .crossfade)))
+        #expect(base != toggles(MusicFavoriteSnapshot(autoplay: false)))
+        #expect(base != toggles(MusicFavoriteSnapshot(fadeSeconds: 3)))
+        #expect(base != toggles(MusicFavoriteSnapshot(), slots: MusicFavoriteSlots(left: .shuffle, right: .loop, topLeft: .autoplay, topRight: .transitions)))
+        #expect(base != toggles(MusicFavoriteSnapshot(), state: .paused))
+    }
+
+    @Test("playback ticks never re-run the kicker toggles or rebuild their menus; a real toggle does, once")
+    func kickerTicks() async {
+        let model = TickModel()
+        let host = NSHostingView(rootView: KickerTickHost(model: model))
+        host.frame = NSRect(x: 0, y: 0, width: 200, height: 60)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: true)
+        window.contentView = host  // never ordered front
+        await settle(host)
+        model.position = 0.1
+        await settle(host)
+        await settle(host)
+        let bodies = model.bodies
+        #expect(bodies > 0)
+        for step in 1...20 {
+            model.position = Double(step) * 0.5
+            await settle(host)
+        }
+        #expect(model.bodies == bodies)
+        model.shuffle = true
+        await settle(host)
+        #expect(model.bodies == bodies + 1)
     }
 }
