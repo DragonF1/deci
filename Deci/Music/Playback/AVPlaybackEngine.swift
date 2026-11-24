@@ -27,6 +27,8 @@ protocol PlaybackEngine: AnyObject {
     var position: TimeInterval { get }
     /// The rate the playing deck keeps for its whole song (1 unless a Mix nudged it): item seconds per wall second.
     var deckRate: Float { get }
+    /// The song time from which the playing song runs at its own tempo to its end: 0 unless it came in tempo-matched.
+    var ownTempoFrom: TimeInterval { get }
 
     /// Replaces the current item. Starts playing once ready when `autoplay` is set.
     func load(_ stream: ResolvedStream, startAt: TimeInterval, autoplay: Bool)
@@ -80,6 +82,7 @@ extension PlaybackEngine {
     var lastTransitionStyle: MusicTransitionStyle? { nil }
     var lastTransitionOnGrid: Bool? { nil }
     var deckRate: Float { 1 }
+    var ownTempoFrom: TimeInterval { 0 }
 }
 
 extension PlaybackEngine {
@@ -172,9 +175,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         var startOffset: TimeInterval = 0
         /// The item's end from the stream's own duration (never the item's doubled one), nil when unknown.
         var naturalEnd: TimeInterval?
-        /// Tier 4b P2b: the deck's item is a composition of the song with its intro repeated; this maps item time to song time.
-        /// nil for every ordinary item. Everything outside the engine sees song time only.
-        var loop: MusicLoopMap?
+        /// The stream of the item, to build it again as the plain song.
+        var stream: ResolvedStream?
+        /// The deck's item is a composition of the song (its intro repeated, or its tempo matched for the overlap); this maps
+        /// item time to song time. nil for every ordinary item. Everything outside the engine sees song time only.
+        var map: MusicItemMap?
         var tap: MusicTapDeck?
         /// Whether the item on the player (or being installed) has a working tap, which applies volume and mute itself.
         var itemIsTapped = false
@@ -189,9 +194,14 @@ final class AVPlaybackEngine: PlaybackEngine {
         var stallObserver: NSObjectProtocol?
 
         /// The song time heard at item time `item`.
-        func songTime(_ item: TimeInterval) -> TimeInterval { loop?.songTime(item) ?? item }
+        func songTime(_ item: TimeInterval) -> TimeInterval { map?.songTime(item) ?? item }
         /// The item time of song time `song`.
-        func itemTime(_ song: TimeInterval) -> TimeInterval { loop?.itemTime(song) ?? song }
+        func itemTime(_ song: TimeInterval) -> TimeInterval { map?.itemTime(song) ?? song }
+
+        /// Where the deck is parked, to the sample for a tempo-matched item (its start is on the grid).
+        var parkTime: CMTime {
+            CMTime(seconds: startOffset, preferredTimescale: map?.stretch == nil ? 600 : MusicTempoStretch.timescale)
+        }
 
         func cancelLoadTasks() {
             for task in loadTasks { task.cancel() }
@@ -228,7 +238,8 @@ final class AVPlaybackEngine: PlaybackEngine {
             videoId = nil
             startOffset = 0
             naturalEnd = nil
-            loop = nil
+            stream = nil
+            map = nil
         }
     }
 
@@ -355,6 +366,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     var standbyAvPlayer: AVPlayer { standby.player }
     private var wantsPlay = false
     private var pendingStart: TimeInterval = 0
+    /// Where the playing song is while its item is being built again for a seek (`reloadPlain`); nil otherwise.
+    private var heldPosition: TimeInterval?
 
     /// The stream being prepared on (or ready on) the standby deck.
     private var preloadStream: ResolvedStream?
@@ -399,8 +412,10 @@ final class AVPlaybackEngine: PlaybackEngine {
     var debugReparkPending: Bool { reparkPending }
     var debugBeatGivenUp: Bool { beatGivenUp }
     var debugStandbyStartOffset: TimeInterval { standby.startOffset }
-    var debugStandbyLoop: MusicLoopMap? { standby.loop }
-    var debugActiveLoop: MusicLoopMap? { active.loop }
+    var debugStandbyLoop: MusicLoopMap? { standby.map?.loop }
+    var debugActiveLoop: MusicLoopMap? { active.map?.loop }
+    var debugStandbyStretch: MusicTempoMap? { standby.map?.stretch }
+    var debugActiveStretch: MusicTempoMap? { active.map?.stretch }
     var debugActiveTap: MusicTapDeck? { active.tap }
     /// Marks the preload ready without any media, so the aligned-start paths can be tested. A test seam.
     func debugMarkPreloadReady() { if preloadStream != nil { preloadReady = true } }
@@ -454,7 +469,10 @@ final class AVPlaybackEngine: PlaybackEngine {
         active.tearDown()
     }
 
+    var ownTempoFrom: TimeInterval { active.map?.stretch?.stretchEnd ?? 0 }
+
     var position: TimeInterval {
+        if let heldPosition { return heldPosition }
         let seconds = active.player.currentTime().seconds
         return seconds.isFinite ? active.songTime(seconds) : 0
     }
@@ -475,20 +493,22 @@ final class AVPlaybackEngine: PlaybackEngine {
         active.tap?.clearEchoHistory()
         wantsPlay = autoplay
         pendingStart = startAt
+        heldPosition = nil
         active.player.automaticallyWaitsToMinimizeStalling = true
         startItem(on: active, stream: stream, role: .active)
     }
 
     /// Builds the item for `stream` on `deck`, with its observers, and installs it once its mix is built (or has timed out).
-    /// With `loop` (a standby for a loop-extend plan) the item is a composition of the song's own local file with its intro
-    /// repeated; false comes back when that could not be built (a remote stream, a loop outside the audio), and the item is
-    /// then the plain one.
+    /// With `edit` (a standby for a loop-extend or tempo-matched plan) the item is a composition of the song's own local file;
+    /// false comes back when that could not be built (a remote stream, an edit that is not valid), and the item is then the
+    /// plain one.
     @discardableResult
-    private func startItem(on deck: Deck, stream: ResolvedStream, role: MusicTapDeck.Role, loop: MusicLoopExtend.Spec? = nil) -> Bool {
+    private func startItem(on deck: Deck, stream: ResolvedStream, role: MusicTapDeck.Role, edit: MusicItemEdit? = nil) -> Bool {
         deck.token += 1
         let token = deck.token
         deck.videoId = stream.videoId
-        deck.loop = nil
+        deck.stream = stream
+        deck.map = nil
 
         var options: [String: Any] = [:]
         if let userAgent = stream.httpHeaders["User-Agent"] {
@@ -496,26 +516,23 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         let asset = AVURLAsset(url: stream.url, options: options)
         let knownDuration = Self.knownDuration(of: stream)
-        guard let loop, let knownDuration, loop.isValid, MusicLoopExtend.isLocal(stream.origin) else {
-            installItem(on: deck, stream: stream, role: role, token: token, tapAsset: asset, loop: nil, knownDuration: knownDuration)
+        guard let edit, let knownDuration, edit.isValid, MusicLoopExtend.isLocal(stream.origin) else {
+            installItem(on: deck, role: role, token: token, tapAsset: asset, map: nil, knownDuration: knownDuration)
             return false
         }
-        // Loop extend: the composition is built without blocking the main actor (the track list and its range are loaded
+        // The composition is built without blocking the main actor (the track list and its range are loaded
         // from the file). A deck that was torn down or reloaded meanwhile has a different token, so a stale build is dropped.
         deck.cancelLoadTasks()
         deck.loadTasks = [Task { @MainActor [weak self, weak deck] in
-            let composition = try? await MusicLoopExtend.composition(
-                asset: asset, spec: loop, songDuration: knownDuration, origin: stream.origin)
+            let built = try? await edit.composition(asset: asset, songDuration: knownDuration, origin: stream.origin)
             guard !Task.isCancelled, let self, let deck, deck.token == token else { return }
-            if let composition {
+            if let built {
                 self.installItem(
-                    on: deck, stream: stream, role: role, token: token, tapAsset: composition, loop: loop,
-                    knownDuration: knownDuration)
+                    on: deck, role: role, token: token, tapAsset: built.composition, map: built.map, knownDuration: knownDuration)
             } else {
-                // The loop could not be built: the plain item, and a plan that gives the beat blend up (see `demoteLoopPlan`).
-                self.demoteLoopPlan()
-                self.installItem(
-                    on: deck, stream: stream, role: role, token: token, tapAsset: asset, loop: nil, knownDuration: knownDuration)
+                // It could not be built: the plain item, and a plan that gives the beat blend up (see `demoteEditedPlan`).
+                self.demoteEditedPlan()
+                self.installItem(on: deck, role: role, token: token, tapAsset: asset, map: nil, knownDuration: knownDuration)
             }
         }]
         return true
@@ -523,20 +540,18 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     /// The item of `startItem`, with its observers and its mix, once the asset it plays is known.
     private func installItem(
-        on deck: Deck, stream: ResolvedStream, role: MusicTapDeck.Role, token: Int, tapAsset: AVAsset,
-        loop: MusicLoopExtend.Spec?, knownDuration: TimeInterval?
+        on deck: Deck, role: MusicTapDeck.Role, token: Int, tapAsset: AVAsset, map: MusicItemMap?, knownDuration: TimeInterval?
     ) {
         let tap = MusicTapDeck(role: role)
         deck.tap = tap
-        let loopApplied = loop
-        deck.loop = loopApplied.map(MusicLoopMap.init)
+        deck.map = map
         let item = AVPlayerItem(asset: tapAsset)
         // A nudged rate keeps its pitch, and the beats stay put on the grid (the default algorithm does neither well).
         item.audioTimePitchAlgorithm = .spectral
         deck.naturalEnd = knownDuration
         if let knownDuration {
-            // Without this the item runs on through the bogus silent half (see `knownDuration(of:)`). A composition is
-            // `extension` longer than the song.
+            // Without this the item runs on through the bogus silent half (see `knownDuration(of:)`). A composition's length is
+            // its own (longer by the loop, longer or shorter by the tempo match): the end is mapped.
             item.forwardPlaybackEndTime = CMTime(seconds: deck.itemTime(knownDuration), preferredTimescale: 1000)
         }
 
@@ -548,7 +563,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             MainActor.assumeIsolated {
                 guard let self, let deck, self.isLive(deck, token) else { return }
                 let seconds = time.seconds
-                guard seconds.isFinite else { return }
+                guard seconds.isFinite, self.heldPosition == nil else { return }
                 self.onTick?(deck.songTime(seconds), deck.player.timeControlStatus == .playing)
                 // The end estimate drifts with stalls and clock changes: keep the standby's start on it.
                 self.evaluateSchedule()
@@ -790,11 +805,13 @@ final class AVPlaybackEngine: PlaybackEngine {
     }
 
     func seek(to seconds: TimeInterval) {
-        if active.installPending {
+        if active.installPending || (heldPosition != nil && active.player.currentItem?.status != .readyToPlay) {
             // The item is not on the player yet: the seek happens when it becomes ready.
             pendingStart = max(0, seconds)
+            if heldPosition != nil { heldPosition = pendingStart }
             return
         }
+        heldPosition = nil
         // A seek keeps the deck's rate: it is the song's own tempo match.
         // A seek in the middle of a crossfade lands on the incoming track, which is the current one already: the old one
         // is let go almost at once and the new one comes up to full level.
@@ -807,6 +824,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         active.tap?.clearEchoHistory()
         // The end moved: the standby's start goes with it, and is set again once the seek has landed.
         cancelSchedule()
+        if reloadPlain(at: max(0, seconds)) { return }
         let token = active.token
         // A seek is in song time: a song time before the loop's end is the first pass of the loop, after it the extension is added.
         let target = CMTime(seconds: active.itemTime(max(0, seconds)), preferredTimescale: 600)
@@ -819,7 +837,20 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
     }
 
+    /// A tempo-matched song the listener takes back to before it is at its own tempo (a scrub, Previous, Loop song): the song it
+    /// was matched to is gone, so it is built again as the plain song, at that position. False when nothing had to be.
+    private func reloadPlain(at seconds: TimeInterval) -> Bool {
+        guard let stream = active.stream, let map = active.map?.stretch, seconds < map.stretchEnd else { return false }
+        pendingGlide = 0
+        active.tearDown()
+        pendingStart = seconds
+        heldPosition = seconds
+        startItem(on: active, stream: stream, role: .active)
+        return true
+    }
+
     func unload() {
+        heldPosition = nil
         cancelPreload()
         resetRate()
         endDrain(fast: true)
@@ -843,12 +874,14 @@ final class AVPlaybackEngine: PlaybackEngine {
                 let target = CMTime(seconds: start, preferredTimescale: 600)
                 deck.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] _ in
                     Task { @MainActor [weak self, weak deck] in
-                        guard let self, let deck, self.isLive(deck, token), self.wantsPlay else { return }
-                        deck.player.play()
+                        guard let self, let deck, self.isLive(deck, token) else { return }
+                        self.heldPosition = nil
+                        if self.wantsPlay { deck.player.play() }
                     }
                 }
-            } else if wantsPlay {
-                deck.player.play()
+            } else {
+                heldPosition = nil
+                if wantsPlay { deck.player.play() }
             }
         case .failed:
             onEvent?(.failed)
@@ -872,11 +905,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         transitionPlan = plan
         standby.player.audioOutputDeviceUniqueID = outputDeviceUID
         standby.player.automaticallyWaitsToMinimizeStalling = false
-        // Loop extend: the standby plays a composition of the song's own file. A remote stream is never composed: the plan
-        // then runs as the plain blend it was made from (no loop, no repeats).
-        let spec = MusicLoopExtend.spec(from: plan)
-        let looping = startItem(on: standby, stream: stream, role: .standby, loop: spec)
-        if spec != nil, !looping { demoteLoopPlan() }
+        // Loop extend and tempo match: the standby plays a composition of the song's own file. A remote stream is never
+        // composed: the plan is then given up for the plain blend it was made from.
+        let edit = MusicItemEdit.edit(from: plan)
+        let edited = startItem(on: standby, stream: stream, role: .standby, edit: edit)
+        if edit != nil, !edited { demoteEditedPlan() }
         // The park offset must lie inside the stream (its exact duration, never the item's doubled one).
         let wanted = transitionPlan?.incomingStartSec ?? 0
         requestedStartOffset = wanted.isFinite ? max(0, wanted) : 0
@@ -887,16 +920,13 @@ final class AVPlaybackEngine: PlaybackEngine {
         applyOutgoingEnd()
     }
 
-    /// A loop extend that cannot be played as one (a remote stream, a loop the file cannot give) is the plain blend it was made
-    /// from, and that blend's overlap is over the vocal budget by construction (the loop was what made it clean). So the beat
-    /// plan is given up like any other fallback: the standby is parked on the smart plan's start and the guarded fade runs.
-    private func demoteLoopPlan() {
+    /// A loop extend or a tempo match that cannot be played as one (a remote stream, a range the file cannot give) is the plain
+    /// blend it was made from, and that blend is over the vocal budget, or off the beat, by construction (the loop was what made
+    /// it clean, the matched tempo what kept it on the grid). So the beat plan is given up like any other fallback: the standby
+    /// is parked on the smart plan's start and the guarded fade runs.
+    private func demoteEditedPlan() {
         guard var plan = transitionPlan else { return }
-        plan.style = .longBlend
-        plan.loopStartSec = 0
-        plan.loopBars = 0
-        plan.loopLengthSec = 0
-        plan.loopRepeats = 0
+        plan.clearItemEdit()
         var smart = plan.fallbackIncomingStartSec ?? 0
         if !smart.isFinite || smart < 0 { smart = 0 }
         if let end = preloadStream.flatMap(Self.knownDuration(of:)), smart >= end - 1 { smart = 0 }
@@ -909,9 +939,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         transitionPlan = plan
     }
 
-    /// The standby is a composition (loop extend) and the beat plan is given up (no lease, late, a seek into the trimmed end):
-    /// nothing will play over its repeats, so it is built again as the plain item, parked on the smart start. The file is
-    /// local, so this is quick; the scheduled start waits for the new preroll.
+    /// The standby is a composition (loop extend, tempo match) and the beat plan is given up (no lease, late, a seek into the
+    /// trimmed end): nothing will play over its repeats or against its matched tempo, so it is built again as the plain item,
+    /// parked on the smart start. The file is local, so this is quick; the scheduled start waits for the new preroll.
     private func rebuildStandbyPlain(_ plan: TransitionPlan) {
         guard let stream = preloadStream else { return }
         var smart = plan.fallbackIncomingStartSec ?? 0
@@ -923,11 +953,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         prerollRetried = false
         reparkPending = false
         standby.player.automaticallyWaitsToMinimizeStalling = false
-        transitionPlan?.style = .longBlend
-        transitionPlan?.loopStartSec = 0
-        transitionPlan?.loopBars = 0
-        transitionPlan?.loopLengthSec = 0
-        transitionPlan?.loopRepeats = 0
+        transitionPlan?.clearItemEdit()
         transitionPlan?.incomingStartSec = smart
         requestedStartOffset = smart
         startItem(on: standby, stream: stream, role: .standby)
@@ -938,8 +964,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard preloadStream != nil, draining == nil else { return }
         let wanted = plan?.incomingStartSec ?? 0
         guard wanted == requestedStartOffset else { return }
-        // A standby that is a composition keeps the loop it was built with: a plan with another loop is refused.
-        guard MusicLoopExtend.spec(from: plan) == MusicLoopExtend.spec(from: transitionPlan) else { return }
+        // A standby that is a composition keeps the edit it was built with: a plan with another loop or tempo is refused.
+        guard MusicItemEdit.edit(from: plan) == MusicItemEdit.edit(from: transitionPlan) else { return }
         // The standby is parked on the beat plan's mix-in and will start at its rate: a plan with another rate is refused.
         // A plan that is not a beat plan (a manual skip's) takes the rate back to 1, which the standby can do at any time.
         if plan?.mode == .beat {
@@ -994,8 +1020,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         // The plan says what is real: this item no longer ends at the trimmed end.
         transitionPlan?.outgoingEndSec = nil
         // What follows is a plain fade from where the standby is parked. A drop swap parks it deep in the song (its drop less
-        // the lead), so it goes back to the song's normal start first, with the schedule held until the seek has landed.
-        if plan.style == .dropSwap || plan.style == .loopExtend, preloadStream != nil { reparkStandbyOnSmartStart(plan) }
+        // the lead), so it goes back to the song's normal start first, with the schedule held until the seek has landed. A loop
+        // or a tempo match has nothing to play under any more: the standby is the plain song again.
+        if plan.style == .dropSwap || plan.style == .loopExtend || MusicItemEdit.edit(from: plan) != nil, preloadStream != nil {
+            reparkStandbyOnSmartStart(plan)
+        }
     }
 
     private func restoreOutgoingEnd() {
@@ -1053,8 +1082,7 @@ final class AVPlaybackEngine: PlaybackEngine {
             prerollStandby(deck, token: token)
             return
         }
-        let target = CMTime(seconds: deck.startOffset, preferredTimescale: 600)
-        deck.player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] finished in
+        deck.player.seek(to: deck.parkTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] finished in
             Task { @MainActor [weak self, weak deck] in
                 guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
                 var landed = finished
@@ -1081,6 +1109,12 @@ final class AVPlaybackEngine: PlaybackEngine {
             from: active.videoId ?? "-", to: preloadStream?.videoId ?? "-", mode: transitionPlan?.mode, reason: reason
         )
         Self.logger.notice("\(line, privacy: .public)")
+        // A tempo-matched song from its top would play its matched part with nothing to match: the plain song instead.
+        if deck.map?.stretch != nil, let plan = transitionPlan {
+            beatGivenUp = true
+            rebuildStandbyPlain(plan)
+            return
+        }
         deck.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] _ in
             Task { @MainActor [weak self, weak deck] in
                 guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil else { return }
@@ -1137,7 +1171,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// in a plain start. The standby goes back to the smart plan's start the plan carries, with the schedule held until the
     /// seek and the preroll are done. A start that comes first (the item ended) goes ahead from the mix-in.
     private func reparkStandbyOnSmartStart(_ plan: TransitionPlan) {
-        if standby.loop != nil || MusicLoopExtend.spec(from: plan) != nil, preloadStream != nil {
+        if standby.map != nil || MusicItemEdit.edit(from: plan) != nil, preloadStream != nil {
             beatGivenUp = true
             rebuildStandbyPlain(plan)
             return
@@ -1498,8 +1532,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         deck.player.defaultRate = 1
         guard preloadReady else { return }
         // Back to where the plan parked it (the first frame the listener should hear), not to the item's start.
-        let parked = CMTime(seconds: deck.startOffset, preferredTimescale: 600)
-        deck.player.seek(to: parked, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] finished in
+        deck.player.seek(to: deck.parkTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak deck] finished in
             Task { @MainActor [weak self, weak deck] in
                 guard let self, let deck, deck === self.standby, deck.token == token, self.preloadStream != nil, finished else { return }
                 deck.player.preroll(atRate: 1) { [weak self, weak deck] _ in
@@ -1515,7 +1548,9 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// The active item played to its end. With a ready preload the standby plays on from here, and `advanced` is reported
     /// in place of `ended`; with none (or one that is not ready) it is the ordinary end of playback.
     private func activeItemEnded() {
-        guard let stream = preloadStream, preloadReady else {
+        // A tempo-matched standby with no song left to blend with would play its matched part alone: the ordinary track change
+        // starts it plain instead.
+        guard let stream = preloadStream, preloadReady, standby.map?.stretch == nil else {
             cancelPreload()
             wantsPlay = false
             onEvent?(.ended)
@@ -1612,6 +1647,7 @@ final class AVPlaybackEngine: PlaybackEngine {
 
         wantsPlay = true
         pendingStart = 0
+        heldPosition = nil
         onEvent?(.advanced(videoId: stream.videoId))
         onTick?(position, incoming.player.timeControlStatus == .playing)
     }
@@ -1642,7 +1678,7 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     /// A manual skip onto the preloaded track: a short crossfade, started now.
     var canCrossfadeToPreloaded: Bool {
-        preloadStream != nil && preloadReady && draining == nil && chain != nil && standby.loop == nil
+        preloadStream != nil && preloadReady && draining == nil && chain != nil && standby.map == nil
             && active.itemIsTapped && standby.itemIsTapped
             && active.tap?.hasLease == true && standby.tap?.hasLease == true
     }
@@ -1792,6 +1828,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         applyLevel(to: outgoing)
         wantsPlay = true
         pendingStart = 0
+        heldPosition = nil
         // An echo's outgoing deck plays on (dry gain 0) until its tail is over: the item's own end stops the timer.
         // A cut holds the outgoing deck until the incoming one starts (`startGap`), then fades it: it is released after both.
         startDrainTimer(seconds: echoSeconds > 0 ? echoSeconds + 0.1 : (!style.isCutLike ? fade : startGap + fade))

@@ -99,6 +99,8 @@ final class MusicPlayer {
     var isPlayingLocalFile: Bool { stream?.origin == .download }
     /// The playing deck's rate for its song (1 unless a Mix nudged it), for Now Playing's elapsed extrapolation.
     var deckRate: Double { Double(engine.deckRate) }
+    /// The song time from which the playing song runs at its own tempo (0 unless it came in tempo-matched).
+    var ownTempoFrom: Double { engine.ownTempoFrom }
 
     /// The video id of `stream` when it is a file on disk, nil for a network stream or none.
     private static func localFileID(of stream: ResolvedStream?) -> String? {

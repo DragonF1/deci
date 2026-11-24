@@ -42,6 +42,8 @@ extension MusicBeatPlanner {
         // The blend as it would be with no vocal guard: the overlap the intro has to cover.
         var open = inputs
         open.vocalGuardEnabled = false
+        // A loop is never tempo-matched as well: it is planned over the blend the song has at its own tempo.
+        open.incomingLocal = false
         let base = MusicBeatPlanner.plan(open, smart: smart)
         guard base.mode == .beat, base.style == .longBlend, base.overlapSec > 0, let mixIn = base.mixInSec,
               let mixOut = base.mixOutSec else { return nil }

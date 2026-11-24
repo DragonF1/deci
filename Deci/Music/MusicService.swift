@@ -390,6 +390,8 @@ final class MusicService {
     /// Set when the app quits: the file stays as the quit left it, whatever the shutdown does to the queue.
     @ObservationIgnored private var sessionClosed = false
     @ObservationIgnored private var lastPeriodicSave = Date.distantPast
+    /// The playing song has reached its own tempo (always, unless it came in tempo-matched).
+    @ObservationIgnored private var atOwnTempo = true
     @ObservationIgnored private var wasPlaying = false
 
     @ObservationIgnored private var searchGeneration = 0
@@ -2766,9 +2768,9 @@ final class MusicService {
         // takes the ordinary load, which starts the song at its normal start.
         if let offered = offeredPlan, offered.inputs.incoming.videoId == track.videoId,
            Self.parksDeepForDropSwap(offered.plan) { return false }
-        // A loop extend's standby plays a composition of the song with its intro repeated: a skip takes the ordinary load.
+        // A loop extend's or a tempo match's standby plays a composition of the song: a skip takes the ordinary load.
         if let offered = offeredPlan, offered.inputs.incoming.videoId == track.videoId,
-           offered.plan.style == .loopExtend { return false }
+           offered.plan.style == .loopExtend || MusicItemEdit.edit(from: offered.plan) != nil { return false }
         // The old track's final ping reads the player's position, so it goes before the engine moves on.
         sendFinalPing()
         // The skip is a quick fade with the incoming loudness match only; the park offset is the plan's own.
@@ -3690,8 +3692,9 @@ final class MusicService {
             djLength: isDJLengthOn, runEnergy: runEnergy
         )
         inputs.plainFade = !isMixingOn
-        // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest.
-        inputs.earliestMixOutSec = player.currentTime + Self.beatPrerollLead * activeDeckRate
+        // A mix point the engine cannot reach in time is not offered: the playhead plus the preroll is the earliest. Nor is one
+        // inside the part a tempo-matched song plays off its own tempo: its stored beats are only where they say after it.
+        inputs.earliestMixOutSec = max(player.currentTime + Self.beatPrerollLead * activeDeckRate, player.ownTempoFrom)
         let plan = MusicTransitionPlanner.plan(inputs)
         let rows = Set([outgoing, incoming].compactMap { $0?.videoId })
         return (plan, OfferedPlan(inputs: inputs, plan: plan, plannedWithRows: rows))
@@ -3756,10 +3759,10 @@ final class MusicService {
         inputs.cleanStartFlag = flags.startsClean
         inputs.cleanPairFlag = flags.pairIsClean
         var plan = MusicTransitionPlanner.plan(inputs)
-        // A loop extend's standby is a composition of the song: a replan that changes the loop (or adds or removes one) is the
-        // preload withdrawn and offered again on the next tick, ready or not: a setting that was turned off (Crossfade, Beat mix,
-        // Vocal guard) or a pair marked clean must not be held back by a loop that is already built.
-        if MusicLoopExtend.spec(from: plan) != MusicLoopExtend.spec(from: offered.plan) {
+        // A loop extend's or a tempo match's standby is a composition of the song: a replan that changes it (or adds or removes
+        // one) is the preload withdrawn and offered again on the next tick, ready or not: a setting that was turned off
+        // (Crossfade, Beat mix, Vocal guard) or a pair marked clean must not be held back by a composition that is already built.
+        if MusicItemEdit.edit(from: plan) != MusicItemEdit.edit(from: offered.plan) {
             cancelPreload()
             return
         }
@@ -4025,6 +4028,11 @@ final class MusicService {
     func handlePlaybackTick(position: TimeInterval, isPlaying: Bool) {
         // Before the session guard: the lyrics highlight needs the position whether or not History is tracking.
         lyrics.observePlayback(position: position, isPlaying: isPlaying, rate: player.deckRate)
+        // Now Playing counts on at 1 from the last time it was told: a tempo-matched song is told again once it is back at
+        // its own tempo, so the matched part leaves no offset behind.
+        let ownTempo = position >= player.ownTempoFrom
+        if ownTempo, !atOwnTempo { syncNowPlaying() }
+        atOwnTempo = ownTempo
         // Before it as well: the remembered place moves on whether or not History is tracking.
         if isPlaying, sessionStore != nil, now().timeIntervalSince(lastPeriodicSave) >= Self.sessionSaveInterval {
             lastPeriodicSave = now()

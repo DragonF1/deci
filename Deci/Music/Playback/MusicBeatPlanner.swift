@@ -2,8 +2,8 @@
 // Tier 3b P2: upgrades a tier 2 smart plan to a beat-matched mix, or refuses and hands the smart plan back with the
 // reason. Pure: value types in, value type out, no clock and no I/O.
 //
-// Tempo: every song plays at its own tempo (rate 1); beats are matched by where the incoming song starts, also against
-// half or double the outgoing tempo. The overlap is 8 bars (16 once the bass swap exists and both songs have room) of the outgoing song, starting on
+// Tempo: every deck plays at rate 1. A song on this Mac has its tempo matched for the overlap inside its item (then it goes
+// back to its own tempo); any other is matched only by where it starts. Both also against half or double the outgoing tempo. The overlap is 8 bars (16 once the bass swap exists and both songs have room) of the outgoing song, starting on
 // one of its phrase boundaries (8-bar multiples counted from its first downbeat). The incoming song starts on one of its
 // own bar boundaries at or after its leading silence, so its beats land on the outgoing beats.
 
@@ -16,15 +16,18 @@ enum MusicBeatPlanner {
         case gridMissing, gridLowConf, tempoClash, noPhraseRoom, tooLate, vocalClash
     }
 
-    /// How far apart two tempos may be (half and double time folded in) for a match to be looked for at all. The incoming
-    /// song itself is never played off its own tempo (see `maxBeatDriftSec`): the match only places its start.
+    /// How far apart two tempos may be (half and double time folded in) for a match to be looked for at all. What the incoming
+    /// song then plays at is `incomingFits`: its own tempo, or matched for the overlap.
     static let maxRateError = 0.08
     static let tempoTolerance = maxRateError
-    /// Every plan plays the incoming song at rate 1, its own tempo (wjyijr): a rate other than 1 would have to stay for the
-    /// whole song, since a rate change on a playing deck opens a gap in the output. So two tempos that differ drift apart
+    /// Every plan plays the incoming deck at rate 1 (wjyijr): a rate other than 1 would have to stay for the whole song,
+    /// since a rate change on a playing deck opens a gap in the output. A song on this Mac can have its tempo matched in its
+    /// item instead (`MusicTempoStretch`, up to 5%). Any other song keeps its own tempo: two tempos that differ drift apart
     /// across the overlap, and a beat blend is only planned where that drift stays within this many seconds of the
     /// outgoing beats, anywhere in the overlap. Otherwise the pair falls to a shorter blend or the filter sweep.
     static let maxBeatDriftSec = 0.030
+    /// Two hits further apart than this are heard as two: a song on this Mac that would drift past it gets its tempo matched.
+    static let tightBeatDriftSec = 0.015
     static let minConfidence: Float = 0.5
     /// intervalSpread is a fraction of the beat period. The floor 0.04 is the old flat limit; a faster song has a shorter
     /// period, so the same timing wobble in seconds is a larger fraction: the limit is `spreadSeconds` worth of period,
@@ -93,12 +96,37 @@ enum MusicBeatPlanner {
     /// a second, so the start moves to put them exactly on the beat at `anchor` (a share of the overlap: 0.5 the middle,
     /// 1 the end), ahead before it and behind after. The song never starts before 0, and the start is nil when the drift
     /// would pass `maxBeatDriftSec` anywhere in the overlap.
-    static func unityStart(mixIn: Double, rate: Double, wallLength: Double, anchor: Double = 0.5) -> Double? {
+    static func unityStart(
+        mixIn: Double, rate: Double, wallLength: Double, anchor: Double = 0.5, limit: Double = maxBeatDriftSec
+    ) -> Double? {
         guard mixIn.isFinite, rate.isFinite, rate > 0, wallLength.isFinite, wallLength >= 0, anchor.isFinite else { return nil }
         let walk = (rate - 1) * wallLength
         let shift = max(walk * min(max(anchor, 0), 1), -mixIn)
-        guard max(abs(shift), abs(shift - walk)) <= maxBeatDriftSec + 1e-9 else { return nil }
+        guard max(abs(shift), abs(shift - walk)) <= limit + 1e-9 else { return nil }
         return mixIn + shift
+    }
+
+    /// How an incoming song plays through an overlap: where it starts and at which tempo (song seconds a wall second, 1 its own).
+    struct IncomingFit: Equatable {
+        let start: Double
+        let stretchRate: Double
+    }
+
+    /// The ways the incoming song's beats can stay on the outgoing ones, best first. Its own tempo when that keeps the beats
+    /// tight, then a tempo match (a song on this Mac, at most `MusicTempoStretch.maxRateError`), then its own tempo with the
+    /// beats drifting up to `maxBeatDriftSec`. Empty when none holds.
+    static func incomingFits(_ inputs: MusicTransitionInputs, mixIn: Double, rate: Double, wallLength: Double) -> [IncomingFit] {
+        let own = unityStart(mixIn: mixIn, rate: rate, wallLength: wallLength).map { IncomingFit(start: $0, stretchRate: 1) }
+        if own != nil, unityStart(mixIn: mixIn, rate: rate, wallLength: wallLength, limit: tightBeatDriftSec) != nil {
+            return [own].compactMap { $0 }
+        }
+        var matched: IncomingFit?
+        let snapped = MusicTempoStretch.snapRate(rate)
+        if inputs.incomingLocal, abs(rate - 1) <= MusicTempoStretch.maxRateError + 1e-9, snapped != 1,
+           let start = unityStart(mixIn: mixIn, rate: rate / snapped, wallLength: wallLength) {
+            matched = IncomingFit(start: start, stretchRate: snapped)
+        }
+        return [matched, own].compactMap { $0 }
     }
 
     // MARK: Plan
@@ -171,18 +199,25 @@ enum MusicBeatPlanner {
                 if !guardTier { late = true }
                 continue
             }
-            // The incoming song plays at rate 1, started so its beats drift evenly around the outgoing ones.
-            guard let inStart = unityStart(mixIn: mixIn, rate: tempo.rate, wallLength: overlap) else {
+            // The incoming song starts so its beats drift evenly around the outgoing ones, tempo-matched when they would not hold.
+            let fits = incomingFits(inputs, mixIn: mixIn, rate: tempo.rate, wallLength: overlap)
+            guard !fits.isEmpty else {
                 driftSkipped += 1
                 continue
             }
-            guard bEnd - (inStart + overlap) >= minIncomingRemainingSec,
-                  inStart + overlap <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec else {
-                continue
-            }
+            let barIn = 4 * bGrid.periodSec
+            guard let fit = fits.first(where: { fit in
+                // The song's own seconds the overlap plays, and where it is back at its own tempo.
+                let consumed = overlap * fit.stretchRate
+                let settled = fit.stretchRate == 1 ? fit.start + consumed
+                    : MusicTempoStretch.Spec(mixIn: fit.start, rate: fit.stretchRate, overlap: consumed, bar: barIn).end
+                return bEnd - settled >= minIncomingRemainingSec
+                    && fit.start + consumed <= bGrid.spanEndSec + spanSlackBeats * bGrid.periodSec
+            }) else { continue }
+            let inStart = fit.start
             var collision: Double?
             if inputs.vocalGuardEnabled {
-                collision = guardCollision(inputs, outStart: mixOut, inStart: inStart, rate: 1, wallLength: overlap)
+                collision = guardCollision(inputs, outStart: mixOut, inStart: inStart, rate: fit.stretchRate, wallLength: overlap)
                 if let c = collision, c > MusicVocalGuard.budgetSec {
                     vocalSkipped += 1
                     if firstCollision == nil { firstCollision = c }
@@ -206,6 +241,11 @@ enum MusicBeatPlanner {
             plan.overlapBars = bars
             plan.overlapSec = overlap
             plan.barSec = barSec
+            if fit.stretchRate != 1 {
+                plan.stretchRate = fit.stretchRate
+                plan.stretchGlideBars = MusicTempoStretch.glideBars
+                plan.stretchBarSec = barIn
+            }
             if let first = firstCollision, let c = collision {
                 plan.vocalAction = "shorten"
                 plan.vocalCollisionSec = c

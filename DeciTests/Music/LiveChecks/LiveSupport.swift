@@ -62,14 +62,18 @@ nonisolated struct LiveSong: Sendable {
         MusicSamples.track(videoId, title: title, artist: override ?? artist, seconds: Int(duration.rounded()))
     }
 
+    /// The tempo match check plays the songs as files on this Mac.
+    nonisolated(unsafe) static var forceLocal = false
+    static var playsLocal: Bool { forceLocal || MusicBeatPlanner.debugForceLoop }
+
     /// The stream the fake backend resolves the id to: the local file, as a network stream, so the real player, the
     /// analysis coordinator and the planner treat it like any song.
     var stream: ResolvedStream {
         ResolvedStream(
             videoId: videoId, url: url, itag: 140, durationSeconds: duration, expiresAt: .distantFuture,
             playbackTrackingURL: nil, httpHeaders: [:],
-            // A loop is only ever composed from a file on this Mac, so the loop check plays them as the track cache.
-            origin: MusicBeatPlanner.debugForceLoop ? .trackCache : .network, audioCodec: "mp4a.40.2"
+            // A loop or a tempo match is only ever composed from a file on this Mac, so those checks play them as the track cache.
+            origin: Self.playsLocal ? .trackCache : .network, audioCodec: "mp4a.40.2"
         )
     }
 }

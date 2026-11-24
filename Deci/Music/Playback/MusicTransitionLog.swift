@@ -70,6 +70,7 @@ enum MusicTransitionLog {
 
     /// transition_beat_plan from=<id> to=<id> bpmA=120.00 bpmB=126.00 rate=0.9524 bars=8 mixOut=123.40 mixIn=12.50
     /// swapAt=- handover=0.00 (service side, at the offer). `bpmA` is the playing song, `bpmB` the next one.
+    /// A tempo match adds stretch=<song seconds a second in the overlap> glide=<bars back to its own tempo>.
     static func beatPlanLine(from: String, to: String, plan: TransitionPlan, bpmA: Double?, bpmB: Double?) -> String {
         let swap = plan.bassSwapAtSec.map { fixed($0, 2) } ?? "-"
         return "transition_beat_plan from=\(from) to=\(to) bpmA=\(bpm(bpmA)) bpmB=\(bpm(bpmB))"
@@ -77,6 +78,7 @@ enum MusicTransitionLog {
             + " mixOut=\(fixed(plan.mixOutSec ?? 0, 2)) mixIn=\(fixed(plan.mixInSec ?? 0, 2))"
             + " swapAt=\(swap) handover=\(fixed(plan.bassHandoverSec, 2))"
             + (plan.floorAligned ? " aligned=1" : "")
+            + (plan.stretchRate != 1 ? " stretch=\(fixed(plan.stretchRate, 4)) glide=\(plan.stretchGlideBars)" : "")
     }
 
     /// transition_vocal_guard from=<id> to=<id> action=shorten before=6.20 after=0.00 fade=5.00

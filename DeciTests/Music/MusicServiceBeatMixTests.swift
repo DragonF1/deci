@@ -4,6 +4,7 @@
 // standby's park offset on a replan. A fake engine, provider and row reader stand in for the real ones.
 
 import Foundation
+import let MediaPlayer.MPNowPlayingInfoPropertyElapsedPlaybackTime
 import Testing
 @testable import Deci
 
@@ -297,6 +298,73 @@ struct MusicServiceBeatMixTests {
         #expect(updated.incomingRate == 1)
         #expect(updated.incomingStartSec == beat.incomingStartSec)
         #expect(h.engine.transitionPlan?.mode == .fixed)
+    }
+}
+
+@MainActor
+@Suite("MusicService tempo match", .serialized)
+struct MusicServiceTempoMatchTests {
+    /// a at 120 bpm into b 1.4 percent slower, b on this Mac when `local`.
+    private func offered(_ h: BeatHarness, local: Bool = true) async -> TransitionPlan? {
+        await h.reader.set(BeatHarness.row("a", period: 0.5))
+        await h.reader.set(BeatHarness.row("b", period: 60 / 118.3))
+        await h.startQueue(["a", "b"])
+        if local {
+            await h.backend.setStream(ResolvedStream(
+                videoId: "b", url: URL(fileURLWithPath: "/nonexistent/b.m4a"), itag: 140, durationSeconds: 240,
+                expiresAt: .distantFuture, playbackTrackingURL: nil, httpHeaders: [:], origin: .download))
+        }
+        await h.tick(126)
+        await h.tick(170)
+        return h.lastPlan
+    }
+
+    @Test("a song on this Mac 1.4 percent off is offered tempo matched, and the line says so; streamed it is not")
+    func offeredMatched() async throws {
+        let h = BeatHarness()
+        let plan = try #require(await offered(h))
+        #expect(plan.mode == .beat && plan.stretchRate == MusicTempoStretch.snapRate(120 / 118.3), "plan: \(plan)")
+        #expect(plan.incomingRate == 1)
+        #expect(h.service.transitionLines.contains { $0.hasPrefix("transition_beat_plan") && $0.contains(" stretch=1.0146 glide=8") },
+                "lines: \(h.service.transitionLines)")
+        let streamed = BeatHarness()
+        let other = try #require(await offered(streamed, local: false))
+        #expect(other.stretchRate == 1 && MusicItemEdit.edit(from: other) == nil)
+    }
+
+    @Test("Next on a tempo matched standby takes the ordinary load: its matched part never plays alone")
+    func nextDoesNotCrossfade() async throws {
+        let h = BeatHarness()
+        let plan = try #require(await offered(h))
+        #expect(plan.stretchRate != 1)
+        h.service.next()
+        #expect(h.engine.manualCrossfades.isEmpty)
+    }
+
+    @Test("a song that came in tempo matched is not mixed out before it is back at its own tempo")
+    func notMixedOutOfItsOwnMatch() async throws {
+        let free = try #require(await offered(BeatHarness()))
+        let mixOut = try #require(free.mixOutSec)
+        let h = BeatHarness()
+        h.engine.ownTempoFrom = mixOut + 4
+        let held = try #require(await offered(h))
+        #expect((held.mixOutSec ?? held.fadeStartSec ?? .infinity) >= mixOut + 4, "mix-out \(held.mixOutSec ?? -1), free \(mixOut)")
+    }
+
+    @Test("Now Playing is told the position once more when a tempo matched song is back at its own tempo, and only then")
+    func nowPlayingResyncsAfterTheMatch() async throws {
+        let h = BeatHarness()
+        await h.startQueue(["a", "b"])
+        h.engine.ownTempoFrom = 30
+        await h.tick(20)
+        let before = h.surface.published.count
+        await h.tick(29)
+        #expect(h.surface.published.count == before)
+        await h.tick(30.4)
+        #expect(h.surface.published.count == before + 1)
+        #expect(h.surface.last?.info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double == 30.4)
+        await h.tick(31)
+        #expect(h.surface.published.count == before + 1)
     }
 }
 

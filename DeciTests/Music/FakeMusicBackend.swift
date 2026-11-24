@@ -802,6 +802,7 @@ final class FakePlaybackEngine: PlaybackEngine {
     var onTick: (@MainActor (TimeInterval, Bool) -> Void)?
     var onEvent: (@MainActor (PlaybackEngineEvent) -> Void)?
     var position: TimeInterval = 0
+    var ownTempoFrom: TimeInterval = 0
 
     private(set) var loads: [Load] = []
     private(set) var playCount = 0

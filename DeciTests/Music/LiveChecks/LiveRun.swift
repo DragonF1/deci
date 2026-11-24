@@ -63,6 +63,9 @@ nonisolated struct LiveTransition: Sendable {
     var beatApplied = false
     /// Loop extend: the incoming deck's reported position and raw item time read together after the repeats, and its map.
     var loopProbe: (position: Double, item: Double, loopEnd: Double, extensionSec: Double)?
+    /// Tempo match: the incoming deck's time map, and its position and raw item time against the host clock after the glide.
+    var tempo: MusicTempoMap?
+    var tempoProbe: [(wall: Double, position: Double, item: Double)] = []
 
     func line(_ name: String) -> LiveLine? {
         lines.compactMap(LiveLine.init).first { $0.name == name }
@@ -393,6 +396,19 @@ final class LiveRunner {
                 }
                 let item = engine.avPlayer.currentTime().seconds
                 record.loopProbe = (engine.position, item, map.loopEnd, map.extensionSec)
+            }
+            if let map = engine.debugActiveStretch {
+                record.tempo = map
+                // Past the glide the song is at its own tempo: five seconds of its position against the host clock.
+                let limit = ContinuousClock.now + .seconds(60)
+                while ContinuousClock.now < limit, engine.position < map.stretchEnd + 0.5 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                for _ in 0..<50 {
+                    let item = engine.avPlayer.currentTime().seconds
+                    record.tempoProbe.append((CMClockGetTime(clock).seconds, engine.position, item))
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
             }
             MusicRenderRecorder.current = nil
             let heard = recorder.snapshot()

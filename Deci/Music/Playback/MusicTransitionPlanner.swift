@@ -81,6 +81,15 @@ struct TransitionPlan: Equatable, Sendable {
     var loopLengthSec: Double = 0
     var loopRepeats: Int = 0
 
+    // Tempo match. Defaulted: a plan without one plays its incoming song at its own tempo throughout.
+    /// The tempo the incoming song is taken to across the overlap: song seconds a wall second, a multiple of 1/1024. It is built
+    /// into the incoming deck's item (`MusicTempoStretch`), so `incomingRate` stays 1. 1 = its own tempo.
+    var stretchRate: Double = 1
+    /// How many of its own bars the incoming song takes to go back to its own tempo after the overlap. 0 = no tempo match.
+    var stretchGlideBars: Int = 0
+    /// One bar (4 beats) of the incoming song in song seconds. 0 = no tempo match.
+    var stretchBarSec: Double = 0
+
     // Tier 4b P3 (DJ-length songs). nil on every plan the rule did not shape.
     /// "chorus2" when the mix-out was moved to the outgoing song's second chorus end (`mixOutSec` is that point).
     var djSection: DJSection? = nil
@@ -135,7 +144,8 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var vocalGuardEnabled: Bool = false
     /// Tier 4b: the style the last applied transition used (the picker never repeats it). nil = none yet.
     var previousStyle: MusicTransitionStyle? = nil
-    /// Tier 4b P2b: the incoming song plays from a file on this Mac (the track cache or a download), so its intro may be looped.
+    /// Tier 4b P2b: the incoming song plays from a file on this Mac (the track cache or a download), so its intro may be
+    /// looped and its tempo matched.
     var incomingLocal: Bool = false
     /// Tier 4b P3: DJ-length songs is on. Off keeps every plan exactly as it was.
     var djLength: Bool = false

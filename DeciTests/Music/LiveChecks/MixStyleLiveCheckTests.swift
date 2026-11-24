@@ -68,7 +68,7 @@ struct MixStyleLiveCheckTests {
         sideB.grid = rowB.usableGrid
         var i = T.inputs(a: sideA, b: sideB)
         i.bassSwapAvailable = true
-        i.incomingLocal = MusicBeatPlanner.debugForceLoop
+        i.incomingLocal = LiveSong.playsLocal
         return i
     }
 
