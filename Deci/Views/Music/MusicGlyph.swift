@@ -19,56 +19,38 @@ struct MusicGlyph: View {
     }
 }
 
-/// The crossfade icon in the foreground style: a faint line fading out and a full one fading in over it.
+/// The crossfade icon in the foreground style: two clips on a timeline that overlap, one solid and the next an outline.
 struct MusicCrossfadeGlyph: View {
     let fontSize: CGFloat
     let weight: Font.Weight
 
-    nonisolated static let faintOpacity = 0.5
-
-    /// What to fill: `solid` in the foreground style, `faint` in the same at `faintOpacity`. The two never overlap and
-    /// neither overlaps itself, so a translucent foreground comes out as one even tone per line.
-    struct Outline {
-        let solid: Path
-        let faint: Path
-    }
+    /// One clip and the space between the two rows, in ems.
+    private nonisolated static let clip = CGSize(width: 0.805, height: 0.378)
+    private nonisolated static let rowGap: CGFloat = 0.085
 
     /// As wide as the SF Symbols beside it look; in height between the infinity and the shuffle glyph.
     nonisolated static func size(fontSize: CGFloat) -> CGSize {
-        CGSize(width: fontSize * 1.22, height: fontSize * 0.74)
+        CGSize(width: fontSize * 1.22, height: fontSize * (clip.height * 2 + rowGap))
     }
 
-    nonisolated static func outline(fontSize: CGFloat, weight: Font.Weight) -> Outline {
+    /// What to fill. The clips never overlap, so a translucent foreground comes out as one even tone.
+    nonisolated static func outline(fontSize: CGFloat, weight: Font.Weight) -> Path {
         let stroke = fontSize * (weight == .regular ? 0.095 : 0.115)
-        let box = CGRect(origin: .zero, size: size(fontSize: fontSize)).insetBy(dx: stroke / 2, dy: stroke / 2)
-        /// A fade curve from one left corner to the opposite right one, level at both ends.
-        func fade(from start: CGFloat, to end: CGFloat) -> Path {
-            Path { path in
-                path.move(to: CGPoint(x: box.minX, y: start))
-                path.addCurve(
-                    to: CGPoint(x: box.maxX, y: end),
-                    control1: CGPoint(x: box.midX, y: start),
-                    control2: CGPoint(x: box.midX, y: end)
-                )
-            }
-        }
-        let round = StrokeStyle(lineWidth: stroke, lineCap: .round)
-        let fadeIn = fade(from: box.maxY, to: box.minY)
-        let fadeOut = fade(from: box.minY, to: box.maxY)
-        return Outline(
-            solid: fadeIn.strokedPath(round),
-            faint: fadeOut.strokedPath(round).subtracting(fadeIn.strokedPath(StrokeStyle(lineWidth: stroke * 2.6)))
-        )
+        let frame = size(fontSize: fontSize)
+        let clip = CGSize(width: fontSize * clip.width, height: fontSize * clip.height)
+        let radius = clip.height * 0.42
+        let first = CGRect(origin: .zero, size: clip)
+        let second = CGRect(origin: CGPoint(x: frame.width - clip.width, y: frame.height - clip.height), size: clip)
+            .insetBy(dx: stroke / 2, dy: stroke / 2)
+        var path = Path(roundedRect: first, cornerRadius: radius)
+        path.addPath(Path(roundedRect: second, cornerRadius: radius - stroke / 2).strokedPath(StrokeStyle(lineWidth: stroke)))
+        return path
     }
 
     var body: some View {
-        let outline = Self.outline(fontSize: fontSize, weight: weight)
         let size = Self.size(fontSize: fontSize)
-        ZStack {
-            outline.solid.fill()
-            outline.faint.fill().opacity(Self.faintOpacity)
-        }
-        .frame(width: size.width, height: size.height)
-        .accessibilityHidden(true)
+        Self.outline(fontSize: fontSize, weight: weight).fill()
+            .frame(width: size.width, height: size.height)
+            .accessibilityHidden(true)
     }
 }

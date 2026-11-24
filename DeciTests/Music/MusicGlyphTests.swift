@@ -27,11 +27,9 @@ struct MusicGlyphTests {
         let frame = CGRect(origin: .zero, size: size).insetBy(dx: -0.01, dy: -0.01)
         for weight in [Font.Weight.regular, .medium] {
             let outline = MusicCrossfadeGlyph.outline(fontSize: fontSize, weight: weight)
-            #expect(!outline.solid.isEmpty && !outline.faint.isEmpty)
-            #expect(frame.contains(outline.solid.boundingRect))
-            #expect(frame.contains(outline.faint.boundingRect))
-            #expect(abs(outline.solid.boundingRect.width - size.width) < fontSize * 0.02)
-            #expect(outline.solid.intersection(outline.faint).cgPath.isEmpty)
+            #expect(frame.contains(outline.boundingRect))
+            #expect(abs(outline.boundingRect.width - size.width) < fontSize * 0.02)
+            #expect(abs(outline.boundingRect.height - size.height) < fontSize * 0.02)
         }
     }
 
@@ -53,12 +51,11 @@ struct MusicGlyphTests {
         #expect(size.height <= MusicTransportMetrics.height)
     }
 
-    @Test("a resting icon keeps the tone of its style: nothing doubles up where the lines cross")
+    @Test("a resting icon keeps the tone of its style: nothing doubles up where the clips meet")
     func evenTone() throws {
         let pixels = try alphas(MusicGlyph(name: MusicTransitionMode.crossfadeSymbol, fontSize: 12, weight: .medium).foregroundStyle(Color.white.opacity(0.5)))
         let peak = try #require(pixels.max())
         #expect(peak > 0.45 && peak < 0.53)
-        #expect(pixels.contains { $0 > 0.2 && $0 < 0.3 })
         #expect(pixels.contains { $0 < 0.01 })
     }
 
