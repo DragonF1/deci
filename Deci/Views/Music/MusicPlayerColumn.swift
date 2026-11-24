@@ -227,7 +227,6 @@ struct MusicPlayerColumn: View {
         let snapshot = MusicFavoriteSnapshot(
             shuffle: service?.shuffleMode ?? .off, loop: service?.loopMode ?? .off,
             autoplay: service?.isAutoplayOn ?? true, transitions: service?.transitionMode ?? .off,
-            isLiked: service?.likeStatus == .like, canLike: service?.canRate == true,
             fadeSeconds: service?.crossfadeSeconds ?? MusicPlaybackPreferences.defaultCrossfadeSeconds
         )
         let actions = MusicTransportActions(
@@ -235,11 +234,7 @@ struct MusicPlayerColumn: View {
             next: { service?.next() },
             togglePlayback: { service?.togglePlayback() },
             perform: { control in
-                guard let service else { return }
-                switch control.kind {
-                case .toggle(let toggle): service.perform(toggle)
-                case .like: Task { service.trackActions.postIfFailed(await service.toggleLike()) }
-                }
+                service?.perform(control.toggle)
             },
             setLoop: { service?.setLoopMode($0) },
             setShuffleMode: { service?.setShuffleMode($0) },

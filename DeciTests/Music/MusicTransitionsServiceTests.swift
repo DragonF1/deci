@@ -94,7 +94,7 @@ struct MusicTransitionsServiceTests {
 
     @Test("the favourite slot's raw crossfade still decodes, and its button cycles Transitions")
     func favouriteSlot() {
-        let slots = MusicFavoriteSlots(leftRaw: "crossfade", rightRaw: "like")
+        let slots = MusicFavoriteSlots(leftRaw: "crossfade", rightRaw: "loop")
         #expect(slots.left == .transitions)
         #expect(slots.leftRaw == "crossfade")
         let h = BeatHarness(preferences: prefs(.off, .off))

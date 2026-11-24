@@ -33,16 +33,16 @@ struct MusicFavoriteRowRenderTests {
     @Test("the three rows render at the same size, so a swapped slot shifts nothing")
     func rows() throws {
         let defaults = try render(row(.default, snapshot: MusicFavoriteSnapshot()), name: "row-1-defaults.png")
-        let crossfadeLike = try render(
-            row(MusicFavoriteSlots(left: .transitions, right: .like), snapshot: MusicFavoriteSnapshot(transitions: .crossfade, isLiked: true, canLike: true)),
-            name: "row-2-crossfade-like.png"
+        let crossfadeAutoplay = try render(
+            row(MusicFavoriteSlots(left: .transitions, right: .autoplay), snapshot: MusicFavoriteSnapshot(autoplay: true, transitions: .crossfade)),
+            name: "row-2-crossfade-autoplay.png"
         )
         let autoplay = try render(
             row(MusicFavoriteSlots(left: .autoplay, right: .loop), snapshot: MusicFavoriteSnapshot(autoplay: true)),
             name: "row-3-autoplay.png"
         )
         #expect(defaults.size.width > 0)
-        #expect(defaults.size == crossfadeLike.size)
+        #expect(defaults.size == crossfadeAutoplay.size)
         #expect(defaults.size == autoplay.size)
     }
 }

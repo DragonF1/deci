@@ -8,28 +8,13 @@ struct MusicFavoriteSnapshot: Equatable {
     var loop = MusicLoopMode.off
     var autoplay = true
     var transitions = MusicTransitionMode.off
-    /// The song playing now is liked.
-    var isLiked = false
-    /// A song can be liked: one plays and the listener is signed in (what the strip's Like button needs too).
-    var canLike = false
     /// The crossfade length in seconds, as Settings has it.
     var fadeSeconds = MusicPlaybackPreferences.defaultCrossfadeSeconds
 
     var shuffleMode: MusicShuffleMode { shuffle }
 
     func isOn(_ control: MusicFavoriteControl) -> Bool {
-        switch control.kind {
-        case .toggle(let toggle): toggle.isOn(shuffle: shuffle, loop: loop, autoplay: autoplay, transitions: transitions)
-        case .like: isLiked
-        }
-    }
-
-    /// Whether a click on the control does anything now: Like needs a song and a signed-in listener.
-    func isAvailable(_ control: MusicFavoriteControl) -> Bool {
-        switch control.kind {
-        case .toggle: true
-        case .like: canLike
-        }
+        control.toggle.isOn(shuffle: shuffle, loop: loop, autoplay: autoplay, transitions: transitions)
     }
 }
 
@@ -38,7 +23,7 @@ struct MusicTransportActions {
     var previous: () -> Void = {}
     var next: () -> Void = {}
     var togglePlayback: () -> Void = {}
-    /// The slot's own click: toggles Autoplay, cycles Shuffle, Loop and Transitions, likes or unlikes the song.
+    /// The slot's own click: toggles Autoplay, cycles Shuffle, Loop and Transitions.
     var perform: (MusicFavoriteControl) -> Void = { _ in }
     var setLoop: (MusicLoopMode) -> Void = { _ in }
     var setShuffleMode: (MusicShuffleMode) -> Void = { _ in }
@@ -172,18 +157,16 @@ struct MusicFavoriteSlotButton: View {
     var body: some View {
         let control = slots[side]
         let isOn = snapshot.isOn(control)
-        let unavailable = !snapshot.isAvailable(control)
         let rest = MusicTransportMetrics.restingGlyphOpacity
         return MusicColumnGlyphButton(
             title: control.title(loop: snapshot.loop, shuffleMode: snapshot.shuffleMode, transitionMode: snapshot.transitions),
             systemImage: control.symbol(
-                loop: snapshot.loop, isLiked: snapshot.isLiked, shuffleMode: snapshot.shuffleMode, transitionMode: snapshot.transitions
+                loop: snapshot.loop, shuffleMode: snapshot.shuffleMode, transitionMode: snapshot.transitions
             ),
             fontSize: fontSize,
             box: box,
-            color: isOn ? accent.solid : Color.white.opacity(unavailable ? 0.30 : rest),
+            color: isOn ? accent.solid : Color.white.opacity(rest),
             isSelected: isOn,
-            isDisabled: unavailable,
             showsHelp: control.hasTooltip,
             height: height,
             reachX: reachX,

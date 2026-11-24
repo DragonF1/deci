@@ -98,8 +98,8 @@ struct MusicTransportRowInvalidationTests {
         #expect(base == row(MusicFavoriteSnapshot(), onPrevious: { print("other") }))
         #expect(base != row(MusicFavoriteSnapshot(shuffle: .shuffle)))
         #expect(base != row(MusicFavoriteSnapshot(fadeSeconds: 3)))
-        #expect(base != row(MusicFavoriteSnapshot(), slots: MusicFavoriteSlots(left: .like, right: .loop)))
-        #expect(base != row(MusicFavoriteSnapshot(), slots: MusicFavoriteSlots(left: .shuffle, right: .loop, topLeft: .like, topRight: .autoplay)))
+        #expect(base != row(MusicFavoriteSnapshot(), slots: MusicFavoriteSlots(left: .autoplay, right: .loop)))
+        #expect(base != row(MusicFavoriteSnapshot(), slots: MusicFavoriteSlots(left: .shuffle, right: .loop, topLeft: .autoplay, topRight: .transitions)))
         #expect(base != row(MusicFavoriteSnapshot(), next: false))
         #expect(base != row(MusicFavoriteSnapshot(), state: .paused))
     }

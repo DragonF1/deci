@@ -124,7 +124,7 @@ import Testing
         #expect(MusicPlaybackToggle.transitions.symbol(loop: .off, transitionMode: .mixing) == "waveform.path")
         #expect(MusicPlaybackToggle.transitions.symbol(loop: .off, transitionMode: .crossfade) == "arrow.triangle.merge")
         #expect(MusicPlaybackToggle.loop.symbol(loop: .song, transitionMode: .mixing) == MusicLoopMode.song.systemImage)
-        #expect(MusicFavoriteControl.transitions.symbol(loop: .off, isLiked: false, transitionMode: .mixing) == "waveform.path")
+        #expect(MusicFavoriteControl.transitions.symbol(loop: .off, transitionMode: .mixing) == "waveform.path")
         #expect(MusicFavoriteControl.transitions.title(transitionMode: .crossfade) == "Crossfade")
         #expect(MusicFavoriteControl.transitions.menuTitle == "Transitions")
         #expect(MusicFavoriteControl.shuffle.title() == "Shuffle")

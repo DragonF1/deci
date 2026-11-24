@@ -13,29 +13,14 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
     case autoplay
     /// Transitions: Off, Crossfade, Mixing. The raw value stays "crossfade" so a slot saved by an older build still loads.
     case transitions = "crossfade"
-    case like
 
-    /// What a control is: one of the playback toggles Up next has too, or Like. Exhaustive, so a new case does not
-    /// compile until it says which.
-    enum Kind: Equatable, Sendable {
-        case toggle(MusicPlaybackToggle)
-        case like
-
-        var toggle: MusicPlaybackToggle? {
-            switch self {
-            case .toggle(let toggle): toggle
-            case .like: nil
-            }
-        }
-    }
-
-    var kind: Kind {
+    /// The playback toggle the control stands for. Exhaustive, so a new case does not compile until it says which.
+    var toggle: MusicPlaybackToggle {
         switch self {
-        case .shuffle: .toggle(.shuffle)
-        case .loop: .toggle(.loop)
-        case .autoplay: .toggle(.autoplay)
-        case .transitions: .toggle(.transitions)
-        case .like: .like
+        case .shuffle: .shuffle
+        case .loop: .loop
+        case .autoplay: .autoplay
+        case .transitions: .transitions
         }
     }
 
@@ -56,7 +41,6 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
         case .loop: "Loop"
         case .autoplay: "Autoplay"
         case .transitions: "Transitions"
-        case .like: "Like"
         }
     }
 
@@ -68,26 +52,22 @@ nonisolated enum MusicFavoriteControl: String, CaseIterable, Sendable {
         case .loop: loop.label
         case .shuffle: shuffleMode.title
         case .transitions: transitionMode.title
-        case .autoplay, .like: menuTitle
+        case .autoplay: menuTitle
         }
     }
 
-    /// The glyph: the Up next header's for the four toggles, the strip's thumbs up (filled once liked) for Like.
+    /// The glyph: the Up next header's for the toggle.
     func symbol(
-        loop: MusicLoopMode, isLiked: Bool, shuffleMode: MusicShuffleMode = .shuffle,
-        transitionMode: MusicTransitionMode = .off
+        loop: MusicLoopMode, shuffleMode: MusicShuffleMode = .shuffle, transitionMode: MusicTransitionMode = .off
     ) -> String {
-        switch kind {
-        case .toggle(let toggle): toggle.symbol(loop: loop, shuffleMode: shuffleMode, transitionMode: transitionMode)
-        case .like: MusicRateButtonLook(kind: .like, status: isLiked ? .like : nil).symbolName
-        }
+        toggle.symbol(loop: loop, shuffleMode: shuffleMode, transitionMode: transitionMode)
     }
 
     /// Only the two buttons the row has always had keep their tooltip; nothing added later gets one.
     var hasTooltip: Bool {
         switch self {
         case .shuffle, .loop: true
-        case .autoplay, .transitions, .like: false
+        case .autoplay, .transitions: false
         }
     }
 }
