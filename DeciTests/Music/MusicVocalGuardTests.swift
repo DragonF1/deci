@@ -100,6 +100,38 @@ struct MusicVocalGuardTests {
         #expect(abs(value - 6) < 1e-12)
     }
 
+    // MARK: Leaving a singer
+
+    @Test("a line is split when it began more than the slack before and goes on for longer than that after")
+    func splitsLine() {
+        let lines = [10.0...14.0, 14.0...18.0]
+        #expect(G.splitsLine(lines, at: 12))
+        #expect(!G.splitsLine(lines, at: 14), "between two lines that follow each other")
+        #expect(!G.splitsLine(lines, at: 10 + G.lineSlackSec), "a pick-up into the bar line")
+        #expect(!G.splitsLine(lines, at: 18 - G.lineSlackSec), "the last syllable")
+        #expect(G.splitsLine(lines, at: 10 + G.lineSlackSec + 0.01) && G.splitsLine(lines, at: 18 - G.lineSlackSec - 0.01))
+        #expect(G.splitsLine([40...41], at: 40.5) && !G.splitsLine([40...41], at: 40.2), "a short line has a middle too")
+        #expect(!G.splitsLine(lines, at: 30) && !G.splitsLine([], at: 12) && !G.splitsLine(lines, at: .nan))
+    }
+
+    @Test("leaving a song: its lines when they are known, its intervals when not, and with no lyrics only its own end is guarded")
+    func cutsOutgoingSinger() {
+        var side = MusicTransitionSide(videoId: "aaaaaaaaaaa", durationSeconds: 240, analysis: analysis(introEnd: 8, outroStart: 200))
+        // No lyrics at all: sung from its intro to its outro for all that is known, but a section ends at a DJ exit.
+        #expect(G.cutsOutgoingSinger(side, at: 112, atDJExit: false) && !G.cutsOutgoingSinger(side, at: 112, atDJExit: true))
+        #expect(!G.cutsOutgoingSinger(side, at: 220, atDJExit: false))
+        // One block of two lines: between them nothing is split.
+        side.vocalIntervals = [100...120]
+        #expect(G.cutsOutgoingSinger(side, at: 110, atDJExit: true), "the block is all there is to go by")
+        side.lyricCues = MusicLyricCues(lines: [100...110, 110...120])
+        #expect(!G.cutsOutgoingSinger(side, at: 110, atDJExit: true) && !G.cutsOutgoingSinger(side, at: 110, atDJExit: false))
+        #expect(G.cutsOutgoingSinger(side, at: 105, atDJExit: true))
+        // Known to be sung nowhere.
+        side.lyricCues = nil
+        side.vocalIntervals = []
+        #expect(!G.cutsOutgoingSinger(side, at: 112, atDJExit: true))
+    }
+
     // MARK: Log line
 
     @Test("the vocal guard log line names the action, both collisions and the fade, and is nil for an untouched plan")

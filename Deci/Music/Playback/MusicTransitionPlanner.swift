@@ -303,8 +303,8 @@ enum MusicTransitionPlanner {
         _ inputs: MusicTransitionInputs, smart: TransitionPlan, loop: TransitionPlan?, ranked: [MusicTransitionStyle]
     ) -> TransitionPlan {
         let beat = MusicBeatPlanner.plan(inputs, smart: smart)
-        // Tier 4c: every Mix pair gets a blend. The picker ranks the styles that suit the pair (a cut or an echo only a hard
-        // ending, matching tempos and a phrase end); the beat-matched blend is one of them. When none can be built (a tempo, a
+        // Tier 4c: every Mix pair gets a mix. The picker ranks the styles that suit the pair (`suits`: a cut or an echo only where
+        // there is something to cut); the beat-matched blend is one of them. When none can be built (a tempo, a
         // grid, a phrase or two singers refused it) the floor blend comes last and is never refused: the smart fade is only
         // left for a pair too short to hold a 6 s overlap.
         func finish(_ built: TransitionPlan) -> TransitionPlan {

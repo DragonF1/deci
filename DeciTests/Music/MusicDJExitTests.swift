@@ -125,7 +125,12 @@ struct MusicDJExitTests {
         #expect(abs((D.exits(i, smartEnd: 236, normal: 208.2).first?.point ?? 0) - 120.2) < 1e-9)
         i.vocalGuardEnabled = true
         #expect(abs((D.exits(i, smartEnd: 236, normal: 208.2).first?.point ?? 0) - 124.2) < 1e-9)
-        #expect(D.sung([10...20], at: 20) == false && D.sung([10...20], at: 15) && D.sung(nil, at: 15) == false)
+        func side(_ intervals: [ClosedRange<Double>]?) -> MusicTransitionSide {
+            var side = i.outgoing
+            side.vocalIntervals = intervals
+            return side
+        }
+        #expect(D.sung(side([10...20]), at: 20) == false && D.sung(side([10...20]), at: 15) && D.sung(side(nil), at: 15) == false)
     }
 
     // MARK: What counts as leaving there

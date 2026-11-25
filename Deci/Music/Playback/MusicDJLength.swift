@@ -70,12 +70,12 @@ nonisolated enum MusicDJLength {
         let entered = MusicDJEntry.pick(inputs.outgoing, start: 0)?.targetSec ?? 0
         let earliest = max(entered + minPlayedSec, inputs.earliestMixOutSec ?? 0)
         func usable(_ point: Double) -> Bool { point >= earliest - 1e-9 && point <= normal - barSec + 1e-9 }
-        let intervals = inputs.vocalGuardEnabled ? inputs.outgoing.vocalIntervals : nil
+        func sung(_ point: Double) -> Bool { inputs.vocalGuardEnabled && Self.sung(inputs.outgoing, at: point) }
 
         return candidates(inputs.outgoing, analysis: a, grid: grid, duration: duration).compactMap { source in
             for base in source.ends where window.contains(base / duration) {
                 // The first bar line from there that no sung line spans.
-                let point = (0...maxVocalShiftBars).map { base + Double($0) * barSec }.first { usable($0) && !sung(intervals, at: $0) }
+                let point = (0...maxVocalShiftBars).map { base + Double($0) * barSec }.first { usable($0) && !sung($0) }
                 if let point { return Exit(point: point, normal: normal, section: source.section) }
             }
             return nil
@@ -143,9 +143,11 @@ nonisolated enum MusicDJLength {
         return sum / Float(hi - lo)
     }
 
-    /// A lyric line spans `time` (a margin of 50 ms either side keeps a line that ends on the bar from counting).
-    static func sung(_ intervals: [ClosedRange<Double>]?, at time: Double) -> Bool {
-        guard let intervals else { return false }
+    /// A lyric line spans `time`. Line by line when the lines are known (`MusicVocalGuard.splitsLine`); else by the intervals, where
+    /// a margin of 50 ms either side keeps a line that ends on the bar from counting.
+    static func sung(_ side: MusicTransitionSide, at time: Double) -> Bool {
+        if let lines = side.lyricCues?.lines, !lines.isEmpty { return MusicVocalGuard.splitsLine(lines, at: time) }
+        guard let intervals = side.vocalIntervals else { return false }
         return intervals.contains { $0.lowerBound < time - 0.05 && $0.upperBound > time + 0.05 }
     }
 }

@@ -113,6 +113,29 @@ enum MusicVocalGuard {
         return a.introEnd < endSec && endSec < a.outroStart
     }
 
+    /// A line that only just began, or is nearly over, may be left: a singer picks up into the bar line, and the words of a line end
+    /// before the next line starts. Never more than `lineSlackShare` of the line at either end, so the middle of a short one counts.
+    static let lineSlackSec = 0.6
+    static let lineSlackShare = 0.25
+
+    /// True when a sung line is split at `time`: it began more than the slack before and goes on for longer than that after.
+    static func splitsLine(_ lines: [ClosedRange<Double>], at time: Double) -> Bool {
+        guard time.isFinite else { return false }
+        return lines.contains { line in
+            let slack = min(lineSlackSec, (line.upperBound - line.lowerBound) * lineSlackShare)
+            return line.lowerBound < time - slack && line.upperBound > time + slack
+        }
+    }
+
+    /// Whether leaving `side` on a bar line at `time`, with nothing overlapping, stops its singer mid-line. Line by line when the
+    /// lines are known, else by its intervals. With no lyrics at all the structural proxy speaks at the song's own end, and
+    /// not at a DJ exit: a section ends there, which is where a singer stops.
+    static func cutsOutgoingSinger(_ side: MusicTransitionSide, at time: Double, atDJExit: Bool) -> Bool {
+        if let lines = side.lyricCues?.lines, !lines.isEmpty { return splitsLine(lines, at: time) }
+        if atDJExit, side.vocalIntervals == nil { return false }
+        return cutsOutgoingSinger(outgoing: side.analysis, intervals: side.vocalIntervals, endSec: time)
+    }
+
     /// The point nearest `endSec` (within `within` seconds) that no sung line covers: just past the end of a line or just
     /// before the start of one. nil when there is none.
     static func nearestGap(_ intervals: [ClosedRange<Double>], to endSec: Double, within: Double = gapSearchSec) -> Double? {

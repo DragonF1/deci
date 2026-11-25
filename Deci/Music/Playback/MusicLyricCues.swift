@@ -13,6 +13,9 @@ nonisolated struct MusicLyricCues: Equatable, Sendable {
     var hooks: [ClosedRange<Double>] = []
     /// When the first words are sung. nil = none are.
     var firstLineSec: Double?
+    /// Every sung line on its own, in song seconds, in order: what a cut would split. The vocal intervals join lines that follow
+    /// each other, so a whole verse is one of those.
+    var lines: [ClosedRange<Double>] = []
 
     /// Two lines further apart than this can repeat each other: nearer ones are one line said twice, not a hook coming back.
     static let minRepeatGapSec = 15.0
@@ -49,7 +52,11 @@ nonisolated struct MusicLyricCues: Equatable, Sendable {
             let next = prepared[i + 1].start
             if next > prepared[i].start { prepared[i].end = min(prepared[i].end, next) }
         }
-        return MusicLyricCues(hooks: hooks(prepared, duration: duration), firstLineSec: first)
+        let spans = prepared.compactMap { line -> ClosedRange<Double>? in
+            let end = min(line.end, duration)
+            return end > line.start ? line.start...end : nil
+        }
+        return MusicLyricCues(hooks: hooks(prepared, duration: duration), firstLineSec: first, lines: spans)
     }
 
     private static func hooks(_ lines: [Line], duration: Double) -> [ClosedRange<Double>] {

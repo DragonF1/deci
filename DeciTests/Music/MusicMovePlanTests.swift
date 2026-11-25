@@ -167,6 +167,22 @@ struct MusicMovePlanTests {
         #expect(plan.echoTailSec <= 0.4 + 1e-9)
     }
 
+    @Test("a song whose own beat is not known still comes in after a tail on a trusted bar line, and never on a bare cut")
+    func tailIntoAnUntrustedGrid() throws {
+        for incoming in [nil, BT.grid(phase: nil, confidence: 0.3)] {
+            let i = BT.inputs(b: incoming), smart = P.smartPlan(i)
+            let cut = try #require(B.styledPlan(BT.inputs(), smart: P.smartPlan(BT.inputs()), style: .quickCut))
+            for style in [MusicTransitionStyle.echoOut, .reverbOut] {
+                let plan = try #require(B.styledPlan(i, smart: smart, style: style), "\(style)")
+                #expect(plan.style == style && plan.mode == .beat && plan.incomingRate == 1)
+                #expect(plan.mixOutSec == cut.mixOutSec, "the outgoing song keeps its bar line")
+                #expect((plan.mixInSec ?? -1) >= 0 && (plan.mixInSec ?? 999) < 8)
+            }
+            let echo = try #require(B.styledPlan(i, smart: smart, style: .echoOut))
+            #expect(abs(echo.echoDelaySec - 0.5) < 1e-9, "one beat of the outgoing song")
+        }
+    }
+
     @Test("songs with no grid still get a reverb out and a brake, at the point the fade would have started")
     func gridless() throws {
         let i = BT.inputs(a: nil, b: nil, bSilenceStart: 3)

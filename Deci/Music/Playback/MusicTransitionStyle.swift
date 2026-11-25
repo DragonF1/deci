@@ -1,8 +1,8 @@
 // Deci/Music/Playback/MusicTransitionStyle.swift
 // Tier 4b P1: how one Mix transition sounds. A style is data on the plan; the picker is pure and deterministic: the same
-// numbers always give the same answer. A cut or an echo only ever suits a pair with a hard ending, matching tempos and a phrase end,
-// or a section end in the middle of the song (a cut in genres that are cut that way, an echo also where the tempos clash). What the
-// genres of the two songs like (`MusicMixHabits`), what the pair asks for (`MusicMixIntent`) and what the last few transitions were
+// numbers always give the same answer. A cut or an echo only ever suits the end of a phrase: of a song that does not fade out, or of a
+// section in the middle of one. A cut needs matching tempos there (or genres that are cut that way), a cut with a tail matching
+// tempos or two songs that cannot be beat matched. What the genres of the two songs like (`MusicMixHabits`), what the pair asks for (`MusicMixIntent`) and what the last few transitions were
 // (`MusicMixHistory`) move the scores.
 
 import Foundation
@@ -94,6 +94,8 @@ nonisolated struct MusicTransitionStyleInputs: Equatable, Sendable {
     var habits = MusicMixHabits.neutral
     /// The outgoing song is left at the end of a section in its middle, not at its own end.
     var atDJExit = false
+    /// That section ends on a bar line of a beat that can be trusted.
+    var exitOnBar = false
     /// Confidence (0...1) of the incoming song's first usable drop; nil when it has none or a grid is not trusted.
     var dropConfidence: Float?
     /// The same for the outgoing song's most confident drop: with both, the two can land together.
@@ -101,7 +103,7 @@ nonisolated struct MusicTransitionStyleInputs: Equatable, Sendable {
     /// Loop extend: the planner built a loop plan for this pair (the incoming intro is short, the file is local).
     var loopFits = false
     /// How many dB the outgoing tail sits below its body (integrated loudness minus the outro's); nil = unknown. A hard ending
-    /// (a cut or an echo does not clip a fade-out) is a tail within `hardEndingDb` of the body.
+    /// (a cut does not clip a fade-out) is a tail within `hardEndingDb` of the body.
     var tailDropDb: Double?
     /// The outgoing song's mix-out lands on a phrase end of a trusted grid with a known downbeat.
     var mixOutOnPhrase = false
@@ -109,11 +111,12 @@ nonisolated struct MusicTransitionStyleInputs: Equatable, Sendable {
     init(
         tempoError: Double? = nil, energyJump: Float? = nil, outroEnergy: Float? = nil, introEnergy: Float? = nil,
         keyDistance: Int? = nil, gridTrusted: Bool = false, habits: MusicMixHabits = .neutral, atDJExit: Bool = false,
-        dropConfidence: Float? = nil, outgoingDropConfidence: Float? = nil, loopFits: Bool = false, tailDropDb: Double? = nil,
+        exitOnBar: Bool = false, dropConfidence: Float? = nil, outgoingDropConfidence: Float? = nil, loopFits: Bool = false, tailDropDb: Double? = nil,
         mixOutOnPhrase: Bool = false
     ) {
         self.habits = habits
         self.atDJExit = atDJExit
+        self.exitOnBar = exitOnBar
         self.tailDropDb = tailDropDb
         self.mixOutOnPhrase = mixOutOnPhrase
         self.loopFits = loopFits
@@ -137,12 +140,18 @@ nonisolated enum MusicTransitionStylePicker {
     static let similarEnergy: Float = 0.1
     /// The log reason for a transition that repeats the previous style because no other style could be built.
     static let noAlternative = "noAlternative"
-    /// A cut or an echo needs a tail this close to the body (dB): a song that fades out gets a blend, not a hard stop.
+    /// A cut, with or without a tail, needs the song's end this close to its body (dB): a song that fades out gets a blend.
     static let hardEndingDb = 6.0
-    /// A cut or an echo needs tempos this close (a fraction, half and double time folded in).
+    /// A cut needs tempos this close (a fraction, half and double time folded in), and so does a tail between two songs that
+    /// could be beat matched.
     static let cutTempoError = 0.03
-    /// The long blend where the tempos clash: the short handover of the floor blend. An effect or a cut with a reason beats it.
+    /// The long blend of two songs that cannot be beat matched: the short handover of the floor blend. An effect or a cut with a
+    /// reason beats it.
     static let clashBlendScore = 0.65
+    /// What a tail gains there: nothing overlaps, so it is how a DJ changes the tempo.
+    static let clashTailBonus = 0.2
+    /// A sweep there has no beats running under it, so it is the effect for a pair that has no other: it waits a song longer.
+    static let floorSweepScore = 0.2
     /// A tail or an intro quieter than this (0...1) has no drums to speak of.
     static let quietEdge: Float = 0.4
 
@@ -201,21 +210,26 @@ nonisolated enum MusicTransitionStylePicker {
         return !MusicMixScore.withinTolerance(error)
     }
 
-    /// Whether a style suits these numbers. A cut or an echo only suits a hard ending (the tail within `hardEndingDb` of the
-    /// body), matching tempos and a mix-out on a phrase end: anything else gets a blend, never a hard stop. Between two songs of
-    /// genres that are cut on a section (`cutsOnSections`), the end of a section in the middle of the song is as good a place: there
-    /// is no tail to clip, and with nothing overlapping the tempos only have to be close enough to beat match. A cut with a tail out
-    /// of such a section end also gets across a tempo clash: the old groove is gone before the new one starts. Every other style is a
-    /// candidate by `isCandidate`.
+    /// No beat mix can be made of these two: the tempos clash, one of them is not known, or a grid is not trusted.
+    static func cannotBeatMix(_ i: MusicTransitionStyleInputs) -> Bool {
+        guard i.gridTrusted, let error = i.tempoError, error.isFinite else { return true }
+        return !MusicMixScore.withinTolerance(error)
+    }
+
+    /// Whether a style suits these numbers. A cut needs something to cut: a hard ending (the tail within `hardEndingDb` of the body)
+    /// on a phrase end of a trusted outgoing grid, or the end of a section in the middle of the song. Anything else gets a blend, so
+    /// a song that fades out is never stopped. There a cut with a tail is right for two songs that cannot be beat matched: the old
+    /// groove is gone before the new one starts, and a section's own end is phrase enough when it is on a bar line. A bare cut also
+    /// needs tempos that match, or that are close enough to beat match at a section end between two genres that are cut there
+    /// (`cutsOnSections`), and so does a tail between two songs that could be beat matched. Every other style is a candidate by
+    /// `isCandidate`.
     static func suits(_ style: MusicTransitionStyle, _ i: MusicTransitionStyleInputs) -> Bool {
         guard style.isCutLike else { return isCandidate(style, i) }
+        let hardEnding = i.tailDropDb.map { $0.isFinite && $0 <= hardEndingDb } ?? false
+        if style.hasTail, cannotBeatMix(i) { return i.atDJExit ? i.exitOnBar : i.mixOutOnPhrase && hardEnding }
         guard i.mixOutOnPhrase, let error = i.tempoError, error.isFinite else { return false }
-        if i.atDJExit {
-            if style.hasTail, i.gridTrusted, isClash(i) { return true }
-            if i.habits.cutsOnSections { return MusicMixScore.withinTolerance(error) }
-        }
-        guard let drop = i.tailDropDb, drop.isFinite, drop <= hardEndingDb else { return false }
-        return error <= cutTempoError + MusicMixScore.boundarySlack
+        if i.atDJExit, i.habits.cutsOnSections { return MusicMixScore.withinTolerance(error) }
+        return hardEnding && error <= cutTempoError + MusicMixScore.boundarySlack
     }
 
     /// Whether a style can be built for these numbers at all (a cut or an echo is always buildable, but only `suits` picks it).
@@ -249,7 +263,7 @@ nonisolated enum MusicTransitionStylePicker {
     }
 
     private static func score(_ style: MusicTransitionStyle, _ i: MusicTransitionStyleInputs) -> Double {
-        let clash = isClash(i)
+        let clash = cannotBeatMix(i)
         let jump = i.energyJump.flatMap { $0.isFinite ? $0 : nil }
         let room: Float? = {
             guard let out = i.outroEnergy, let intro = i.introEnergy, out.isFinite, intro.isFinite else { return nil }
@@ -258,7 +272,7 @@ nonisolated enum MusicTransitionStylePicker {
         let far = (i.keyDistance ?? 0) >= farKey
         switch style {
         case .longBlend:
-            // Where the tempos clash it is a short handover, not two songs running together: keys and energy hardly matter.
+            // There it is a short handover, not two songs running together: keys and energy hardly matter.
             if clash { return clashBlendScore }
             var value = 1.0
             if far { value -= 0.3 }
@@ -276,11 +290,12 @@ nonisolated enum MusicTransitionStylePicker {
             if let jump, jump <= -bigJump { value += 0.25 }
             if let out = i.outroEnergy, out.isFinite, out < 0.4 { value += 0.1 }
             if i.gridTrusted { value += 0.02 }
+            if clash { value += clashTailBonus }
             return value
         case .filterSweep:
             // Below the plain blend, above a cut: the sweep is the blend with a twist, so it comes up when the blend would
             // repeat. A rising song is what it is for.
-            var value = 0.6
+            var value = clash ? floorSweepScore : 0.6
             if let jump, jump >= similarEnergy { value += 0.2 }
             if let jump, jump >= bigJump { value += 0.05 }
             return value
@@ -292,7 +307,7 @@ nonisolated enum MusicTransitionStylePicker {
             return 1.05
         case .lowpassSweep:
             // The other way round from the high-pass: a song that sinks away is for a calmer one.
-            var value = 0.6
+            var value = clash ? floorSweepScore : 0.6
             if let jump, jump <= -similarEnergy { value += 0.2 }
             if let jump, jump <= -bigJump { value += 0.05 }
             return value
@@ -310,6 +325,7 @@ nonisolated enum MusicTransitionStylePicker {
         case .reverbOut:
             // For the next song to start in: the quieter its first seconds, the more of the tail is heard.
             var value = 0.45
+            if clash { value += clashTailBonus }
             if let jump, jump <= -bigJump { value += 0.2 }
             if let intro = i.introEnergy, intro.isFinite, intro < quietEdge { value += 0.15 }
             if far { value += 0.05 }
@@ -317,6 +333,7 @@ nonisolated enum MusicTransitionStylePicker {
         case .brake:
             // A joke when there is nothing to stop.
             var value = 0.4
+            if clash { value += clashTailBonus }
             if let jump, jump >= bigJump { value += 0.15 }
             if far { value += 0.1 }
             if !i.atDJExit, let out = i.outroEnergy, out.isFinite, out < quietEdge { value -= 0.3 }
@@ -359,6 +376,7 @@ nonisolated enum MusicTransitionStylePicker {
         out.mixOutOnPhrase = mixOutIsPhraseEnd(inputs)
         out.habits = MusicMixHabits.pair(for: inputs)
         out.atDJExit = inputs.djMixOutSec != nil
+        out.exitOnBar = exitIsOnBar(inputs)
         if out.gridTrusted, let row = inputs.incoming.analysis {
             out.dropConfidence = MusicDropDetector.best(in: row, grid: inputs.incoming.grid)?.confidence
             if out.dropConfidence != nil, let leaving = inputs.outgoing.analysis {
@@ -381,6 +399,14 @@ nonisolated enum MusicTransitionStylePicker {
         let phraseSec = Double(MusicBeatPlanner.phraseBars) * barSec
         let phrases = (out - first) / phraseSec
         return abs(phrases - phrases.rounded()) * phraseSec < 0.005
+    }
+
+    /// The DJ exit is a bar line of a trusted grid with a known downbeat.
+    private static func exitIsOnBar(_ inputs: MusicTransitionInputs) -> Bool {
+        guard let exit = inputs.djMixOutSec, let grid = inputs.outgoing.grid ?? inputs.outgoing.analysis?.usableGrid,
+              MusicBeatPlanner.trusted(grid), let first = grid.barTime(0) else { return false }
+        let bars = (exit - first) / (4 * grid.periodSec)
+        return abs(bars - bars.rounded()) * 4 * grid.periodSec < 0.005
     }
 
     private static func profile(_ side: MusicTransitionSide) -> MusicMixProfile {

@@ -1,6 +1,6 @@
 // DeciTests/Music/MusicTransitionStyleTests.swift
-// Tier 4b P1: the style picker and the planner hook. A pair that cannot beat mix gets a cut or an echo, never a plain fade,
-// and the picker never repeats the style before it.
+// Tier 4b P1: the style picker and the planner hook. A pair that cannot beat mix gets a short handover, or a cut with a tail where
+// its outgoing song ends hard on a phrase or is left at a section end, and the picker never repeats the style before it.
 
 import Foundation
 import Testing
@@ -59,27 +59,56 @@ struct MusicTransitionStyleTests {
         #expect(!P.isClash(S()))
     }
 
-    @Test("a tempo clash is a blend, never a cut or an echo, whatever came before")
+    @Test("a tempo clash is never a bare cut, and a blend unless the song ends hard on a phrase")
     func clashPicks() {
         for previous in [nil] + MusicTransitionStyle.allCases.map(Optional.some) {
-            let ranked = P.ranked(S(tempoError: 0.3, tailDropDb: 1, mixOutOnPhrase: true), previous: previous)
-            #expect(!ranked.contains(.quickCut) && !ranked.contains(.echoOut))
-            #expect(ranked.first == .longBlend)
+            for signals in [
+                S(tempoError: 0.3, tailDropDb: 9, mixOutOnPhrase: true), S(tempoError: 0.3, tailDropDb: 1, mixOutOnPhrase: false),
+                S(tempoError: 0.3, tailDropDb: nil, mixOutOnPhrase: true),
+            ] {
+                let ranked = P.ranked(signals, previous: previous)
+                #expect(!ranked.contains { $0.isCutLike })
+                #expect(ranked.first == .longBlend)
+            }
+            #expect(!P.ranked(S(tempoError: 0.3, tailDropDb: 1, mixOutOnPhrase: true), previous: previous).contains(.quickCut))
         }
         #expect(P.pick(S(tempoError: 0.02), previous: nil) == .longBlend)
     }
 
-    @Test("a cut or an echo suits a hard ending, matched tempo and a phrase end, and nothing less")
+    @Test("two songs that cannot be beat matched: a tail at a hard phrase end beats the handover, then the handover has its turn")
+    func tailsAcrossAClash() {
+        let hard = S(tempoError: 0.3, outroEnergy: 0.6, introEnergy: 0.6, gridTrusted: true, tailDropDb: 2, mixOutOnPhrase: true)
+        let first = P.pick(hard, history: MusicMixHistory(Array(repeating: .longBlend, count: 4)))
+        #expect(first.hasTail)
+        #expect(P.pick(hard, history: MusicMixHistory([first, .longBlend])) == .longBlend)
+        // The grids are not both trusted, or a tempo is not known: the same pair, as far as a mix goes.
+        #expect(P.cannotBeatMix(S(tempoError: 0.0)) && P.cannotBeatMix(S(gridTrusted: true)))
+        #expect(!P.cannotBeatMix(S(tempoError: 0.0, gridTrusted: true)))
+        for style in [MusicTransitionStyle.echoOut, .reverbOut, .brake] {
+            #expect(P.suits(style, hard))
+            #expect(P.suits(style, S(tempoError: 0.0, tailDropDb: 2, mixOutOnPhrase: true)))
+            #expect(P.suits(style, S(tempoError: nil, gridTrusted: true, tailDropDb: 2, mixOutOnPhrase: true)))
+        }
+    }
+
+    @Test("a sweep with no beats under it waits behind the tails and the handover")
+    func floorSweepWaits() {
+        let pair = S(tempoError: 0.3, energyJump: 0.15, keyDistance: 0, gridTrusted: true)
+        #expect(P.pick(pair, history: MusicMixHistory(Array(repeating: .longBlend, count: 3))) == .longBlend)
+        #expect(P.pick(pair, history: MusicMixHistory(Array(repeating: .longBlend, count: 5))) == .filterSweep)
+    }
+
+    @Test("between two songs that could be beat matched a cut or an echo needs a hard ending, matched tempo and a phrase end")
     func suitsRule() {
-        let hard = S(tempoError: 0.01, tailDropDb: 3, mixOutOnPhrase: true)
+        let hard = S(tempoError: 0.01, gridTrusted: true, tailDropDb: 3, mixOutOnPhrase: true)
         for style in [MusicTransitionStyle.quickCut, .echoOut] {
             #expect(P.suits(style, hard))
-            #expect(!P.suits(style, S(tempoError: 0.01, tailDropDb: 9, mixOutOnPhrase: true)), "a fading tail")
-            #expect(!P.suits(style, S(tempoError: 0.01, tailDropDb: nil, mixOutOnPhrase: true)), "unknown tail")
-            #expect(!P.suits(style, S(tempoError: 0.08, tailDropDb: 3, mixOutOnPhrase: true)), "tempo off")
-            #expect(!P.suits(style, S(tempoError: nil, tailDropDb: 3, mixOutOnPhrase: true)), "tempo unknown")
-            #expect(!P.suits(style, S(tempoError: 0.01, tailDropDb: 3, mixOutOnPhrase: false)), "off the phrase")
+            #expect(!P.suits(style, S(tempoError: 0.01, gridTrusted: true, tailDropDb: 9, mixOutOnPhrase: true)), "a fading tail")
+            #expect(!P.suits(style, S(tempoError: 0.01, gridTrusted: true, tailDropDb: nil, mixOutOnPhrase: true)), "unknown tail")
+            #expect(!P.suits(style, S(tempoError: 0.05, gridTrusted: true, tailDropDb: 3, mixOutOnPhrase: true)), "tempo off")
+            #expect(!P.suits(style, S(tempoError: 0.01, gridTrusted: true, tailDropDb: 3, mixOutOnPhrase: false)), "off the phrase")
         }
+        #expect(!P.suits(.quickCut, S(tempoError: nil, gridTrusted: true, tailDropDb: 3, mixOutOnPhrase: true)), "tempo unknown")
         #expect(P.suits(.longBlend, S()))
         #expect(P.ranked(hard, previous: nil).contains(.quickCut) || P.ranked(hard, previous: nil).contains(.echoOut))
     }
@@ -91,21 +120,22 @@ struct MusicTransitionStyleTests {
 
     @Test("two rap songs are cut at the end of a section in the middle, two house songs never")
     func sectionCuts() {
-        func at(_ habits: MusicMixHabits, exit: Bool = true, error: Double? = 0.05, phrase: Bool = true) -> S {
-            S(tempoError: error, gridTrusted: true, habits: habits, atDJExit: exit, mixOutOnPhrase: phrase)
+        func at(_ habits: MusicMixHabits, exit: Bool = true, error: Double? = 0.05, phrase: Bool = true, bar: Bool = true) -> S {
+            S(tempoError: error, gridTrusted: true, habits: habits, atDJExit: exit, exitOnBar: bar, mixOutOnPhrase: phrase)
         }
         let rap = Self.habits(.hipHop, .hipHop), house = Self.habits(.house, .house)
         for style in [MusicTransitionStyle.quickCut, .echoOut] {
             #expect(P.suits(style, at(rap)))
             #expect(!P.suits(style, at(rap, exit: false)), "at its own end a cut still needs a hard ending")
             #expect(P.suits(style, at(rap, error: 0.2)) == (style == .echoOut), "only an echo gets across a tempo clash")
-            #expect(!P.suits(style, at(rap, error: nil)), "a tempo is unknown")
+            #expect(P.suits(style, at(rap, error: nil)) == (style == .echoOut), "a tempo is unknown")
             #expect(!P.suits(style, at(rap, phrase: false)), "not at the end of a phrase")
             #expect(!P.suits(style, at(house)))
             #expect(P.suits(style, at(house, error: 0.2)) == (style == .echoOut))
-            #expect(!P.suits(style, at(house, exit: false, error: 0.2)) && !P.suits(style, at(house, error: 0.2, phrase: false)))
+            #expect(!P.suits(style, at(house, exit: false, error: 0.2)) && !P.suits(style, at(house, error: 0.2, bar: false)))
+            #expect(P.suits(style, at(house, error: 0.2, phrase: false)) == (style == .echoOut), "a section end is phrase enough")
             let loose = S(tempoError: 0.2, habits: house, atDJExit: true, mixOutOnPhrase: true)
-            #expect(!P.suits(style, loose), "a grid that is not trusted")
+            #expect(!P.suits(style, loose), "a section end of a beat that is not trusted")
         }
         #expect(P.pick(at(rap), previous: .longBlend).isCutLike)
         #expect(P.pick(at(house), previous: .longBlend) == .longBlend)
@@ -201,7 +231,7 @@ struct MusicTransitionStyleTests {
 
     // MARK: Low-confidence pairs (follow-up 1), Tier 4c rule
 
-    @Test("a cut or an echo is never ranked without a hard ending, a matched tempo and a phrase end; a blend always is")
+    @Test("a cut or an echo is never ranked without a hard ending and a phrase end, a bare cut never on a clash; a blend always is")
     func cutNeedsAHardEnding() {
         let soft = MusicTransitionStyleInputs(tempoError: 0.0, energyJump: 0.5, keyDistance: 5, gridTrusted: false)
         let ranked = MusicTransitionStylePicker.ranked(soft, previous: .longBlend)
@@ -213,7 +243,7 @@ struct MusicTransitionStyleTests {
         #expect(cuts.contains(.quickCut) && cuts.contains(.echoOut))
         hard.tempoError = 0.4
         let clash = MusicTransitionStylePicker.ranked(hard, previous: nil)
-        #expect(!clash.contains(.quickCut) && !clash.contains(.echoOut))
+        #expect(!clash.contains(.quickCut) && clash.contains(.echoOut) && clash.contains(.longBlend))
     }
 
     @Test("the picker judges the outgoing deck's heard tempo: 120 bpm at 1.05 meets 126 bpm")

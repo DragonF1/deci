@@ -310,8 +310,9 @@ enum MusicBeatPlanner {
     static let echoRepeats = 6.0
 
     /// A cut, with or without a tail, on the outgoing song's last bar line, for any tempo gap. The incoming song starts on its
-    /// first bar line at or after its smart start, at rate 1. Beat mode with no overlap: the engine starts the incoming
-    /// deck on the cut. nil when a grid is unusable, there is no bar line with room, or the incoming song is too short.
+    /// first bar line at or after its smart start, at rate 1; a tail may bring in a song with no trusted grid where the smart plan
+    /// starts it. Beat mode with no overlap: the engine starts the incoming deck on the cut. nil when a grid is unusable, there is
+    /// no bar line with room, or the incoming song is too short.
     static func styledPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, style: MusicTransitionStyle) -> TransitionPlan? {
         griddedStyledPlan(inputs, smart: smart, style: style) ?? gridlessStyledPlan(inputs, smart: smart, style: style)
     }
@@ -333,7 +334,7 @@ enum MusicBeatPlanner {
         if let earliest = inputs.earliestMixOutSec, cut < earliest { return nil }
         // A cut that stops the outgoing singer mid-word is not a candidate: the pair gets a blend.
         if inputs.vocalGuardEnabled,
-           MusicVocalGuard.cutsOutgoingSinger(outgoing: inputs.outgoing.analysis, intervals: inputs.outgoing.vocalIntervals, endSec: cut) {
+           MusicVocalGuard.cutsOutgoingSinger(inputs.outgoing, at: cut, atDJExit: inputs.djMixOutSec != nil) {
             return nil
         }
         let bEnd = inputs.incoming.analysis.flatMap { MusicTransitionPlanner.trimmedEnd(of: $0, duration: bDuration) } ?? bDuration
@@ -364,24 +365,29 @@ enum MusicBeatPlanner {
               !inputs.manualSkip, !inputs.albumInOrder, !inputs.loopSong,
               let aDuration = valid(inputs.outgoing.durationSeconds), let bDuration = valid(inputs.incoming.durationSeconds),
               let a = inputs.outgoing.analysis, let b = inputs.incoming.analysis,
-              let aGrid = inputs.outgoing.grid ?? a.usableGrid, let bGrid = inputs.incoming.grid ?? b.usableGrid,
-              usable(aGrid), usable(bGrid) else { return nil }
-        let bothTrusted = trusted(aGrid) && trusted(bGrid)
-        // A grid that failed the trust checks is only good enough when it still knows where the bar lines are.
-        guard bothTrusted || (aGrid.downbeatPhase != nil && bGrid.downbeatPhase != nil) else { return nil }
+              let aGrid = inputs.outgoing.grid ?? a.usableGrid, usable(aGrid) else { return nil }
+        let outTrusted = trusted(aGrid)
+        // A grid that failed the trust checks is only good enough when it still knows where the bar lines are, and so is the
+        // other song's beside it. Without any such grid a song that comes in after a tail (nothing runs beside it) starts at its entry.
+        let bGrid = (inputs.incoming.grid ?? b.usableGrid).flatMap { grid -> MusicBeatGrid? in
+            guard usable(grid) else { return nil }
+            return (outTrusted && trusted(grid)) || (aGrid.downbeatPhase != nil && grid.downbeatPhase != nil) ? grid : nil
+        }
+        guard bGrid != nil || (style.hasTail && outTrusted && aGrid.downbeatPhase != nil) else { return nil }
         let aEnd = smart.outgoingEndSec ?? aDuration
         let barSec = 4 * aGrid.periodSec
         guard let outLine = mixOutTime(grid: aGrid, analysis: a, bars: 1, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
-              let inLine = mixInTime(grid: bGrid, start: entryBarStart(inputs, smart: smart, lead: 0, grid: bGrid)) else { return nil }
+              let inLine = bGrid.map({ mixInTime(grid: $0, start: entryBarStart(inputs, smart: smart, lead: 0, grid: $0)) })
+                ?? entryStart(inputs, smart: smart, lead: 0), inLine.isFinite, inLine >= 0 else { return nil }
         // Both songs are on their bar lines, but for a brake: it takes the beat before them.
         let rate = outgoingRate(inputs)
-        let beat = bothTrusted ? aGrid.periodSec / rate : nil
+        let beat = outTrusted ? aGrid.periodSec / rate : nil
         let lead = brakeLead(style, beat: beat, mixIn: inLine)
         let mixOut = outLine - lead * rate, mixIn = inLine - lead
         guard mixOut > 0 else { return nil }
         if let earliest = inputs.earliestMixOutSec, mixOut < earliest { return nil }
         if inputs.vocalGuardEnabled,
-           MusicVocalGuard.cutsOutgoingSinger(outgoing: a, intervals: inputs.outgoing.vocalIntervals, endSec: mixOut) {
+           MusicVocalGuard.cutsOutgoingSinger(inputs.outgoing, at: outLine, atDJExit: inputs.djMixOutSec != nil) {
             return nil
         }
         let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration

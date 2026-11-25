@@ -84,6 +84,17 @@ struct MusicLyricCuesTests {
         #expect(last.upperBound <= 138 + MusicVocalIntervals.maxLineSec && last.upperBound > 138)
     }
 
+    @Test("every sung line is kept on its own, in order, cut at the next line and at the end of the song")
+    func keepsLines() {
+        let lines = [
+            LyricLine(time: 20, text: "second line here", end: 25), LyricLine(time: 10, text: "first line here", end: 14),
+            LyricLine(time: 23, text: "third line here", end: 26), LyricLine(time: 16, text: "♪", end: 18),
+            LyricLine(time: 178, text: "last line here", end: 185),
+        ]
+        #expect(MusicLyricCues.from(lines: lines, duration: 180).lines == [10...14, 20...23, 23...26, 178...180])
+        #expect(MusicLyricCues.from(lines: [], duration: 180).lines.isEmpty)
+    }
+
     @Test("the first line is the first words: notes and blanks are not")
     func firstLine() {
         let lines = [LyricLine(time: 0, text: "♪"), LyricLine(time: 5, text: "  "), LyricLine(time: 12, text: "hello there")]

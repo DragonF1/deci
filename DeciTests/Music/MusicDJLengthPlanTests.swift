@@ -88,6 +88,33 @@ struct MusicDJLengthPlanTests {
         #expect(abs((unguarded.mixOutSec ?? 0) - 112.2) < 0.001)
     }
 
+    @Test("two songs whose tempos clash: the section end is left with a tail once one is due, on the bar line")
+    func tailAtTheSectionEnd() {
+        var i = inputs(bPeriod: 60.0 / 131)
+        i.history = MusicMixHistory(Array(repeating: .longBlend, count: 4))
+        let plan = MusicTransitionPlanner.plan(i)
+        #expect(plan.style.hasTail, "\(plan.style)")
+        #expect(plan.djSection == .chorus2)
+        #expect(abs((plan.mixOutSec ?? 0) + plan.brakeLeadSec - 112.2) < 0.001, "mixOut \(plan.mixOutSec ?? -1)")
+        // Right after an effect it is a handover, at the same place.
+        i.history = MusicMixHistory([.longBlend, .echoOut])
+        let next = MusicTransitionPlanner.plan(i)
+        #expect(next.style == .longBlend && next.djSection == .chorus2)
+    }
+
+    @Test("between two lines of a verse sung without a break the exit stays where it is")
+    func betweenTwoLines() {
+        // The intervals join the two lines into one block across the chorus end at 112.2; line by line nothing is split there.
+        var i = inputs(intervals: [100...124], vocalGuard: true)
+        i.outgoing.lyricCues = MusicLyricCues(lines: [100...106, 106...112, 112.4...118, 118...124])
+        let plan = MusicTransitionPlanner.plan(i)
+        #expect(plan.djSection == .chorus2)
+        #expect(abs((plan.mixOutSec ?? 0) - 112.2) < 0.001, "mixOut \(plan.mixOutSec ?? -1)")
+        // A line across it moves it on by a bar, which the next line has only just begun at.
+        i.outgoing.lyricCues = MusicLyricCues(lines: [100...106, 106...113.5, 113.8...118, 118...124])
+        #expect(abs((MusicTransitionPlanner.plan(i).mixOutSec ?? 0) - 114.2) < 0.001)
+    }
+
     @Test("a singer who never stops moves the exit to the next chorus, and with none clear keeps the normal plan")
     func vocalFallsBack() {
         // Every bar line the second chorus could be left at is sung over; the third one ends at 160.2.
