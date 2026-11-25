@@ -15,8 +15,8 @@ actor MusicTrackCache {
         var maxBytes: Int64 = 200 * 1_048_576
         var minFreeBytes: Int64 = 1_024 * 1_048_576
         var staleAfter: TimeInterval = 3600
-        /// A draining deck may still hold the old file for a crossfade (12 s at most).
-        var graceAfterRelease: TimeInterval = 20
+        /// A draining deck may still hold the old file: for a blend (`MusicBeatPlanner.maxOverlapSec`, 40 s) and the tail after it.
+        var graceAfterRelease: TimeInterval = 60
     }
 
     enum Failure: Error, Equatable { case diskFull, tooLarge, invalidVideoId, alreadyFetching }

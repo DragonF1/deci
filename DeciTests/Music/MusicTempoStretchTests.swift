@@ -37,6 +37,24 @@ struct MusicTempoStretchTests {
         #expect(Self.spec(rate: 1.0166).rate == 1041.0 / 1024)
     }
 
+    @Test("a pair may match when both beats are trusted and 5 percent apart at most, same time or double; an unknown song may too")
+    func mayMatch() {
+        func row(_ bpm: Double, confidence: Float = 0.9) -> MusicAnalysis {
+            var row = BeatHarness.row("b", period: 60 / bpm, grid: false)
+            row.beatGrid = MusicBeatPlannerTests.grid(period: 60 / bpm, confidence: confidence).encode()
+            return row
+        }
+        func may(_ out: MusicAnalysis?, _ into: MusicAnalysis?) -> Bool { MusicTempoStretch.mayMatch(outgoing: out, incoming: into) }
+        #expect(may(row(87), row(87.5)))
+        #expect(may(row(100), row(104.9)))
+        #expect(!may(row(97.99), row(104.01)), "6.1 percent is past what a song is stretched by")
+        #expect(may(row(70), row(139)), "double time")
+        #expect(!may(row(104), row(69.5)), "3 to 2 is no match")
+        #expect(may(nil, nil) && may(row(120), nil) && may(nil, row(120)))
+        let weak = row(120, confidence: 0.1), gridless = BeatHarness.row("b", period: 0.5, grid: false)
+        #expect(!may(row(120), weak) && !may(weak, row(120)) && !may(nil, gridless) && !may(gridless, nil))
+    }
+
     @Test("the pieces cover the song with no gap, the first and the last are native, and every scaled one is at exactly k/1024")
     func piecesAreExact() throws {
         for rate in Self.rates {

@@ -24,6 +24,10 @@ actor FakeAnalysisProvider: MusicAnalysisProviding {
     private var outcomes: [String: MusicAnalysisCoordinator.Outcome] = [:]
     private var gates: [String: MusicTestGate] = [:]
     private var cancelGates: [String: MusicTestGate] = [:]
+    /// What `pinnedFile` answers, and the songs it was asked for.
+    private var pins: [String: MusicSongFileOutcome] = [:]
+    private(set) var pinRequests: [String] = []
+    private var pinGates: [String: MusicTestGate] = [:]
     /// Every provider call in the order it took effect: "ensure:x", "cancel:x" (when it returned), "discard:x".
     private(set) var events: [String] = []
 
@@ -31,6 +35,19 @@ actor FakeAnalysisProvider: MusicAnalysisProviding {
 
     func setOutcome(_ id: String, _ outcome: MusicAnalysisCoordinator.Outcome) { outcomes[id] = outcome }
     func hold(_ id: String, _ gate: MusicTestGate) { gates[id] = gate }
+    func setPinned(_ id: String, _ outcome: MusicSongFileOutcome) { pins[id] = outcome }
+    func holdPin(_ id: String, _ gate: MusicTestGate) { pinGates[id] = gate }
+
+    /// Like the coordinator: a fetch whose task is cancelled fails and leaves nothing pinned.
+    func pinnedFile(for stream: ResolvedStream) async -> MusicSongFileOutcome {
+        let id = stream.videoId
+        pinRequests.append(id)
+        events.append("pin:\(id)")
+        if let gate = pinGates[id] {
+            await withTaskCancellationHandler { await gate.wait() } onCancel: { Task { await gate.open() } }
+        }
+        return Task.isCancelled ? .failed : pins[id] ?? .failed
+    }
 
     func ensure(stream: ResolvedStream, wantsFile: Bool) async -> MusicAnalysisCoordinator.Outcome {
         ensures.append((stream.videoId, wantsFile))
@@ -86,7 +103,7 @@ private struct CacheHarness {
     let service: MusicService
     let folder: URL
 
-    init(crossfade: Bool = false, downloads: MusicDownloadService? = nil) {
+    init(crossfade: Bool = false, mixing: Bool = false, downloads: MusicDownloadService? = nil) {
         let engine = self.engine
         let clock = self.clock
         let player = MusicPlayer(engine: engine)
@@ -102,7 +119,9 @@ private struct CacheHarness {
             raiseSignInWindow: {},
             nowPlaying: NowPlayingController(surface: surface, fetchArtwork: { _ in nil }),
             now: { clock.now },
-            preferences: MusicPlaybackPreferences(transitionMode: crossfade ? .crossfade : .off, crossfadeSeconds: 6),
+            preferences: MusicPlaybackPreferences(
+                transitionMode: mixing ? .mixing : crossfade ? .crossfade : .off, crossfadeSeconds: 6
+            ),
             queueRetryDelay: .seconds(60),
             downloads: downloads,
             connectivity: connectivity,
@@ -238,6 +257,108 @@ struct MusicServiceTrackCacheTests {
         await h.tick(1)
         await h.tick(30)
         #expect(await h.analysis.ensuredIDs == ["a", "b"], "asked once, the coordinator answers from the store")
+        #expect(await h.analysis.pinRequests.isEmpty, "nothing mixes, so nothing needs its file")
+    }
+
+    @Test("with Mixing on a next song that already has a row gets its file too, and the preload plays from it")
+    func analysedNextIsFetchedForMixing() async throws {
+        let h = CacheHarness(mixing: true)
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b"])
+        await h.analysis.setOutcome("b", .alreadyFresh)
+        await h.analysis.setPinned("b", .file(try h.makeFile("b")))
+        await h.tick(1)
+        await h.tick(30)
+        #expect(await h.analysis.pinRequests == ["b"], "fetched once")
+        await h.tick(196)
+        #expect(h.engine.preloads.last?.origin == .trackCache)
+        #expect(await h.analysis.discards.isEmpty)
+    }
+
+    @Test("Crossfade alone stretches nothing, so an analysed next song stays streamed")
+    func analysedNextStaysStreamedUnderCrossfade() async throws {
+        let h = CacheHarness(crossfade: true)
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b"])
+        await h.analysis.setOutcome("b", .alreadyFresh)
+        await h.analysis.setPinned("b", .file(try h.makeFile("b")))
+        await h.tick(1)
+        await h.tick(196)
+        #expect(await h.analysis.pinRequests.isEmpty)
+        #expect(h.engine.preloads.last?.origin == .network)
+    }
+
+    @Test("a downloaded next song needs no file, and a file that failed or belongs to somebody else leaves it streamed")
+    func analysedNextWithoutAFile() async throws {
+        let outcomes: [MusicSongFileOutcome] = [.failed, .rateLimited, .borrowed(URL(fileURLWithPath: "/nonexistent/b.m4a"))]
+        for outcome in outcomes {
+            let h = CacheHarness(mixing: true)
+            defer { h.cleanUp() }
+            await h.startQueue(["a", "b"])
+            await h.analysis.setOutcome("b", .alreadyFresh)
+            await h.analysis.setPinned("b", outcome)
+            await h.tick(1)
+            await h.tick(196)
+            #expect(await h.analysis.pinRequests == ["b"])
+            #expect(h.engine.preloads.last?.origin == .network, "\(outcome)")
+        }
+        let h = CacheHarness(mixing: true)
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b"])
+        await h.backend.setStream(ResolvedStream(
+            videoId: "b", url: URL(fileURLWithPath: "/nonexistent/b.m4a"), itag: 140, durationSeconds: 200,
+            expiresAt: .distantFuture, playbackTrackingURL: nil, httpHeaders: [:], origin: .download))
+        await h.analysis.setOutcome("b", .alreadyFresh)
+        await h.tick(1)
+        #expect(await h.analysis.pinRequests.isEmpty)
+    }
+
+    @Test("an analysed song that stops being next while its file comes is dropped at once, and the new next does not wait for it")
+    func analysedNextChangesMidFetch() async throws {
+        let h = CacheHarness(mixing: true)
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b", "c"])
+        await h.analysis.setOutcome("b", .alreadyFresh)
+        await h.analysis.setOutcome("c", .alreadyFresh)
+        await h.analysis.setPinned("b", .file(try h.makeFile("b")))
+        await h.analysis.setPinned("c", .file(try h.makeFile("c")))
+        let gate = MusicTestGate()
+        await h.analysis.holdPin("b", gate)
+        h.settledTick(1)
+        await h.service.prefetchTask?.value
+        while await h.analysis.pinRequests.isEmpty { await Task.yield() }
+
+        h.service.playNext(MusicSamples.track("c", title: "Song c"))
+        await h.tick(2)
+        #expect(await h.analysis.pinRequests == ["b", "c"], "the new next got its turn without the gate being opened")
+        await h.settle()
+        #expect(await h.analysis.discards == ["b"])
+        await h.tick(196)
+        #expect(h.engine.preloads.last?.videoId == "c")
+        #expect(h.engine.preloads.last?.origin == .trackCache)
+    }
+
+    @Test("Next while its file still comes plays the song streamed and stops the fetch, so the song after it is not held up")
+    func nextPlaysMidFetch() async throws {
+        let h = CacheHarness(mixing: true)
+        defer { h.cleanUp() }
+        await h.startQueue(["a", "b", "c"])
+        await h.analysis.setOutcome("b", .alreadyFresh)
+        await h.analysis.setOutcome("c", .alreadyFresh)
+        await h.analysis.setPinned("b", .file(try h.makeFile("b")))
+        await h.analysis.setPinned("c", .file(try h.makeFile("c")))
+        let gate = MusicTestGate()
+        await h.analysis.holdPin("b", gate)
+        h.settledTick(1)
+        await h.service.prefetchTask?.value
+        while await h.analysis.pinRequests.isEmpty { await Task.yield() }
+
+        h.service.next()
+        await h.settle()
+        h.engine.emit(.playingChanged(true))
+        await h.tick(1)
+        #expect(await h.analysis.pinRequests == ["b", "c"])
+        #expect(await h.analysis.discards.isEmpty, "the playing song is never discarded")
     }
 
     @Test("when the next song changes mid-analysis the old job finishes and stores, its file is discarded, the new next waits behind it")

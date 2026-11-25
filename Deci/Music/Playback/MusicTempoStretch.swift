@@ -34,6 +34,15 @@ nonisolated enum MusicTempoStretch {
 
     static func snapRate(_ rate: Double) -> Double { (rate * rateSteps).rounded() / rateSteps }
 
+    /// Whether the incoming song could be taken to the outgoing one's tempo. A song whose analysis is not in yet still may; one
+    /// without a beat to trust never can.
+    static func mayMatch(outgoing: MusicAnalysis?, incoming: MusicAnalysis?) -> Bool {
+        let grids = [outgoing, incoming].compactMap { $0 }.map { row in row.usableGrid.flatMap { MusicBeatPlanner.trusted($0) ? $0 : nil } }
+        guard grids.allSatisfy({ $0 != nil }) else { return false }
+        guard let out = outgoing?.usableGrid, let into = incoming?.usableGrid else { return true }
+        return MusicBeatPlanner.tempoMatch(outBpm: out.bpm, inBpm: into.bpm, tolerance: maxRateError) != nil
+    }
+
     /// A tempo match of the incoming song, in song seconds.
     struct Spec: Equatable, Sendable {
         /// Where the overlap starts in the song.

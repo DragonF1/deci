@@ -332,6 +332,41 @@ struct MusicServiceTempoMatchTests {
         #expect(other.stretchRate == 1 && MusicItemEdit.edit(from: other) == nil)
     }
 
+    /// a into b, b streamed and analysed long ago, with its file there to fetch.
+    private func analysedStream(bPeriod: Double, bGrid: Bool = true) async throws -> BeatHarness {
+        let h = BeatHarness()
+        let folder = URL(fileURLWithPath: "/Volumes/Storage/_test/deci/tempo-match", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("b.m4a")
+        try Data("audio".utf8).write(to: file)
+        await h.reader.set(BeatHarness.row("a", period: 0.5))
+        await h.reader.set(BeatHarness.row("b", period: bPeriod, grid: bGrid))
+        await h.provider.setOutcome("b", .alreadyFresh)
+        await h.provider.setPinned("b", .file(file))
+        await h.startQueue(["a", "b"])
+        await h.tick(126)
+        await h.tick(170)
+        return h
+    }
+
+    @Test("a streamed song that was analysed before has its file fetched, so it is tempo matched after all")
+    func analysedStreamIsMatched() async throws {
+        let h = try await analysedStream(bPeriod: 60 / 118.3)
+        #expect(await h.provider.pinRequests == ["b"])
+        #expect(h.engine.preloads.last?.origin == .trackCache)
+        let plan = try #require(h.lastPlan)
+        #expect(plan.mode == .beat && plan.stretchRate == MusicTempoStretch.snapRate(120 / 118.3), "plan: \(plan)")
+    }
+
+    @Test("a pair that can never be tempo matched fetches nothing: too far apart, or no beat grid")
+    func unmatchableStreamIsNotFetched() async throws {
+        let clash = try await analysedStream(bPeriod: 60 / 111)
+        #expect(await clash.provider.pinRequests.isEmpty)
+        #expect(clash.engine.preloads.last?.origin == .network)
+        let gridless = try await analysedStream(bPeriod: 0.5, bGrid: false)
+        #expect(await gridless.provider.pinRequests.isEmpty)
+    }
+
     @Test("Next on a tempo matched standby takes the ordinary load: its matched part never plays alone")
     func nextDoesNotCrossfade() async throws {
         let h = BeatHarness()

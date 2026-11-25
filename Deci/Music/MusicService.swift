@@ -338,6 +338,8 @@ final class MusicService {
     @ObservationIgnored private var nextSeen: (id: String, since: Date)?
     /// Songs whose cache file this service asked for and has not released or discarded yet.
     @ObservationIgnored private var heldCacheJobs: [String: Int] = [:]
+    /// The job that is fetching the file of a song whose analysis was stored long ago (`mayTempoMatch`).
+    @ObservationIgnored private var fileFetchJob: Int?
     /// Counts the analysis jobs started; a job's number tells it apart from an older one for the same song.
     @ObservationIgnored private var analysisJobCounter = 0
     /// The next song's cache file once its analysis is stored, so the preload can play from it.
@@ -3287,7 +3289,8 @@ final class MusicService {
     /// Hands the next song to the analysis side: a network song is fetched whole into the track cache (its file is kept
     /// for the preload), a downloaded one is analysed from its own file. Not offline, not signed out, not Loop song, and
     /// one job at a time: a job for a song that is no longer next is not cancelled when it is already running (its row
-    /// is still stored, only its file goes), and the new job waits behind it.
+    /// is still stored, only its file goes), and the new job waits behind it. A song that is analysed already needs no
+    /// analysis but still a file, when Mixing could match its tempo.
     private func startAnalysis(for stream: ResolvedStream) {
         guard let analysis, !isOffline, authState != .signedOut, loopMode != .song,
               stream.videoId != analysisCurrentID, analysisTarget != stream.videoId else { return }
@@ -3320,15 +3323,24 @@ final class MusicService {
             defer {
                 self.analysisJobs[job] = nil
                 self.analysisRunning[job] = nil
+                if self.fileFetchJob == job { self.fileFetchJob = nil }
             }
             guard !Task.isCancelled else { return }
             // Running until it has landed, row read and file settled, so a song that is next again can take it back.
             self.analysisRunning[job] = id
-            let outcome = await analysis.ensure(stream: stream, wantsFile: wantsFile)
+            var outcome = await analysis.ensure(stream: stream, wantsFile: wantsFile)
             // The row the job stored is read before the preload is offered again, so a plan can use it.
             if !Task.isCancelled, self.analysisTarget == id {
                 await self.readTransitionRow(id)
                 if self.analysisTarget == id { self.nextRowSettled = id }
+            }
+            if wantsFile, outcome == .alreadyFresh, self.analysisTarget == id, self.heldCacheJobs[id] == job, !Task.isCancelled,
+               self.mayTempoMatch(stream) {
+                // There is no row left to wait for, so from here the job is dropped, not left to finish, when the song stops
+                // being next.
+                self.analysisRunning[job] = nil
+                self.fileFetchJob = job
+                if case .file(let file) = await analysis.pinnedFile(for: stream) { outcome = .analysed(file: file) }
             }
             guard self.heldCacheJobs[id] == job, !Task.isCancelled else {
                 // The song stopped being next while the file was coming: nobody will play it. A newer job for the same
@@ -3347,6 +3359,13 @@ final class MusicService {
         analysisJobs[job] = (id, task)
         analysisTask = task
         analysisTail = task
+    }
+
+    /// Whether the file of the next song, whose analysis is stored, is worth fetching: only a song on this Mac can be taken to
+    /// the playing song's tempo, so a streamed one never was.
+    private func mayTempoMatch(_ stream: ResolvedStream) -> Bool {
+        isBeatMixOn && mixesTransitions && plansTransitions
+            && MusicTempoStretch.mayMatch(outgoing: freshRow(for: player.currentStream), incoming: freshRow(for: stream))
     }
 
     /// The song that starts playing gets its analysis asked for once, when it has no fresh entry (the coordinator checks
@@ -3420,6 +3439,8 @@ final class MusicService {
             if id == nil { dropSpeculativeAnalysis(target) } else { retireSpeculativeAnalysis(target) }
         }
         if let id, analysisTarget == id {
+            // It plays as a stream now: the rest of its file is of no use, and the song after it waits for this job.
+            if let fetching = fileFetchJob, fetching == analysisTargetJob { analysisTask?.cancel() }
             analysisTarget = nil
             analysisTargetJob = 0
         }
