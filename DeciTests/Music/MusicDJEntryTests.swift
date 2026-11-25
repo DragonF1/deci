@@ -177,7 +177,7 @@ struct MusicDJEntryTests {
         let plan = MusicTransitionPlanner.plan(i)
         #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.djEntry == .verse, "\(plan)")
         let start = try #require(plan.mixInSec)
-        #expect(abs(start + B.floorFadeSeconds - (41 - MusicVocalIntervals.padSec)) < 1e-6, "start \(start)")
+        #expect(abs(start + B.floorMinFadeSeconds - (41 - MusicVocalIntervals.padSec)) < 1e-6, "start \(start)")
         #expect(plan.fallbackIncomingStartSec == 0)
     }
 

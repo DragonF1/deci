@@ -148,6 +148,8 @@ struct MusicDJExitTests {
         plan.mixOutSec = 131
         #expect(!D.leaves(plan, at: exit))
         plan.mixOutSec = 117
+        #expect(D.leaves(plan, at: exit), "a handover that lands on it")
+        plan.mixOutSec = 116
         #expect(!D.leaves(plan, at: exit))
         plan.overlapSec = 0.1
         plan.mixOutSec = 121

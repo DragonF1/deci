@@ -1,8 +1,9 @@
 // Deci/Music/Playback/MusicTransitionStyle.swift
 // Tier 4b P1: how one Mix transition sounds. A style is data on the plan; the picker is pure and deterministic: the same
-// numbers always give the same answer. A style that repeats the previous one is only marked down, so a long blend may follow a
-// long blend; a cut or an echo only ever suits a pair with a hard ending, matching tempos and a phrase end, or (in genres that are
-// cut that way) a section end in the middle of the song. What the genres of the two songs like moves the scores (`MusicMixHabits`).
+// numbers always give the same answer. A cut or an echo only ever suits a pair with a hard ending, matching tempos and a phrase end,
+// or a section end in the middle of the song (a cut in genres that are cut that way, an echo also where the tempos clash). What the
+// genres of the two songs like (`MusicMixHabits`), what the pair asks for (`MusicMixIntent`) and what the last few transitions were
+// (`MusicMixHistory`) move the scores.
 
 import Foundation
 
@@ -26,6 +27,12 @@ nonisolated enum MusicTransitionStyle: String, Sendable, CaseIterable {
     /// A cut or an echo: no overlap to speak of, the outgoing song is held at full level until the incoming one starts.
     /// Every other style is made of a long overlap like the plain blend.
     var isCutLike: Bool { self == .quickCut || self == .echoOut }
+
+    /// An effect is heard as one: it is kept for about every fourth or fifth song.
+    var isEffect: Bool { self == .filterSweep || self == .echoOut }
+
+    /// What a Mix is made of: one song over the other and nothing more.
+    var isPlainBlend: Bool { self == .longBlend || self == .loopExtend }
 
     /// Owner-facing name.
     var label: String {
@@ -100,34 +107,42 @@ nonisolated enum MusicTransitionStylePicker {
     static let hardEndingDb = 6.0
     /// A cut or an echo needs tempos this close (a fraction, half and double time folded in).
     static let cutTempoError = 0.03
-    /// What a style loses for repeating the previous one (after the score is rounded); doubled for a cut or an echo after either
-    /// of the two, and nothing for a long blend or a loop extend, which are what a Mix is made of.
-    static let repeatPenalty = 0.25
+    /// The long blend where the tempos clash: the short handover of the floor blend. An effect or a cut with a reason beats it.
+    static let clashBlendScore = 0.65
+    /// A tail or an intro quieter than this (0...1) has no drums to speak of.
+    static let quietEdge: Float = 0.4
 
     /// The style for a pair: the best ranked one, the long blend when none is a candidate.
+    static func pick(_ inputs: MusicTransitionStyleInputs, history: MusicMixHistory) -> MusicTransitionStyle {
+        ranked(inputs, history: history).first ?? .longBlend
+    }
+
+    /// `pick` with only the last transition known.
     static func pick(_ inputs: MusicTransitionStyleInputs, previous: MusicTransitionStyle?) -> MusicTransitionStyle {
-        ranked(inputs, previous: previous).first ?? .longBlend
+        pick(inputs, history: MusicMixHistory(previous.map { [$0] } ?? []))
     }
 
-    static func penalty(_ style: MusicTransitionStyle, previous: MusicTransitionStyle?) -> Double {
-        if style.isCutLike { return previous?.isCutLike == true ? 2 * repeatPenalty : 0 }
-        return style == previous && style != .longBlend && style != .loopExtend ? repeatPenalty : 0
-    }
-
-    /// Every style that suits the pair, best first. A style that repeats `previous` loses `penalty` but stays in the list. A
-    /// tie goes to the fixed order long blend, quick cut, echo out, so the result is deterministic.
+    /// `ranked` with only the last transition known.
     static func ranked(_ inputs: MusicTransitionStyleInputs, previous: MusicTransitionStyle?) -> [MusicTransitionStyle] {
+        ranked(inputs, history: MusicMixHistory(previous.map { [$0] } ?? []))
+    }
+
+    /// Every style that suits the pair, best first. What the history makes of a style counts after the score is rounded, and an
+    /// effect too soon after the last one is left out. A tie goes to the fixed order long blend, quick cut, echo out, so the result is
+    /// deterministic.
+    static func ranked(_ inputs: MusicTransitionStyleInputs, history: MusicMixHistory) -> [MusicTransitionStyle] {
+        let intent = MusicMixIntent.pick(inputs)
         // A cut lands "on the downbeat", which needs a trusted grid: without one the echo (a fixed delay) always ranks
         // above it, and the cut only comes up when the echo cannot be built.
         func total(_ style: MusicTransitionStyle) -> Double {
-            ((score(style, inputs) + inputs.habits.bonus(for: style)) * 1000).rounded() / 1000
+            ((score(style, inputs) + inputs.habits.bonus(for: style) + intent.bonus(for: style)) * 1000).rounded() / 1000
         }
         let echoScore = total(.echoOut)
         let scored = MusicTransitionStyle.pickable.enumerated().compactMap { index, style -> (MusicTransitionStyle, Double, Int)? in
-            guard suits(style, inputs) else { return nil }
+            guard suits(style, inputs), history.allows(style) else { return nil }
             var main = total(style)
             if style == .quickCut, !inputs.gridTrusted { main = min(main, echoScore - 0.002) }
-            return (style, main - penalty(style, previous: previous), index)
+            return (style, main + history.bonus(for: style), index)
         }
         let order = scored.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }.map(\.0)
         #if DEBUG
@@ -155,12 +170,16 @@ nonisolated enum MusicTransitionStylePicker {
     /// Whether a style suits these numbers. A cut or an echo only suits a hard ending (the tail within `hardEndingDb` of the
     /// body), matching tempos and a mix-out on a phrase end: anything else gets a blend, never a hard stop. Between two songs of
     /// genres that are cut on a section (`cutsOnSections`), the end of a section in the middle of the song is as good a place: there
-    /// is no tail to clip, and with nothing overlapping the tempos only have to be close enough to beat match. Every other style
-    /// is a candidate by `isCandidate`.
+    /// is no tail to clip, and with nothing overlapping the tempos only have to be close enough to beat match. An echo out of such a
+    /// section end also gets across a tempo clash: the old groove is gone before the new one starts. Every other style is a candidate
+    /// by `isCandidate`.
     static func suits(_ style: MusicTransitionStyle, _ i: MusicTransitionStyleInputs) -> Bool {
         guard style.isCutLike else { return isCandidate(style, i) }
         guard i.mixOutOnPhrase, let error = i.tempoError, error.isFinite else { return false }
-        if i.atDJExit, i.habits.cutsOnSections { return MusicMixScore.withinTolerance(error) }
+        if i.atDJExit {
+            if style == .echoOut, i.gridTrusted, isClash(i) { return true }
+            if i.habits.cutsOnSections { return MusicMixScore.withinTolerance(error) }
+        }
         guard let drop = i.tailDropDb, drop.isFinite, drop <= hardEndingDb else { return false }
         return error <= cutTempoError + MusicMixScore.boundarySlack
     }
@@ -194,8 +213,8 @@ nonisolated enum MusicTransitionStylePicker {
         let far = (i.keyDistance ?? 0) >= farKey
         switch style {
         case .longBlend:
-            // A blend needs the tempos to meet: with a clash it is out of the running.
-            if clash { return -1 }
+            // Where the tempos clash it is a short handover, not two songs running together: keys and energy hardly matter.
+            if clash { return clashBlendScore }
             var value = 1.0
             if far { value -= 0.3 }
             if let jump, abs(jump) >= hugeJump { value -= 0.3 }
@@ -230,6 +249,14 @@ nonisolated enum MusicTransitionStylePicker {
     }
 
     // MARK: From planner inputs
+
+    /// The outgoing song is left in its quiet tail, or the incoming one starts on a quiet intro: two drum parts never meet there. A
+    /// DJ exit or entry is not at the song's own edge, so it never counts.
+    static func hasQuietEdge(_ inputs: MusicTransitionInputs) -> Bool {
+        let outro = MusicMixCompact(profile(inputs.outgoing)).outro, intro = MusicMixCompact(profile(inputs.incoming)).intro
+        func quiet(_ value: Float) -> Bool { value >= 0 && value < quietEdge }
+        return (inputs.djMixOutSec == nil && quiet(outro)) || (inputs.djEntry == nil && quiet(intro))
+    }
 
     /// The picker's numbers for a pair of planner sides.
     static func inputs(for inputs: MusicTransitionInputs) -> MusicTransitionStyleInputs {

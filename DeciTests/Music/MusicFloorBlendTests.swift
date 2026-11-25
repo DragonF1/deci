@@ -1,8 +1,8 @@
 // DeciTests/Music/MusicFloorBlendTests.swift
 // Tier 4c Batch B: the floor of every Mix transition. Whatever the grids, tempos, phrase room or singers say, a pair gets a
-// 6 to 8 s blend in beat mode at rate 1 with a bass swap; only a song too short for it keeps the plain smart fade. Also the
-// vocal cut-off guard and the cold-intro rule. Since wjyijr the incoming song is always at rate 1: only pairs within
-// `floorTempoError` (0.75 percent) are aligned, the rest get the filter sweep.
+// blend in beat mode at rate 1 with a bass swap; only a song too short for it keeps the plain smart fade. Also the vocal cut-off
+// guard and the cold-intro rule. Since wjyijr the incoming song is always at rate 1: only pairs within `floorTempoError`
+// (0.75 percent) are aligned, the rest are handed over (see `MusicHandoverTests`).
 
 import Foundation
 import Testing
@@ -32,28 +32,28 @@ struct MusicFloorBlendTests {
         #expect(plan.outgoingEndSec == (plan.mixOutSec ?? 0) + 8)
     }
 
-    @Test("a tempo mismatch above 0.75 percent thins the outgoing song early: a sweep from the settings, the bass in at about a quarter")
-    func mismatchedFloorThins() throws {
-        let i = BT.inputs(b: BT.grid(period: 60 / 131, anchor: 0.1, phase: 1))
-        let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
-        #expect(plan.mode == .beat && plan.style == .filterSweep && plan.incomingRate == 1)
-        #expect(plan.sweepFromHz == Double(MusicSweepSettings.defaultFromHz) && plan.sweepToHz == Double(MusicSweepSettings.defaultToHz))
-        let swap = try #require(plan.bassSwapAtSec)
-        #expect(swap < plan.fadeSeconds / 2 && abs(swap / plan.fadeSeconds - 0.25) < 0.02)
-        // Within 0.75 percent (and at double time) the kicks stay together: no thinning. 2 percent is thinned now.
-        let close = BT.inputs(b: BT.grid(period: 0.5 * 0.995, anchor: 0.1, phase: 1))
-        #expect(try #require(B.floorBlendPlan(close, smart: Self.smart(close))).style == .longBlend)
-        let loose = BT.inputs(b: BT.grid(period: 0.5 * 0.98, anchor: 0.1, phase: 1))
-        #expect(try #require(B.floorBlendPlan(loose, smart: Self.smart(loose))).style == .filterSweep)
-        let double = BT.inputs(b: BT.grid(period: 0.25, anchor: 0.1, phase: 1))
-        #expect(try #require(B.floorBlendPlan(double, smart: Self.smart(double))).style == .longBlend)
+    @Test("a tempo mismatch above 0.75 percent is a handover, within it (and at double time) the kicks stay together")
+    func mismatchedFloorHandsOver() throws {
+        func floor(_ period: Double) throws -> TransitionPlan {
+            let i = BT.inputs(b: BT.grid(period: period, anchor: 0.1, phase: 1))
+            return try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
+        }
+        for period in [60.0 / 131, 0.5 * 0.98] {
+            let plan = try floor(period)
+            #expect(plan.mode == .beat && plan.style == .longBlend && plan.handsOverByEQ && plan.incomingRate == 1)
+        }
+        for period in [0.5 * 0.995, 0.25] {
+            let plan = try floor(period)
+            #expect(plan.style == .longBlend && !plan.handsOverByEQ)
+        }
     }
 
-    @Test("with no grid at all (unknown tempo) the floor still blends, thinned")
+    @Test("with no grid at all (unknown tempo) the floor still blends: 6 s, the bass changing hands early and quickly")
     func gridlessFloor() throws {
         let i = BT.inputs(a: nil, b: nil)
         let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
-        #expect(plan.mode == .beat && plan.style == .filterSweep && plan.fadeSeconds == 8 && plan.bassSwapAtSec != nil)
+        #expect(plan.mode == .beat && plan.style == .longBlend && plan.fadeSeconds == 6 && plan.handsOverByEQ)
+        #expect(plan.bassSwapAtSec == 1.5 && plan.bassHandoverSec == 0.5 && !plan.floorAligned)
     }
 
     @Test("a song too short to hold the fade gets no floor, and the plain smart fade stays")
@@ -72,22 +72,22 @@ struct MusicFloorBlendTests {
         ]
         for i in pairs {
             let plan = MusicTransitionPlanner.plan(i)
-            #expect(plan.mode == .beat && plan.fadeSeconds >= 6 && plan.fadeSeconds <= 16)
+            #expect(plan.mode == .beat && plan.fadeSeconds >= B.handoverMinSec && plan.fadeSeconds <= 16)
             #expect(plan.overlapBars > 0 || plan.bassSwapAtSec != nil, "a floor blend always swaps the bass")
             #expect(plan.style != .quickCut && plan.style != .echoOut)
         }
     }
 
-    @Test("a pair the beat planner refused for room but with trusted grids and meeting tempos gets the long blend; an untrusted grid sweeps")
+    @Test("a pair the beat planner refused for room but with trusted grids and meeting tempos gets the long blend; an untrusted grid is handed over")
     func refusedButMatchedIsALongBlend() {
         let plan = MusicTransitionPlanner.plan(BT.inputs(bDuration: 60))
         #expect(plan.mode == .beat && plan.style == .longBlend, "style \(plan.style.rawValue)")
         for i in [BT.inputs(a: BT.grid(confidence: 0.3)), BT.inputs(a: BT.grid(phase: nil, confidence: 0.3))] {
             let untrusted = MusicTransitionPlanner.plan(i)
-            #expect(untrusted.mode == .beat && untrusted.style == .filterSweep && untrusted.incomingRate == 1)
+            #expect(untrusted.mode == .beat && untrusted.style == .longBlend && untrusted.handsOverByEQ && untrusted.incomingRate == 1)
         }
         let clash = MusicTransitionPlanner.plan(BT.inputs(a: BT.grid(confidence: 0.3), b: BT.grid(period: 60 / 160, anchor: 0.1, phase: 1)))
-        #expect(clash.style == .filterSweep)
+        #expect(clash.style == .longBlend && clash.handsOverByEQ && !clash.floorAligned)
     }
 
     // MARK: aligned floor blends
@@ -123,7 +123,7 @@ struct MusicFloorBlendTests {
         #expect(plan.mixInSec ?? -1 >= Self.smart(i).incomingStartSec - 1e-9)
     }
 
-    @Test("a grid without a downbeat on one side aligns beat on beat, and an unmatched tempo or a missing grid stays unaligned")
+    @Test("a grid without a downbeat on one side aligns beat on beat, and a missing grid stays unaligned")
     func alignedOnBeatsOnly() throws {
         let noPhase = BT.inputs(b: BT.grid(anchor: 0.1, phase: nil, span: 0.1...236))
         let plan = try #require(B.floorBlendPlan(noPhase, smart: Self.smart(noPhase)))
@@ -135,10 +135,6 @@ struct MusicFloorBlendTests {
         let halfPlan = try #require(B.floorBlendPlan(half, smart: Self.smart(half)))
         #expect(halfPlan.floorAligned)
         #expect(Self.beatOffset(try #require(half.incoming.grid), try #require(halfPlan.mixInSec)) < 0.001)
-        // A 5 percent gap: thinned early, nothing aligned.
-        let gap = BT.inputs(b: BT.grid(period: 60 / 131, anchor: 0.1, phase: 1, span: 0.1...236))
-        let thin = try #require(B.floorBlendPlan(gap, smart: Self.smart(gap)))
-        #expect(!thin.floorAligned && thin.style == .filterSweep && thin.mixOutSec == Self.smart(gap).fadeStartSec)
         // No grid at all: nothing to align to.
         let none = BT.inputs(a: nil, b: nil)
         #expect(!(try #require(B.floorBlendPlan(none, smart: Self.smart(none)))).floorAligned)
@@ -262,17 +258,7 @@ struct MusicFloorBlendTests {
 
     // MARK: wjyijr: the tempo window of the floor
 
-    @Test("a 5 percent gap with both grids: the pair is thinned at rate 1 and not aligned, a sweep (the matched rate is gone)")
-    func fivePercentGapIsASweep() throws {
-        // 120 against 126 bpm: the incoming plays at its own tempo, so the kicks would drift apart: thin the outgoing song.
-        let i = BT.inputs(b: BT.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, span: 0.1...236))
-        let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
-        #expect(plan.mode == .beat && plan.style == .filterSweep && !plan.floorAligned)
-        #expect(plan.incomingRate == 1)
-        #expect(plan.sweepFromHz > 0)
-    }
-
-    @Test("the floor's window is 0.75 percent: a pair at 0.7 percent is aligned, one at 0.9 percent and one at 8 percent are thinned")
+    @Test("the floor's window is 0.75 percent: a pair at 0.7 percent is aligned, one at 0.9 percent and one at 8 percent are handed over")
     func floorWindowEdge() throws {
         #expect(abs(MusicBeatPlanner.floorTempoError - 0.0075) < 1e-12)
         let edge = BT.inputs(b: BT.grid(period: 0.5 * 1.007, anchor: 0.1, phase: 1, span: 0.1...236))
@@ -280,8 +266,8 @@ struct MusicFloorBlendTests {
         #expect(matched.style == .longBlend && matched.floorAligned && matched.incomingRate == 1)
         for gap in [1.009, 1.08, 1.0919] {
             let i = BT.inputs(b: BT.grid(period: 0.5 * gap, anchor: 0.1, phase: 1, span: 0.1...236))
-            let thin = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
-            #expect(thin.style == .filterSweep && thin.incomingRate == 1 && !thin.floorAligned, "gap \(gap)")
+            let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
+            #expect(plan.style == .longBlend && plan.handsOverByEQ && plan.incomingRate == 1, "gap \(gap)")
         }
     }
 
@@ -296,7 +282,7 @@ struct MusicFloorBlendTests {
 
     // MARK: Review gate: an untrusted grid never sets the rate or the alignment
 
-    @Test("an untrusted grid on either side at a 5 percent gap: rate 1, no alignment, a sweep")
+    @Test("an untrusted grid on either side at a 5 percent gap: rate 1, no alignment, the quick handover")
     func untrustedGridNeverMatches() throws {
         let b126 = { (confidence: Float, spread: Float) in
             BT.grid(period: 60.0 / 126, anchor: 0.1, phase: 1, confidence: confidence, spread: spread, span: 0.1...236)
@@ -310,7 +296,7 @@ struct MusicFloorBlendTests {
         for i in cases {
             #expect(B.floorTempo(i) == nil && B.floorAlignment(i) == nil)
             let plan = try #require(B.floorBlendPlan(i, smart: Self.smart(i)))
-            #expect(plan.incomingRate == 1 && plan.floorAligned == false && plan.style == .filterSweep)
+            #expect(plan.incomingRate == 1 && plan.floorAligned == false && plan.handsOverByEQ && plan.fadeSeconds == 6)
         }
     }
 

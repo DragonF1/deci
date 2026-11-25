@@ -77,12 +77,14 @@ struct MusicStylePickerP2Tests {
         for signals in [far, falling, unknown] { #expect(!P.ranked(signals, previous: nil).contains(.filterSweep)) }
     }
 
-    @Test("a confident drop makes a drop swap the best pick after a blend; a weak or missing one does not")
+    @Test("a confident drop is what a pair is mixed for; a weak or missing one is not")
     func dropCandidate() {
         let strong = S(tempoError: 0.01, energyJump: 0.0, keyDistance: 0, gridTrusted: true, dropConfidence: 0.9)
-        #expect(P.ranked(strong, previous: .longBlend).contains(.dropSwap))
-        #expect(P.ranked(strong, previous: nil).first == .longBlend, "only a repeat sends a pristine blend away")
+        #expect(MusicMixIntent.pick(strong) == .drop)
+        #expect(P.pick(strong, previous: nil) == .dropSwap)
+        #expect(P.pick(strong, previous: .dropSwap) == .longBlend, "not twice running")
         var weak = strong; weak.dropConfidence = 0.2
+        #expect(MusicMixIntent.pick(weak) == .ride)
         var none = strong; none.dropConfidence = nil
         var untrusted = strong; untrusted.gridTrusted = false
         var clash = strong; clash.tempoError = 0.3

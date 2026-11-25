@@ -1,5 +1,5 @@
 // DeciTests/Music/MusicStyleNoRepeatTests.swift
-// Tier 4b P1: the planner asks the picker for every Mix pair and never repeats the style before it, grids or no grids.
+// Tier 4b P1: the planner asks the picker for every Mix pair and keeps from repeating the moves before it, grids or no grids.
 
 import Foundation
 import Testing
@@ -158,13 +158,15 @@ struct MusicStyleNoRepeatTests {
         }
     }
 
-    @Test("a run of pairs with a tempo clash is a thinned floor blend every time, never a cut or an echo")
+    @Test("a run of pairs with a tempo clash is handed over every time, never a cut or an echo away from a section end")
     func clashRun() {
-        var previous: MusicTransitionStyle?
+        var history = MusicMixHistory()
         for _ in 0..<4 {
-            let plan = MusicTransitionPlanner.plan(Self.clash(previous: previous))
-            #expect(plan.mode == .beat && plan.style == .filterSweep && plan.fadeSeconds >= 6)
-            previous = plan.style
+            var i = Self.clash(previous: nil)
+            i.history = history
+            let plan = MusicTransitionPlanner.plan(i)
+            #expect(plan.mode == .beat && plan.style == .longBlend && plan.handsOverByEQ && plan.intent == .tempoChange)
+            history.add(plan.style)
         }
     }
 }

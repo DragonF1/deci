@@ -11,6 +11,8 @@ nonisolated struct MusicMixHabits: Equatable, Sendable {
     var bonus: [MusicTransitionStyle: Double] = [:]
     /// A cut or an echo out is right at the end of a section in the middle of the song, where nothing has died down yet.
     var cutsOnSections = false
+    /// The two songs are known to be different kinds of music.
+    var changesGenre = false
 
     /// No habit at all: everything as it was before genres.
     static let neutral = MusicMixHabits()
@@ -42,6 +44,7 @@ nonisolated struct MusicMixHabits: Equatable, Sendable {
         }
         habits.cutsOnSections = sides.allSatisfy { !$0.isGuess && cutFriendly.contains($0.family) }
         if sides.allSatisfy({ !$0.isGuess && $0.family != .open }), out.family.group != into.family.group {
+            habits.changesGenre = true
             habits.bonus[.echoOut, default: 0] += 0.15
             habits.bonus[.quickCut, default: 0] += 0.1
             habits.bonus[.longBlend, default: 0] -= 0.15

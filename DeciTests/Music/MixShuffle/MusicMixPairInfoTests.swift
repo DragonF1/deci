@@ -92,36 +92,36 @@ struct MusicMixPairInfoTests {
         let b = MixRows.row("bbbbbbbbbbb", bpm: 90)
         let info = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(b))
         #expect(info.style != .quickCut && info.style != .echoOut)
-        let after = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(b), previousStyle: info.style)
+        let after = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(b), history: MusicMixHistory([info.style]))
         #expect(after.style != .quickCut && after.style != .echoOut)
     }
 
-    @Test("Up next glyphs chain down the queue: row i is chosen against row i-1, the first against the last applied style")
+    @Test("Up next glyphs chain down the queue: each row is chosen against the rows before it, the first against what was played")
     func chain() {
         let rows = [
             MixRows.row("aaaaaaaaaaa", bpm: 120), MixRows.row("bbbbbbbbbbb", bpm: 90),
             MixRows.row("ccccccccccc", bpm: 140), MixRows.row("ddddddddddd", bpm: 100),
         ]
         let sides = rows.map { Optional(MixRows.side($0)) }
-        let chain = MusicMixPairInfo.makeChain(sides: sides, lastApplied: nil).compactMap { $0 }
+        let chain = MusicMixPairInfo.makeChain(sides: sides, history: MusicMixHistory()).compactMap { $0 }
         #expect(chain.count == 3)
         // Tier 4c: tempo clashes blend; a style may repeat, so the chain only has to stay a blend (no cut or echo).
         for info in chain { #expect(info.style != .quickCut && info.style != .echoOut) }
-        let seeded = MusicMixPairInfo.makeChain(sides: sides, lastApplied: chain[0].style).compactMap { $0 }
+        let seeded = MusicMixPairInfo.makeChain(sides: sides, history: MusicMixHistory([chain[0].style])).compactMap { $0 }
         #expect(seeded.count == 3)
-        #expect(MusicMixPairInfo.makeChain(sides: [sides[0]], lastApplied: nil).isEmpty)
+        #expect(MusicMixPairInfo.makeChain(sides: [sides[0]], history: MusicMixHistory()).isEmpty)
     }
 
     @Test("A pair without an analysis row plays a plain fade, so the next row is planned against a long blend")
     func missingRow() {
         let a = MixRows.row("aaaaaaaaaaa", bpm: 120), c = MixRows.row("ccccccccccc", bpm: 90)
         let sides: [MusicTransitionSide?] = [MixRows.side(a), nil, MixRows.side(c)]
-        let result = MusicMixPairInfo.makeChain(sides: sides, lastApplied: .quickCut)
+        let result = MusicMixPairInfo.makeChain(sides: sides, history: MusicMixHistory([.quickCut]))
         #expect(result.count == 2 && result[0] == nil && result[1] == nil)
         let tail: [MusicTransitionSide?] = [nil, MixRows.side(a), MixRows.side(c)]
-        let seeded = MusicMixPairInfo.makeChain(sides: tail, lastApplied: .quickCut)
+        let seeded = MusicMixPairInfo.makeChain(sides: tail, history: MusicMixHistory([.quickCut]))
         #expect(seeded[0] == nil)
-        let direct = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(c), previousStyle: .longBlend)
+        let direct = MusicMixPairInfo.make(outgoing: MixRows.side(a), incoming: MixRows.side(c), history: MusicMixHistory([.longBlend]))
         #expect(seeded[1]?.style == direct.style)
     }
 }

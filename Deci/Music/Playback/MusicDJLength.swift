@@ -40,8 +40,9 @@ nonisolated enum MusicDJLength {
         var section: DJSection
     }
 
-    /// How far before and after an exit a floor blend may start (it looks for a beat and a gap between two sung lines).
-    static let floorSlack = -2.5...10.0
+    /// How far before and after an exit a floor blend may start (it looks for a beat and a gap between two sung lines, and a short
+    /// handover starts up to a bar early so the new song's "1" is the exit).
+    static let floorSlack = -3.4...10.0
 
     /// The places to leave the outgoing song, best first, at most one a source. Empty when the plan must stay as it is: it is off,
     /// a rule keeps the pair from mixing, the song has no second chorus, hook or drop in the window, less than `minPlayedSec` would

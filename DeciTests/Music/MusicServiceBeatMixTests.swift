@@ -164,7 +164,7 @@ struct MusicServiceBeatMixTests {
         await h.tick(126)
         await h.tick(222)
         let plan = try #require(h.lastPlan)
-        #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.fadeSeconds >= 6)
+        #expect(plan.mode == .beat && plan.overlapBars == 0 && plan.fadeSeconds >= MusicBeatPlanner.handoverMinSec)
         // wjyijr: the incoming song always plays at rate 1.
         #expect(plan.incomingRate == 1)
     }

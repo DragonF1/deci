@@ -38,16 +38,10 @@ struct MusicTransitionStyleTests {
         }
     }
 
-    @Test("a repeat is marked down, not removed: a long blend repeats freely, a cut loses twice as much")
-    func repeatPenalty() {
-        #expect(P.penalty(.longBlend, previous: .longBlend) == 0)
-        #expect(P.penalty(.loopExtend, previous: .loopExtend) == 0)
-        #expect(P.penalty(.filterSweep, previous: .filterSweep) == P.repeatPenalty)
-        #expect(P.penalty(.quickCut, previous: .quickCut) == 2 * P.repeatPenalty)
-        #expect(P.penalty(.echoOut, previous: .echoOut) == 2 * P.repeatPenalty)
-        #expect(P.penalty(.quickCut, previous: .longBlend) == 0)
-        #expect(P.penalty(.quickCut, previous: nil) == 0)
+    @Test("a blend follows a blend when nothing else fits")
+    func blendFollowsBlend() {
         #expect(P.pick(S(tempoError: 0.0), previous: .longBlend) == .longBlend)
+        #expect(P.pick(S(tempoError: 0.0), history: MusicMixHistory(Array(repeating: .longBlend, count: 8))) == .longBlend)
     }
 
     @Test("the picker is deterministic")
@@ -104,26 +98,26 @@ struct MusicTransitionStyleTests {
         for style in [MusicTransitionStyle.quickCut, .echoOut] {
             #expect(P.suits(style, at(rap)))
             #expect(!P.suits(style, at(rap, exit: false)), "at its own end a cut still needs a hard ending")
-            #expect(!P.suits(style, at(rap, error: 0.2)), "the tempos clash")
+            #expect(P.suits(style, at(rap, error: 0.2)) == (style == .echoOut), "only an echo gets across a tempo clash")
             #expect(!P.suits(style, at(rap, error: nil)), "a tempo is unknown")
             #expect(!P.suits(style, at(rap, phrase: false)), "not at the end of a phrase")
             #expect(!P.suits(style, at(house)))
+            #expect(P.suits(style, at(house, error: 0.2)) == (style == .echoOut))
+            #expect(!P.suits(style, at(house, exit: false, error: 0.2)) && !P.suits(style, at(house, error: 0.2, phrase: false)))
+            let loose = S(tempoError: 0.2, habits: house, atDJExit: true, mixOutOnPhrase: true)
+            #expect(!P.suits(style, loose), "a grid that is not trusted")
         }
         #expect(P.pick(at(rap), previous: .longBlend).isCutLike)
         #expect(P.pick(at(house), previous: .longBlend) == .longBlend)
     }
 
-    @Test("a cut or an echo out after either of the two loses twice the repeat penalty")
+    @Test("a cut or an echo out never comes right after either of the two")
     func cutsDoNotPile() {
         let rap = Self.habits(.hipHop, .hipHop)
         let here = S(tempoError: 0.02, gridTrusted: true, habits: rap, atDJExit: true, mixOutOnPhrase: true)
         for previous in [MusicTransitionStyle.quickCut, .echoOut] {
-            #expect(P.penalty(.quickCut, previous: previous) == 2 * P.repeatPenalty)
-            #expect(P.penalty(.echoOut, previous: previous) == 2 * P.repeatPenalty)
             #expect(!P.pick(here, previous: previous).isCutLike)
         }
-        #expect(P.penalty(.filterSweep, previous: .filterSweep) == P.repeatPenalty)
-        #expect(P.penalty(.longBlend, previous: .longBlend) == 0)
     }
 
     @Test("a loop extend still beats the blend it replaces, whatever the genres")
@@ -134,13 +128,14 @@ struct MusicTransitionStyleTests {
         }
     }
 
-    @Test("the planner turns a tempo clash into a floor blend: beat mode, 6 to 8 s, a bass swap, no cut")
+    @Test("the planner hands a tempo clash over in a few bars: beat mode, a bass swap, no cut")
     func plannerClash() throws {
         for previous in [nil] + MusicTransitionStyle.allCases.map(Optional.some) {
             let plan = MusicTransitionPlanner.plan(Self.clash(previous: previous))
             #expect(plan.mode == .beat)
             #expect(plan.style != .quickCut && plan.style != .echoOut)
-            #expect(plan.fadeSeconds >= 6 && plan.incomingRate == 1)
+            #expect(plan.fadeSeconds >= MusicBeatPlanner.handoverMinSec && plan.incomingRate == 1)
+            #expect(plan.handsOverByEQ || plan.style == .filterSweep)
             #expect(plan.bassSwapAtSec != nil)
             #expect(plan.mixOutSec != nil && plan.mixInSec != nil)
         }
@@ -196,6 +191,12 @@ struct MusicTransitionStyleTests {
         #expect(MusicTransitionLog.styleLine(from: "a", to: "b", style: .quickCut, reason: nil, previous: nil)
             == "transition_style from=a to=b style=quickCut reason=none prev=none")
         #expect(!line.contains("\u{2014}"))
+        func why(_ intent: MusicMixIntent?, _ variety: Bool) -> String {
+            MusicTransitionLog.styleLine(from: "a", to: "b", style: .dropSwap, reason: nil, previous: nil, intent: intent, forVariety: variety)
+        }
+        #expect(why(.lift, false).hasSuffix(" prev=none why=lift"))
+        #expect(why(.lift, true).hasSuffix(" prev=none why=lift,variety"))
+        #expect(why(nil, false).hasSuffix(" prev=none"))
     }
 
     // MARK: Low-confidence pairs (follow-up 1), Tier 4c rule

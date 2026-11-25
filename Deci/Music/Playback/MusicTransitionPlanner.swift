@@ -93,6 +93,12 @@ struct TransitionPlan: Equatable, Sendable {
     /// What the incoming song gets going with, when it starts past its intro.
     var djEntry: MusicDJEntry.Kind? = nil
 
+    /// The tempos do not meet: the EQ takes the outgoing song away early so two drum parts are hardly heard together.
+    var handsOverByEQ = false
+    /// What the mix is for, and whether another move would have been picked but for the last few transitions. nil outside Mix.
+    var intent: MusicMixIntent? = nil
+    var forVariety = false
+
     /// The mid and high moves of both decks across the overlap. nil on every plan without a blend.
     var mixEQ: MusicMixEQPlan? = nil
 
@@ -146,8 +152,13 @@ struct MusicTransitionInputs: Equatable, Sendable {
     var earliestMixOutSec: Double? = nil
     /// Tier 3c: keep two singers from overlapping in a mix. Off keeps every plan exactly as it was.
     var vocalGuardEnabled: Bool = false
-    /// Tier 4b: the style the last applied transition used (the picker never repeats it). nil = none yet.
-    var previousStyle: MusicTransitionStyle? = nil
+    /// The last few applied transitions, which the picker keeps from repeating.
+    var history = MusicMixHistory()
+    /// The style of the last one. nil = none yet. Setting it forgets the ones before.
+    var previousStyle: MusicTransitionStyle? {
+        get { history.previous }
+        set { history = MusicMixHistory(newValue.map { [$0] } ?? []) }
+    }
     /// Tier 4b P2b: the incoming song plays from a file on this Mac (the track cache or a download), so its intro may be
     /// looped and its tempo matched.
     var incomingLocal: Bool = false
@@ -168,11 +179,11 @@ struct MusicTransitionInputs: Equatable, Sendable {
         settingSeconds: Double, albumInOrder: Bool = false, loopSong: Bool = false,
         cleanStartFlag: Bool = false, cleanPairFlag: Bool = false, manualSkip: Bool = false,
         beatMixEnabled: Bool = true, bassSwapAvailable: Bool = false, vocalGuardEnabled: Bool = false,
-        previousStyle: MusicTransitionStyle? = nil, incomingLocal: Bool = false,
+        previousStyle: MusicTransitionStyle? = nil, history: MusicMixHistory? = nil, incomingLocal: Bool = false,
         djLength: Bool = false
     ) {
         self.djLength = djLength
-        self.previousStyle = previousStyle
+        self.history = history ?? MusicMixHistory(previousStyle.map { [$0] } ?? [])
         self.incomingLocal = incomingLocal
         self.outgoing = outgoing
         self.incoming = incoming
@@ -263,27 +274,39 @@ enum MusicTransitionPlanner {
 
     private static func basePlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan {
         guard inputs.beatMixEnabled, smart.mode == .smart else { return vocalGuarded(smart, inputs) }
-        let beat = MusicBeatPlanner.plan(inputs, smart: smart)
-        let previous = inputs.previousStyle
-        // Tier 4c: every Mix pair gets a blend. The picker ranks the styles that suit the pair (a cut or an echo only a hard
-        // ending, matching tempos and a phrase end); the beat-matched blend is one of them. When none can be built (a tempo, a
-        // grid, a phrase or two singers refused it) the floor blend comes last and is never refused: the smart fade is only
-        // left for a pair too short to hold a 6 s overlap.
         // Tier 4b P2b: an intro too short for the overlap can be looped; then loop extend is a candidate.
         let loop = MusicBeatPlanner.loopExtendPlan(inputs, smart: smart)
         var signals = MusicTransitionStylePicker.inputs(for: inputs)
         signals.loopFits = loop != nil
+        let ranked = MusicTransitionStylePicker.ranked(signals, history: inputs.history)
+        var plan = rankedPlan(inputs, smart: smart, loop: loop, ranked: ranked)
+        guard plan.mode == .beat else { return plan }
+        plan.intent = MusicMixIntent.pick(signals)
+        plan.forVariety = plan.style == ranked.first
+            && plan.style != MusicTransitionStylePicker.pick(signals, history: MusicMixHistory())
+        return plan
+    }
+
+    /// The first of the `ranked` styles that can be built, else the floor of every Mix transition.
+    private static func rankedPlan(
+        _ inputs: MusicTransitionInputs, smart: TransitionPlan, loop: TransitionPlan?, ranked: [MusicTransitionStyle]
+    ) -> TransitionPlan {
+        let beat = MusicBeatPlanner.plan(inputs, smart: smart)
+        // Tier 4c: every Mix pair gets a blend. The picker ranks the styles that suit the pair (a cut or an echo only a hard
+        // ending, matching tempos and a phrase end); the beat-matched blend is one of them. When none can be built (a tempo, a
+        // grid, a phrase or two singers refused it) the floor blend comes last and is never refused: the smart fade is only
+        // left for a pair too short to hold a 6 s overlap.
         func finish(_ built: TransitionPlan) -> TransitionPlan {
             var plan = built
             plan.fallbackReason = beat.mode == .beat ? nil : beat.fallbackReason
             if beat.mode != .beat { plan.gridFail = beat.gridFail }
             return plan
         }
-        for style in MusicTransitionStylePicker.ranked(signals, previous: previous) {
+        for style in ranked {
             // The beat-matched blend, or (when the beat planner refused) the floor blend below.
             if style == .longBlend {
                 if beat.mode == .beat { return beat }
-                // The beat planner refused: the long blend is still the default, as the floor blend (thinned only when the tempos clash).
+                // The beat planner refused: the long blend is still the default, as the floor blend (a short handover when the tempos clash).
                 if let floor = MusicBeatPlanner.floorBlendPlan(inputs, smart: smart) { return finish(floor) }
                 continue
             }
@@ -306,7 +329,7 @@ enum MusicTransitionPlanner {
         // A song too short for the floor blend: the guarded smart fade stays, and the log says it repeats because there was
         // no alternative.
         var out = legacyPlan(inputs, smart: smart, beat: beat)
-        if previous == .longBlend { out.fallbackReason = out.fallbackReason ?? MusicTransitionStylePicker.noAlternative }
+        if inputs.previousStyle == .longBlend { out.fallbackReason = out.fallbackReason ?? MusicTransitionStylePicker.noAlternative }
         return out
     }
 

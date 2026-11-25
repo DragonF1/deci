@@ -26,6 +26,10 @@ nonisolated struct MusicMixEQPlan: Equatable, Sendable {
     static let outgoingMidEnd = 0.5
     /// Where the outgoing highs go after that, -8 dB.
     static let outgoingHighEnd = 0.4
+    /// The same at tempos that do not meet, -12 and -14 dB: the outgoing drums are out of the way as the new bass lands.
+    static let handoverMidEnd = 0.25
+    static let handoverHighEnd = 0.2
+    static let handoverSec = 0.2
     /// The mids of the song that gives way to the other's voice, -14 dB.
     static let carveGain = 0.2
     /// How fast a carve closes and opens again.
@@ -58,7 +62,11 @@ nonisolated struct MusicMixEQPlan: Equatable, Sendable {
         var out = MusicMixEQPlan()
         let baseIn = [Move(at: midStart, gain: incomingMidStart), Move(at: midOpen, gain: 1)]
         var baseOut: [Move] = []
-        if !sweeps {
+        if plan.handsOverByEQ {
+            let turn = min(max(plan.bassHandoverSec, handoverSec), owner / 2)
+            baseOut = [Move(at: owner - turn, gain: 1), Move(at: owner, gain: handoverMidEnd)]
+            out.outgoingHigh = [Move(at: owner - turn, gain: 1), Move(at: min(length, owner + turn), gain: handoverHighEnd)]
+        } else if !sweeps {
             // The high-pass of a sweep already takes the outgoing song away from below.
             baseOut = [Move(at: on(owner * 0.75), gain: 1), Move(at: on(owner + (length - owner) / 4), gain: outgoingMidEnd)]
             out.outgoingHigh = [

@@ -32,11 +32,11 @@ nonisolated struct MusicMixPairInfo: Equatable, Sendable {
     @MainActor
     static func make(
         outgoing: MusicTransitionSide, incoming: MusicTransitionSide, settingSeconds: Double = 6, beatMixEnabled: Bool = true,
-        previousStyle: MusicTransitionStyle? = nil
+        history: MusicMixHistory = MusicMixHistory()
     ) -> MusicMixPairInfo {
         let inputs = MusicTransitionInputs(
             outgoing: outgoing, incoming: incoming, crossfadeOn: true, settingSeconds: settingSeconds,
-            beatMixEnabled: beatMixEnabled, bassSwapAvailable: true, previousStyle: previousStyle
+            beatMixEnabled: beatMixEnabled, bassSwapAvailable: true, history: history
         )
         let plan = MusicTransitionPlanner.plan(inputs)
         let row = incoming.analysis
@@ -47,29 +47,30 @@ nonisolated struct MusicMixPairInfo: Equatable, Sendable {
         )
     }
 
-    /// The Up next chain: row i is planned with row i-1's style as its previous one, and row 0 with `lastApplied`, the
-    /// style of the transition that is playing now. `sides[0]` is the playing song, so `sides.count - 1` entries come back.
+    /// The Up next chain: row 0 is planned with `history`, the transitions that were played, and every row after it with the
+    /// styles of the rows before it on top. It knows no DJ exits, so a move that only comes up at one is not shown.
+    /// `sides[0]` is the playing song, so `sides.count - 1` entries come back.
     /// A nil side (no analysis row yet) gives a nil entry: that pair plays a plain fade, a long blend, so the next row is
     /// planned against `.longBlend`.
     @MainActor
     static func makeChain(
-        sides: [MusicTransitionSide?], lastApplied: MusicTransitionStyle?, settingSeconds: Double = 6, beatMixEnabled: Bool = true
+        sides: [MusicTransitionSide?], history: MusicMixHistory, settingSeconds: Double = 6, beatMixEnabled: Bool = true
     ) -> [MusicMixPairInfo?] {
         guard sides.count >= 2 else { return [] }
-        var previous = lastApplied
+        var history = history
         var out: [MusicMixPairInfo?] = []
         for index in 1..<sides.count {
             guard let outgoing = sides[index - 1], let incoming = sides[index] else {
                 out.append(nil)
-                previous = .longBlend
+                history.add(.longBlend)
                 continue
             }
             let info = make(
                 outgoing: outgoing, incoming: incoming, settingSeconds: settingSeconds,
-                beatMixEnabled: beatMixEnabled, previousStyle: previous
+                beatMixEnabled: beatMixEnabled, history: history
             )
             out.append(info)
-            previous = info.style
+            history.add(info.style)
         }
         return out
     }

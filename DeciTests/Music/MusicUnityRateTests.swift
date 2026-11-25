@@ -218,28 +218,27 @@ struct MusicUnityRateTests {
         #expect(max(abs(start), abs(end)) <= B.maxBeatDriftSec + 1e-6)
     }
 
-    @Test("the logged pair, 120 against 118.3 bpm (1.44 percent), gets no main beat blend: tempoClash, and a rate-1 filter sweep floor")
-    func loggedPairIsASweep() throws {
+    @Test("the logged pair, 120 against 118.3 bpm (1.44 percent), gets no main beat blend: tempoClash, and a rate-1 handover")
+    func loggedPairIsHandedOver() throws {
         let i = Self.pair(120, 118.3)
         let smart = MusicTransitionPlanner.smartPlan(i)
         let plan = B.plan(i, smart: smart)
         #expect(plan.mode != .beat && plan.fallbackReason == "tempoClash", "plan: \(plan.mode) \(plan.fallbackReason ?? "nil")")
         let floor = try #require(B.floorBlendPlan(i, smart: smart))
-        #expect(floor.mode == .beat && floor.style == .filterSweep && floor.incomingRate == 1 && !floor.floorAligned)
-        #expect(floor.sweepFromHz > 0)
-        // What the transition planner hands the engine is that sweep.
+        #expect(floor.mode == .beat && floor.style == .longBlend && floor.incomingRate == 1 && floor.handsOverByEQ)
+        // What the transition planner hands the engine is that.
         let final = MusicTransitionPlanner.plan(i)
-        #expect(final.mode == .beat && final.style == .filterSweep && final.incomingRate == 1)
+        #expect(final.mode == .beat && final.handsOverByEQ && final.incomingRate == 1)
     }
 
-    @Test("the floor's tempo window is 0.75 percent: 0.5 percent is an aligned blend, 1 percent a sweep")
+    @Test("the floor's tempo window is 0.75 percent: 0.5 percent is an aligned blend, 1 percent a handover")
     func floorWindow() throws {
         #expect(abs(B.floorTempoError - 0.0075) < 1e-12)
         let near = Self.pair(120, 120 / 1.005)
         let aligned = try #require(B.floorBlendPlan(near, smart: MusicTransitionPlanner.smartPlan(near)))
-        #expect(aligned.style == .longBlend && aligned.floorAligned && aligned.incomingRate == 1)
+        #expect(aligned.style == .longBlend && aligned.floorAligned && !aligned.handsOverByEQ && aligned.incomingRate == 1)
         let far = Self.pair(120, 120 / 1.01)
-        let sweep = try #require(B.floorBlendPlan(far, smart: MusicTransitionPlanner.smartPlan(far)))
-        #expect(sweep.style == .filterSweep && !sweep.floorAligned && sweep.incomingRate == 1)
+        let handover = try #require(B.floorBlendPlan(far, smart: MusicTransitionPlanner.smartPlan(far)))
+        #expect(handover.style == .longBlend && handover.handsOverByEQ && handover.incomingRate == 1)
     }
 }

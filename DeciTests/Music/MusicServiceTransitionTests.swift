@@ -73,10 +73,10 @@ private struct TransitionHarness {
         )
     }
 
-    /// The first worked example: A ends at 197 with a 12 s outro, B opens at 0.5 s with an 8 s intro.
+    /// A ends at 197 with a 12 s outro, B opens at 0.5 s with an intro no longer than the handover, so it is entered at its trim.
     func standardRows(bLufs: Double = -14) async {
         await reader.set(Self.row("a", silenceEnd: 197, outroStart: 185))
-        await reader.set(Self.row("b", silenceStart: 0.5, introEnd: 8, lufs: bLufs))
+        await reader.set(Self.row("b", silenceStart: 0.5, introEnd: 6, lufs: bLufs))
     }
 
     func settle() async {
@@ -148,10 +148,10 @@ struct MusicServiceTransitionTests {
 
         #expect(h.engine.preloads.count == 1)
         let plan = try #require(h.lastPlan)
-        // Tier 4c: Mix never falls back to the plain smart fade; with no grids this is a gridless 8 s floor blend from the smart start.
+        // Tier 4c: Mix never falls back to the plain smart fade; with no grids and no known quiet edge this is a 6 s handover.
         #expect(plan.mode == .beat)
         #expect(plan.incomingStartSec == 0.5)
-        #expect(plan.fadeSeconds == 8)
+        #expect(plan.fadeSeconds == 6)
         #expect(plan.fadeStartSec == 185)
         #expect(plan.incomingRate == 1)
         // The radio scan may log its own line first (Mix on a radio queue): the plan line is the one looked at.
@@ -375,6 +375,7 @@ struct MusicServiceTransitionTests {
 
         #expect(h.player.nowPlaying?.videoId == "b")
         #expect(h.player.currentTime == 0.5)
+        #expect(h.service.mixHistory == MusicMixHistory([.longBlend]), "the mix counts for the next pick")
     }
 
     @Test("a hand-over without a plan still starts at 0")

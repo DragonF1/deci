@@ -116,9 +116,11 @@ final class MusicService {
     /// Each shown song's own tempo and key line, by video id, from its stored row. Kept apart from `mixPairs`: a song whose
     /// row lands after a song with none gets no pair, but its line still has to appear. Empty unless `showsMixInfo`.
     private(set) var mixRowTexts: [String: String] = [:]
-    /// Tier 4b: the style of the last transition that was applied. The picker never repeats it, and the first Up next glyph
-    /// is chosen against it.
-    private(set) var lastAppliedStyle: MusicTransitionStyle?
+    /// The transitions that were applied, so the picker keeps from repeating a move. The first Up next glyph is chosen against it.
+    /// Empty unless Mixing is on.
+    private(set) var mixHistory = MusicMixHistory()
+    /// Tier 4b: the style of the last one.
+    var lastAppliedStyle: MusicTransitionStyle? { mixHistory.previous }
     /// Tier 4c: the rate the playing deck keeps for its whole song (the applied Mix plan's incoming rate; 1 after a skip, a
     /// load or a plain start). Read from the engine, which resets it on every one of those, so it cannot go stale.
     var activeDeckRate: Double { player.deckRate }
@@ -1808,7 +1810,7 @@ final class MusicService {
         // A missing analysis row gives a plain fade (a long blend) for that pair.
         let sides: [MusicTransitionSide?] = chain.map { song in mixRows[song.videoId].map { mixSide(song, row: $0) } }
         let infos = MusicMixPairInfo.makeChain(
-            sides: sides, lastApplied: lastAppliedStyle, settingSeconds: crossfadeSeconds, beatMixEnabled: isBeatMixOn
+            sides: sides, history: mixHistory, settingSeconds: crossfadeSeconds, beatMixEnabled: isBeatMixOn
         )
         for (index, info) in infos.enumerated() {
             guard let info else { continue }
@@ -2260,13 +2262,13 @@ final class MusicService {
     }
 
     /// The Transitions button in Up next. Off is the gapless switch; a fade already running finishes, and the next
-    /// transition follows the new mode. Leaving Mixing drops what only Mixing keeps (the last applied style); the parked
+    /// transition follows the new mode. Leaving Mixing drops what only Mixing keeps (the applied styles); the parked
     /// plan is built again for the new mode.
     func setTransitionMode(_ mode: MusicTransitionMode) {
         guard mode != transitionMode else { return }
         transitionMode = mode
         if !isMixingOn {
-            lastAppliedStyle = nil
+            mixHistory = MusicMixHistory()
             if !showsMixInfo { clearMixInfo() }
         }
         savePlaybackPreferences()
@@ -2672,7 +2674,12 @@ final class MusicService {
         // What the engine really ran: a plan it downgraded (late, given up, off the grid, no echo path) was a plain fade.
         let planned = offeredPlan?.plan.style
         let ran = player.lastTransitionStyle ?? planned ?? .longBlend
-        lastAppliedStyle = isBeatMixOn ? ran : nil
+        // A gapless join (an album in order, a song on repeat) is no mix: what the set has heard stays as it was.
+        if !isBeatMixOn {
+            mixHistory = MusicMixHistory()
+        } else if let mode = offeredPlan?.plan.mode, mode != .gapless, mode != .clean {
+            mixHistory.add(ran)
+        }
         if let applied = offeredPlan {
             let reason = ran == planned ? applied.plan.fallbackReason : "engineDowngrade"
             if applied.plan.djSection != nil || applied.plan.djEntry != nil, ran == planned, player.lastTransitionOnGrid != false,
@@ -2682,10 +2689,11 @@ final class MusicService {
                     outAt: out, entry: applied.plan.djEntry, inAt: applied.plan.mixInSec
                 ))
             }
-            if ran != .longBlend || planned != .longBlend || reason == MusicTransitionStylePicker.noAlternative {
+            let intent = ran == planned ? applied.plan.intent : nil
+            if ran != .longBlend || planned != .longBlend || intent != nil || reason == MusicTransitionStylePicker.noAlternative {
                 log(MusicTransitionLog.styleLine(
                     from: applied.inputs.outgoing.videoId, to: applied.inputs.incoming.videoId, style: ran,
-                    reason: reason, previous: applied.inputs.previousStyle
+                    reason: reason, previous: applied.inputs.previousStyle, intent: intent, forVariety: applied.plan.forVariety
                 ))
             }
         }
@@ -2744,8 +2752,8 @@ final class MusicService {
             player.updateTransitionPlan(skipPlan)
         }
         guard player.crossfadeToPreloaded(seconds: Self.quickFadeSeconds) else { return false }
-        // The skip played a quick plain fade.
-        lastAppliedStyle = isBeatMixOn ? (player.lastTransitionStyle ?? .longBlend) : nil
+        // The skip played a quick plain fade, which is not a mix: what the set has heard stays as it was.
+        if !isBeatMixOn { mixHistory = MusicMixHistory() }
         preloadOffered = nil
         offeredPlan = nil
         startAdvancedSession(stream: stream, adopting: { self.player.adoptPreloaded() })
@@ -3685,7 +3693,7 @@ final class MusicService {
             crossfadeOn: mixesTransitions, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
             manualSkip: false, beatMixEnabled: isBeatMixOn && beatFallbackFor != next.videoId,
-            bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn, previousStyle: lastAppliedStyle,
+            bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn, history: mixHistory,
             incomingLocal: MusicLoopExtend.isLocal(preloadStream(for: next).origin),
             djLength: isDJLengthOn
         )

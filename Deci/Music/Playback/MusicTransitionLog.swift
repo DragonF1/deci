@@ -89,6 +89,7 @@ enum MusicTransitionLog {
             + " mixOut=\(fixed(plan.mixOutSec ?? 0, 2)) mixIn=\(fixed(plan.mixInSec ?? 0, 2))"
             + " swapAt=\(swap) handover=\(fixed(plan.bassHandoverSec, 2))"
             + (plan.floorAligned ? " aligned=1" : "")
+            + (plan.handsOverByEQ ? " byEQ=1" : "")
             + (plan.stretchRate != 1 ? " stretch=\(fixed(plan.stretchRate, 4)) glide=\(plan.stretchGlideBars)" : "")
     }
 
@@ -141,9 +142,16 @@ enum MusicTransitionLog {
         return text.hasPrefix("-") && Double(text) == 0 ? String(text.dropFirst()) : text
     }
 
-    /// Tier 4b: which style a planned or applied transition used. Ids and plain words only.
-    static func styleLine(from: String, to: String, style: MusicTransitionStyle, reason: String?, previous: MusicTransitionStyle?) -> String {
-        "transition_style from=\(from) to=\(to) style=\(style.rawValue) reason=\(reason ?? "none") prev=\(previous?.rawValue ?? "none")"
+    /// Tier 4b: which style a planned or applied transition used, and why: what the pair asked for, and `variety` when the last few
+    /// transitions tipped it. Ids and plain words only.
+    static func styleLine(
+        from: String, to: String, style: MusicTransitionStyle, reason: String?, previous: MusicTransitionStyle?,
+        intent: MusicMixIntent? = nil, forVariety: Bool = false
+    ) -> String {
+        let line = "transition_style from=\(from) to=\(to) style=\(style.rawValue) reason=\(reason ?? "none")"
+            + " prev=\(previous?.rawValue ?? "none")"
+        guard let intent else { return line }
+        return line + " why=\(intent.rawValue)" + (forVariety ? ",variety" : "")
     }
 
     /// transition_dj from=<id> to=<id> section=chorus2 outAt=123.40, and entry=verse inAt=12.30 when the incoming song came in

@@ -65,7 +65,7 @@ private struct MixHarness {
     func standardRows(bLufs: Double = -14) async {
         await reader.set(MusicTransitionPlannerTests.analysis("a", duration: 200, silenceEnd: 197, outroStart: 185))
         await reader.set(
-            MusicTransitionPlannerTests.analysis("b", duration: 200, silenceStart: 0.5, introEnd: 8, lufs: bLufs)
+            MusicTransitionPlannerTests.analysis("b", duration: 200, silenceStart: 0.5, introEnd: 6, lufs: bLufs)
         )
     }
 
@@ -206,6 +206,11 @@ struct MusicServiceMixFlagTests {
         #expect(plan.outgoingEndSec == 197)
         #expect(h.engine.preloads.count == 1)
         #expect(h.engine.cancelPreloadCount == cancels)
+
+        h.engine.advance()
+        await h.settle()
+        #expect(h.player.nowPlaying?.videoId == "b")
+        #expect(h.service.mixHistory == MusicMixHistory(), "a gapless join is no mix")
     }
 
     @Test("unflagging while a preload is parked restores mixing")
