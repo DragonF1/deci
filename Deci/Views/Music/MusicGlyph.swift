@@ -1,21 +1,47 @@
 // Deci/Views/Music/MusicGlyph.swift
 import SwiftUI
 
-/// The glyph of a playback control by name: an SF Symbol, or our own drawing for `MusicTransitionMode.crossfadeSymbol`.
+/// The glyph of a playback control by name: an SF Symbol, or our own drawing for `MusicTransitionMode.crossfadeSymbol` and
+/// `MusicShuffleMode.flowSymbol`.
 struct MusicGlyph: View {
     let name: String
     let fontSize: CGFloat
     let weight: Font.Weight
 
     /// The name stands for a drawing of ours, not an SF Symbol.
-    nonisolated static func isCustom(_ name: String) -> Bool { name == MusicTransitionMode.crossfadeSymbol }
+    nonisolated static func isCustom(_ name: String) -> Bool {
+        name == MusicTransitionMode.crossfadeSymbol || name == MusicShuffleMode.flowSymbol
+    }
 
     var body: some View {
-        if Self.isCustom(name) {
-            MusicCrossfadeGlyph(fontSize: fontSize, weight: weight)
-        } else {
-            Image(systemName: name).font(.system(size: fontSize, weight: weight))
+        switch name {
+        case MusicTransitionMode.crossfadeSymbol: MusicCrossfadeGlyph(fontSize: fontSize, weight: weight)
+        case MusicShuffleMode.flowSymbol: MusicFlowShuffleGlyph(fontSize: fontSize, weight: weight)
+        default: Image(systemName: name).font(.system(size: fontSize, weight: weight))
         }
+    }
+}
+
+/// The Flow Shuffle icon in the foreground style: the shuffle glyph with a sparkle past its top right corner. The sparkle
+/// takes no room in the layout, so the arrows stay where they are when the button goes from Shuffle to Flow Shuffle.
+struct MusicFlowShuffleGlyph: View {
+    let fontSize: CGFloat
+    let weight: Font.Weight
+
+    nonisolated static let sparkleSymbol = "sparkle"
+
+    /// What puts arrows and sparkle together in the middle, for a place with an edge close around the glyph.
+    nonisolated static func centering(fontSize: CGFloat) -> CGSize { CGSize(width: -fontSize * 0.21, height: fontSize * 0.16) }
+
+    var body: some View {
+        Image(systemName: MusicShuffleMode.symbol)
+            .font(.system(size: fontSize, weight: weight))
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: Self.sparkleSymbol)
+                    .font(.system(size: fontSize * 0.52, weight: .bold))
+                    .offset(x: fontSize * 0.34, y: -fontSize * 0.30)
+            }
+            .accessibilityHidden(true)
     }
 }
 

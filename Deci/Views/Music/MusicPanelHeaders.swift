@@ -233,6 +233,7 @@ private struct MusicPlaybackToggleButton: View {
     var body: some View {
         Button(action: action) {
             MusicGlyph(name: symbol, fontSize: 13, weight: .regular)
+                .offset(symbol == MusicShuffleMode.flowSymbol ? MusicFlowShuffleGlyph.centering(fontSize: 13) : .zero)
                 .foregroundStyle(isOn ? accent.solid : Color.white.opacity(isHovered ? 0.75 : 0.50))
                 .frame(width: 26, height: 22)
                 .background(

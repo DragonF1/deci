@@ -27,15 +27,17 @@ import Testing
         #expect(MusicShuffleMode.flow.title == "Flow Shuffle")
     }
 
-    @Test("Flow Shuffle's glyph is the curved path and exists on this system")
+    @Test("Flow Shuffle's glyph is our own, made of two SF Symbols this system has")
     func flowGlyph() {
-        #expect(MusicShuffleMode.flowSymbol == "point.topleft.down.to.point.bottomright.curvepath")
-        #expect(NSImage(systemSymbolName: MusicShuffleMode.flowSymbol, accessibilityDescription: nil) != nil)
+        #expect(MusicGlyph.isCustom(MusicShuffleMode.flowSymbol))
+        for part in [MusicShuffleMode.symbol, MusicFlowShuffleGlyph.sparkleSymbol] {
+            #expect(NSImage(systemSymbolName: part, accessibilityDescription: nil) != nil)
+        }
     }
 
     /// The plain shuffle glyph has always been wider than its 13 pt box (about 17 pt at the slot's 12 pt medium) and
     /// spills a little into the gaps on either side, so the bound is that room: no mode's glyph is wider than the plain
-    /// one, and its spill stays well short of the button next to it.
+    /// one, and its spill stays well short of the button next to it. (Flow Shuffle's sparkle: `MusicGlyphTests`.)
     @Test("every shuffle glyph fits the room the shuffle slot has at the row's size")
     func shuffleGlyphsFitTheSlot() throws {
         let box = MusicTransportMetrics.box(.shuffle)
@@ -46,7 +48,7 @@ import Testing
             return try #require(base.withSymbolConfiguration(config)).size
         }
         let plain = try size(MusicShuffleMode.symbol)
-        for mode in MusicShuffleMode.allCases {
+        for mode in MusicShuffleMode.allCases where !MusicGlyph.isCustom(mode.symbol) {
             let glyph = try size(mode.symbol)
             #expect(glyph.width <= plain.width + 1, "\(mode) is \(glyph.width) pt wide, the shuffle glyph \(plain.width) pt")
             #expect((glyph.width - box) / 2 <= gap / 2, "\(mode) spills past half the \(gap) pt gap")
@@ -78,7 +80,7 @@ import Testing
 
     @Test("every SF Symbol the shuffle and Transitions UI draws exists on this system")
     func glyphsExist() {
-        let names = [MusicShuffleMode.symbol, MusicShuffleMode.flowSymbol, MusicTransitionMode.mixingSymbol]
+        let names = [MusicShuffleMode.symbol, MusicFlowShuffleGlyph.sparkleSymbol, MusicTransitionMode.mixingSymbol]
         for name in names {
             #expect(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil, "\(name) is not an SF Symbol")
         }

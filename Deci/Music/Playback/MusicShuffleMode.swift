@@ -21,8 +21,8 @@ nonisolated enum MusicShuffleMode: String, CaseIterable, Sendable {
     /// The plain glyph of Off and Shuffle.
     static let symbol = "shuffle"
 
-    /// Flow Shuffle's glyph, a path that bends from one point to the next (every macOS the app runs on has it).
-    static let flowSymbol = "point.topleft.down.to.point.bottomright.curvepath"
+    /// Flow Shuffle's glyph, the plain one with a sparkle. Not an SF Symbol: `MusicGlyph` puts the two together for this name.
+    static let flowSymbol = "deci.flowShuffle"
 
     /// What the button is called for VoiceOver and the tooltip.
     var title: String { self == .flow ? "Flow Shuffle" : "Shuffle" }
