@@ -44,6 +44,13 @@ struct HUDThresholdTests {
         #expect(hud.waveIconNameForTest == "speaker.fill")
     }
 
+    @Test("The classic tile speaks the app's name with its level, and only the level for the device")
+    func classicAppName() {
+        #expect(ClassicStyleHUD(sliderFraction: 0.5, mute: false, appName: "Discord").accessibilityDescription == "Discord, Volume 50 percent")
+        #expect(ClassicStyleHUD(sliderFraction: 0.5, mute: true, appName: "Discord").accessibilityDescription == "Discord, Muted")
+        #expect(ClassicStyleHUD(sliderFraction: 0.5, mute: false).accessibilityDescription == "Volume 50 percent")
+    }
+
     @Test("Classic icon: 33% → wave.1")
     func classicLow() {
         let hud = ClassicStyleHUD(sliderFraction: 0.33, mute: false)

@@ -339,6 +339,20 @@ struct HUDWindowControllerMessageTests {
         #expect(hud.showDidUpdatePanel == false)
     }
 
+    @Test("One app's level, and a note that there is no app, show like the volume HUD", arguments: [
+        (popup: false, fullscreen: false, shown: true), (true, false, false), (false, true, false),
+    ])
+    func appHud(popup: Bool, fullscreen: Bool, shown: Bool) {
+        let hud = makeController(popupVisible: popup, fullscreen: fullscreen)
+        defer { hud.shutdown() }
+
+        hud.showApp(sliderFraction: 0.5, mute: false, name: "Discord", write: { _ in })
+        #expect(hud.showDidUpdatePanel == shown)
+
+        hud.showAppNote(HUDMessage(symbol: "speaker.slash", text: "No app in front"))
+        #expect(hud.showDidUpdatePanel == shown)
+    }
+
     @Test("Two messages in a row are both shown, the second replacing the first")
     func twoMessages() {
         let hud = makeController()

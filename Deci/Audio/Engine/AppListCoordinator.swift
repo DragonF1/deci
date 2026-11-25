@@ -62,7 +62,7 @@ final class AppListCoordinator {
     // MARK: - Inactive App Settings (by persistence identifier)
 
     func getVolumeForInactive(identifier: String) -> Float {
-        settingsManager.getVolume(for: identifier) ?? 1.0
+        settingsManager.getVolume(for: identifier) ?? settingsManager.appSettings.defaultNewAppVolume
     }
 
     func setVolumeForInactive(identifier: String, to volume: Float) {

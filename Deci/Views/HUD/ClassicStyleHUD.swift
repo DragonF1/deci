@@ -5,6 +5,8 @@ import SwiftUI
 struct ClassicStyleHUD: View {
     let sliderFraction: Float
     let mute: Bool
+    /// The app whose level this is, nil for the output device, which the tile does not name.
+    var appName: String? = nil
 
     // MARK: - Constants
 
@@ -50,9 +52,9 @@ struct ClassicStyleHUD: View {
     var waveIconNameForTest: String { waveIconName }
     #endif
 
-    private var accessibilityDescription: String {
-        if mute { return "Muted" }
-        return "Volume \(Int((displayValue * 100).rounded())) percent"
+    var accessibilityDescription: String {
+        let level = mute ? "Muted" : "Volume \(Int((displayValue * 100).rounded())) percent"
+        return appName.map { "\($0), \(level)" } ?? level
     }
 
     // MARK: - Body
@@ -63,6 +65,17 @@ struct ClassicStyleHUD: View {
             tileSection
         }
         .frame(width: Self.frameSize, height: Self.frameSize)
+        .overlay(alignment: .top) {
+            if let appName {
+                Text(appName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(DesignTokens.Colors.hudTileActive)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, Self.tileSideInset)
+                    .padding(.top, 20)
+            }
+        }
         .background {
             RoundedRectangle(cornerRadius: Self.cornerRadius)
                 .fill(.regularMaterial)
@@ -122,6 +135,12 @@ struct ClassicStyleHUD: View {
 
 #Preview("Classic — max volume") {
     ClassicStyleHUD(sliderFraction: 1.0, mute: false)
+        .padding()
+        .background(Color.black)
+}
+
+#Preview("Classic, one app") {
+    ClassicStyleHUD(sliderFraction: 0.5, mute: false, appName: "Discord")
         .padding()
         .background(Color.black)
 }

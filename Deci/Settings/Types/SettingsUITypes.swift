@@ -170,16 +170,72 @@ nonisolated struct VolumeKeyCombo: OptionSet, Codable, Hashable, Sendable {
     }
 }
 
-/// One volume keybind row: the modifiers that pick it and the percent of the slider one press moves.
+/// What a volume keybind row controls.
+nonisolated enum VolumeKeyTarget: Codable, Hashable, Sendable {
+    case defaultOutput
+    /// Whichever app is in front when the key is pressed.
+    case frontApp
+    /// One app, playing or not, by its persistence identifier. The name is for the menu and the HUD.
+    case app(identifier: String, name: String)
+
+    /// The app's identifier, nil for the other targets.
+    var appIdentifier: String? {
+        if case .app(let identifier, _) = self { return identifier }
+        return nil
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, identifier, name }
+    private enum Kind: String, Codable { case defaultOutput, frontApp, app }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .defaultOutput: self = .defaultOutput
+        case .frontApp: self = .frontApp
+        case .app:
+            let identifier = try container.decode(String.self, forKey: .identifier)
+            guard !identifier.isEmpty else {
+                throw DecodingError.dataCorruptedError(forKey: .identifier, in: container, debugDescription: "Empty app identifier")
+            }
+            let name = (try? container.decode(String.self, forKey: .name)) ?? ""
+            self = .app(identifier: identifier, name: name.isEmpty ? identifier : name)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .defaultOutput: try container.encode(Kind.defaultOutput, forKey: .kind)
+        case .frontApp: try container.encode(Kind.frontApp, forKey: .kind)
+        case .app(let identifier, let name):
+            try container.encode(Kind.app, forKey: .kind)
+            try container.encode(identifier, forKey: .identifier)
+            try container.encode(name, forKey: .name)
+        }
+    }
+}
+
+/// One volume keybind row: the modifiers that pick it, the percent of the slider one press moves and what it moves.
 nonisolated struct VolumeKeyBinding: Codable, Hashable, Identifiable, Sendable {
     var id: UUID
     var combo: VolumeKeyCombo
     var percent: Int
+    var target: VolumeKeyTarget
 
-    init(id: UUID = UUID(), combo: VolumeKeyCombo, percent: Int) {
+    init(id: UUID = UUID(), combo: VolumeKeyCombo, percent: Int, target: VolumeKeyTarget = .defaultOutput) {
         self.id = id
         self.combo = combo
         self.percent = percent
+        self.target = target
+    }
+
+    /// A row from before targets existed, and one whose target cannot be read, controls the default output.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        combo = try container.decode(VolumeKeyCombo.self, forKey: .combo)
+        percent = try container.decode(Int.self, forKey: .percent)
+        target = (try? container.decodeIfPresent(VolumeKeyTarget.self, forKey: .target)) ?? .defaultOutput
     }
 
     /// Whole percent of the slider moved per press.

@@ -692,6 +692,26 @@ final class AudioEngine {
 
     func setVolumeForInactive(identifier: String, to volume: Float) {
         appListCoordinator.setVolumeForInactive(identifier: identifier, to: volume)
+        for tap in pausedTaps(identifier: identifier) {
+            let pid = tap.app.id
+            volumeState.setVolume(for: pid, to: volume, identifier: identifier)
+            tap.volume = effectiveVolume(for: pid, deviceUIDs: tap.currentDeviceUIDs)
+            if settingsManager.appSettings.loudnessCompensationEnabled {
+                tap.updateLoudnessCompensation(volume: effectiveLoudnessVolume(for: tap), enabled: true)
+            }
+        }
+    }
+
+    /// The taps of an app that is paused: it left the list, but its process and its tap live on, and it resumes with the
+    /// level they hold instead of reading the saved one again.
+    private func pausedTaps(identifier: String) -> [any ProcessTapControlling] {
+        let listed = Set(apps.map(\.id))
+        return taps.values.filter { $0.app.persistenceIdentifier == identifier && !listed.contains($0.app.id) }
+    }
+
+    /// Whether an app that is not in the list is only paused, so its level is still Deci's to change.
+    func isPaused(identifier: String) -> Bool {
+        !pausedTaps(identifier: identifier).isEmpty
     }
 
     func getBoostForInactive(identifier: String) -> BoostLevel {
@@ -708,6 +728,10 @@ final class AudioEngine {
 
     func setMuteForInactive(identifier: String, to muted: Bool) {
         appListCoordinator.setMuteForInactive(identifier: identifier, to: muted)
+        for tap in pausedTaps(identifier: identifier) {
+            volumeState.setMute(for: tap.app.id, to: muted, identifier: identifier)
+            tap.isMuted = muted
+        }
     }
 
     func getEQSettingsForInactive(identifier: String) -> EQSettings {

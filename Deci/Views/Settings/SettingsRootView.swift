@@ -51,6 +51,7 @@ struct SettingsRootView: View {
 
             ShortcutsTab(
                 settings: settings,
+                audioEngine: audioEngine,
                 accessibility: accessibility,
                 mediaKeyStatus: mediaKeyStatus,
                 mediaKeyMonitor: mediaKeyMonitor,

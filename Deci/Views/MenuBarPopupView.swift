@@ -1514,7 +1514,6 @@ struct MenuBarPopupView: View {
                 applyAppVolumeStep(
                     currentGain: audioEngine.currentVolume(for: app),
                     currentMute: audioEngine.isMuted(for: app),
-                    direction: direction,
                     delta: delta,
                     setGain: { audioEngine.setVolume(for: app, to: $0) },
                     setMute: { audioEngine.setMute(for: app, to: $0) }
@@ -1524,7 +1523,6 @@ struct MenuBarPopupView: View {
             applyAppVolumeStep(
                 currentGain: audioEngine.getVolumeForInactive(identifier: persistenceID),
                 currentMute: audioEngine.getMuteForInactive(identifier: persistenceID),
-                direction: direction,
                 delta: delta,
                 setGain: { audioEngine.setVolumeForInactive(identifier: persistenceID, to: $0) },
                 setMute: { audioEngine.setMuteForInactive(identifier: persistenceID, to: $0) }
@@ -1550,28 +1548,17 @@ struct MenuBarPopupView: View {
         }
     }
 
-    /// Steps an app row's volume with the mute edges of a media key: up unmutes a muted app, down unmutes it while the
-    /// new level is audible, and down to silence mutes an unmuted one. Used for both active and pinned-inactive app rows.
+    /// Steps an app row's volume as a media key does. Used for both active and pinned-inactive app rows.
     private func applyAppVolumeStep(
         currentGain: Float,
         currentMute: Bool,
-        direction: Int,
         delta: Double,
         setGain: (Float) -> Void,
         setMute: (Bool) -> Void
     ) {
-        let currentSlider = VolumeMapping.gainToSlider(currentGain)
-        let nextSlider = max(0.0, min(1.0, currentSlider + delta))
-        let nextGain = VolumeMapping.sliderToGain(nextSlider)
-        let willBeSilent = nextSlider <= 0.001
-        if direction > 0 {
-            if currentMute { setMute(false) }
-        } else if currentMute && !willBeSilent {
-            setMute(false)
-        } else if !currentMute && willBeSilent {
-            setMute(true)
-        }
-        setGain(nextGain)
+        let next = AppVolumeLevel(gain: currentGain, isMuted: currentMute).stepped(by: delta)
+        if next.isMuted != currentMute { setMute(next.isMuted) }
+        setGain(next.gain)
     }
 
     private func toggleMute(for target: PopupKeyboardNavModel.RowID?) -> KeyPress.Result {

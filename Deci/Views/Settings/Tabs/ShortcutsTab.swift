@@ -1,15 +1,22 @@
 // FineTune/Views/Settings/Tabs/ShortcutsTab.swift
+import AppKit
 import SwiftUI
 import KeyboardShortcuts
 
 @MainActor
 struct ShortcutsTab: View {
     @Bindable var settings: SettingsManager
+    let audioEngine: AudioEngine
     @Bindable var accessibility: AccessibilityPermissionService
     @Bindable var mediaKeyStatus: MediaKeyStatus
     let mediaKeyMonitor: MediaKeyMonitor
     let volumeKeyRecorder: VolumeKeyRecorder
     let shortcutsRegistry: ShortcutsRegistry
+
+    /// The apps open now, for the targets of the volume keybinds: one that is silent can be picked too.
+    @State private var runningApps: [VolumeKeyTarget] = []
+
+    private static let targetWidth: CGFloat = 150
 
     var body: some View {
         ScrollView {
@@ -36,6 +43,17 @@ struct ShortcutsTab: View {
             volumeKeyRecorder.cancel()
         }
         .onExitCommand { volumeKeyRecorder.cancel() }
+        .onAppear { refreshRunningApps() }
+        .onReceive(Self.workspaceChanges(NSWorkspace.didLaunchApplicationNotification)) { _ in refreshRunningApps() }
+        .onReceive(Self.workspaceChanges(NSWorkspace.didTerminateApplicationNotification)) { _ in refreshRunningApps() }
+    }
+
+    private static func workspaceChanges(_ name: Notification.Name) -> NotificationCenter.Publisher {
+        NSWorkspace.shared.notificationCenter.publisher(for: name)
+    }
+
+    private func refreshRunningApps() {
+        runningApps = VolumeKeyTargetMenu.runningApps()
     }
 
     /// Whether a window notification is about the Settings window, found by the title `WindowTitleBridge` pins.
@@ -125,6 +143,7 @@ struct ShortcutsTab: View {
                 VolumeKeyRecorderField(combo: binding.combo, isRecording: isRecording, isEnabled: canRecordVolumeKey) {
                     if isRecording { volumeKeyRecorder.cancel() } else { volumeKeyRecorder.begin(binding.id) }
                 }
+                targetPicker(binding)
                 Text("\(VolumeKeyBinding.clampedPercent(binding.percent))%")
                     .font(DesignTokens.Typography.percentage)
                     .monospacedDigit()
@@ -145,13 +164,36 @@ struct ShortcutsTab: View {
         }
     }
 
+    private func targetPicker(_ binding: VolumeKeyBinding) -> some View {
+        let apps = VolumeKeyTargetMenu.apps(
+            saved: binding.target,
+            mixer: audioEngine.displayableApps,
+            running: runningApps,
+            isIgnored: { audioEngine.isIgnored(identifier: $0) }
+        )
+        return Picker("Controls", selection: targetBinding(for: binding.id)) {
+            Text("Default output").tag(VolumeKeyTarget.defaultOutput)
+            Text("App in front").tag(VolumeKeyTarget.frontApp)
+            Divider()
+            ForEach(apps, id: \.appIdentifier) { target in
+                Text(target.menuTitle).tag(target)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .controlSize(.small)
+        .frame(width: Self.targetWidth, alignment: .trailing)
+        .help("What these keys control. Mute with the same modifiers mutes it.")
+    }
+
     private var addVolumeKeybindRow: some View {
         let isFull = settings.appSettings.volumeKeyBindings.count >= VolumeKeyBinding.maxCount
         return SettingsRow(
             "Add volume keybind",
             description: isFull
                 ? "Up to \(VolumeKeyBinding.maxCount) volume keybinds."
-                : "Hold modifiers with F11 / F12 for their own step. The plain step also sets the popup's arrow keys."
+                : "Hold modifiers with F11 / F12 for their own step, on the default output or one app. The plain step also "
+                    + "sets the popup's arrow keys."
         ) {
             Button("Add") {
                 // The new row waits for its modifiers right away when a press can reach the recorder.
@@ -174,6 +216,18 @@ struct ShortcutsTab: View {
                 var app = settings.appSettings
                 guard let index = app.volumeKeyBindings.firstIndex(where: { $0.id == id }) else { return }
                 app.volumeKeyBindings[index].percent = VolumeKeyBinding.clampedPercent(newValue)
+                settings.appSettings = app
+            }
+        )
+    }
+
+    private func targetBinding(for id: UUID) -> Binding<VolumeKeyTarget> {
+        Binding(
+            get: { settings.appSettings.volumeKeyBindings.first { $0.id == id }?.target ?? .defaultOutput },
+            set: { newValue in
+                var app = settings.appSettings
+                guard let index = app.volumeKeyBindings.firstIndex(where: { $0.id == id }) else { return }
+                app.volumeKeyBindings[index].target = newValue
                 settings.appSettings = app
             }
         )

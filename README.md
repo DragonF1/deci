@@ -24,7 +24,7 @@ Deci is a macOS menu bar app with a per-app volume mixer, a 10-band EQ, a native
 
 ### Keyboard and media keys
 
-- **Volume keys**: F11 and F12 change the volume by 10% per press. With Command the step is 5%, and with Command+Shift it is 1%. F10 mutes. The steps can be changed in Settings, from 1% to 50%.
+- **Volume keys**: F11 and F12 change the volume by 10% per press. With Command the step is 5%, and with Command+Shift it is 1%. F10 mutes. The steps can be changed in Settings, from 1% to 50%. A row can also be set to one app, or to the app in front, so for example Option with F11, F12 and F10 changes and mutes only that app.
 - **Toggle popup**: a global shortcut opens and closes the Deci popup.
 - **Music hotkeys**: global shortcuts to save the playing song to a playlist, like it, or dislike it. Disliking also skips the song.
 - **Popup keys**: arrow keys move, M mutes, and Escape closes.

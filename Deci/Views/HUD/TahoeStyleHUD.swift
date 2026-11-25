@@ -6,6 +6,9 @@ struct TahoeStyleHUD: View {
     let sliderFraction: Float
     let mute: Bool
     let deviceName: String
+    /// Changes with every key press shown, so a press always drops the value of an earlier drag, also when it lands on the
+    /// level the HUD had before the drag or on another app at the same level.
+    var showSerial: Int = 0
     var onSliderChange: ((Float) -> Void)? = nil
     var onHoverChange: ((Bool) -> Void)? = nil
 
@@ -127,6 +130,9 @@ struct TahoeStyleHUD: View {
             dragValue = nil
         }
         .onChange(of: mute) { _, _ in
+            dragValue = nil
+        }
+        .onChange(of: showSerial) { _, _ in
             dragValue = nil
         }
         .accessibilityElement(children: .ignore)

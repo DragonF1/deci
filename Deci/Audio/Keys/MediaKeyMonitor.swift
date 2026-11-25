@@ -10,6 +10,10 @@ import os
 @MainActor
 protocol MediaKeyHUDPresenting: AnyObject {
     func show(sliderFraction: Double, mute: Bool, deviceName: String)
+    /// One app's level instead of the device's; `write` takes the slider fraction of a drag on the HUD.
+    func showApp(sliderFraction: Double, mute: Bool, name: String, write: @escaping (Double) -> Void)
+    /// What a key came to that had no app to act on.
+    func showAppNote(_ message: HUDMessage)
     func swallowObserved()
     func passThroughObserved()
 }
@@ -33,7 +37,7 @@ struct VolumeKeyModifiers: Equatable {
 }
 
 /// Intercepts F10/F11/F12 via a `CGEventTap`, swallows them so the native HUD
-/// does not double-fire, and drives the default output device.
+/// does not double-fire, and drives the default output device, or the app a keybind row names.
 @MainActor
 final class MediaKeyMonitor {
     // MARK: - Collaborators
@@ -46,6 +50,8 @@ final class MediaKeyMonitor {
     private let popupVisibility: PopupVisibilityService
     private let mediaKeyStatus: MediaKeyStatus
     private let volumeKeyRecorder: VolumeKeyRecorder
+    /// The apps the keybind rows can name. DeciApp gives it the Music player after init.
+    let appVolume: VolumeKeyAppControl
     private let logger = Logger(subsystem: "com.abraham.Deci", category: "MediaKeyMonitor")
 
     // MARK: - Tap state
@@ -115,6 +121,7 @@ final class MediaKeyMonitor {
         self.popupVisibility = popupVisibility
         self.mediaKeyStatus = mediaKeyStatus
         self.volumeKeyRecorder = volumeKeyRecorder
+        self.appVolume = VolumeKeyAppControl(engine: audioEngine)
         subscribeToWorkspaceLifecycle()
     }
 
@@ -262,10 +269,17 @@ final class MediaKeyMonitor {
 
     // MARK: - Event handling
 
-    /// Applies a decoded `MediaKeyEvent` to the default output device, stepping by the row that fits the
-    /// modifiers `held` with the key. `stepping` names the row instead, for a repeat that keeps the row of its
-    /// press after the modifiers changed; `held` still decides the feedback pop's Shift and Option.
+    /// Applies a decoded `MediaKeyEvent` to what the row that fits the modifiers `held` with the key controls: the
+    /// default output device, or an app. Mute follows the row too, so it mutes what the same modifiers step.
+    /// `stepping` names the row instead, for a repeat that keeps the row of its press after the modifiers changed;
+    /// `held` still decides the feedback pop's Shift and Option.
     func handle(_ event: MediaKeyEvent, held: VolumeKeyCombo = [], stepping row: VolumeKeyBinding? = nil) {
+        let binding = row ?? settingsManager.appSettings.volumeKeyBinding(for: held)
+        // Before the device: an app's level does not need a default output.
+        if let binding, binding.target != .defaultOutput {
+            handleApp(event, binding: binding)
+            return
+        }
         let volumeMonitor = audioEngine.deviceVolumeMonitor
         let deviceID = volumeMonitor.defaultDeviceID
         guard deviceID.isValid else {
@@ -373,6 +387,35 @@ final class MediaKeyMonitor {
         }
     }
 
+    /// Steps or mutes the app a row names, with the mute edges of the default output's keys. No feedback pop and no
+    /// device flash: those are about the output device.
+    private func handleApp(_ event: MediaKeyEvent, binding: VolumeKeyBinding) {
+        let direction: Double
+        let isRepeat: Bool
+        switch event {
+        case .volumeUp(let value): (direction, isRepeat) = (1, value)
+        case .volumeDown(let value): (direction, isRepeat) = (-1, value)
+        case .muteToggle: (direction, isRepeat) = (0, false)
+        case .playback: return
+        }
+        let shouldShowHUD = !popupVisibility.isVisible
+        switch appVolume.subject(for: binding.target) {
+        case .unavailable(let message):
+            logger.debug("Volume key has no app to act on")
+            // Once a press: a held key would say it again thirty times a second.
+            if shouldShowHUD, !isRepeat { hudController.showAppNote(message) }
+        case .app(let identifier, let name):
+            let current = appVolume.level(of: identifier)
+            let delta = direction * Double(VolumeKeyBinding.clampedPercent(binding.percent)) / 100
+            let next = direction == 0 ? current.muteToggled : current.stepped(by: delta)
+            appVolume.set(next, for: identifier)
+            guard shouldShowHUD else { return }
+            hudController.showApp(sliderFraction: next.slider, mute: next.isMuted, name: name) { [weak self] slider in
+                self?.appVolume.drag(to: slider, for: identifier)
+            }
+        }
+    }
+
     /// `true` if this repeat falls inside the 80 ms floor and should be dropped.
     private func isDDCRepeatCoalesced() -> Bool {
         let now = DispatchTime.now()
@@ -459,10 +502,11 @@ final class MediaKeyMonitor {
 
     /// Decides what a decoded key does and returns `true` if the caller should swallow it. While a keybind row
     /// is recording, a volume key is that recording and changes no volume. A volume key no row fits is left
-    /// alone, not swallowed, so macOS makes its own change. Mute has no combos and is always handled. The
-    /// play/pause, next and previous keys are swallowed from their fresh press until its key-up, so macOS never acts
-    /// on them (F8 would otherwise launch Apple Music); a repeat or key-up with no swallowed press before it passes
-    /// through. The verdict is returned at once and the handler hears the swallowed phases on the next turn of the main
+    /// alone, not swallowed, so macOS makes its own change. Mute is always handled, whatever is held: it mutes
+    /// what the row for those modifiers controls, and the default output when none fits. The play/pause, next
+    /// and previous keys are swallowed from their fresh press until its key-up, so macOS never acts on them (F8
+    /// would otherwise launch Apple Music); a repeat or key-up with no swallowed press before it passes through.
+    /// The verdict is returned at once and the handler hears the swallowed phases on the next turn of the main
     /// queue, so the tap callback never waits on routing, Chrome or the player. They stay out of the volume HUD's
     /// observations.
     func processMediaKey(_ event: MediaKeyEvent, held: VolumeKeyCombo) -> Bool {
@@ -522,8 +566,9 @@ final class MediaKeyMonitor {
     ///
     /// A fresh press is matched on the modifiers held and its route remembered per key. A repeat follows that
     /// route: after a handled press the modifiers held now are matched again, falling back to the pressed row when
-    /// none fits; after a passed-through press it passes through, whatever is held by then. A repeat whose press
-    /// was never seen is matched on the modifiers held, as a fresh press would be.
+    /// none fits, or when the one that fits controls something else: letting go of Option first must not move a hold
+    /// from one app to the whole output. After a passed-through press it passes through, whatever is held by then. A
+    /// repeat whose press was never seen is matched on the modifiers held, as a fresh press would be.
     private func steppingRow(for event: MediaKeyEvent, held: VolumeKeyCombo) -> VolumeKeyBinding? {
         let isUp: Bool
         let isRepeat: Bool
@@ -537,7 +582,10 @@ final class MediaKeyMonitor {
 
         if isRepeat {
             switch isUp ? upRoute : downRoute {
-            case .handled(let rowID)?: return matched ?? rows.first { $0.id == rowID }
+            case .handled(let rowID)?:
+                let pressed = rows.first { $0.id == rowID }
+                if let matched, let pressed, matched.target != pressed.target { return pressed }
+                return matched ?? pressed
             case .passedThrough?: return nil
             case nil: return matched
             }

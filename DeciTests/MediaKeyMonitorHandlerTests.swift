@@ -28,6 +28,12 @@ final class FractionRecordingHUD: MediaKeyHUDPresenting {
     func show(sliderFraction: Double, mute: Bool, deviceName: String) {
         shown.append((sliderFraction, mute, deviceName))
     }
+    private(set) var shownApps: [(sliderFraction: Double, mute: Bool, name: String, write: (Double) -> Void)] = []
+    private(set) var notes: [HUDMessage] = []
+    func showApp(sliderFraction: Double, mute: Bool, name: String, write: @escaping (Double) -> Void) {
+        shownApps.append((sliderFraction, mute, name, write))
+    }
+    func showAppNote(_ message: HUDMessage) { notes.append(message) }
     func swallowObserved() { swallowed += 1 }
     func passThroughObserved() { passedThrough += 1 }
 }

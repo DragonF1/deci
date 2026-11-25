@@ -85,6 +85,25 @@ final class HUDWindowController: MediaKeyHUDPresenting {
 
     /// Displays the HUD. Skipped when the foreground app is fullscreen or the popup is visible.
     func show(sliderFraction: Double, mute: Bool, deviceName: String) {
+        showVolume(sliderFraction: sliderFraction, mute: mute, name: deviceName, isApp: false) { [weak self] in
+            self?.volumeWriter?($0)
+        }
+    }
+
+    /// The same HUD for one app's level. A drag on its slider goes to `write`, so it moves that app and not the device.
+    func showApp(sliderFraction: Double, mute: Bool, name: String, write: @escaping (Double) -> Void) {
+        showVolume(sliderFraction: sliderFraction, mute: mute, name: name, isApp: true, write: write)
+    }
+
+    /// A line instead of a level, for a key that had no app to act on. Skipped where the volume HUD would be.
+    func showAppNote(_ message: HUDMessage) {
+        guard !(fullscreenOverride ?? isForegroundAppFullscreen()), !popupVisibility.isVisible else { return }
+        showMessage(message)
+    }
+
+    private func showVolume(
+        sliderFraction: Double, mute: Bool, name: String, isApp: Bool, write: @escaping (Double) -> Void
+    ) {
         showCallCount += 1
         showDidUpdatePanel = false
 
@@ -121,10 +140,9 @@ final class HUDWindowController: MediaKeyHUDPresenting {
                 TahoeStyleHUD(
                     sliderFraction: displayFraction,
                     mute: mute,
-                    deviceName: deviceName,
-                    onSliderChange: { [weak self] newFraction in
-                        self?.volumeWriter?(Double(newFraction))
-                    },
+                    deviceName: name,
+                    showSerial: showCallCount,
+                    onSliderChange: { write(Double($0)) },
                     onHoverChange: { [weak self] hovering in
                         self?.handleHoverChange(hovering)
                     }
@@ -134,7 +152,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
             size = NSSize(width: 300, height: 72)
         case .classic:
             root = AnyView(
-                ClassicStyleHUD(sliderFraction: displayFraction, mute: mute)
+                ClassicStyleHUD(sliderFraction: displayFraction, mute: mute, appName: isApp ? name : nil)
                     .preferredColorScheme(scheme)
             )
             size = NSSize(width: 200, height: 200)
@@ -167,7 +185,7 @@ final class HUDWindowController: MediaKeyHUDPresenting {
         }
 
         scheduleHide(for: style)
-        postAccessibilityAnnouncement(panel: panel, sliderFraction: sliderFraction, mute: mute, deviceName: deviceName)
+        postAccessibilityAnnouncement(panel: panel, sliderFraction: sliderFraction, mute: mute, deviceName: name)
     }
 
     /// Shows one short line with a symbol, for what a hotkey came to. Same panel, place and timing as the volume HUD,
