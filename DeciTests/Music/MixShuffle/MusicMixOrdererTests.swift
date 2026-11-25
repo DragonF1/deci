@@ -330,9 +330,10 @@ import Testing
     }
 
     @Test func similarSongsSpreadOut() {
-        // Ten identical-sounding songs among thirty: they should not clump.
+        // Ten identical-sounding songs among thirty that can all be beat matched: they should not clump. Songs too far off in
+        // tempo to be matched could not go between them.
         var songs = (0..<20).map { i in
-            MusicMixProfile(videoId: "o\(i)", artist: "o\(i)", bpm: 90 + Double(i) * 4, gridTrusted: true, camelot: MusicCamelot(number: 1 + i % 12, isMinor: i % 2 == 0), energy: 0.5)
+            MusicMixProfile(videoId: "o\(i)", artist: "o\(i)", bpm: 117 + Double(i) * 0.3, gridTrusted: true, camelot: MusicCamelot(number: 1 + i % 12, isMinor: i % 2 == 0), energy: 0.5)
         }
         songs += (0..<10).map { MusicMixProfile(videoId: "same\($0)", artist: "same\($0)", bpm: 120, gridTrusted: true, camelot: MusicCamelot(code: "8A"), energy: 0.5) }
         var gaps: [Double] = []

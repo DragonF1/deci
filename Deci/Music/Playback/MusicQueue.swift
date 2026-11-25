@@ -556,6 +556,40 @@ struct MusicQueue: Equatable, Codable {
         return true
     }
 
+    /// The last song up to the current one that the radio did not bring: the listener's own choice, which the radio follows.
+    var radioAnchorIndex: Int? {
+        guard let currentIndex else { return nil }
+        return tracks[...currentIndex].lastIndex { !isRadioSong($0.videoId) }
+    }
+
+    /// The staged radio becomes the songs of `order` it has, in that order. The others leave it, but a later page may bring
+    /// them again: the genre that left them out is not the listener's own removal. Nothing changes when `order` names none.
+    mutating func keepStagedRadio(_ order: [String]) {
+        let kept = Self.named(order, in: autoplay)
+        guard !kept.isEmpty else { return }
+        autoplay = kept
+    }
+
+    /// `radioHead` becomes the songs of `order` it has, in that order. The others leave the queue, as in `keepStagedRadio`.
+    mutating func keepRadioHead(_ order: [String]) {
+        guard let currentIndex else { return }
+        let head = radioHead
+        let kept = Self.named(order, in: head)
+        guard !kept.isEmpty else { return }
+        let start = currentIndex + 1
+        tracks.replaceSubrange(start..<(start + head.count), with: kept)
+        for id in Set(head.map(\.videoId)).subtracting(kept.map(\.videoId)) {
+            naturalRank[id] = nil
+            radioIds.remove(id)
+        }
+    }
+
+    private static func named(_ order: [String], in list: [MusicTrack]) -> [MusicTrack] {
+        let byId = Dictionary(list.map { ($0.videoId, $0) }) { first, _ in first }
+        var seen = Set<String>()
+        return order.compactMap { seen.insert($0).inserted ? byId[$0] : nil }
+    }
+
     /// Lines the songs the listener has not queued up in `order` (video ids), in the slots those songs hold after the
     /// current one. A song of `order` that is not an unqueued upcoming song is ignored; an unqueued upcoming song that
     /// `order` does not name keeps its slot. The current song, the previous songs and the queued ones stay where they are.

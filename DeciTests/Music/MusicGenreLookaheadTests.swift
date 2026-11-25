@@ -38,6 +38,26 @@ struct MusicGenreLookaheadTests {
 
     private func askedCount() async -> Int { await calls.asked.count }
 
+    @Test("a song with no tags of its own can be sorted by those of the same artist, and only by those")
+    func sameArtist() async {
+        let l = lookahead(nil, .found(facts(tags: ["techno"])))
+        await l.prepare(videoId: "v", query: query, allowNetwork: true)
+        #expect(l.artistGenres("artist") == ["techno"])
+        #expect(l.artistGenres("Artist & Someone Else") == ["techno"])
+        #expect(l.artistGenres("Nobody").isEmpty && l.artistGenres("").isEmpty)
+        #expect(l.genres(for: "w").isEmpty)
+    }
+
+    @Test("a song that waited for the network does not read the cache again")
+    func readsCacheOnce() async {
+        let l = lookahead(nil, .found(facts(tags: ["techno"])))
+        await l.prepare(videoId: "v", query: query, allowNetwork: false)
+        #expect(!l.hasRequested("v", allowNetwork: true) && l.hasRequested("v", allowNetwork: false))
+        await l.prepare(videoId: "v", query: query, allowNetwork: true)
+        #expect(await calls.reads == ["v"])
+        #expect(l.genres(for: "v") == ["techno"])
+    }
+
     @Test("fresh tags in the cache are used and nothing is asked")
     func cached() async {
         let l = lookahead(stored(facts(genres: ["Pop"], tags: ["house", "Pop"])))

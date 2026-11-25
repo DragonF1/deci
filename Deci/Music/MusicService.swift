@@ -597,6 +597,7 @@ final class MusicService {
             loadLikeStatus()
         }
         topUpQueue()
+        genreSweepSoon()
     }
 
     /// The network went. A radio or page fetch that is out is cancelled instead of waited out (it would only fail after
@@ -1494,6 +1495,8 @@ final class MusicService {
             mixTask?.cancel()
             mixTask = nil
             mixOrderPending = false
+            genreOrderPending = false
+            genreUnknown = []
             mixAvoid = []
             mixReplanPending = false
             mixAnalyseCurrent = false
@@ -1582,28 +1585,32 @@ final class MusicService {
     /// and works out what Up next shows. A song with no row scores neutral and is never blocked; it joins a later
     /// window once its row is stored. `keeping` songs at the front of the unqueued songs stay where they are, and the
     /// last of them is the song the window mixes out of.
-    private func orderMix(keeping fixedCount: Int) async {
+    private func orderMix(keeping fixedCount: Int, analysing: Bool = true) async {
         let unqueued = queue.unqueuedUpcoming
         let fixed = Array(unqueued.prefix(fixedCount))
         let window = Array(unqueued.dropFirst(fixedCount).prefix(MusicMixWindow.size))
         let anchor = fixed.last ?? queue.current
         guard !window.isEmpty else {
+            genreOrderPending = false
             await refreshMixPairs()
             return
         }
         await readMixRows(for: window + (anchor.map { [$0] } ?? []))
+        await readMixGenres(for: window + (anchor.map { [$0] } ?? []))
         guard !Task.isCancelled, isFlowShuffleOn else { return }
-        let profiles = window.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
-        let first = anchor.map { MusicMixProfile(videoId: $0.videoId, artist: $0.artist, analysis: mixRows[$0.videoId]) }
         var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
-        queue.mixOrder(orderer.order(profiles, first: first))
+        queue.mixOrder(orderer.order(window.map(mixProfile), first: anchor.map(mixProfile)))
+        genreUnknown = Set(window.filter { mixFamily(of: $0) == nil }.map(\.videoId))
+        genreOrderPending = false
         // The reorder can move the page's last own song, which the staged radio was asked for.
         if dropStaleRadio() { topUpQueueAfterModeChange() }
         mixOrderPending = false
         mixPlayed = 0
         saveSession()
         radioScanSoon()
+        genreSweepSoon()
         await refreshMixPairs()
+        guard analysing else { return }
         await analyseMissingRows(in: window)
         // Rows that landed show in Up next at once; they change the order at the next top-up.
         await refreshMixPairs()
@@ -1850,7 +1857,7 @@ final class MusicService {
     /// re-planned once the new song has started. A song that ended by itself never comes here.
     private func noteMixSkip(of leaving: MusicTrack?) {
         guard isFlowShuffleOn, let leaving else { return }
-        mixAvoid.append(MusicMixProfile(videoId: leaving.videoId, artist: leaving.artist, analysis: mixRows[leaving.videoId]))
+        mixAvoid.append(mixProfile(leaving))
         if mixAvoid.count > Self.mixAvoidKept { mixAvoid.removeFirst(mixAvoid.count - Self.mixAvoidKept) }
         mixReplanPending = true
     }
@@ -1861,7 +1868,9 @@ final class MusicService {
     private func replanAfterSkip() async {
         guard isFlowShuffleOn, let current = queue.current else { return }
         // One read covers the fixed song and the window; what is fixed is decided after it, from the queue as it is then.
-        await readMixRows(for: Array(queue.unqueuedUpcoming.prefix(MusicMixOrderer.tailCount + 1)) + [current])
+        let tail = Array(queue.unqueuedUpcoming.prefix(MusicMixOrderer.tailCount + 1)) + [current]
+        await readMixRows(for: tail)
+        await readMixGenres(for: tail)
         guard !Task.isCancelled, isFlowShuffleOn, let current = queue.current else { return }
         let unqueued = queue.unqueuedUpcoming
         let first = unqueued.first?.videoId
@@ -1869,12 +1878,9 @@ final class MusicService {
         let window = Array(unqueued.dropFirst(fixedCount).prefix(MusicMixOrderer.tailCount))
         guard window.count > 1 else { return }
         let anchor = unqueued.prefix(fixedCount).last ?? current
-        func profile(_ track: MusicTrack) -> MusicMixProfile {
-            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
-        }
         var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
         let order = orderer.reorderTail(
-            anchor: profile(anchor), upcoming: window.map(profile), avoid: mixAvoid, count: MusicMixOrderer.tailCount,
+            anchor: mixProfile(anchor), upcoming: window.map(mixProfile), avoid: mixAvoid, count: MusicMixOrderer.tailCount,
             // Only the playing song is held at a rate; a preloaded anchor has not started yet.
             anchorRate: fixedCount == 0 ? activeDeckRate : 1
         )
@@ -1913,21 +1919,27 @@ final class MusicService {
         func orderKey(_ staged: [MusicTrack]) -> String {
             anchor.videoId + "|" + staged.prefix(MusicMixWindow.size).map(\.videoId).joined(separator: ",")
         }
-        // A row that landed since (the radio scan stores them) places the radio again, with the real tempo and key.
+        // A row that landed since (the radio scan stores them) or a genre places the radio again, with the real tempo and key.
         func placedKey(_ staged: [MusicTrack]) -> String {
-            orderKey(staged) + "|" + staged.prefix(MusicMixWindow.size).filter { mixRows[$0.videoId] != nil }.map(\.videoId).joined(separator: ",")
+            let head = staged.prefix(MusicMixWindow.size)
+            return ([orderKey(staged)] + [
+                head.filter { mixRows[$0.videoId] != nil }, head.filter { mixFamily(of: $0) != nil },
+            ].map { $0.map(\.videoId).joined(separator: ",") }).joined(separator: "|")
         }
         let staged = queue.autoplay
         guard placedKey(staged) != radioPlacedKey else { return }
         // The next song is locked once it is being prepared: a late row never moves it.
         guard !isNextSongLocked(staged.first) else { return }
         await readMixRows(for: Array(staged.prefix(MusicMixWindow.size)) + [anchor])
+        await readMixGenres(for: Array(staged.prefix(MusicMixWindow.size)) + [anchor])
         guard !Task.isCancelled, isFlowShuffleOn, queue.tracks.last?.videoId == anchor.videoId,
               orderKey(queue.autoplay) == orderKey(staged), !isNextSongLocked(queue.autoplay.first) else { return }
         let placed = Self.placement(
-            of: staged, after: anchor, rows: mixRows, seed: shuffleGenerator.next(), pickFromFirst: MusicRadioPick.candidateCount
+            of: staged, after: anchor, rows: mixRows, seed: shuffleGenerator.next(), pickFromFirst: MusicRadioPick.candidateCount,
+            tags: mixTags
         )
         reorderStaged(placed.map(\.videoId))
+        keepRadioInGenre()
         radioPlacedKey = placedKey(queue.autoplay)
     }
 
@@ -1935,12 +1947,12 @@ final class MusicService {
     /// laid into the slots that cost their neighbours least. Among them only songs with a row are judged once one has.
     static func placement(
         of fresh: [MusicTrack], after anchor: MusicTrack, rows: [String: MusicAnalysis], seed: UInt64,
-        pickFromFirst: Int = MusicMixWindow.size
+        pickFromFirst: Int = MusicMixWindow.size, tags: (MusicTrack) -> [String] = { _ in [] }
     ) -> [MusicTrack] {
         let head = Array(fresh.prefix(MusicMixWindow.size))
         let rest = Array(fresh.dropFirst(head.count))
         func profile(_ track: MusicTrack) -> MusicMixProfile {
-            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: rows[track.videoId])
+            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: rows[track.videoId], tags: tags(track))
         }
         func isKnown(_ p: MusicMixProfile) -> Bool { p.bpm != nil || p.camelot != nil || p.energy != nil }
         let profiles = head.map(profile)
@@ -2141,15 +2153,12 @@ final class MusicService {
     /// has stored a row (the best first, the others by Mix's own orderer out of it); otherwise only the best song
     /// moves. A radio with nothing to score keeps the order it had. The queue is only assigned when the order changed.
     private func pickRadioNext(_ plan: RadioScanPlan, analysed: Int) async {
-        func profile(_ track: MusicTrack) -> MusicMixProfile {
-            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
-        }
         if plan.staged, isFlowShuffleOn {
-            guard plan.tracks.contains(where: { MusicRadioPick.isKnown(profile($0)) }) else { return }
+            guard plan.tracks.contains(where: { MusicRadioPick.isKnown(mixProfile($0)) }) else { return }
             await placeStagedRadio()
             return
         }
-        guard let choice = MusicRadioPick.best(of: plan.tracks.map(profile), after: profile(plan.anchor)),
+        guard let choice = MusicRadioPick.best(of: plan.tracks.map(mixProfile), after: mixProfile(plan.anchor)),
               choice.videoId != plan.tracks.first?.videoId else { return }
         if plan.staged {
             let others = queue.autoplay.map(\.videoId).filter { $0 != choice.videoId }
@@ -2157,9 +2166,9 @@ final class MusicService {
         } else if isFlowShuffleOn {
             // Rows that were there when Mix ordered the songs are in its order already; the ones this scan stored are not.
             guard analysed > 0 else { return }
-            let rest = plan.tracks.filter { $0.videoId != choice.videoId }.map(profile)
+            let rest = plan.tracks.filter { $0.videoId != choice.videoId }.map(mixProfile)
             var orderer = MusicMixOrderer(seed: shuffleGenerator.next())
-            let chosen = plan.tracks.first { $0.videoId == choice.videoId }.map(profile)
+            let chosen = plan.tracks.first { $0.videoId == choice.videoId }.map(mixProfile)
             let order = [choice.videoId] + orderer.order(rest, first: chosen)
             var copy = queue
             copy.mixOrder(order)
@@ -2190,20 +2199,19 @@ final class MusicService {
         let next = plan.staged ? queue.autoplay.first : queue.upcoming.first
         guard let next else { return }
         let known = plan.tracks.filter { mixRows[$0.videoId] != nil }.count
-        func profile(_ track: MusicTrack) -> MusicMixProfile {
-            MusicMixProfile(videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId])
-        }
-        let scorable = MusicRadioPick.isKnown(profile(plan.anchor)) && MusicRadioPick.isKnown(profile(next))
+        let (anchor, following) = (mixProfile(plan.anchor), mixProfile(next))
+        let scorable = MusicRadioPick.isKnown(anchor) && MusicRadioPick.isKnown(following)
         let reason = locked ? "locked" : (scorable ? "best" : "order")
         log(MusicTransitionLog.radioPickLine(
             candidates: plan.tracks.count, analysed: analysed, known: known, picked: next.videoId,
-            score: scorable ? MusicRadioPick.score(of: profile(next), after: profile(plan.anchor)) : nil, reason: reason
+            score: scorable ? MusicRadioPick.score(of: following, after: anchor) : nil, reason: reason
         ))
     }
 
     /// The playing song changed: what Up next shows is worked out again for the songs after it. With Flow Shuffle on,
     /// after `MusicMixWindow.topUpAfter` songs the next window is ordered too, behind the songs the listener can see.
     private func mixTrackChanged() {
+        genreSweepSoon()
         guard showsMixInfo else { return }
         guard isFlowShuffleOn else {
             // Mixing alone orders nothing: only what Up next shows is worked out again.
@@ -2214,6 +2222,8 @@ final class MusicService {
         mixPlayed += 1
         let order = mixOrderPending || MusicMixWindow.needsTopUp(playedSinceOrdering: mixPlayed)
         let kept = mixOrderPending ? 0 : Self.mixVisibleKept
+        // A cancelled ordering for genres that came in is done now.
+        let regroup = genreOrderPending && !order
         let analyseCurrent = mixAnalyseCurrent
         mixAnalyseCurrent = false
         let replan = mixReplanPending
@@ -2223,6 +2233,7 @@ final class MusicService {
             // The re-plan after a skip comes first: it is the part the listener hears next.
             if replan { await self?.replanAfterSkip() }
             if order { await self?.orderMix(keeping: kept) }
+            if regroup { await self?.orderMix(keeping: kept, analysing: false) }
             if !order || replan { await self?.refreshMixPairs() }
             if analyseCurrent, let self, let current = self.queue.current {
                 await self.analyseMissingRows(in: [current])
@@ -2257,7 +2268,12 @@ final class MusicService {
         touchSession()
         isAutoplayOn = on
         savePlaybackPreferences()
-        if on { queue.restoreRadio(using: &shuffleGenerator) } else { queue.parkRadio() }
+        if on {
+            queue.restoreRadio(using: &shuffleGenerator)
+            radioGrew()
+        } else {
+            queue.parkRadio()
+        }
         topUpQueueAfterModeChange()
         noteQueueFilling()
         saveSession()
@@ -2277,6 +2293,7 @@ final class MusicService {
         replanOffered()
         radioScanSoon()
         refreshMixPairsSoon()
+        genreSweepSoon()
     }
 
     /// The Transitions button: Off, Crossfade, Mixing, Off.
@@ -3155,7 +3172,7 @@ final class MusicService {
             // The radio that follows a page waits beside it until the page runs out.
             added = queue.stageAutoplay(page.tracks, continuation: page.continuation, seed: seed)
             if added > 0, isFlowShuffleOn { placeStagedRadioSoon() }
-            if added > 0 { radioScanSoon() }
+            if added > 0 { radioGrew() }
         } else {
             // The radio has answered: from here the queue is the radio's, even if it had nothing new to add. A mix's
             // answer joins the queue itself and the queue stays the mix's; a plain radio asked once the mix has run dry
@@ -3173,7 +3190,7 @@ final class MusicService {
             }
             added = queue.append(page.tracks, continuation: page.continuation, using: &shuffleGenerator, inOrder: isFlowShuffleOn)
             if added > 0 { mixQueueGrew() }
-            if added > 0 { radioScanSoon() }
+            if added > 0 { radioGrew() }
         }
         if added > 0, resumePendingAdvance() { return }
         // Pages overlap heavily: one that adds nothing still has a continuation, so ask again at once,
@@ -3650,8 +3667,171 @@ final class MusicService {
             var query = MusicSongFactsQuery(track: track)
             let stream = [current, prefetched].compactMap { $0 }.first { $0.videoId == track.videoId }
             query.durationSeconds = query.durationSeconds ?? stream?.durationSeconds
-            Task { await lookahead.prepare(videoId: track.videoId, query: query, allowNetwork: network) }
+            Task { [weak self, query] in
+                await lookahead.prepare(videoId: track.videoId, query: query, allowNetwork: network)
+                self?.applyGenres()
+            }
         }
+    }
+
+    // MARK: - Genre sorting
+
+    // In Mixing, Flow Shuffle keeps a genre together and the autoplay radio stays in the one it was started from. Both go by the
+    // tags Deci has stored, and by the tags of another song of the same artist. What neither knows is looked up one song at a
+    // time, only for the songs about to be ordered and the radio's first ones, and the order is made again when it is in.
+
+    /// The lookups under way; nil when nothing is left to look up.
+    @ObservationIgnored private(set) var genreTask: Task<Void, Never>?
+    /// The songs ahead changed while the lookups run: they go over them again.
+    @ObservationIgnored private var genreSweepAgain = false
+    /// The songs whose genre was not known when Flow Shuffle last ordered them.
+    @ObservationIgnored private var genreUnknown: Set<String> = []
+    /// Genres came in that the order does not know yet.
+    @ObservationIgnored private var genreOrderPending = false
+    /// The order is made again after this many lookups, and when they are done.
+    private static let genresPerOrder = 16
+
+    private var sortsByGenre: Bool { genreLookahead != nil && isBeatMixOn && mixesTransitions }
+
+    /// The tags a song is sorted by.
+    private func mixTags(_ track: MusicTrack) -> [String] {
+        guard sortsByGenre, let lookahead = genreLookahead else { return [] }
+        let own = lookahead.genres(for: track.videoId)
+        return own.isEmpty ? lookahead.artistGenres(track.artist) : own
+    }
+
+    /// What the mix engine knows about a song.
+    private func mixProfile(_ track: MusicTrack) -> MusicMixProfile {
+        MusicMixProfile(
+            videoId: track.videoId, artist: track.artist, analysis: mixRows[track.videoId], tags: mixTags(track)
+        )
+    }
+
+    private func mixFamily(of track: MusicTrack) -> MusicGenreFamily? { mixProfile(track).genre }
+
+    /// Reads the stored genres of `tracks`. No network.
+    private func readMixGenres(for tracks: [MusicTrack]) async {
+        guard sortsByGenre, let lookahead = genreLookahead else { return }
+        for track in tracks where !lookahead.hasRequested(track.videoId, allowNetwork: false) {
+            if Task.isCancelled { return }
+            await lookahead.prepare(videoId: track.videoId, query: MusicSongFactsQuery(track: track), allowNetwork: false)
+        }
+    }
+
+    /// The songs whose genre decides something: the ones Flow Shuffle orders next, the radio's first ones and the song it follows.
+    /// `own`: the tags of another song of the artist are not enough.
+    private func genreSweepTracks() -> [(track: MusicTrack, own: Bool)] {
+        guard sortsByGenre else { return [] }
+        let sources = radioGenreSources()
+        var tracks: [MusicTrack] = []
+        if isFlowShuffleOn {
+            tracks += (queue.current.map { [$0] } ?? []) + queue.unqueuedUpcoming.prefix(MusicMixWindow.size + Self.mixVisibleKept)
+        }
+        let radio = queue.radioHead.prefix(MusicRadioGenre.lookedUp)
+        let staged = playsAutoplay ? queue.autoplay.prefix(MusicRadioGenre.lookedUp) : []
+        let own = sources + radio + staged
+        let ownIds = Set(own.map(\.videoId))
+        var seen = Set<String>()
+        // What the radio follows comes first, then what plays first.
+        return (sources + tracks + radio + staged).filter { seen.insert($0.videoId).inserted }
+            .map { ($0, ownIds.contains($0.videoId)) }
+    }
+
+    /// Starts the lookups, or has the ones under way go on with the songs that are ahead now.
+    private func genreSweepSoon() {
+        guard sortsByGenre else { return }
+        genreSweepAgain = true
+        guard genreTask == nil else { return }
+        genreTask = Task { [weak self] in
+            while let self, self.genreSweepAgain {
+                self.genreSweepAgain = false
+                await self.sweepGenres()
+            }
+            self?.genreTask = nil
+        }
+    }
+
+    private func sweepGenres() async {
+        guard let lookahead = genreLookahead else { return }
+        await readMixGenres(for: genreSweepTracks().map(\.track))
+        applyGenres()
+        var looked = 0
+        // Every round asks for one song, which is then never asked for again. The radio goes by a song's own tags only; for the
+        // order those of another song of the artist will do.
+        while !isOffline, let track = genreSweepTracks().first(where: {
+            !lookahead.hasRequested($0.track.videoId, allowNetwork: true)
+                && ($0.own ? lookahead.genres(for: $0.track.videoId) : mixTags($0.track)).isEmpty
+        })?.track {
+            await lookahead.prepare(videoId: track.videoId, query: MusicSongFactsQuery(track: track), allowNetwork: true)
+            looked += 1
+            if looked % Self.genresPerOrder == 0 { applyGenres() }
+        }
+        if looked > 0 { applyGenres() }
+    }
+
+    /// Puts the genres that are known now to use: in the radio, and in the order of the songs behind the ones the listener sees.
+    private func applyGenres() {
+        guard sortsByGenre else { return }
+        keepRadioInGenre()
+        guard isFlowShuffleOn else { return }
+        if playsAutoplay, !queue.autoplay.isEmpty { placeStagedRadioSoon() }
+        let ahead = queue.unqueuedUpcoming.dropFirst(Self.mixVisibleKept).prefix(MusicMixWindow.size)
+        guard !mixOrderPending, !genreOrderPending, ahead.count > 1,
+              ahead.contains(where: { genreUnknown.contains($0.videoId) && mixFamily(of: $0) != nil }) else { return }
+        genreOrderPending = true
+        let previous = mixTask
+        mixTask = Task { [weak self] in
+            // Cancelling this one cancels the one it waits for too.
+            await withTaskCancellationHandler { await previous?.value } onCancel: { previous?.cancel() }
+            guard let self, !Task.isCancelled, self.genreOrderPending, !self.mixOrderPending else { return }
+            await self.orderMix(keeping: Self.mixVisibleKept, analysing: false)
+        }
+    }
+
+    /// The radio gained songs.
+    private func radioGrew() {
+        keepRadioInGenre()
+        radioScanSoon()
+        genreSweepSoon()
+    }
+
+    /// The songs the radio follows, the one that says most first: what the listener chose last, and what played since.
+    private func radioGenreSources() -> [MusicTrack] {
+        if queue.upcoming.isEmpty || queue.isPage { return queue.autoplay.isEmpty || !playsAutoplay ? [] : queue.tracks.suffix(3).reversed() }
+        guard !queue.radioHead.isEmpty, let current = queue.currentIndex, let anchor = queue.radioAnchorIndex else { return [] }
+        return Array(queue.tracks[anchor...current].prefix(3))
+    }
+
+    /// The autoplay radio stays in the genre of the song it follows: songs of that genre come first, and songs known to be of another
+    /// one are left out as long as enough others are ahead. A next song that is already being prepared stays where it is.
+    private func keepRadioInGenre() {
+        guard sortsByGenre, let family = radioGenreSources().lazy.compactMap({ self.mixFamily(of: $0) }).first else { return }
+        let staged = queue.radioHead.isEmpty
+        guard !staged || playsAutoplay else { return }
+        let songs = staged ? queue.autoplay : queue.radioHead
+        let isNext = !staged || queue.upcoming.isEmpty
+        let locked = isNext && isNextSongLocked(songs.first) ? 1 : 0
+        let rest = songs.dropFirst(locked)
+        guard !rest.isEmpty else { return }
+        var families: [String: MusicGenreFamily] = [:]
+        for track in rest {
+            // The tags of another song of the artist can bring a song in, never leave it out.
+            let known = mixFamily(of: track)
+            if known == family || !genres(of: track.videoId).isEmpty { families[track.videoId] = known }
+        }
+        let kept = MusicRadioGenre.kept(rest.map(\.videoId), families: families, anchor: family)
+        let order = songs.prefix(locked).map(\.videoId) + kept
+        guard order != songs.map(\.videoId) else { return }
+        var copy = queue
+        if staged { copy.keepStagedRadio(order) } else { copy.keepRadioHead(order) }
+        queue = copy
+        if kept.count < rest.count {
+            log(MusicTransitionLog.radioGenreLine(
+                family: family.rawValue, kept: kept.count, left: rest.count - kept.count,
+                same: kept.filter { families[$0] == family }.count
+            ))
+        }
+        saveSession()
     }
 
     /// The genre tags known for a song, best fitting first; empty when they are not known (yet).

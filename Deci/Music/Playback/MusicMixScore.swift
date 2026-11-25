@@ -54,10 +54,13 @@ nonisolated struct MusicMixProfile: Sendable, Equatable {
     /// 0...1 loudness of the first and last seconds, how much room a long blend has.
     var introEnergy: Float?
     var outroEnergy: Float?
+    /// What kind of music its tags say it is; nil when it has none that say.
+    var genre: MusicGenreFamily?
 
     init(
         videoId: String, artist: String = "", bpm: Double? = nil, gridTrusted: Bool = false,
-        camelot: MusicCamelot? = nil, energy: Float? = nil, introEnergy: Float? = nil, outroEnergy: Float? = nil
+        camelot: MusicCamelot? = nil, energy: Float? = nil, introEnergy: Float? = nil, outroEnergy: Float? = nil,
+        genre: MusicGenreFamily? = nil
     ) {
         self.videoId = videoId
         self.artist = artist
@@ -67,6 +70,7 @@ nonisolated struct MusicMixProfile: Sendable, Equatable {
         self.energy = energy
         self.introEnergy = introEnergy
         self.outroEnergy = outroEnergy
+        self.genre = genre
     }
 }
 
@@ -82,6 +86,9 @@ nonisolated struct MusicMixCompact: Sendable {
     var energy: Float
     var intro: Float
     var outro: Float
+    /// The genre family and its group as numbers. Negative means unknown.
+    var genre: Int
+    var group: Int
 
     init(_ profile: MusicMixProfile) {
         let bpm = profile.bpm ?? 0
@@ -96,6 +103,9 @@ nonisolated struct MusicMixCompact: Sendable {
         energy = unit(profile.energy)
         intro = unit(profile.introEnergy)
         outro = unit(profile.outroEnergy)
+        let family = profile.genre.flatMap { $0 == .open ? nil : $0 }
+        genre = family?.index ?? -1
+        group = family?.group ?? -1
     }
 }
 
@@ -115,6 +125,9 @@ nonisolated enum MusicMixScore {
     /// beyond it the tempo clashes and the score falls off a cliff.
     static let tempoSweetSpot = 0.03
     static let tempoTolerance = 0.08
+    /// The most a song can be stretched to be beat matched. Closer than `tempoTolerance`: what still sounds right next to
+    /// each other is wider than what the planner can put on one beat.
+    static let matchTolerance = 0.05
     static let tempoClashCeiling = 0.5
     static let tempoClashSpan = 0.22
     /// Half or double time lines the beats up but not the bars.
@@ -150,6 +163,43 @@ nonisolated enum MusicMixScore {
     static func tempoFits(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Bool {
         guard let error = tempoMeasure(a, b)?.error else { return true }
         return withinTolerance(error)
+    }
+
+    // What a step costs, in whole points, before any score is looked at. A lower cost always wins; the score only decides
+    // between equal ones. Same genre and beat matched is free, half or double time costs a point. A change of genre costs less than a tempo clash and more
+    // than two songs that only nearly share a tempo, so the music stays in its genre while that genre still mixes.
+    static let genreNearCost = 1
+    static let genreChangeCost = 3
+    static let tempoHalfCost = 1
+    static let tempoNearCost = 2
+    static let tempoClashCost = 4
+
+    /// Nothing for the same genre, a point for a related one or when either is not known, the most for another one.
+    @_optimize(speed)
+    static func genreCost(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Int {
+        guard a.genre >= 0, b.genre >= 0 else { return genreNearCost }
+        if a.genre == b.genre { return 0 }
+        return a.group == b.group ? genreNearCost : genreChangeCost
+    }
+
+    /// Both genres are known and a DJ would call it a change of genre.
+    @_optimize(speed)
+    static func changesGenre(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Bool {
+        a.genre >= 0 && b.genre >= 0 && a.group != b.group
+    }
+
+    /// Nothing when the two can be beat matched: both beats are known for sure and one can be stretched onto the other.
+    @_optimize(speed)
+    static func tempoCost(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Int {
+        guard let measure = tempoMeasure(a, b) else { return tempoNearCost }
+        guard withinTolerance(measure.error) else { return tempoClashCost }
+        guard a.trusted, b.trusted, measure.error <= matchTolerance + boundarySlack else { return tempoNearCost }
+        return measure.folded ? tempoHalfCost : 0
+    }
+
+    @_optimize(speed)
+    static func stepCost(_ a: MusicMixCompact, _ b: MusicMixCompact) -> Int {
+        genreCost(a, b) + tempoCost(a, b)
     }
 
     /// Float rounding in the ratio must not push 100 to 108 over the line, so every boundary shares this slack.

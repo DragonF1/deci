@@ -111,9 +111,9 @@ nonisolated struct MusicMixOrderer: Sendable {
         }
         func clash(_ a: MusicMixCompact?, _ b: MusicMixCompact?) -> Int {
             guard let a, let b else { return 0 }
-            return MusicMixScore.tempoFits(a, b) ? 0 : 1
+            return (MusicMixScore.tempoFits(a, b) ? 0 : 1) + (MusicMixScore.changesGenre(a, b) ? 1 : 0)
         }
-        // Fewest tempo clashes after the insertion first, then the best gain.
+        // Fewest tempo clashes and changes of genre after the insertion first, then the best gain.
         var best = low, bestClashes = Int.max, bestGain = -Double.infinity
         for slot in low...window.count {
             let previous = slot == 0 ? anchorCompact : compact[slot - 1]
@@ -131,18 +131,22 @@ nonisolated struct MusicMixOrderer: Sendable {
         return best
     }
 
-    /// The candidate that mixes best out of `anchor`. When none has anything known (or there is no anchor) the choice is
-    /// a seeded random one, because a score of pure unknowns would always pick the first.
+    /// The candidate that mixes best out of `anchor`, of its genre when there is one. When none has anything known (or
+    /// there is no anchor) the choice is a seeded random one, because a score of pure unknowns would always pick the first.
     mutating func pickBest(from candidates: [MusicMixProfile], after anchor: MusicMixProfile?) -> MusicMixProfile? {
         guard !candidates.isEmpty else { return nil }
         let anchorKnown = anchor.map { $0.bpm != nil || $0.camelot != nil || $0.energy != nil } ?? false
         let known = candidates.contains { $0.bpm != nil || $0.camelot != nil || $0.energy != nil }
         guard known, anchorKnown, let anchor else { return candidates.randomElement(using: &generator) }
         let from = MusicMixCompact(anchor)
-        let values = candidates.map { MusicMixScore.score(from: from, to: MusicMixCompact($0), allowLift: false) }
-        let top = values.max() ?? 0
+        let compact = candidates.map(MusicMixCompact.init)
+        let genres = compact.map { MusicMixScore.genreCost(from, $0) }
+        let nearest = genres.min() ?? 0
+        let near = compact.indices.filter { genres[$0] == nearest }
+        let values = compact.map { MusicMixScore.score(from: from, to: $0, allowLift: false) }
+        let top = near.map { values[$0] }.max() ?? 0
         // Ties are common (identical tempo and key), so the seed decides among them.
-        let tied = values.indices.filter { values[$0] >= top - 1e-9 }
+        let tied = near.filter { values[$0] >= top - 1e-9 }
         return candidates[tied.randomElement(using: &generator) ?? 0]
     }
 
@@ -326,14 +330,14 @@ nonisolated struct MusicMixOrderer: Sendable {
                     remaining.swapAt(position, position + generator.below(remaining.count - position))
                 }
             }
-            // The tempo gate only works when the song we mix out of has a known tempo.
-            let gateOn = scorer.hasCurrent && scorer.current!.bpm > 0
+            // The gate only works when the song we mix out of has a known tempo or a known genre.
+            let gateOn = scorer.hasCurrent && (scorer.current!.bpm > 0 || scorer.current!.genre >= 0)
             var scored: [(position: Int, value: Double, raw: Double)] = []
             pool.removeAll(keepingCapacity: true)
             for strict in [true, false] {
                 scored.removeAll(keepingCapacity: true)
                 pool.removeAll(keepingCapacity: true)
-                // Hard artist rules decide who is allowed; the tempo gate only narrows inside that.
+                // Hard artist rules decide who is allowed; the gate only narrows inside that.
                 for position in 0..<looked {
                     let artist = metas[remaining[position]].artist
                     if strict {
@@ -384,9 +388,10 @@ nonisolated struct MusicMixOrderer: Sendable {
         return out
     }
 
-    /// Narrows `pool` (positions in `remaining`, already allowed by the artist rules) to songs that keep the tempo step
-    /// inside the tolerance: the sample's fitting songs, else a scan of everything left, else the nearest tempo. Then
-    /// keeps the songs with the fewest tempo neighbours left (plus one), so outliers are placed before they are stranded.
+    /// Narrows `pool` (positions in `remaining`, already allowed by the artist rules) to the cheapest step out of `current`
+    /// (`MusicMixScore.stepCost`: same genre and on the beat first), from the sample, else from everything left. When even
+    /// that is a tempo clash, only the nearest tempos of it. Then keeps the songs with the fewest tempo neighbours left
+    /// (plus one), so outliers are placed before they are stranded.
     @_optimize(speed)
     private mutating func gate(
         _ pool: inout [Int], current: MusicMixCompact?, looked: Int, remaining: [Int], compact: [MusicMixCompact],
@@ -399,47 +404,43 @@ nonisolated struct MusicMixOrderer: Sendable {
             preferFresh = true
         }
         var fitting = pool
-        if let current { fitting = pool.filter { MusicMixScore.tempoFits(current, compact[remaining[$0]]) } }
-        if let current, fitting.isEmpty, looked < remaining.count {
-            // Nothing in the sample fits: look at everything left that the artist rules allow.
-            for position in looked..<remaining.count {
-                let index = remaining[position]
-                let artist = metas[index].artist
-                if preferFresh, metas[index].avoided { continue }
-                if strict {
-                    if artist >= 0, artist == lastArtist { continue }
-                    if let crowded, artist != crowded { continue }
+        if let current {
+            fitting.removeAll(keepingCapacity: true)
+            var cheapest = Int.max
+            @_optimize(speed)
+            func consider(_ position: Int) {
+                let cost = MusicMixScore.stepCost(current, compact[remaining[position]])
+                if cost > cheapest { return }
+                if cost < cheapest {
+                    cheapest = cost
+                    fitting.removeAll(keepingCapacity: true)
                 }
-                if MusicMixScore.tempoFits(current, compact[index]) { fitting.append(position) }
+                fitting.append(position)
             }
-            if fitting.count > Self.sampleLimit {
-                for i in 0..<Self.sampleLimit { fitting.swapAt(i, i + generator.below(fitting.count - i)) }
-                fitting.removeLast(fitting.count - Self.sampleLimit)
-            }
-        }
-        if let current, fitting.isEmpty {
-            // No song fits anywhere: the nearest tempo, with a little slack so a near tie keeps its choice.
-            var all = pool
-            if looked < remaining.count {
+            for position in pool { consider(position) }
+            // The best the sample has is not the best there can be: look at everything left that the artist rules allow.
+            let ideal = current.genre >= 0 ? 0 : MusicMixScore.genreNearCost
+            if cheapest > ideal, remaining.count > looked {
                 for position in looked..<remaining.count {
-                    let artist = metas[remaining[position]].artist
-                    if preferFresh, metas[remaining[position]].avoided { continue }
+                    let index = remaining[position]
+                    let artist = metas[index].artist
+                    if preferFresh, metas[index].avoided { continue }
                     if strict {
                         if artist >= 0, artist == lastArtist { continue }
                         if let crowded, artist != crowded { continue }
                     }
-                    all.append(position)
+                    consider(position)
                 }
             }
-            var minError = Double.infinity
-            for position in all {
-                minError = min(minError, MusicMixScore.tempoError(current, compact[remaining[position]]) ?? 0)
-            }
-            let errors = all.map { MusicMixScore.tempoError(current, compact[remaining[$0]]) ?? 0 }
-            for slack in Self.nearestSlackSteps {
-                let step = all.indices.filter { errors[$0] <= minError + slack }.map { all[$0] }
-                fitting = step
-                if step.count >= min(Self.nearestMinPool, all.count) { break }
+            if fitting.contains(where: { !MusicMixScore.tempoFits(current, compact[remaining[$0]]) }) {
+                // No song of it fits on tempo: the nearest one, with a little slack so a near tie keeps its choice.
+                let errors = fitting.map { MusicMixScore.tempoError(current, compact[remaining[$0]]) ?? 0 }
+                let minError = errors.min() ?? 0
+                let all = fitting
+                for slack in Self.nearestSlackSteps {
+                    fitting = all.indices.filter { errors[$0] <= minError + slack }.map { all[$0] }
+                    if fitting.count >= min(Self.nearestMinPool, all.count) { break }
+                }
             }
             if fitting.count > Self.sampleLimit {
                 for i in 0..<Self.sampleLimit { fitting.swapAt(i, i + generator.below(fitting.count - i)) }

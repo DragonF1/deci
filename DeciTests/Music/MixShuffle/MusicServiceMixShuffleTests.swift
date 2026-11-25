@@ -25,7 +25,10 @@ struct MixShuffleHarness {
     let player: MusicPlayer
     let service: MusicService
 
-    init(preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(), withReader: Bool = true, seed: UInt64 = 11) {
+    init(
+        preferences: MusicPlaybackPreferences = MusicPlaybackPreferences(), withReader: Bool = true, seed: UInt64 = 11,
+        genreLookahead: MusicGenreLookahead? = nil
+    ) {
         let engine = self.engine
         let clock = self.clock
         let saved = self.saved
@@ -47,7 +50,8 @@ struct MixShuffleHarness {
             connectivity: connectivity,
             refreshOnCreate: false,
             analysis: provider,
-            analysisReader: withReader ? reader : nil
+            analysisReader: withReader ? reader : nil,
+            genreLookahead: genreLookahead
         )
     }
 

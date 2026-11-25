@@ -184,9 +184,9 @@ import Testing
     @Test func skipsQueuedPrefixAndCapsAtSize() {
         let ids = (0..<500).map(String.init)
         let window = MusicMixWindow.window(upcoming: ids, queuedCount: 3)
-        #expect(window.count == 24)
+        #expect(window.count == 48)
         #expect(window.first == "3")
-        #expect(window.last == "26")
+        #expect(window.last == "50")
     }
 
     @Test func shortQueuesAndEdges() {

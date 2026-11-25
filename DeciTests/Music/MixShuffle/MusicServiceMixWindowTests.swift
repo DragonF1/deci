@@ -23,7 +23,7 @@ struct MusicServiceMixWindowTests {
         return h
     }
 
-    @Test("a 500 song queue orders only the next 24 songs and the tail keeps its order")
+    @Test("a 500 song queue orders only the next 48 songs and the tail keeps its order")
     func bigQueueOrdersOneWindow() async {
         let ids = Self.ids(500)
         let h = await harness(ids)
@@ -32,7 +32,7 @@ struct MusicServiceMixWindowTests {
         let natural = h.order
         await h.settle()
         let size = MusicMixWindow.size
-        // Slot 0 is the playing song; the window is slots 1...24.
+        // Slot 0 is the playing song; the window is slots 1...48.
         #expect(Array(h.order[(size + 1)...]) == Array(natural[(size + 1)...]))
         #expect(Set(h.order[1...size]) == Set(natural[1...size]))
         #expect(h.order[0] == natural[0])
@@ -46,12 +46,13 @@ struct MusicServiceMixWindowTests {
         h.service.setShuffleMode(.flow)
         await h.settle()
         let reads = await h.reader.reads
-        #expect(reads.count < 120)
+        // Ordering reads the window once and Up next reads what it shows: never more than twice the window and a few.
+        #expect(reads.count < 2 * MusicMixWindow.size + 60)
     }
 
     @Test("songs the listener queued stay in front and the window starts behind them")
     func queuedPrefixSkipped() async {
-        let ids = Self.ids(60)
+        let ids = Self.ids(80)
         let h = await harness(ids)
         let first = MusicSamples.track("s010", title: "Song s010", artist: "Artist s010")
         let second = MusicSamples.track("s020", title: "Song s020", artist: "Artist s020")
@@ -62,7 +63,7 @@ struct MusicServiceMixWindowTests {
         let natural = h.order
         await h.settle()
         #expect(Array(h.order[1...2]) == ["s010", "s020"])
-        // The window is the 24 songs after the queued two; everything behind them is untouched.
+        // The window is the 48 songs after the queued two; everything behind them is untouched.
         let tailStart = 3 + MusicMixWindow.size
         #expect(Array(h.order[tailStart...]) == Array(natural[tailStart...]))
         #expect(Set(h.order[3..<tailStart]) == Set(natural[3..<tailStart]))

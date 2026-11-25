@@ -73,6 +73,11 @@ enum MusicTransitionLog {
             + " score=\(score.map { fixed($0, 2) } ?? "-") reason=\(reason)"
     }
 
+    /// The radio was kept in its genre: the family it stays in, and how many of the songs ahead stayed and went.
+    static func radioGenreLine(family: String, kept: Int, left: Int, same: Int) -> String {
+        "radio_genre family=\(family) kept=\(kept) same=\(same) left=\(left)"
+    }
+
     /// transition_late from=<id> to=<id> reason=late
     /// A song's analysis landed after the transition was planned: nothing changes for that transition.
     static func lateLine(from: String, to: String, late: String) -> String {

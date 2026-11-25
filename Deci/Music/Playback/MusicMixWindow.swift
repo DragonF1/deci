@@ -4,7 +4,8 @@
 import Foundation
 
 nonisolated enum MusicMixWindow {
-    static let size = 24
+    /// Wide enough that most songs have one of their own genre they can really be beat matched with in it.
+    static let size = 48
     /// A top-up orders the next window once this many songs of the current one were played.
     static let topUpAfter = 6
 

@@ -23,16 +23,20 @@ nonisolated enum MusicRadioPick {
     }
 
     /// The candidate with the best score out of `anchor`. Only songs with a stored analysis are judged: a song nothing is
-    /// known about is never picked over one that is. Ties go to the earlier song, so the radio's own order decides them.
+    /// known about is never picked over one that is. A song of the same genre beats a better score of another one.
+    /// Ties go to the earlier song, so the radio's own order decides them.
     /// Nil when there is nothing to score from: the song it follows is unknown, or no candidate is known.
     static func best(of candidates: [MusicMixProfile], after anchor: MusicMixProfile) -> Choice? {
         guard isKnown(anchor) else { return nil }
-        var best: Choice?
+        let from = MusicMixCompact(anchor)
+        var best: (choice: Choice, genre: Int)?
         for candidate in candidates where isKnown(candidate) {
             let value = score(of: candidate, after: anchor)
-            if best == nil || value > (best?.score ?? 0) + 1e-9 { best = Choice(videoId: candidate.videoId, score: value) }
+            let genre = MusicMixScore.genreCost(from, MusicMixCompact(candidate))
+            if let best, genre > best.genre || (genre == best.genre && value <= best.choice.score + 1e-9) { continue }
+            best = (Choice(videoId: candidate.videoId, score: value), genre)
         }
-        return best
+        return best?.choice
     }
 }
 

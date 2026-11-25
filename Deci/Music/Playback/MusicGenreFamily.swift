@@ -29,6 +29,9 @@ nonisolated enum MusicGenreFamily: String, CaseIterable, Sendable {
     /// Nothing is known about it.
     case open
 
+    /// Its place in the list, for loops that compare numbers.
+    var index: Int { Self.allCases.firstIndex(of: self) ?? 0 }
+
     /// Families a DJ mixes the same way: going from one group to another is a change of genre.
     var group: Int {
         switch self {
