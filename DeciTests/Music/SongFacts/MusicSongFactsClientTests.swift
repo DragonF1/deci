@@ -160,7 +160,7 @@ struct MusicSongFactsClientTests {
         }
         #expect(brainz[0].url.absoluteString.contains("inc=artist-credits+tags"))
         #expect(!brainz[0].url.absoluteString.contains("genres"))
-        #expect(brainz[1].url.absoluteString.contains("inc=genres+releases"))
+        #expect(brainz[1].url.absoluteString.contains("inc=genres+releases+artist-credits"))
     }
 
     @Test("MusicBrainz is held to one request a second")
@@ -238,6 +238,28 @@ struct MusicSongFactsClientTests {
         #expect(transport.urls.filter { $0.contains("musicbrainz.org") }.count == 1)
     }
 
+    @Test("every genre name is kept as a tag: the recording's first, then its artist's, then the album's, each once")
+    func tags() async throws {
+        let recording = """
+        {"id":"\(Fx.mbid)","genres":[{"count":3,"name":"pop"}],
+        "artist-credit":[{"artist":{"genres":[{"count":1,"name":"Alternative R&B"},{"count":5,"name":"POP"}]}}]}
+        """
+        let transport = StubSongFactsTransport(Fx.fullRoutes())
+        transport.route("musicbrainz.org/ws/2/recording/", [.success(Fx.ok(recording))])
+        let found = try #require(facts(await client(transport).lookup(Fx.query)))
+        #expect(found.tags == ["pop", "Alternative R&B", "R&B"])
+        #expect(found.genres == ["R&B"], "the panel still shows the first service's")
+    }
+
+    @Test("a lookup that found no genre at all stores an empty list, so it is not asked for again")
+    func noTags() async throws {
+        let transport = StubSongFactsTransport(Fx.fullRoutes())
+        transport.route("api.deezer.com/album/", [.success(Fx.ok("{\"id\":1,\"label\":\"L\",\"genres\":{\"data\":[]}}"))])
+        transport.route("musicbrainz.org/ws/2/isrc/", [.success(Fx.ok("{\"recordings\":[]}"))])
+        let found = try #require(facts(await client(transport).lookup(Fx.query)))
+        #expect(found.tags == [])
+    }
+
     @Test("at most 8 genres, each cut to 200 characters, and only a plausible release date is kept")
     func caps() async throws {
         let long = String(repeating: "x", count: 500)
@@ -251,6 +273,7 @@ struct MusicSongFactsClientTests {
         let found = try #require(facts(await client(transport).lookup(Fx.query)))
         #expect(found.genres.count == 8)
         #expect(found.genres.allSatisfy { $0.count <= 200 })
+        #expect((found.tags ?? []).count == 8 && (found.tags ?? []).allSatisfy { $0.count <= 200 })
         #expect(found.releaseDate == nil)
         #expect(MusicSongFactsClient.validReleaseDate("2020") == "2020")
         #expect(MusicSongFactsClient.validReleaseDate("2020-03") == "2020-03")

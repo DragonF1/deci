@@ -91,6 +91,28 @@ struct MusicSongFactsStoreTests {
         #expect(record.isLookupFresh(at: clock.date.addingTimeInterval(400 * 86_400)))
     }
 
+    @Test("a complete row stays when a later lookup for its tags finds less")
+    func thinnerLookup() async throws {
+        let clock = SongFactsClock()
+        let store = try store(clock)
+        var old = found(clock: clock)
+        old.tags = nil
+        for id in ["miss", "partial", "bare"] { await store.putLookup(videoId: id, .found(old)) }
+        await store.putLookup(videoId: "miss", .notFound)
+        var thin = MusicSongFacts(fetchedAt: clock.date)
+        thin.tags = ["techno"]
+        await store.putLookup(videoId: "partial", .partial(thin))
+        thin.tags = []
+        await store.putLookup(videoId: "bare", .partial(thin))
+        for (id, tags) in [("miss", old.genres), ("partial", ["techno"]), ("bare", nil)] as [(String, [String]?)] {
+            var expected = old
+            expected.tags = tags
+            let record = try #require(await store.record(for: id))
+            #expect(record.facts == expected, "\(id)")
+            #expect(record.outcome == .hit)
+        }
+    }
+
     @Test("a miss is believed for 7 days and not after")
     func missTTL() async throws {
         let clock = SongFactsClock()

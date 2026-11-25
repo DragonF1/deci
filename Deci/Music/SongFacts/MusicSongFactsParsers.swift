@@ -63,6 +63,8 @@ enum MusicSongFactsParsers {
     struct MusicBrainzDetail: Equatable {
         /// Most voted first.
         var genres: [String]
+        /// Genres of the credited artists, most voted first.
+        var artistGenres: [String] = []
         var firstReleaseDate: String?
     }
 
@@ -154,13 +156,21 @@ enum MusicSongFactsParsers {
 
     static func musicBrainzDetail(_ data: Data) throws -> MusicBrainzDetail {
         let root = try object(data)
-        let genres = (root["genres"] as? [Any] ?? []).compactMap { raw -> (name: String, count: Int)? in
+        let artists = (root["artist-credit"] as? [Any] ?? []).compactMap { ($0 as? [String: Any])?["artist"] as? [String: Any] }
+        return MusicBrainzDetail(
+            genres: musicBrainzGenres(root["genres"] as? [Any] ?? []),
+            artistGenres: musicBrainzGenres(artists.flatMap { $0["genres"] as? [Any] ?? [] }),
+            firstReleaseDate: string(root["first-release-date"])
+        )
+    }
+
+    /// Genre names, most voted first. Stable: the service's own order breaks a tie.
+    private static func musicBrainzGenres(_ raw: [Any]) -> [String] {
+        let genres = raw.compactMap { raw -> (name: String, count: Int)? in
             guard let genre = raw as? [String: Any], let name = string(genre["name"]) else { return nil }
             return (name, int(genre["count"]) ?? 0)
         }
-        // Stable: the service's own order breaks a tie.
-        let ordered = genres.enumerated().sorted { ($0.element.count, -$0.offset) > ($1.element.count, -$1.offset) }
-        return MusicBrainzDetail(genres: ordered.map(\.element.name), firstReleaseDate: string(root["first-release-date"]))
+        return genres.enumerated().sorted { ($0.element.count, -$0.offset) > ($1.element.count, -$1.offset) }.map(\.element.name)
     }
 
     // MARK: - TheAudioDB

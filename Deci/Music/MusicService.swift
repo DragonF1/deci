@@ -246,6 +246,8 @@ final class MusicService {
     /// Tests only: turns the DJ's exits and entries off. They are part of Mixing in the app.
     @ObservationIgnored private let liveDJLength: (@MainActor () -> Bool)?
     @ObservationIgnored private let vocalLookahead: MusicVocalLookahead?
+    /// The genres of the playing song and the next one; nil in tests that plan without.
+    @ObservationIgnored private let genreLookahead: MusicGenreLookahead?
     /// The incoming song a beat mix was given up for (it was not parked in time): its transition is planned the smart
     /// way from then on. Forgotten when the track changes.
     @ObservationIgnored private var beatFallbackFor: String?
@@ -440,9 +442,11 @@ final class MusicService {
         mixFlags: MusicMixFlagStore? = nil,
         listening: (any MusicListeningRecording)? = nil,
         // 3d-4: sung intervals from synced lyrics for the vocal guard; nil (a test's default) keeps the structural proxy.
-        vocalLookahead: MusicVocalLookahead? = nil
+        vocalLookahead: MusicVocalLookahead? = nil,
+        genreLookahead: MusicGenreLookahead? = nil
     ) {
         self.vocalLookahead = vocalLookahead
+        self.genreLookahead = genreLookahead
         self.mixFlags = mixFlags
         self.listening = listening
         self.analysis = analysis
@@ -1822,7 +1826,7 @@ final class MusicService {
         MusicTransitionSide(
             videoId: track.videoId,
             durationSeconds: track.durationSeconds.map(Double.init) ?? Double(row.format.durationMs) / 1000,
-            analysis: row, youtubeLoudnessDb: row.youtubeLoudnessDb
+            analysis: row, youtubeLoudnessDb: row.youtubeLoudnessDb, genres: genres(of: track.videoId)
         )
     }
 
@@ -3518,10 +3522,13 @@ final class MusicService {
         var inputs = MusicTransitionInputs(
             outgoing: MusicTransitionSide(
                 videoId: current.videoId, durationSeconds: current.durationSeconds, analysis: row,
-                vocalIntervals: vocalLookahead?.intervals(for: current.videoId), deckRate: activeDeckRate,
-                lyricCues: vocalLookahead?.cues(for: current.videoId)
+                vocalIntervals: vocalLookahead?.intervals(for: current.videoId), genres: genres(of: current.videoId),
+                deckRate: activeDeckRate, lyricCues: vocalLookahead?.cues(for: current.videoId)
             ),
-            incoming: MusicTransitionSide(videoId: nextId, durationSeconds: nil, analysis: nil),
+            incoming: MusicTransitionSide(
+                videoId: nextId, durationSeconds: nil, analysis: prefetched.flatMap { $0.videoId == nextId ? freshRow(for: $0) : nil },
+                genres: genres(of: nextId)
+            ),
             crossfadeOn: mixesTransitions, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
             beatMixEnabled: isBeatMixOn && beatFallbackFor != nextId, bassSwapAvailable: true, vocalGuardEnabled: isVocalGuardOn,
@@ -3575,6 +3582,7 @@ final class MusicService {
         if let line = MusicTransitionLog.vocalGuardLine(
             from: plan.offered.inputs.outgoing.videoId, to: stream.videoId, plan: plan.plan
         ) { log(line) }
+        if plan.offered.inputs.beatMixEnabled { log(MusicTransitionLog.genreLine(plan.offered.inputs)) }
         logBeat(plan.offered)
     }
 
@@ -3600,6 +3608,25 @@ final class MusicService {
             Task { await lookahead.prepare(query, duration: duration, allowNetwork: network) }
         }
     }
+
+    /// Starts the genre lookup for the playing song and the next one (once each), like `startVocalLookahead` but whatever the vocal
+    /// guard is set to. What Deci already looked up for the Song data panel is used as it is; otherwise the same services are asked,
+    /// with the artist and title only. Never awaited by the plan.
+    func startGenreLookahead() {
+        guard let lookahead = genreLookahead, isBeatMixOn, mixesTransitions, plansTransitions,
+              let current = player.currentStream else { return }
+        let network = !isOffline
+        for track in [player.nowPlaying, preloadTarget] {
+            guard let track, !lookahead.hasRequested(track.videoId, allowNetwork: network) else { continue }
+            var query = MusicSongFactsQuery(track: track)
+            let stream = [current, prefetched].compactMap { $0 }.first { $0.videoId == track.videoId }
+            query.durationSeconds = query.durationSeconds ?? stream?.durationSeconds
+            Task { await lookahead.prepare(videoId: track.videoId, query: query, allowNetwork: network) }
+        }
+    }
+
+    /// The genre tags known for a song, best fitting first; empty when they are not known (yet).
+    private func genres(of videoId: String) -> [String] { genreLookahead?.genres(for: videoId) ?? [] }
 
     /// The beat line of an offered plan: the beat plan, or why a pair that could have beat-mixed did not.
     private func logBeat(_ offered: OfferedPlan) {
@@ -3648,12 +3675,12 @@ final class MusicService {
             outgoing: MusicTransitionSide(
                 videoId: current.videoId, durationSeconds: current.durationSeconds, analysis: outgoing,
                 youtubeLoudnessDb: current.loudnessDb, vocalIntervals: vocalLookahead?.intervals(for: current.videoId),
-                deckRate: activeDeckRate, lyricCues: vocalLookahead?.cues(for: current.videoId)
+                genres: genres(of: current.videoId), deckRate: activeDeckRate, lyricCues: vocalLookahead?.cues(for: current.videoId)
             ),
             incoming: MusicTransitionSide(
                 videoId: next.videoId, durationSeconds: next.durationSeconds, analysis: incoming,
                 youtubeLoudnessDb: next.loudnessDb, vocalIntervals: vocalLookahead?.intervals(for: next.videoId),
-                lyricCues: vocalLookahead?.cues(for: next.videoId)
+                genres: genres(of: next.videoId), lyricCues: vocalLookahead?.cues(for: next.videoId)
             ),
             crossfadeOn: mixesTransitions, settingSeconds: crossfadeSeconds, albumInOrder: playsAlbumInOrder,
             loopSong: loopMode == .song, cleanStartFlag: flags.startsClean, cleanPairFlag: flags.pairIsClean,
@@ -4006,6 +4033,7 @@ final class MusicService {
         // A session whose account expired only counts listening: the next song is not prepared under the dead account.
         if isPlaying, session?.pingsDropped != true {
             startVocalLookahead()
+            startGenreLookahead()
             prefetchNextIfNeeded(position: position)
             offerPreload(position: position)
             giveUpBeatMixIfNotReady(position: position)

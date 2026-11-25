@@ -57,8 +57,8 @@ nonisolated enum MusicDJLength {
         let barSec = grid.map { 4 * $0.periodSec } ?? nominalBarSec
         let end = smartEnd ?? duration
         // The mix-out has to be beaten by a bar. The planner passes the real one; without it, it is estimated at the overlap the
-        // beat planner tries first (16 bars with bass swap and a known downbeat, else 8), or at a floor blend's.
-        let estimateBars = inputs.bassSwapAvailable ? 16 : MusicBeatPlanner.phraseBars
+        // beat planner tries first when both downbeats are known, or at a floor blend's.
+        let estimateBars = MusicBeatPlanner.overlapLengths(inputs, barSec: barSec, phrased: true).first ?? MusicBeatPlanner.phraseBars
         let estimate = grid.flatMap { MusicBeatPlanner.mixOutTime(grid: $0, analysis: a, bars: estimateBars, barSec: barSec, end: end) }
         let normal = known ?? estimate ?? (end - MusicBeatPlanner.floorFadeSeconds)
         guard normal.isFinite else { return [] }

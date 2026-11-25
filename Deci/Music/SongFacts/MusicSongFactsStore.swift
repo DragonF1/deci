@@ -112,6 +112,11 @@ actor MusicSongFactsStore {
         case .notFound: outcome = .miss; facts = MusicSongFacts(fetchedAt: now())
         }
         let existing = record(for: videoId)
+        // A complete row stays when a lookup for its tags found less (a service had a bad moment): only the tags are added.
+        if outcome != .hit, var kept = existing, kept.outcome == .hit {
+            if let tags = facts.tags, !tags.isEmpty { kept.facts.tags = tags } else if outcome == .miss { kept.facts.tags = kept.facts.genres }
+            return write(kept, videoId: videoId)
+        }
         facts.measureFailedAt = existing?.facts.measureFailedAt
         if let tempo = existing?.facts.bpm, existing?.facts.source(of: .bpm) == .deci {
             facts.setMeasuredTempo(bpm: tempo, confidence: existing?.facts.bpmConfidence ?? 0)

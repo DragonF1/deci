@@ -25,6 +25,8 @@ final class LiveWorld {
     private(set) var lyricLines: [String: [LyricLine]] = [:]
     private(set) var lyricIntervals: [String: [ClosedRange<Double>]] = [:]
     private(set) var instrumentals: Set<String> = []
+    /// Genre tags by song: what a rig made from here on answers the genre lookup with. Empty for none.
+    var genreTags: [String: [String]] = [:]
     private(set) var analysisSeconds = 0.0
     private(set) var analysedNow = 0
 
@@ -122,6 +124,19 @@ final class LiveWorld {
         )
     }
 
+    /// Answers from `genreTags`, as if the Song data panel had looked every song up.
+    func makeGenreLookahead() -> MusicGenreLookahead {
+        let tags = genreTags
+        return MusicGenreLookahead(
+            readCache: { id in
+                var facts = MusicSongFacts(fetchedAt: Date())
+                facts.tags = tags[id] ?? []
+                return MusicSongFactsCached(facts: facts, lookupIsFresh: true, measureAttempted: false)
+            },
+            lookup: { _, _ in .failed }
+        )
+    }
+
     /// The pieces of one real MusicService: real analysis, real planner, real queue; only the network is the fake backend.
     struct Rig {
         let service: MusicService
@@ -157,7 +172,8 @@ final class LiveWorld {
             refreshOnCreate: false,
             analysis: coordinator,
             analysisReader: coordinator,
-            vocalLookahead: lookahead
+            vocalLookahead: lookahead,
+            genreLookahead: genreTags.isEmpty ? nil : makeGenreLookahead()
         )
         return Rig(service: service, player: player, backend: backend, saved: saved, clock: clock)
     }

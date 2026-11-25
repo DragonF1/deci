@@ -3,9 +3,10 @@
 // reason. Pure: value types in, value type out, no clock and no I/O.
 //
 // Tempo: every deck plays at rate 1. A song on this Mac has its tempo matched for the overlap inside its item (then it goes
-// back to its own tempo); any other is matched only by where it starts. Both also against half or double the outgoing tempo. The overlap is 8 bars (16 once the bass swap exists and both songs have room) of the outgoing song, starting on
-// one of its phrase boundaries (8-bar multiples counted from its first downbeat). The incoming song starts on one of its
-// own bar boundaries at or after its leading silence, so its beats land on the outgoing beats.
+// back to its own tempo); any other is matched only by where it starts. Both also against half or double the outgoing tempo. The
+// overlap is as many bars of the outgoing song as songs of these genres run together (4, 8 or 16: `MusicMixHabits`; 8 without a
+// bass swap or a downbeat), starting on one of its phrase boundaries (8-bar multiples counted from its first downbeat). The
+// incoming song starts on one of its own bar boundaries at or after its leading silence, so its beats land on the outgoing beats.
 
 import Foundation
 
@@ -164,7 +165,7 @@ enum MusicBeatPlanner {
         let barSec = 4 * aGrid.periodSec
         let bothPhrased = aGrid.downbeatPhase != nil && bGrid.downbeatPhase != nil
         let bEnd = MusicTransitionPlanner.trimmedEnd(of: b, duration: bDuration) ?? bDuration
-        let lengths = inputs.bassSwapAvailable && bothPhrased ? [16, 8] : [8]
+        let lengths = overlapLengths(inputs, barSec: barSec, phrased: bothPhrased)
         var late = false
         // Tier 3c: lengths skipped only because two singers would overlap, and the first and least of those collisions.
         var vocalSkipped = 0
@@ -174,8 +175,8 @@ enum MusicBeatPlanner {
         // Tier 4c: the first blend whose end falls inside a sung line. It is kept only when no other length ends in a gap.
         var clipped: TransitionPlan?
 
-        // The 4-bar guard tier comes last, and only when a longer length had room and collided (a length with no room
-        // does not stop it: a 16 bar overlap that never fits is no reason to refuse a clean 4 bar one).
+        // The 4-bar guard tier comes last (unless 4 bars were tried already), and only when a longer length had room and collided
+        // (a length with no room does not stop it: a 16 bar overlap that never fits is no reason to refuse a clean 4 bar one).
         var index = 0
         while index < lengths.count + 1 {
             defer { index += 1 }
@@ -183,7 +184,7 @@ enum MusicBeatPlanner {
             if index < lengths.count {
                 bars = lengths[index]
             } else {
-                guard inputs.vocalGuardEnabled, vocalSkipped > 0, 4 * barSec >= MusicVocalGuard.minBeatTierSec
+                guard !lengths.contains(4), inputs.vocalGuardEnabled, vocalSkipped > 0, 4 * barSec >= MusicVocalGuard.minBeatTierSec
                 else { break }
                 bars = 4
             }
@@ -255,8 +256,8 @@ enum MusicBeatPlanner {
                 plan.vocalCollisionSec = c
                 plan.vocalBeforeSec = first
             }
-            if inputs.bassSwapAvailable, bothPhrased, bars != 4 {
-                // Half of 8 or 16 bars is a bar line.
+            if inputs.bassSwapAvailable, bothPhrased, !guardTier {
+                // Half of 4, 8 or 16 bars is a bar line.
                 landBass(&plan, on: overlap / 2, beat: aGrid.periodSec / outRate)
             }
             if inputs.vocalGuardEnabled, let intervals = inputs.outgoing.vocalIntervals,
@@ -274,6 +275,14 @@ enum MusicBeatPlanner {
         }
         if driftSkipped > 0 { return refuse(.tempoClash) }
         return refuse(late ? .tooLate : .noPhraseRoom)
+    }
+
+    /// The overlap lengths (bars) to try, in order: what songs of these genres are mixed over, and 8 without a bass swap or a known
+    /// downbeat on both. 4 bars only where they still last as long as a blend has to.
+    static func overlapLengths(_ inputs: MusicTransitionInputs, barSec: Double, phrased: Bool) -> [Int] {
+        guard inputs.bassSwapAvailable, phrased else { return [phraseBars] }
+        let lengths = MusicMixHabits.pair(for: inputs).lengths.filter { $0 != 4 || 4 * barSec >= MusicVocalGuard.minBeatTierSec }
+        return lengths.isEmpty ? [phraseBars] : lengths
     }
 
     /// Puts the bass swap into the beat that ends on `downbeat` (seconds into the overlap, as is `beat`).

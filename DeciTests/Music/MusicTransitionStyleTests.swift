@@ -23,7 +23,7 @@ struct MusicTransitionStyleTests {
     static let samples: [S] = [
         S(), S(tempoError: 0), S(tempoError: 0.2), S(tempoError: 0.5, energyJump: 0.5, keyDistance: 5),
         S(tempoError: 0.02, energyJump: -0.4, outroEnergy: 0.2, introEnergy: 0.9, keyDistance: 4),
-        S(tempoError: 0.2, energyJump: -0.4, outroEnergy: 0.1, gridTrusted: true, genres: ["Ambient"]),
+        S(tempoError: 0.2, energyJump: -0.4, outroEnergy: 0.1, gridTrusted: true, habits: .pair(.init(family: .soft, isGuess: false), .unknown)),
         S(tempoError: .nan, energyJump: .nan), S(tempoError: 0.01, outroEnergy: 0.9, introEnergy: 0.9),
     ]
 
@@ -90,12 +90,48 @@ struct MusicTransitionStyleTests {
         #expect(P.ranked(hard, previous: nil).contains(.quickCut) || P.ranked(hard, previous: nil).contains(.echoOut))
     }
 
-    @Test("genres only break a tie, they never beat a signal")
-    func genresTieBreak() {
-        let soft = S(tempoError: 0.3, genres: ["ambient", "folk"])
-        let punchy = S(tempoError: 0.3, genres: ["techno"])
-        #expect(P.pick(soft, previous: nil) == P.pick(S(tempoError: 0.3), previous: nil))
-        #expect(P.pick(punchy, previous: nil) == P.pick(S(tempoError: 0.3), previous: nil))
+    /// The habits of two songs whose genre a service named.
+    static func habits(_ out: MusicGenreFamily, _ into: MusicGenreFamily) -> MusicMixHabits {
+        .pair(.init(family: out, isGuess: false), .init(family: into, isGuess: false))
+    }
+
+    @Test("two rap songs are cut at the end of a section in the middle, two house songs never")
+    func sectionCuts() {
+        func at(_ habits: MusicMixHabits, exit: Bool = true, error: Double? = 0.05, phrase: Bool = true) -> S {
+            S(tempoError: error, gridTrusted: true, habits: habits, atDJExit: exit, mixOutOnPhrase: phrase)
+        }
+        let rap = Self.habits(.hipHop, .hipHop), house = Self.habits(.house, .house)
+        for style in [MusicTransitionStyle.quickCut, .echoOut] {
+            #expect(P.suits(style, at(rap)))
+            #expect(!P.suits(style, at(rap, exit: false)), "at its own end a cut still needs a hard ending")
+            #expect(!P.suits(style, at(rap, error: 0.2)), "the tempos clash")
+            #expect(!P.suits(style, at(rap, error: nil)), "a tempo is unknown")
+            #expect(!P.suits(style, at(rap, phrase: false)), "not at the end of a phrase")
+            #expect(!P.suits(style, at(house)))
+        }
+        #expect(P.pick(at(rap), previous: .longBlend).isCutLike)
+        #expect(P.pick(at(house), previous: .longBlend) == .longBlend)
+    }
+
+    @Test("a cut or an echo out after either of the two loses twice the repeat penalty")
+    func cutsDoNotPile() {
+        let rap = Self.habits(.hipHop, .hipHop)
+        let here = S(tempoError: 0.02, gridTrusted: true, habits: rap, atDJExit: true, mixOutOnPhrase: true)
+        for previous in [MusicTransitionStyle.quickCut, .echoOut] {
+            #expect(P.penalty(.quickCut, previous: previous) == 2 * P.repeatPenalty)
+            #expect(P.penalty(.echoOut, previous: previous) == 2 * P.repeatPenalty)
+            #expect(!P.pick(here, previous: previous).isCutLike)
+        }
+        #expect(P.penalty(.filterSweep, previous: .filterSweep) == P.repeatPenalty)
+        #expect(P.penalty(.longBlend, previous: .longBlend) == 0)
+    }
+
+    @Test("a loop extend still beats the blend it replaces, whatever the genres")
+    func loopExtendKeepsPace() {
+        for family in MusicGenreFamily.allCases {
+            let habits = Self.habits(family, family)
+            #expect(habits.bonus(for: .loopExtend) >= habits.bonus(for: .longBlend))
+        }
     }
 
     @Test("the planner turns a tempo clash into a floor blend: beat mode, 6 to 8 s, a bass swap, no cut")

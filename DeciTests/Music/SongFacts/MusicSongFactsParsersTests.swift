@@ -150,7 +150,20 @@ struct MusicSongFactsParsersTests {
     func musicBrainzDetail() throws {
         let detail = try Parsers.musicBrainzDetail(data(SongFactsFixtures.musicBrainzRecording))
         #expect(detail.genres == ["pop", "synth-pop"])
+        #expect(detail.artistGenres.isEmpty)
         #expect(detail.firstReleaseDate == "2019-11-29")
+    }
+
+    @Test("a recording also gives its artists' genres, most voted first whoever they belong to")
+    func musicBrainzArtistGenres() throws {
+        let json = """
+        {"id":"x","genres":[],"artist-credit":[
+        {"name":"A","artist":{"id":"1","genres":[{"count":2,"name":"pop"},{"count":9,"name":"house"}]}},
+        {"name":"B","artist":{"id":"2","genres":[{"count":4,"name":"techno"},{"name":"bad","count":"x"},7]}},"text",{"name":"C"}]}
+        """
+        let detail = try Parsers.musicBrainzDetail(data(json))
+        #expect(detail.genres.isEmpty)
+        #expect(detail.artistGenres == ["house", "techno", "pop", "bad"])
     }
 
     // MARK: - TheAudioDB

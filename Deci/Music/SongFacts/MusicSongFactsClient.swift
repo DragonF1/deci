@@ -34,6 +34,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
     /// The only hosts a request may reach, redirects included.
     static let allowedHosts: Set<String> = ["api.deezer.com", "api.reccobeats.com", "musicbrainz.org", "www.theaudiodb.com"]
     static let maximumGenres = 8
+    static let maximumTags = 16
     static let maximumTextLength = 200
 
     private static let unreserved = CharacterSet(
@@ -54,6 +55,10 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
         var stopped = false
         /// The Deezer step itself failed before it matched the song (quota, oversize reply, bad reply).
         var deezerFailedUnmatched = false
+        /// Genre names by how closely they are about the song: the recording's, its artist's, the album's or the record's.
+        var recordingTags: [String] = []
+        var artistTags: [String] = []
+        var otherTags: [String] = []
     }
 
     private let transport: any HTTPTransport
@@ -97,6 +102,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
         await musicBrainz(&run)
         if !run.hasFeatures { await audioDB(query, &run) }
         if Task.isCancelled || run.deezerFailedUnmatched { return .failed }
+        run.facts.tags = Self.tags(run.recordingTags + run.artistTags + run.otherTags)
         if run.facts.isEmpty { return run.trouble ? .failed : .notFound }
         return run.trouble ? .partial(run.facts) : .found(run.facts)
     }
@@ -132,6 +138,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
                let album = try MusicSongFactsParsers.deezerAlbum(try await get("https://api.deezer.com/album/\(albumId)")) {
                 fill(&run, \.label, album.label, .label, .deezer)
                 fillGenres(&run, album.genres, .deezer)
+                run.otherTags += album.genres.prefix(Self.maximumGenres)
             }
         } catch {
             note(error, &run)
@@ -190,9 +197,11 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
             await throttle(.musicBrainz, interval: Self.musicBrainzInterval)
             let detail = try MusicSongFactsParsers.musicBrainzDetail(
                 try await get(
-                    "https://musicbrainz.org/ws/2/recording/\(recording.id)?inc=genres+releases&fmt=json",
+                    "https://musicbrainz.org/ws/2/recording/\(recording.id)?inc=genres+releases+artist-credits&fmt=json",
                     headers: ["User-Agent": Self.musicBrainzUserAgent]))
             fillGenres(&run, detail.genres, .musicbrainz)
+            run.recordingTags = Array(detail.genres.prefix(Self.maximumGenres))
+            run.artistTags = Array(detail.artistGenres.prefix(Self.maximumGenres))
             fill(&run, \.releaseDate, Self.validReleaseDate(detail.firstReleaseDate), .releaseDate, .musicbrainz)
         } catch {
             // A 400 is a request the service will not take; asking again would not help, and nothing is lost.
@@ -225,6 +234,7 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
             fill(&run, \.energy, track.energy, .energy, .theaudiodb)
             fill(&run, \.danceability, track.danceability, .danceability, .theaudiodb)
             fillGenres(&run, track.genre.map { [$0] } ?? [], .theaudiodb)
+            run.otherTags += track.genre.map { [$0] } ?? []
         } catch {
             note(error, &run)
         }
@@ -240,6 +250,12 @@ actor MusicSongFactsClient: MusicSongFactsLooking {
         guard let value, run.facts[keyPath: path] == nil else { return }
         run.facts[keyPath: path] = value
         run.facts.claim(field, source)
+    }
+
+    /// Each name once, whatever its case, at most `maximumTags` of them, none too long.
+    private static func tags(_ names: [String]) -> [String] {
+        var seen: Set<String> = []
+        return Array(names.map { String($0.prefix(maximumTextLength)) }.filter { seen.insert($0.lowercased()).inserted }.prefix(maximumTags))
     }
 
     private func fillGenres(_ run: inout Run, _ names: [String], _ source: MusicSongFacts.Source) {

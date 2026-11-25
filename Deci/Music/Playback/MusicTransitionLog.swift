@@ -30,6 +30,17 @@ enum MusicTransitionLog {
         return " vocal=\(vocal.outgoing ? "lyrics" : "proxy")/\(vocal.incoming ? "lyrics" : "proxy")"
     }
 
+    /// transition_genre from=<id> to=<id> out=hipHop/tag in=pop/guess bars=4,8 cuts=no
+    /// What kind of music the two songs were taken for (read from a tag, or guessed from tempo and energy) and how such songs
+    /// are mixed.
+    static func genreLine(_ inputs: MusicTransitionInputs) -> String {
+        func side(_ genre: MusicGenre) -> String { "\(genre.family.rawValue)/\(genre.isGuess ? "guess" : "tag")" }
+        let habits = MusicMixHabits.pair(for: inputs)
+        return "transition_genre from=\(inputs.outgoing.videoId) to=\(inputs.incoming.videoId)"
+            + " out=\(side(MusicGenre(of: inputs.outgoing))) in=\(side(MusicGenre(of: inputs.incoming)))"
+            + " bars=\(habits.lengths.map(String.init).joined(separator: ",")) cuts=\(habits.cutsOnSections ? "yes" : "no")"
+    }
+
     /// transition_applied from=<id> to=<id> mode=smart fade=6.40 lead=13.30 skipped=4.00
     /// Engine side, at the hand-over. `lead` is how long before the outgoing item's end the overlap started, `skipped` the
     /// audible tail of the outgoing item that was never played (lead - fade).

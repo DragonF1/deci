@@ -94,6 +94,8 @@ final class MusicServiceHost {
             let lyricsCache = LyricsDiskCache.live()
             let lyricsClient = YTMusicLyricsClient.live()
             let lyricsChain = LyricsChain(primary: lyricsClient, fallback: LRCLibClient.live(), cache: lyricsCache)
+            // One set of song facts: what the Song data panel and the genre lookup learn is shared.
+            let facts = MusicSongFactsRepository.live()
             let service = MusicService(
                 backend: backend,
                 player: MusicServiceHost.makePlayer(mixer: mixer),
@@ -116,10 +118,10 @@ final class MusicServiceHost {
                 analysisReader: coordinator,
                 mixFlags: MusicMixFlagStore.live(),
                 listening: MusicListeningStore(url: MusicListeningStore.liveURL()),
-                vocalLookahead: .live(cache: lyricsCache, client: lyricsClient)
+                vocalLookahead: .live(cache: lyricsCache, client: lyricsClient),
+                genreLookahead: .live(facts: facts)
             )
             // The Song data panel asks the online services and measures what they lack.
-            let facts = MusicSongFactsRepository.live()
             service.songData.attachFacts(
                 repository: facts,
                 measurer: MusicSongMeasurer(analysis: coordinator, facts: facts.cache),

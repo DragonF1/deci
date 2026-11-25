@@ -43,7 +43,11 @@ struct MusicSongFacts: Sendable, Equatable, Codable {
     var instrumentalness: Double?
     var speechiness: Double?
     var liveness: Double?
+    /// What the panel shows: the genres of the first service that gave any.
     var genres: [String] = []
+    /// Every genre name any service gave the song, the one about this very recording first, then its artist's, then its album's.
+    /// nil on a row stored before they were kept.
+    var tags: [String]?
     /// As the service wrote it: "2020-03-20", sometimes only a year.
     var releaseDate: String?
     var label: String?
@@ -71,7 +75,7 @@ struct MusicSongFacts: Sendable, Equatable, Codable {
     var isEmpty: Bool {
         isrc == nil && bpm == nil && key == nil && energy == nil && danceability == nil && valence == nil
             && acousticness == nil && instrumentalness == nil && speechiness == nil && liveness == nil
-            && genres.isEmpty && releaseDate == nil && label == nil && explicit == nil && deezerId == nil && mbid == nil
+            && genres.isEmpty && (tags ?? []).isEmpty && releaseDate == nil && label == nil && explicit == nil && deezerId == nil && mbid == nil
     }
 
     /// The sources in use, in chain order, each once.

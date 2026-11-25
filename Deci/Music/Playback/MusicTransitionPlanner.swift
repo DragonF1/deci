@@ -115,7 +115,7 @@ struct MusicTransitionSide: Equatable, Sendable {
     /// Tier 3d-4: where the song is sung, in song seconds, from synced lyrics. nil = unknown (the structural proxy is
     /// used); empty = known instrumental.
     var vocalIntervals: [ClosedRange<Double>]? = nil
-    /// Tier 4b: genre tags from the song facts, often empty. Only ever a tie-break for the style picker.
+    /// Genre tags from the song facts, best fitting first, often empty: they decide how the song is mixed (`MusicGenre`).
     var genres: [String] = []
     /// Tier 4c: the rate this song's deck plays at for its whole song (a Mix nudged it), item seconds per wall second. Only
     /// meaningful on the outgoing side. 1 for a song that was started plainly.
