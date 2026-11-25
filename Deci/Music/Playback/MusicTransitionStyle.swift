@@ -20,16 +20,40 @@ nonisolated enum MusicTransitionStyle: String, Sendable, CaseIterable {
     case dropSwap
     /// The incoming song's intro is looped 4 or 8 bars until the overlap fits inside it.
     case loopExtend
+    /// A beat blend with a low-pass sweep on the outgoing song: it goes dull and sinks under the new song.
+    case lowpassSweep
+    /// A beat blend whose outgoing song is taken away on a bar line near the end, its last beat echoing over the new song.
+    case echoThrow
+    /// The outgoing song stops on the bar line and its last moment rings out in a big room while the next song starts.
+    case reverbOut
+    /// The outgoing song is stopped like a record under a hand as the next song starts.
+    case brake
+    /// A beat blend whose outgoing song stutters (a beat, half a beat, a quarter) in the bar before the bass changes hands.
+    case loopRoll
+    /// Both songs' drops land on the same downbeat and run together for a phrase, one bassline at a time.
+    case doubleDrop
 
     /// What the picker may return today.
-    static let pickable: [MusicTransitionStyle] = [.longBlend, .quickCut, .echoOut, .filterSweep, .dropSwap, .loopExtend]
+    static let pickable: [MusicTransitionStyle] = [
+        .longBlend, .quickCut, .echoOut, .filterSweep, .dropSwap, .loopExtend, .lowpassSweep, .echoThrow, .reverbOut, .brake, .loopRoll,
+        .doubleDrop,
+    ]
 
-    /// A cut or an echo: no overlap to speak of, the outgoing song is held at full level until the incoming one starts.
+    /// A cut, or a cut with a tail: no overlap to speak of, the outgoing song is held at full level until the incoming one starts.
     /// Every other style is made of a long overlap like the plain blend.
-    var isCutLike: Bool { self == .quickCut || self == .echoOut }
+    var isCutLike: Bool { self == .quickCut || hasTail }
+
+    /// The outgoing song goes on being heard after the cut, as an effect and nothing else.
+    var hasTail: Bool { self == .echoOut || self == .reverbOut || self == .brake }
+
+    /// A sweep: the filter takes the outgoing song away.
+    var isSweep: Bool { self == .filterSweep || self == .lowpassSweep }
+
+    /// The plan places itself on a drop: nothing else says where either song is.
+    var landsOnDrop: Bool { self == .dropSwap || self == .doubleDrop }
 
     /// An effect is heard as one: it is kept for about every fourth or fifth song.
-    var isEffect: Bool { self == .filterSweep || self == .echoOut }
+    var isEffect: Bool { isSweep || hasTail || self == .echoThrow || self == .loopRoll }
 
     /// What a Mix is made of: one song over the other and nothing more.
     var isPlainBlend: Bool { self == .longBlend || self == .loopExtend }
@@ -43,6 +67,12 @@ nonisolated enum MusicTransitionStyle: String, Sendable, CaseIterable {
         case .filterSweep: return "Filter sweep"
         case .dropSwap: return "Drop swap"
         case .loopExtend: return "Loop extend"
+        case .lowpassSweep: return "Low-pass sweep"
+        case .echoThrow: return "Echo throw"
+        case .reverbOut: return "Reverb out"
+        case .brake: return "Brake"
+        case .loopRoll: return "Loop roll"
+        case .doubleDrop: return "Double drop"
         }
     }
 }
@@ -66,6 +96,8 @@ nonisolated struct MusicTransitionStyleInputs: Equatable, Sendable {
     var atDJExit = false
     /// Confidence (0...1) of the incoming song's first usable drop; nil when it has none or a grid is not trusted.
     var dropConfidence: Float?
+    /// The same for the outgoing song's most confident drop: with both, the two can land together.
+    var outgoingDropConfidence: Float?
     /// Loop extend: the planner built a loop plan for this pair (the incoming intro is short, the file is local).
     var loopFits = false
     /// How many dB the outgoing tail sits below its body (integrated loudness minus the outro's); nil = unknown. A hard ending
@@ -77,7 +109,8 @@ nonisolated struct MusicTransitionStyleInputs: Equatable, Sendable {
     init(
         tempoError: Double? = nil, energyJump: Float? = nil, outroEnergy: Float? = nil, introEnergy: Float? = nil,
         keyDistance: Int? = nil, gridTrusted: Bool = false, habits: MusicMixHabits = .neutral, atDJExit: Bool = false,
-        dropConfidence: Float? = nil, loopFits: Bool = false, tailDropDb: Double? = nil, mixOutOnPhrase: Bool = false
+        dropConfidence: Float? = nil, outgoingDropConfidence: Float? = nil, loopFits: Bool = false, tailDropDb: Double? = nil,
+        mixOutOnPhrase: Bool = false
     ) {
         self.habits = habits
         self.atDJExit = atDJExit
@@ -85,6 +118,7 @@ nonisolated struct MusicTransitionStyleInputs: Equatable, Sendable {
         self.mixOutOnPhrase = mixOutOnPhrase
         self.loopFits = loopFits
         self.dropConfidence = dropConfidence
+        self.outgoingDropConfidence = outgoingDropConfidence
         self.tempoError = tempoError
         self.energyJump = energyJump
         self.outroEnergy = outroEnergy
@@ -170,14 +204,14 @@ nonisolated enum MusicTransitionStylePicker {
     /// Whether a style suits these numbers. A cut or an echo only suits a hard ending (the tail within `hardEndingDb` of the
     /// body), matching tempos and a mix-out on a phrase end: anything else gets a blend, never a hard stop. Between two songs of
     /// genres that are cut on a section (`cutsOnSections`), the end of a section in the middle of the song is as good a place: there
-    /// is no tail to clip, and with nothing overlapping the tempos only have to be close enough to beat match. An echo out of such a
-    /// section end also gets across a tempo clash: the old groove is gone before the new one starts. Every other style is a candidate
-    /// by `isCandidate`.
+    /// is no tail to clip, and with nothing overlapping the tempos only have to be close enough to beat match. A cut with a tail out
+    /// of such a section end also gets across a tempo clash: the old groove is gone before the new one starts. Every other style is a
+    /// candidate by `isCandidate`.
     static func suits(_ style: MusicTransitionStyle, _ i: MusicTransitionStyleInputs) -> Bool {
         guard style.isCutLike else { return isCandidate(style, i) }
         guard i.mixOutOnPhrase, let error = i.tempoError, error.isFinite else { return false }
         if i.atDJExit {
-            if style == .echoOut, i.gridTrusted, isClash(i) { return true }
+            if style.hasTail, i.gridTrusted, isClash(i) { return true }
             if i.habits.cutsOnSections { return MusicMixScore.withinTolerance(error) }
         }
         guard let drop = i.tailDropDb, drop.isFinite, drop <= hardEndingDb else { return false }
@@ -185,22 +219,33 @@ nonisolated enum MusicTransitionStylePicker {
     }
 
     /// Whether a style can be built for these numbers at all (a cut or an echo is always buildable, but only `suits` picks it).
-    /// A sweep needs keys that agree and an incoming song that is no quieter, with or without a trusted grid; a drop swap
-    /// needs a beat blend and a confident drop.
+    /// A sweep needs keys that agree and an incoming song that is no quieter (no louder for a low-pass), with or without a trusted
+    /// grid; a throw and a roll need a beat blend; a drop swap also a confident drop, a double drop one in each song.
     private static func isCandidate(_ style: MusicTransitionStyle, _ i: MusicTransitionStyleInputs) -> Bool {
         switch style {
         case .filterSweep:
             guard let jump = i.energyJump, jump.isFinite, jump >= -similarEnergy else { return false }
             return (i.keyDistance ?? 0) < farKey
+        case .lowpassSweep:
+            guard let jump = i.energyJump, jump.isFinite, jump <= similarEnergy else { return false }
+            return (i.keyDistance ?? 0) < farKey
+        case .echoThrow, .loopRoll:
+            return i.gridTrusted && i.tempoError != nil && !isClash(i) && (i.keyDistance ?? 0) < farKey
         case .dropSwap:
-            guard i.gridTrusted, !isClash(i), let confidence = i.dropConfidence, confidence.isFinite else { return false }
-            // Overlapping 4 to 8 bars needs keys that agree, like the sweep.
-            return confidence >= MusicDropDetector.confidenceFloor && (i.keyDistance ?? 0) < farKey
+            return dropFits(i, i.dropConfidence)
+        case .doubleDrop:
+            return dropFits(i, i.dropConfidence) && dropFits(i, i.outgoingDropConfidence)
         case .loopExtend:
             return i.loopFits
         default:
             return true
         }
+    }
+
+    /// A drop worth landing on, in a pair that can overlap for a few bars: that needs keys that agree, like the sweep.
+    private static func dropFits(_ i: MusicTransitionStyleInputs, _ confidence: Float?) -> Bool {
+        guard i.gridTrusted, !isClash(i), let confidence, confidence.isFinite else { return false }
+        return confidence >= MusicDropDetector.confidenceFloor && (i.keyDistance ?? 0) < farKey
     }
 
     private static func score(_ style: MusicTransitionStyle, _ i: MusicTransitionStyleInputs) -> Double {
@@ -245,6 +290,41 @@ nonisolated enum MusicTransitionStylePicker {
         case .loopExtend:
             // The blend it replaces would be shortened or refused for two singers: a loop beats it, and only a repeat sends it away.
             return 1.05
+        case .lowpassSweep:
+            // The other way round from the high-pass: a song that sinks away is for a calmer one.
+            var value = 0.6
+            if let jump, jump <= -similarEnergy { value += 0.2 }
+            if let jump, jump <= -bigJump { value += 0.05 }
+            return value
+        case .echoThrow:
+            // For two songs of a kind, where a sweep up or down would say nothing.
+            var value = 0.6
+            if let jump, abs(jump) < similarEnergy { value += 0.2 }
+            return value
+        case .loopRoll:
+            // It builds up to what comes next, so something has to come.
+            var value = 0.55
+            if let jump, jump >= similarEnergy { value += 0.2 }
+            if let drop = i.dropConfidence, drop.isFinite, drop >= MusicDropDetector.confidenceFloor { value += 0.1 }
+            return value
+        case .reverbOut:
+            // For the next song to start in: the quieter its first seconds, the more of the tail is heard.
+            var value = 0.45
+            if let jump, jump <= -bigJump { value += 0.2 }
+            if let intro = i.introEnergy, intro.isFinite, intro < quietEdge { value += 0.15 }
+            if far { value += 0.05 }
+            return value
+        case .brake:
+            // A joke when there is nothing to stop.
+            var value = 0.4
+            if let jump, jump >= bigJump { value += 0.15 }
+            if far { value += 0.1 }
+            if !i.atDJExit, let out = i.outroEnergy, out.isFinite, out < quietEdge { value -= 0.3 }
+            return value
+        case .doubleDrop:
+            // The weaker of the two drops says how well it lands.
+            let weaker = min(i.dropConfidence ?? 0, i.outgoingDropConfidence ?? 0)
+            return 0.6 + 0.4 * Double(min(1, max(0, weaker)))
         }
     }
 
@@ -281,6 +361,9 @@ nonisolated enum MusicTransitionStylePicker {
         out.atDJExit = inputs.djMixOutSec != nil
         if out.gridTrusted, let row = inputs.incoming.analysis {
             out.dropConfidence = MusicDropDetector.best(in: row, grid: inputs.incoming.grid)?.confidence
+            if out.dropConfidence != nil, let leaving = inputs.outgoing.analysis {
+                out.outgoingDropConfidence = MusicDropDetector.drops(in: leaving, grid: inputs.outgoing.grid)?.map(\.confidence).max()
+            }
         }
         return out
     }

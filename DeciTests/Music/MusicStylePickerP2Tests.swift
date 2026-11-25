@@ -133,6 +133,8 @@ struct MusicStylePickerP2Tests {
         let all = S(tempoError: 0.01, energyJump: 0.3, keyDistance: 1, gridTrusted: true, dropConfidence: 0.8,
                     tailDropDb: 2, mixOutOnPhrase: true)
         let ranked = P.ranked(all, previous: nil)
-        #expect(Set(ranked) == [.longBlend, .quickCut, .echoOut, .filterSweep, .dropSwap])
+        #expect(Set(ranked) == [
+            .longBlend, .quickCut, .echoOut, .filterSweep, .dropSwap, .echoThrow, .reverbOut, .brake, .loopRoll,
+        ])
     }
 }

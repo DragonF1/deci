@@ -64,13 +64,24 @@ struct TransitionPlan: Equatable, Sendable {
     // Tier 4b (transition styles). Defaulted: every plan built before 4b is a long blend.
     /// How this transition sounds. A beat-matched plan is `.longBlend`; a cut or echo is a beat-mode plan with no overlap.
     var style: MusicTransitionStyle = .longBlend
-    /// Echo out: seconds the outgoing song keeps playing after the cut (the tail), already held to what is left of the song.
+    /// Seconds the outgoing song is heard after the cut (the tail of an echo out or throw, a reverb out or a brake), already held to
+    /// what is left of the song.
     var echoTailSec: Double = 0
-    /// Echo out: the delay time, one beat with a trusted grid, else `MusicEchoSettings.untrustedDelaySeconds`.
+    /// Echo out or throw: the delay time, one beat with a trusted grid, else `MusicEchoSettings.untrustedDelaySeconds`.
     var echoDelaySec: Double = 0
-    /// Filter sweep: the high-pass on the outgoing song runs from `sweepFromHz` to `sweepToHz` across the overlap. 0 = none.
+    /// A sweep: the filter on the outgoing song runs from `sweepFromHz` to `sweepToHz` across the overlap. 0 = none.
     var sweepFromHz: Double = 0
     var sweepToHz: Double = 0
+    /// The sweep is a high-pass (the song thins out), else a low-pass (it goes dull).
+    var sweepHighpass = true
+    /// Echo throw: seconds into the overlap where the outgoing song is taken away and its last beat echoes on. 0 = none.
+    var echoThrowAtSec: Double = 0
+    /// Loop roll: seconds into the overlap where its bar begins, and one of its beats (wall seconds). 0 = none.
+    var rollAtSec: Double = 0
+    var rollBeatSec: Double = 0
+    /// Brake: how long before the incoming song's "1" the outgoing song starts to stop. `mixOutSec` and `mixInSec` already
+    /// count it, and the incoming song fades in across it.
+    var brakeLeadSec: Double = 0
     /// Loop extend: the incoming song's loop, in song seconds. The first downbeat it starts on, the bars it spans (4 or 8), the
     /// length of those bars in seconds and how many extra times it plays. 0 = none.
     var loopStartSec: Double = 0
@@ -257,8 +268,8 @@ enum MusicTransitionPlanner {
         dj.djEntry = entry
         var planned = basePlan(dj, smart: smart)
         guard planned.mode == .beat else { return basePlan(inputs, smart: smart) }
-        // A drop swap places itself on the drop.
-        if planned.style != .dropSwap, planned.entersDeep { planned.djEntry = entry.kind }
+        // A drop swap or a double drop places itself on the drop.
+        if !planned.style.landsOnDrop, planned.entersDeep { planned.djEntry = entry.kind }
         return planned
     }
 
@@ -310,13 +321,19 @@ enum MusicTransitionPlanner {
                 if let floor = MusicBeatPlanner.floorBlendPlan(inputs, smart: smart) { return finish(floor) }
                 continue
             }
-            // The sweep is the beat blend with a high-pass on the outgoing song, or the same thing without a grid; the drop
-            // swap is planned on its own.
+            // A sweep is the beat blend with a filter on the outgoing song, or the same thing without a grid; a throw and a roll
+            // are the beat blend with a move on top; the drop swap and the double drop are planned on their own.
             let built: TransitionPlan?
             switch style {
             case .filterSweep:
                 built = beat.mode == .beat ? MusicBeatPlanner.filterSweepPlan(from: beat) : MusicBeatPlanner.gridlessSweepPlan(inputs, smart: smart)
+            case .lowpassSweep:
+                built = beat.mode == .beat ? MusicBeatPlanner.lowpassSweepPlan(from: beat)
+                    : MusicBeatPlanner.gridlessSweepPlan(inputs, smart: smart, highpass: false)
+            case .echoThrow: built = MusicBeatPlanner.echoThrowPlan(from: beat, inputs, smart: smart)
+            case .loopRoll: built = MusicBeatPlanner.loopRollPlan(from: beat, inputs)
             case .dropSwap: built = MusicBeatPlanner.dropSwapPlan(inputs, smart: smart)
+            case .doubleDrop: built = MusicBeatPlanner.doubleDropPlan(inputs, smart: smart)
             case .loopExtend: built = loop
             default: built = MusicBeatPlanner.styledPlan(inputs, smart: smart, style: style)
             }

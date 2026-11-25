@@ -46,13 +46,13 @@ nonisolated struct MusicMixEQPlan: Equatable, Sendable {
 
     // MARK: Building
 
-    /// The moves of `plan`, or nil when it has no blend (cuts, echoes and drop swaps have their own shape).
+    /// The moves of `plan`, or nil when it has no blend (cuts and drops have their own shape).
     static func make(for plan: TransitionPlan, _ inputs: MusicTransitionInputs) -> MusicMixEQPlan? {
         let length = plan.overlapSec
-        guard plan.mode == .beat, [.longBlend, .filterSweep, .loopExtend].contains(plan.style),
+        guard plan.mode == .beat, !plan.style.isCutLike, !plan.style.landsOnDrop,
               length.isFinite, length >= shortestOverlapSec else { return nil }
         let owner = bassOwnerChange(plan)
-        let sweeps = plan.style == .filterSweep
+        let sweeps = plan.style.isSweep
         let unit = beatSec(plan)
         func on(_ t: Double) -> Double { snapped(t, unit: unit, length: length) }
 
@@ -67,7 +67,7 @@ nonisolated struct MusicMixEQPlan: Equatable, Sendable {
             baseOut = [Move(at: owner - turn, gain: 1), Move(at: owner, gain: handoverMidEnd)]
             out.outgoingHigh = [Move(at: owner - turn, gain: 1), Move(at: min(length, owner + turn), gain: handoverHighEnd)]
         } else if !sweeps {
-            // The high-pass of a sweep already takes the outgoing song away from below.
+            // The filter of a sweep already takes the outgoing song away.
             baseOut = [Move(at: on(owner * 0.75), gain: 1), Move(at: on(owner + (length - owner) / 4), gain: outgoingMidEnd)]
             out.outgoingHigh = [
                 Move(at: on(owner), gain: 1), Move(at: on(owner + (length - owner) / 2), gain: outgoingHighEnd),

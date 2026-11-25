@@ -242,14 +242,70 @@ final class MusicTapDeck: @unchecked Sendable {
 
     /// Tier 4b: starts the echo tail on this deck's lease (see `MusicRenderLease.beginEcho`). `delay` is in seconds; the cut
     /// comes `cutAfter` seconds of rendered audio from now.
-    func beginEcho(delay: Double, cutAfter: Double, feedback: Float = MusicEchoSettings.defaultFeedback) {
+    func beginEcho(
+        delay: Double, cutAfter: Double, feedback: Float = MusicEchoSettings.defaultFeedback, isThrow: Bool = false
+    ) {
         state.withLock { state in
             guard !state.retired, let lease = state.lease else { return }
             lease.beginEcho(MusicEchoSettings(
                 delayFrames: lease.frames(forSeconds: delay), cutAfterFrames: lease.frames(forSeconds: cutAfter),
-                feedback: feedback, wetGain: MusicEchoSettings.defaultWetGain, lowpassHz: MusicEchoSettings.defaultLowpassHz
+                feedback: feedback, wetGain: MusicEchoSettings.defaultWetGain, lowpassHz: MusicEchoSettings.defaultLowpassHz,
+                isThrow: isThrow
             ))
         }
+    }
+
+    /// Starts the reverb out on this deck's lease: the song hangs in the air for `tail` seconds from the cut.
+    func beginReverb(tail: Double, cutAfter: Double) {
+        state.withLock { state in
+            guard !state.retired, let lease = state.lease else { return }
+            lease.reverb.begin(MusicReverbSettings(
+                cutAfterFrames: lease.frames(forSeconds: cutAfter), tailFrames: lease.frames(forSeconds: tail)
+            ))
+        }
+    }
+
+    /// Starts the brake on this deck's lease: from the cut the song slows down to nothing over `length` seconds.
+    func beginBrake(length: Double, cutAfter: Double, gain: Float) {
+        state.withLock { state in
+            guard !state.retired, let lease = state.lease else { return }
+            lease.brake.begin(MusicBrakeSettings(
+                cutAfterFrames: lease.frames(forSeconds: cutAfter), lengthFrames: lease.frames(forSeconds: length), gain: gain
+            ))
+        }
+    }
+
+    /// Starts the loop roll on this deck's lease: its bar begins `after` seconds of rendered audio from now.
+    func beginRoll(after: Double, beat: Double) {
+        state.withLock { state in
+            guard !state.retired, let lease = state.lease else { return }
+            lease.roll.begin(MusicRollSettings(
+                startFrame: lease.frames(forSeconds: after), beatFrames: lease.frames(forSeconds: beat)
+            ))
+        }
+    }
+
+    #if DEBUG
+    /// What the last `beginReverb`, `beginBrake` and `beginRoll` asked for, nil for one that is off.
+    var debugReverb: MusicReverbSettings? {
+        state.withLock { $0.lease.flatMap { $0.reverb.control.isActive ? $0.reverb.debugSettings : nil } }
+    }
+    var debugBrake: MusicBrakeSettings? {
+        state.withLock { $0.lease.flatMap { $0.brake.control.isActive ? $0.brake.debugSettings : nil } }
+    }
+    var debugRoll: MusicRollSettings? {
+        state.withLock { $0.lease.flatMap { $0.roll.control.isActive ? $0.roll.debugSettings : nil } }
+    }
+    #endif
+
+    /// Ends every tail and the roll over `seconds` (see `MusicRenderLease.releaseTails`).
+    func releaseTails(over seconds: Double) {
+        state.withLock { $0.lease?.releaseTails(over: seconds) }
+    }
+
+    /// They are off (the lease is about to be released).
+    func endTails() {
+        state.withLock { $0.lease?.endTails() }
     }
 
     /// False when this deck's lease renders through the gain-only path (no echo possible). True with no lease yet.
@@ -270,14 +326,14 @@ final class MusicTapDeck: @unchecked Sendable {
         state.withLock { $0.lease?.endEcho() }
     }
 
-    /// Tier 4b P2: starts the high-pass sweep on this deck's lease. The cutoff starts to move `after` seconds of rendered
-    /// audio from now and takes `over` seconds to get from `fromHz` to `toHz`.
-    func beginSweep(fromHz: Double, toHz: Double, after: Double, over: Double) {
+    /// Tier 4b P2: starts the sweep (a high-pass, or a low-pass) on this deck's lease. The cutoff starts to move `after` seconds
+    /// of rendered audio from now and takes `over` seconds to get from `fromHz` to `toHz`.
+    func beginSweep(fromHz: Double, toHz: Double, after: Double, over: Double, highpass: Bool = true) {
         state.withLock { state in
             guard !state.retired, let lease = state.lease else { return }
             lease.beginSweep(MusicSweepSettings(
                 startFrame: lease.frames(forSeconds: after), durationFrames: max(1, lease.frames(forSeconds: over)),
-                fromHz: Float(fromHz), toHz: Float(toHz), highpass: true
+                fromHz: Float(fromHz), toHz: Float(toHz), highpass: highpass
             ))
         }
     }

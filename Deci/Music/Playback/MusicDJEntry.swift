@@ -64,10 +64,10 @@ nonisolated struct MusicDJEntry: Equatable, Sendable {
 }
 
 extension TransitionPlan {
-    /// The incoming song is parked well past where a plain start would put it: a drop swap, or an entry that skips an intro. Such a
+    /// The incoming song is parked well past where a plain start would put it: a drop, or an entry that skips an intro. Such a
     /// standby must never be played as a plain start.
     nonisolated var entersDeep: Bool {
         guard mode == .beat, let mixIn = mixInSec, let plain = fallbackIncomingStartSec else { return false }
-        return mixIn - plain > max(barSec, style == .dropSwap ? 0.5 : 2.5)
+        return mixIn - plain > max(barSec, style.landsOnDrop ? 0.5 : 2.5)
     }
 }

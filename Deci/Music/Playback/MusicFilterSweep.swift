@@ -101,7 +101,12 @@ nonisolated final class MusicFilterSweep: @unchecked Sendable {
 
     /// Filters a stereo interleaved block in place.
     func process(_ samples: UnsafeMutablePointer<Float>, frames: Int) {
-        guard armed else { return }
+        guard armed, frames > 0 else { return }
+        if position == 0, !settings.highpass {
+            // A low-pass that starts empty would begin with a step: it starts where the song is.
+            ic2L = samples[0]
+            ic2R = samples[1]
+        }
         var done = 0
         while done < frames {
             let run = min(Self.blockFrames, frames - done)

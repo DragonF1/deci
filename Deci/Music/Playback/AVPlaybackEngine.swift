@@ -144,16 +144,13 @@ final class AVPlaybackEngine: PlaybackEngine {
     private static let fadeLead: TimeInterval = 0.05
     /// A fade shorter than this is not worth it: the switch is gapless instead.
     nonisolated private static let minimumFade: TimeInterval = 1
-    /// Tier 4b: a quick cut or an echo out fades the dry signal in a few milliseconds (the downbeat stays hard), so its floor
+    /// Tier 4b: a cut, with or without a tail, fades the dry signal in a few milliseconds (the downbeat stays hard), so its floor
     /// is far lower.
     nonisolated private static let minimumStyledFade: TimeInterval = 0.003
 
-    /// The shortest fade the plan's style accepts: a cut and an echo are made of a very short one.
+    /// The shortest fade the plan's style accepts: a cut and its tails are made of a very short one.
     nonisolated static func minimumFade(for style: MusicTransitionStyle?) -> TimeInterval {
-        switch style ?? .longBlend {
-        case .quickCut, .echoOut: return minimumStyledFade
-        default: return minimumFade
-        }
+        (style ?? .longBlend).isCutLike ? minimumStyledFade : minimumFade
     }
     /// Tier 3b: seconds added to the incoming start host time so two beats land together (measured in the 3a spike).
     nonisolated static let beatCalibrationSec = -0.007
@@ -313,9 +310,10 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var bassSwapActive = false
     /// True while the decks run the mid and high moves of a mix, until the drain is over.
     private var mixEQActive = false
-    /// The draining deck is playing an echo tail: a seek, skip or load ends it with a short wet ramp.
-    private var drainEchoing = false
-    /// The draining deck runs a filter sweep: a skip or a seek ends it with the fade, and the lease clears it with the deck.
+    /// The draining deck plays a move of its own (an echo, reverb or brake tail, or a loop roll): a seek, skip or load ends it
+    /// with a short ramp.
+    private var drainHasMove = false
+    /// The draining deck runs a sweep: a skip or a seek ends it with the fade, and the lease clears it with the deck.
     private var sweepActive = false
     /// Tier 4b: the style the last crossfade really ran (a plan the engine downgraded reports a long blend). nil before any.
     private(set) var lastTransitionStyle: MusicTransitionStyle?
@@ -1024,10 +1022,11 @@ final class AVPlaybackEngine: PlaybackEngine {
         endRestoredBySeek = true
         // The plan says what is real: this item no longer ends at the trimmed end.
         transitionPlan?.outgoingEndSec = nil
-        // What follows is a plain fade from where the standby is parked. A drop swap parks it deep in the song (its drop less
-        // the lead) and so does an entry past the intro, so it goes back to the song's normal start first, with the schedule held
-        // until the seek has landed. A loop or a tempo match has nothing to play under any more: the standby is the plain song again.
-        if plan.style == .dropSwap || plan.entersDeep || plan.style == .loopExtend || MusicItemEdit.edit(from: plan) != nil,
+        // What follows is a plain fade from where the standby is parked. A drop swap or a double drop parks it deep in the song
+        // (its drop less the lead) and so does an entry past the intro, so it goes back to the song's normal start first, with the
+        // schedule held until the seek has landed. A loop or a tempo match has nothing to play under any more: the standby is the
+        // plain song again.
+        if plan.style.landsOnDrop || plan.entersDeep || plan.style == .loopExtend || MusicItemEdit.edit(from: plan) != nil,
            preloadStream != nil {
             reparkStandbyOnSmartStart(plan)
         }
@@ -1564,8 +1563,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         let incoming = standby
         let outgoing = active
-        // A drop swap's mix-in, and a DJ entry's, is deep in the song (the repark may have replaced the plan's own start already).
-        let deep = transitionPlan.map { $0.style == .dropSwap || $0.entersDeep } ?? false
+        // The mix-in of a drop swap or a double drop, and a DJ entry's, is deep in the song (the repark may have replaced the
+        // plan's own start already).
+        let deep = transitionPlan.map { $0.style.landsOnDrop || $0.entersDeep } ?? false
         if reparkPending {
             reparkPending = false
             // Such a song stays on the smart start the seek is already going to (a start from there waits for that seek). Any
@@ -1739,17 +1739,26 @@ final class AVPlaybackEngine: PlaybackEngine {
         // A cut or an echo holds the outgoing dry signal at full level until the incoming song's first frame (the start gap),
         // then fades it in about 30 ms, so no silent gap opens between the two.
         var style = (onGrid ? plan?.style : nil) ?? .longBlend
-        // An echo needs the full stereo path on the outgoing lease (mono and big planar blocks only get the gain): there it
+        // A tail needs the full stereo path on the outgoing lease (mono and big planar blocks only get the gain): there it
         // is a quick cut, never a silent tail.
-        if style == .echoOut {
-            let canEcho = (plan?.echoTailSec ?? 0) > 0 && (plan?.echoDelaySec ?? 0) > 0 && outgoing.tap?.supportsEcho == true
-            if !canEcho { style = .quickCut }
-        }
-        // A sweep needs the same stereo path, and a plan that names a range: otherwise it is the plain blend.
-        if style == .filterSweep {
-            // A late start (startStandby) has lost the grid and never sweeps, so it is the plain blend for the next pick too.
-            let canSweep = !startStandby && (plan?.sweepToHz ?? 0) > 0 && outgoing.tap?.supportsSweep == true
-            if !canSweep { style = .longBlend }
+        let hasStereoPath = outgoing.tap?.supportsEcho == true
+        let tail = plan?.echoTailSec ?? 0
+        if style.hasTail, tail <= 0 || !hasStereoPath || (style == .echoOut && (plan?.echoDelaySec ?? 0) <= 0) { style = .quickCut }
+        // A sweep, a throw and a roll need the same stereo path and a plan that names them: otherwise it is the plain blend. A late
+        // start (startStandby) has lost the grid and has none of them, so it is the plain blend for the next pick too.
+        let overlapStart = overlapOffset(of: outgoing, gap: startGap, unrendered: startGap)
+        switch style {
+        case .filterSweep, .lowpassSweep:
+            if startStandby || (plan?.sweepToHz ?? 0) <= 0 || outgoing.tap?.supportsSweep != true { style = .longBlend }
+        case .echoThrow:
+            let at = plan?.echoThrowAtSec ?? 0
+            let canThrow = !startStandby && hasStereoPath && tail > 0 && (plan?.echoDelaySec ?? 0) > 0 && at > 0 && at < fade && at + overlapStart > 0
+            if !canThrow { style = .longBlend }
+        case .loopRoll:
+            let at = plan?.rollAtSec ?? 0
+            let canRoll = !startStandby && hasStereoPath && (plan?.rollBeatSec ?? 0) > 0 && at > 0 && at < fade && at + overlapStart > 0
+            if !canRoll { style = .longBlend }
+        default: break
         }
         lastTransitionStyle = style
         lastTransitionOnGrid = onGrid
@@ -1758,20 +1767,45 @@ final class AVPlaybackEngine: PlaybackEngine {
         } else {
             outgoing.tap?.drain(over: fade, after: startGap)
         }
-        var echoSeconds = 0.0
-        drainEchoing = false
-        if style == .echoOut, let plan {
-            // The line already holds the song's last second (every lease records its dry signal): it is fed until the cut,
-            // then the repeats of the last beat start.
-            outgoing.tap?.beginEcho(delay: plan.echoDelaySec, cutAfter: startGap)
-            echoSeconds = startGap + plan.echoTailSec
-            drainEchoing = true
+        // Seconds from the flip until the outgoing deck is done: its fade, or the tail that goes on after it.
+        var drainSeconds = style.isCutLike ? startGap + fade : fade
+        drainHasMove = false
+        // The incoming song is there at once, but under a brake it comes up as the old song stops.
+        var fadeIn: (seconds: TimeInterval, curve: MusicFadeCurve) = (fade, .equalPower)
+        if let plan {
+            switch style {
+            case .echoOut:
+                // The line already holds the song's last second (every lease records its dry signal): it is fed until the cut,
+                // then the repeats of the last beat start.
+                outgoing.tap?.beginEcho(delay: plan.echoDelaySec, cutAfter: startGap)
+            case .reverbOut:
+                outgoing.tap?.beginReverb(tail: tail, cutAfter: startGap)
+            case .brake:
+                let alone = plan.brakeLeadSec >= tail / 2
+                outgoing.tap?.beginBrake(
+                    length: tail, cutAfter: startGap, gain: alone ? MusicBrakeSettings.soloGain : MusicBrakeSettings.coveredGain)
+                if plan.brakeLeadSec > fade { fadeIn = (plan.brakeLeadSec, .linear) }
+            case .echoThrow:
+                outgoing.tap?.beginEcho(delay: plan.echoDelaySec, cutAfter: plan.echoThrowAtSec + overlapStart, isThrow: true)
+                drainHasMove = true
+                drainSeconds = max(fade, startGap + plan.echoThrowAtSec + tail + 0.1)
+            case .loopRoll:
+                outgoing.tap?.beginRoll(after: plan.rollAtSec + overlapStart, beat: plan.rollBeatSec)
+                drainHasMove = true
+            default: break
+            }
+            if style.hasTail {
+                drainHasMove = true
+                drainSeconds = startGap + tail + 0.1
+            }
         }
         // A beat mix with a bass swap: the lows stay with the outgoing deck and hand over in one step on a bar boundary.
         // A start that was late has lost the grid, so the highs just fade as they would for any plan.
-        // A filter sweep replaces the outgoing bass swap with a high-pass on the outgoing deck, rising across the overlap.
-        if style == .filterSweep, let plan, !startStandby {
-            outgoing.tap?.beginSweep(fromHz: plan.sweepFromHz, toHz: plan.sweepToHz, after: startGap, over: fade)
+        // A filter sweep replaces the outgoing bass swap with a high-pass on the outgoing deck, rising across the overlap. A
+        // low-pass sweep takes the top away instead, and the bass changes hands as in any blend.
+        if style.isSweep, let plan {
+            outgoing.tap?.beginSweep(
+                fromHz: plan.sweepFromHz, toHz: plan.sweepToHz, after: startGap, over: fade, highpass: plan.sweepHighpass)
             sweepActive = true
         }
         if onGrid, !startStandby, let plan {
@@ -1803,7 +1837,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         incoming.tap?.beginFadeIn()
         incoming.tap?.activate()
-        incoming.tap?.fade(to: 1, over: fade, curve: .equalPower, fromSilence: true)
+        incoming.tap?.fade(to: 1, over: fadeIn.seconds, curve: fadeIn.curve, fromSilence: true)
         active = incoming
         drainIsScheduledMix = scheduled
         draining = outgoing
@@ -1837,9 +1871,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         wantsPlay = true
         pendingStart = 0
         heldPosition = nil
-        // An echo's outgoing deck plays on (dry gain 0) until its tail is over: the item's own end stops the timer.
+        // With a tail the outgoing deck plays on (dry gain 0) until it is over: the item's own end stops the timer.
         // A cut holds the outgoing deck until the incoming one starts (`startGap`), then fades it: it is released after both.
-        startDrainTimer(seconds: echoSeconds > 0 ? echoSeconds + 0.1 : (!style.isCutLike ? fade : startGap + fade))
+        startDrainTimer(seconds: drainSeconds)
     }
 
     /// The spectral time pitch's own delay: a render's audio is this many frames further into the song than the tap's label
@@ -1961,8 +1995,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         guard let old = draining else { return }
         drainIsScheduledMix = false
         draining = nil
-        drainEchoing = false
-        old.tap?.endEcho()
+        drainHasMove = false
+        old.tap?.endTails()
         if sweepActive {
             sweepActive = false
             old.tap?.endSweep()
@@ -2041,8 +2075,8 @@ final class AVPlaybackEngine: PlaybackEngine {
             }
             if mixEQActive { active.tap?.releaseMixEQ(over: Self.quickDrain) }
             old.tap?.drain(over: Self.quickDrain, curve: .linear)
-            // An echo tail is faded with its own wet ramp, so ending it early leaves no step.
-            if drainEchoing { old.tap?.releaseEcho(over: Self.quickDrain) }
+            // A tail is faded with its own ramp and a roll goes back to the song, so ending them early leaves no step.
+            if drainHasMove { old.tap?.releaseTails(over: Self.quickDrain) }
             startQuickDrainTimer()
         } else {
             finishDrain()

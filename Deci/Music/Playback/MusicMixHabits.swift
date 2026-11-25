@@ -45,9 +45,10 @@ nonisolated struct MusicMixHabits: Equatable, Sendable {
         habits.cutsOnSections = sides.allSatisfy { !$0.isGuess && cutFriendly.contains($0.family) }
         if sides.allSatisfy({ !$0.isGuess && $0.family != .open }), out.family.group != into.family.group {
             habits.changesGenre = true
-            habits.bonus[.echoOut, default: 0] += 0.15
-            habits.bonus[.quickCut, default: 0] += 0.1
-            habits.bonus[.longBlend, default: 0] -= 0.15
+            let changes: [MusicTransitionStyle: Double] = [
+                .echoOut: 0.15, .reverbOut: 0.15, .quickCut: 0.1, .brake: 0.1, .longBlend: -0.15, .doubleDrop: -0.15,
+            ]
+            for (style, value) in changes { habits.bonus[style, default: 0] += value }
         }
         return habits
     }
@@ -67,18 +68,41 @@ nonisolated struct MusicMixHabits: Equatable, Sendable {
     /// What a family's DJs like (above 0) and leave alone (below 0).
     static func likes(_ family: MusicGenreFamily) -> [MusicTransitionStyle: Double] {
         switch family {
-        case .house: [.longBlend: 0.1, .filterSweep: 0.1, .quickCut: -0.2, .echoOut: -0.1]
-        case .techno: [.longBlend: 0.15, .filterSweep: 0.1, .loopExtend: 0.1, .quickCut: -0.3, .echoOut: -0.3]
-        case .trance: [.longBlend: 0.2, .dropSwap: 0.05, .quickCut: -0.4, .echoOut: -0.2]
-        case .dnb: [.dropSwap: 0.1]
-        case .bass: [.dropSwap: 0.25, .longBlend: -0.15, .quickCut: 0.1]
-        case .garage: [.dropSwap: 0.05]
-        case .hipHop: [.quickCut: 0.45, .echoOut: 0.3, .longBlend: -0.1, .filterSweep: -0.3]
-        case .latin: [.quickCut: 0.2, .echoOut: 0.15, .filterSweep: -0.1]
-        case .afro: [.echoOut: 0.2, .filterSweep: -0.15]
-        case .pop: [.quickCut: 0.15, .echoOut: 0.2, .filterSweep: -0.05]
-        case .rock: [.quickCut: 0.4, .echoOut: 0.1, .filterSweep: -0.3, .longBlend: -0.15]
-        case .soft: [.longBlend: 0.1, .echoOut: 0.15, .quickCut: -0.4, .filterSweep: -0.4, .dropSwap: -0.3]
+        case .house: [
+            .longBlend: 0.1, .filterSweep: 0.1, .quickCut: -0.2, .echoOut: -0.1,
+            .lowpassSweep: 0.1, .loopRoll: 0.1, .echoThrow: 0.05, .reverbOut: -0.1, .brake: -0.3, .doubleDrop: -0.1,
+        ]
+        case .techno: [
+            .longBlend: 0.15, .filterSweep: 0.1, .loopExtend: 0.1, .quickCut: -0.3, .echoOut: -0.3,
+            .lowpassSweep: 0.1, .loopRoll: 0.15, .reverbOut: -0.2, .brake: -0.4, .doubleDrop: -0.1,
+        ]
+        case .trance: [
+            .longBlend: 0.2, .dropSwap: 0.05, .quickCut: -0.4, .echoOut: -0.2, .echoThrow: 0.05, .reverbOut: -0.1, .brake: -0.4,
+        ]
+        case .dnb: [.dropSwap: 0.1, .doubleDrop: 0.3, .loopRoll: 0.1, .brake: -0.1]
+        case .bass: [.dropSwap: 0.25, .longBlend: -0.15, .quickCut: 0.1, .doubleDrop: 0.25, .loopRoll: 0.1, .brake: 0.1]
+        case .garage: [.dropSwap: 0.05, .echoThrow: 0.1, .loopRoll: 0.05, .brake: -0.1]
+        case .hipHop: [
+            .quickCut: 0.45, .echoOut: 0.3, .longBlend: -0.1, .filterSweep: -0.3,
+            .brake: 0.4, .reverbOut: 0.1, .echoThrow: 0.1, .lowpassSweep: -0.3, .loopRoll: -0.1, .doubleDrop: -0.3,
+        ]
+        case .latin: [.quickCut: 0.2, .echoOut: 0.15, .filterSweep: -0.1, .echoThrow: 0.1, .brake: 0.1, .doubleDrop: -0.1]
+        case .afro: [
+            .echoOut: 0.2, .filterSweep: -0.15, .echoThrow: 0.15, .reverbOut: 0.15, .lowpassSweep: -0.1, .loopRoll: -0.1, .brake: -0.2,
+            .doubleDrop: -0.2,
+        ]
+        case .pop: [
+            .quickCut: 0.15, .echoOut: 0.2, .filterSweep: -0.05, .reverbOut: 0.15, .echoThrow: 0.1, .brake: 0.1, .lowpassSweep: -0.05,
+            .doubleDrop: -0.1,
+        ]
+        case .rock: [
+            .quickCut: 0.4, .echoOut: 0.1, .filterSweep: -0.3, .longBlend: -0.15,
+            .brake: 0.2, .reverbOut: 0.15, .echoThrow: -0.1, .lowpassSweep: -0.3, .loopRoll: -0.3, .doubleDrop: -0.3,
+        ]
+        case .soft: [
+            .longBlend: 0.1, .echoOut: 0.15, .quickCut: -0.4, .filterSweep: -0.4, .dropSwap: -0.3,
+            .reverbOut: 0.2, .lowpassSweep: -0.1, .echoThrow: -0.1, .brake: -0.5, .loopRoll: -0.5, .doubleDrop: -0.5,
+        ]
         case .open: [:]
         }
     }

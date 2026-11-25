@@ -35,8 +35,8 @@ extension MusicBeatPlanner {
         case aligned
         /// The same with nothing lined up: one of the songs has no drums there.
         case open
-        /// 6 to 8 s with the high-pass on the outgoing song.
-        case sweep
+        /// 6 to 8 s with a filter on the outgoing song, a high-pass or a low-pass.
+        case sweep(highpass: Bool)
         /// A few bars, the bass changing hands on the "1" of both songs.
         case step(Step)
         /// 6 s with an early, quick bass change: there is no beat to land it on.
@@ -64,9 +64,9 @@ extension MusicBeatPlanner {
         return gridlessBlendPlan(inputs, smart: smart, shape: .quick)
     }
 
-    /// The filter sweep without a trusted grid: an 8 s floor blend whose outgoing song always gets the high-pass.
-    static func gridlessSweepPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan) -> TransitionPlan? {
-        gridlessBlendPlan(inputs, smart: smart, shape: .sweep)
+    /// A sweep without a trusted grid: an 8 s floor blend whose outgoing song always gets the filter.
+    static func gridlessSweepPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, highpass: Bool = true) -> TransitionPlan? {
+        gridlessBlendPlan(inputs, smart: smart, shape: .sweep(highpass: highpass))
     }
 
     /// The handover two songs with known bars get. nil when a grid is not trusted or has no downbeat.
@@ -248,6 +248,13 @@ extension MusicBeatPlanner {
             plan.vocalBeforeSec = firstCollision
         }
         switch shape {
+        case .sweep(highpass: false):
+            plan.style = .lowpassSweep
+            plan.sweepHighpass = false
+            plan.sweepFromHz = lowpassFromHz
+            plan.sweepToHz = lowpassToHz
+            plan.bassSwapAtSec = fade / 2
+            plan.bassHandoverSec = floorBassHandoverSec
         case .sweep:
             plan.style = .filterSweep
             plan.sweepFromHz = Double(MusicSweepSettings.defaultFromHz)

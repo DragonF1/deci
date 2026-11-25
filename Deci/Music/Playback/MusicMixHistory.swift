@@ -1,6 +1,6 @@
 // Deci/Music/Playback/MusicMixHistory.swift
 // The last few transitions of a set, newest first. It is what keeps one move from coming up over and over: a move that was just
-// made is marked down, a long run of blends gets tiring, and an effect (a sweep or an echo out) comes about every fourth or fifth
+// made is marked down, a long run of blends gets tiring, and an effect (a sweep, an echo, a roll, a brake) comes about every fourth or fifth
 // song. Pure: the same history always gives the same numbers.
 
 import Foundation
@@ -61,10 +61,15 @@ nonisolated struct MusicMixHistory: Equatable, Sendable {
         var bonus = 0.0
         if style.isEffect {
             bonus += min(Self.mostDueBonus, Self.dueBonus * Double(max(0, sinceEffect - Self.effectSpacing + 1)))
-            // The two effects take turns.
-            if styles.first(where: \.isEffect) == style { bonus -= Self.repeatPenalty }
+            // The effects take turns: not the last one again, and not yet the one before it.
+            let effects = styles.filter(\.isEffect)
+            if effects.first == style {
+                bonus -= Self.repeatPenalty
+            } else if effects.count > 1, effects[1] == style {
+                bonus -= Self.repeatPenalty / 2
+            }
         }
-        // A cut and an echo are the same kind of move, and the one that tires soonest.
+        // A cut, with a tail or without, is one kind of move, and the one that tires soonest.
         let same: (MusicTransitionStyle) -> Bool = { style.isCutLike ? $0.isCutLike : $0 == style }
         let weight = style.isCutLike ? 2 : 1.0
         if let last = styles.first, same(last) {

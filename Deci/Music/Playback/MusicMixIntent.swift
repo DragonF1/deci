@@ -35,10 +35,11 @@ nonisolated enum MusicMixIntent: String, Sendable, CaseIterable {
     /// Added to a style's score. A change of genre has its say in `MusicMixHabits`.
     func bonus(for style: MusicTransitionStyle) -> Double {
         switch (self, style) {
-        case (.drop, .dropSwap), (.lift, .dropSwap), (.lift, .filterSweep), (.lift, .quickCut): 0.1
-        case (.drop, .filterSweep), (.section, .quickCut), (.section, .echoOut): 0.05
-        case (.breather, .longBlend), (.breather, .loopExtend): 0.05
-        case (.breather, .echoOut), (.tempoChange, .echoOut): 0.15
+        case (.drop, .doubleDrop), (.breather, .echoOut), (.breather, .reverbOut), (.tempoChange, .echoOut), (.tempoChange, .reverbOut): 0.15
+        case (.drop, .dropSwap), (.lift, .dropSwap), (.lift, .doubleDrop), (.lift, .filterSweep), (.lift, .quickCut), (.lift, .loopRoll): 0.1
+        case (.breather, .lowpassSweep), (.tempoChange, .brake): 0.1
+        case (.drop, .filterSweep), (.drop, .loopRoll), (.section, .quickCut), (.section, .echoOut), (.section, .echoThrow): 0.05
+        case (.section, .reverbOut), (.section, .brake), (.breather, .longBlend), (.breather, .loopExtend): 0.05
         default: 0
         }
     }

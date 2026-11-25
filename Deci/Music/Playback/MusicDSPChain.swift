@@ -363,7 +363,7 @@ final class MusicDSPChain: @unchecked Sendable {
         let startGain = lease.currentGain
         let fade = lease.beginFade()
         let offset = lease.beginOffset()
-        if !isOwner, lease.isDraining, fade.remaining == 0, fade.value <= 0, !lease.isEchoActive {
+        if !isOwner, lease.isDraining, fade.remaining == 0, fade.value <= 0, !lease.isTailActive {
             // The drain is over: nothing of this lease is heard any more.
             Self.silence(list)
             lease.noteSilenced(frames)
@@ -436,6 +436,9 @@ final class MusicDSPChain: @unchecked Sendable {
             memset(samples, 0, sampleCount * MemoryLayout<Float>.size)
             if bass != nil { lease.resetSplit() }
             lease.mixEQ.skip(frames)
+            lease.roll.skip()
+            lease.reverb.skip()
+            lease.brake.skip()
             return
         }
         if metered { dsp.noteLevel(samples, count: sampleCount, scale: fade.meanValue(over: frames) * offset.meanValue(over: frames)) }
@@ -454,16 +457,23 @@ final class MusicDSPChain: @unchecked Sendable {
         if lease.beginSweepRender() { lease.sweep.process(samples, frames: frames) }
         // The mids and highs of the mixer EQ, also before the fade (a no-op when idle).
         lease.mixEQ.process(samples, frames: frames)
+        // A loop roll replaces the song for three beats, so every effect behind it hears the roll (a no-op when idle).
+        lease.roll.process(samples, frames: frames)
         // Tier 4b: an echo takes a copy of the signal before the fade, so cutting the dry never cuts the tail.
         let echoing = lease.beginEchoRender() && lease.echo.capture(input, frames: frames)
         if !lease.isEchoActive { lease.applyHistoryClear() }
         // Without an echo the block goes into the line as history, so a later request finds the song's last second there.
         if !echoing && !lease.isEchoActive { lease.echo.record(input, frames: frames) }
+        // The reverb out and the brake also take the signal before the fade: one from the history, one from this block.
+        let reverbing = lease.reverb.prepare()
+        let braking = lease.brake.prepare(input, frames: frames)
         Self.limitAndFade(samples, frames: frames, channels: 2, fade: fade, offset: offset, lease: lease, bass: bass)
         if echoing {
             lease.echo.mix(into: samples, frames: frames, scale: offset.meanValue(over: frames))
             if lease.echo.isReleasedOut { lease.finishEchoRender() }
         }
+        if reverbing { lease.reverb.mix(into: samples, frames: frames, history: lease.echo, scale: offset.meanValue(over: frames)) }
+        if braking { lease.brake.mix(into: samples, frames: frames, scale: offset.meanValue(over: frames)) }
         if metered { dsp.notePeak(samples, count: sampleCount) }
     }
 
@@ -1007,6 +1017,7 @@ final class MusicRenderLease: @unchecked Sendable {
     private let echoCutFrames = Atomic<Int>(0)
     private let echoParams = Atomic<UInt64>(0)
     private let echoLowpass = Atomic<UInt32>(MusicEchoSettings.defaultLowpassHz.bitPattern)
+    private let echoThrows = Atomic<Bool>(false)
     private let echoGeneration = Atomic<Int>(0)
     private nonisolated(unsafe) var seenEchoGeneration = 0
     private let echoReleaseFrames = Atomic<Int>(0)
@@ -1030,6 +1041,10 @@ final class MusicRenderLease: @unchecked Sendable {
 
     /// The mids and highs of a mix. It holds its own request and renderer state.
     let mixEQ: MusicMixEQ
+    /// The other moves of the outgoing deck, each with its own request and renderer state.
+    let reverb: MusicReverbTail
+    let brake: MusicVinylBrake
+    let roll: MusicLoopRoll
 
     // Tier 3b P4: the bass channel. `bassActiveFlag` is off outside a beat mix (every render then takes the old path).
     private let bassActiveFlag = Atomic<Bool>(false)
@@ -1141,6 +1156,9 @@ final class MusicRenderLease: @unchecked Sendable {
         echo = MusicEchoDelay(sampleRate: rate, maxBlockFrames: max(4_096, maxFrames))
         sweep = MusicFilterSweep(sampleRate: rate)
         mixEQ = MusicMixEQ(sampleRate: rate)
+        reverb = MusicReverbTail(sampleRate: rate)
+        brake = MusicVinylBrake(sampleRate: rate)
+        roll = MusicLoopRoll(sampleRate: rate)
         currentGain = chain.targetGain
         seenSnapGeneration = chain.snapGeneration.load(ordering: .acquiring)
     }
@@ -1279,6 +1297,7 @@ final class MusicRenderLease: @unchecked Sendable {
         echoCutFrames.store(settings.cutAfterFrames, ordering: .relaxed)
         echoParams.store(UInt64(settings.feedback.bitPattern) << 32 | UInt64(settings.wetGain.bitPattern), ordering: .relaxed)
         echoLowpass.store(settings.lowpassHz.bitPattern, ordering: .relaxed)
+        echoThrows.store(settings.isThrow, ordering: .relaxed)
         // Generation first, flag second (both releasing), so a renderer that sees the flag sees the new request.
         echoGeneration.wrappingAdd(1, ordering: .releasing)
         echoActiveFlag.store(true, ordering: .releasing)
@@ -1337,6 +1356,26 @@ final class MusicRenderLease: @unchecked Sendable {
 
     var isEchoActive: Bool { echoActiveFlag.load(ordering: .acquiring) }
 
+    /// Something of this lease is heard after its fade is over.
+    var isTailActive: Bool { isEchoActive || reverb.control.isActive || brake.control.isActive }
+
+    /// Ends whatever the outgoing deck plays on with over `seconds` of rendered audio. Any thread.
+    func releaseTails(over seconds: Double) {
+        releaseEcho(over: seconds)
+        let length = frames(forSeconds: seconds)
+        reverb.control.release(frames: length)
+        brake.control.release(frames: length)
+        roll.control.release(frames: length)
+    }
+
+    /// All of it is off at the next render (the lease is about to be released). Any thread.
+    func endTails() {
+        endEcho()
+        reverb.control.end()
+        brake.control.end()
+        roll.control.end()
+    }
+
     /// Renderer: picks up a new echo request. True while an echo is on.
     fileprivate func beginEchoRender() -> Bool {
         guard echoActiveFlag.load(ordering: .acquiring) else { return false }
@@ -1349,7 +1388,8 @@ final class MusicRenderLease: @unchecked Sendable {
                 cutAfterFrames: echoCutFrames.load(ordering: .relaxed),
                 feedback: Float(bitPattern: UInt32(params >> 32)),
                 wetGain: Float(bitPattern: UInt32(params & 0xFFFF_FFFF)),
-                lowpassHz: Float(bitPattern: echoLowpass.load(ordering: .relaxed))
+                lowpassHz: Float(bitPattern: echoLowpass.load(ordering: .relaxed)),
+                isThrow: echoThrows.load(ordering: .relaxed)
             ))
         }
         let release = echoReleaseGeneration.load(ordering: .acquiring)

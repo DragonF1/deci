@@ -5,6 +5,7 @@
 // output); from the cut it only recirculates: repeats of the last beat that decay by the feedback each time, low-passed so
 // each repeat is darker than the one before. Render safe: no lock, no allocation, no Objective-C.
 
+import Accelerate
 import Foundation
 
 /// One echo's settings, in frames, as the engine asks for them.
@@ -19,6 +20,9 @@ nonisolated struct MusicEchoSettings: Equatable, Sendable {
     var wetGain: Float
     /// One-pole low-pass on the wet path, in Hz.
     var lowpassHz: Float
+    /// An echo throw: the cut takes the dry signal away (a blend is still running and would let it play on), and the repeats
+    /// have no lows, which belong to the new song by then.
+    var isThrow = false
 
     static let defaultFeedback: Float = 0.5
     static let defaultWetGain: Float = 0.35
@@ -27,6 +31,10 @@ nonisolated struct MusicEchoSettings: Equatable, Sendable {
     static let maxDelaySeconds = 1.0
     /// The delay when the grid is not trusted.
     static let untrustedDelaySeconds = 0.375
+    /// A throw's repeats have no lows below this.
+    static let throwHighpassHz = 250.0
+    /// How long a throw takes the dry signal away over.
+    static let throwCutSeconds = 0.005
 }
 
 nonisolated final class MusicEchoDelay: @unchecked Sendable {
@@ -50,6 +58,13 @@ nonisolated final class MusicEchoDelay: @unchecked Sendable {
     private var lowL: Float = 0
     private var lowR: Float = 0
     private var untilCut = 0
+    private var isThrow = false
+    /// Frames of the dry's fade left, for a throw, and its length.
+    private var dryLeft = 0
+    private let dryTotal: Int
+    private let throwCoefficient: Float
+    private var bodyL: Float = 0
+    private var bodyR: Float = 0
 
     init(sampleRate: Double, maxBlockFrames: Int) {
         let rate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 48_000
@@ -58,6 +73,8 @@ nonisolated final class MusicEchoDelay: @unchecked Sendable {
         line = .allocate(capacity: capacity * 2)
         line.initialize(repeating: 0, count: capacity * 2)
         copyFrames = max(1, maxBlockFrames)
+        dryTotal = max(1, Int((MusicEchoSettings.throwCutSeconds * rate).rounded()))
+        throwCoefficient = Float(1 - exp(-2 * Double.pi * MusicEchoSettings.throwHighpassHz / rate))
         copy = .allocate(capacity: copyFrames * 2)
         copy.initialize(repeating: 0, count: copyFrames * 2)
     }
@@ -74,6 +91,10 @@ nonisolated final class MusicEchoDelay: @unchecked Sendable {
         releasedOut = false
         lowL = 0
         lowR = 0
+        bodyL = 0
+        bodyR = 0
+        isThrow = settings.isThrow
+        dryLeft = dryTotal
         delay = min(max(1, settings.delayFrames), capacity - 1)
         untilCut = max(0, settings.cutAfterFrames)
         feedback = min(max(settings.feedback.isFinite ? settings.feedback : 0.5, 0), 0.9)
@@ -111,6 +132,19 @@ nonisolated final class MusicEchoDelay: @unchecked Sendable {
             write = write + run == capacity ? 0 : write + run
             done += run
         }
+    }
+
+    /// Adds `gain` times `count` recorded frames of one channel to `out`, beginning `framesBack` frames before the newest one
+    /// recorded. Render thread only.
+    func addHistory(
+        channel: Int, framesBack: Int, count: Int, gain: Float, into out: UnsafeMutablePointer<Float>
+    ) {
+        guard channel == 0 || channel == 1, count > 0, framesBack >= count, framesBack <= capacity else { return }
+        let start = write >= framesBack ? write - framesBack : write - framesBack + capacity
+        var scale = gain
+        let run = min(count, capacity - start)
+        vDSP_vsma(line + start * 2 + channel, 2, &scale, out, 1, out, 1, vDSP_Length(run))
+        if run < count { vDSP_vsma(line + channel, 2, &scale, out + run, 1, out + run, 1, vDSP_Length(count - run)) }
     }
 
     /// Keeps a copy of a block before the fade is applied to it. False when the block is longer than the copy.
@@ -159,9 +193,20 @@ nonisolated final class MusicEchoDelay: @unchecked Sendable {
             if fed {
                 untilCut -= 1
             } else {
+                var dry: Float = 1
+                if isThrow {
+                    if dryLeft > 0 { dryLeft -= 1 }
+                    dry = Float(dryLeft) / Float(dryTotal)
+                    bodyL += throwCoefficient * (heardL - bodyL)
+                    bodyR += throwCoefficient * (heardR - bodyR)
+                    if abs(bodyL) < 1e-20 { bodyL = 0 }
+                    if abs(bodyR) < 1e-20 { bodyR = 0 }
+                    heardL -= bodyL
+                    heardR -= bodyR
+                }
                 // The sum is clamped: the dry that is still fading out and a repeat never clip together.
-                samples[frame * 2] = min(1, max(-1, samples[frame * 2] + heardL * gain * ramp))
-                samples[frame * 2 + 1] = min(1, max(-1, samples[frame * 2 + 1] + heardR * gain * ramp))
+                samples[frame * 2] = min(1, max(-1, samples[frame * 2] * dry + heardL * gain * ramp))
+                samples[frame * 2 + 1] = min(1, max(-1, samples[frame * 2 + 1] * dry + heardR * gain * ramp))
             }
         }
     }

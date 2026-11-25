@@ -309,7 +309,7 @@ enum MusicBeatPlanner {
     /// Repeats the tail aims for: at feedback 0.5 six repeats are about -36 dB.
     static let echoRepeats = 6.0
 
-    /// A quick cut or an echo out on the outgoing song's last bar line, for any tempo gap. The incoming song starts on its
+    /// A cut, with or without a tail, on the outgoing song's last bar line, for any tempo gap. The incoming song starts on its
     /// first bar line at or after its smart start, at rate 1. Beat mode with no overlap: the engine starts the incoming
     /// deck on the cut. nil when a grid is unusable, there is no bar line with room, or the incoming song is too short.
     static func styledPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, style: MusicTransitionStyle) -> TransitionPlan? {
@@ -320,11 +320,16 @@ enum MusicBeatPlanner {
     /// plan's fade would start, the incoming song at the smart plan's start, and an echo uses the fixed delay. nil when the
     /// smart plan has no fade start or the incoming song is too short.
     private static func gridlessStyledPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, style: MusicTransitionStyle) -> TransitionPlan? {
-        guard style == .quickCut || style == .echoOut, inputs.beatMixEnabled, inputs.crossfadeOn, smart.mode == .smart,
+        guard style.isCutLike, inputs.beatMixEnabled, inputs.crossfadeOn, smart.mode == .smart,
               !inputs.manualSkip, !inputs.albumInOrder, !inputs.loopSong,
               let aDuration = valid(inputs.outgoing.durationSeconds), let bDuration = valid(inputs.incoming.durationSeconds),
-              let cut = smart.fadeStartSec, cut.isFinite, cut > 0, smart.incomingStartSec.isFinite, smart.incomingStartSec >= 0
+              let point = smart.fadeStartSec, point.isFinite, point > 0, smart.incomingStartSec.isFinite, smart.incomingStartSec >= 0
         else { return nil }
+        let entry = entryStart(inputs, smart: smart, lead: 0)
+        let rate = outgoingRate(inputs)
+        let lead = brakeLead(style, beat: nil, mixIn: entry)
+        let cut = point - lead * rate, mixIn = entry - lead
+        guard cut > 0 else { return nil }
         if let earliest = inputs.earliestMixOutSec, cut < earliest { return nil }
         // A cut that stops the outgoing singer mid-word is not a candidate: the pair gets a blend.
         if inputs.vocalGuardEnabled,
@@ -332,7 +337,6 @@ enum MusicBeatPlanner {
             return nil
         }
         let bEnd = inputs.incoming.analysis.flatMap { MusicTransitionPlanner.trimmedEnd(of: $0, duration: bDuration) } ?? bDuration
-        let mixIn = entryStart(inputs, smart: smart, lead: 0)
         guard bEnd - mixIn >= minIncomingRemainingSec else { return nil }
         let aEnd = smart.outgoingEndSec ?? aDuration
         var plan = smart
@@ -351,21 +355,12 @@ enum MusicBeatPlanner {
         plan.barSec = 0
         plan.bassSwapAtSec = nil
         plan.bassHandoverSec = 0
-        if style == .echoOut {
-            let delay = MusicEchoSettings.untrustedDelaySeconds
-            let ro = outgoingRate(inputs)
-            let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, (aEnd - cut) / ro))
-            plan.echoDelaySec = delay
-            plan.echoTailSec = tail
-            plan.outgoingEndSec = cut + tail * ro
-        } else {
-            plan.outgoingEndSec = cut
-        }
-        return plan
+        plan.brakeLeadSec = lead
+        return applyTail(&plan, style: style, cut: cut, end: aEnd, rate: rate, beat: nil) ? plan : nil
     }
 
     private static func griddedStyledPlan(_ inputs: MusicTransitionInputs, smart: TransitionPlan, style: MusicTransitionStyle) -> TransitionPlan? {
-        guard style == .quickCut || style == .echoOut, inputs.beatMixEnabled, inputs.crossfadeOn, smart.mode == .smart,
+        guard style.isCutLike, inputs.beatMixEnabled, inputs.crossfadeOn, smart.mode == .smart,
               !inputs.manualSkip, !inputs.albumInOrder, !inputs.loopSong,
               let aDuration = valid(inputs.outgoing.durationSeconds), let bDuration = valid(inputs.incoming.durationSeconds),
               let a = inputs.outgoing.analysis, let b = inputs.incoming.analysis,
@@ -376,8 +371,14 @@ enum MusicBeatPlanner {
         guard bothTrusted || (aGrid.downbeatPhase != nil && bGrid.downbeatPhase != nil) else { return nil }
         let aEnd = smart.outgoingEndSec ?? aDuration
         let barSec = 4 * aGrid.periodSec
-        guard let mixOut = mixOutTime(grid: aGrid, analysis: a, bars: 1, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
-              let mixIn = mixInTime(grid: bGrid, start: entryBarStart(inputs, smart: smart, lead: 0, grid: bGrid)) else { return nil }
+        guard let outLine = mixOutTime(grid: aGrid, analysis: a, bars: 1, barSec: barSec, end: aEnd, preferred: inputs.djMixOutSec),
+              let inLine = mixInTime(grid: bGrid, start: entryBarStart(inputs, smart: smart, lead: 0, grid: bGrid)) else { return nil }
+        // Both songs are on their bar lines, but for a brake: it takes the beat before them.
+        let rate = outgoingRate(inputs)
+        let beat = bothTrusted ? aGrid.periodSec / rate : nil
+        let lead = brakeLead(style, beat: beat, mixIn: inLine)
+        let mixOut = outLine - lead * rate, mixIn = inLine - lead
+        guard mixOut > 0 else { return nil }
         if let earliest = inputs.earliestMixOutSec, mixOut < earliest { return nil }
         if inputs.vocalGuardEnabled,
            MusicVocalGuard.cutsOutgoingSinger(outgoing: a, intervals: inputs.outgoing.vocalIntervals, endSec: mixOut) {
@@ -402,17 +403,8 @@ enum MusicBeatPlanner {
         plan.barSec = barSec
         plan.bassSwapAtSec = nil
         plan.bassHandoverSec = 0
-        if style == .echoOut {
-            let delay = bothTrusted ? min(aGrid.periodSec / outgoingRate(inputs), MusicEchoSettings.maxDelaySeconds) : MusicEchoSettings.untrustedDelaySeconds
-            let ro = outgoingRate(inputs)
-            let tail = min(min(delay * echoRepeats, maxEchoTailSec), max(0, (aEnd - mixOut) / ro))
-            plan.echoDelaySec = delay
-            plan.echoTailSec = tail
-            plan.outgoingEndSec = mixOut + tail * ro
-        } else {
-            plan.outgoingEndSec = mixOut
-        }
-        return plan
+        plan.brakeLeadSec = lead
+        return applyTail(&plan, style: style, cut: mixOut, end: aEnd, rate: rate, beat: beat) ? plan : nil
     }
 
     /// A grid whose numbers can be believed at all (the trust checks are stricter).

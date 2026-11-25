@@ -101,14 +101,14 @@ struct MusicMixHistoryTests {
         var sweeps = 0
         for _ in 0..<40 {
             let pick = P.pick(clash, history: h)
-            #expect(pick == .longBlend || pick == .filterSweep)
-            if pick == .filterSweep { sweeps += 1 }
+            #expect(pick == .longBlend || pick.isSweep)
+            if pick.isSweep { sweeps += 1 }
             h.add(pick)
         }
         #expect((6...11).contains(sweeps), "\(sweeps)")
-        // A far key or a quieter song is never swept.
+        // A far key is never swept; a quieter song is swept down, never up.
         #expect(P.pick(S(tempoError: 0.2, energyJump: 0.3, keyDistance: 5, gridTrusted: true), history: Self.blends(8)) == .longBlend)
-        #expect(P.pick(S(tempoError: 0.2, energyJump: -0.3, keyDistance: 0, gridTrusted: true), history: Self.blends(8)) == .longBlend)
+        #expect(P.pick(S(tempoError: 0.2, energyJump: -0.3, keyDistance: 0, gridTrusted: true), history: Self.blends(8)) == .lowpassSweep)
     }
 
     @Test("the planner says what a pair is mixed for, and whether only variety chose the move")

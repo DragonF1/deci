@@ -40,6 +40,9 @@ nonisolated enum MusicDJLength {
         var section: DJSection
     }
 
+    /// A brake starts in wall seconds before the exit; a deck off its file's tempo makes them a little more or less song.
+    static let brakeSlackSec = 0.1
+
     /// How far before and after an exit a floor blend may start (it looks for a beat and a gap between two sung lines, and a short
     /// handover starts up to a bar early so the new song's "1" is the exit).
     static let floorSlack = -3.4...10.0
@@ -79,13 +82,17 @@ nonisolated enum MusicDJLength {
         }
     }
 
-    /// A plan made for `exit` really leaves there: a mix at the point, a drop swap whose outgoing song is gone at the point, or a
-    /// floor blend that starts beside it; never one that puts two singers together, and always earlier than the usual mix-out.
+    /// A plan made for `exit` really leaves there: a mix at the point, a drop swap or a double drop whose outgoing song is
+    /// gone at or before the point, a brake just before it, or a floor blend that starts beside it; never one that puts two
+    /// singers together, and always earlier than the usual mix-out.
     static func leaves(_ plan: TransitionPlan, at exit: Exit) -> Bool {
         guard plan.mode == .beat, plan.vocalAction != "min", let out = plan.mixOutSec, out <= exit.normal - nominalBarSec / 2
         else { return false }
         if abs(out - exit.point) < 1e-6 { return true }
         if plan.style == .dropSwap { return plan.outgoingEndSec.map { abs($0 - exit.point) < 1e-6 } ?? false }
+        // A double drop leaves after a drop before the exit, a brake a beat before it.
+        if plan.style == .doubleDrop { return plan.outgoingEndSec.map { $0 <= exit.point + 1e-6 } ?? false }
+        if plan.style == .brake { return abs(out + plan.brakeLeadSec - exit.point) < brakeSlackSec }
         return plan.overlapBars == 0 && plan.overlapSec >= 1 && floorSlack.contains(out - exit.point)
     }
 
