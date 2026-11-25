@@ -163,6 +163,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private static let latestLeadMargin: TimeInterval = 0.1
     /// The outgoing deck of a seek, skip or quick fade is gone within this.
     private static let quickDrain: TimeInterval = 0.03
+    /// How long the mids of a song whose mix ended early take to open.
+    private static let mixEQRelease: TimeInterval = 0.3
 
     /// One AVPlayer and everything that belongs to the item it holds.
     @MainActor
@@ -309,6 +311,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var beatOverlap: BeatOverlap?
     /// True while the decks' bass channels are on (from the flip of a beat mix with a swap until the drain is over).
     private var bassSwapActive = false
+    /// True while the decks run the mid and high moves of a mix, until the drain is over.
+    private var mixEQActive = false
     /// The draining deck is playing an echo tail: a seek, skip or load ends it with a short wet ramp.
     private var drainEchoing = false
     /// The draining deck runs a filter sweep: a skip or a seek ends it with the fade, and the lease clears it with the deck.
@@ -430,6 +434,7 @@ final class AVPlaybackEngine: PlaybackEngine {
     func debugGiveUpBeat() { beatGivenUp = true }
     var debugBeatOverlap: BeatOverlap? { beatOverlap }
     var debugBassSwapActive: Bool { bassSwapActive }
+    var debugMixEQActive: Bool { mixEQActive }
     func debugSetBeatOverlap(_ overlap: BeatOverlap?) { beatOverlap = overlap }
     func debugSetWantsPlay(_ on: Bool) { wantsPlay = on }
     func debugBeatSchedule(rate: Float, at host: CMTime) {
@@ -1771,6 +1776,7 @@ final class AVPlaybackEngine: PlaybackEngine {
         }
         if onGrid, !startStandby, let plan {
             beginBassSwap(outgoing: outgoing, incoming: incoming, plan: plan, fade: fade, gap: startGap, outgoingKeepsBass: style == .filterSweep)
+            beginMixEQ(outgoing: outgoing, incoming: incoming, plan: plan, fade: fade, gap: startGap)
         }
         pendingGlide = 0
         beatOverlap = nil
@@ -1836,11 +1842,54 @@ final class AVPlaybackEngine: PlaybackEngine {
         startDrainTimer(seconds: echoSeconds > 0 ? echoSeconds + 0.1 : (!style.isCutLike ? fade : startGap + fade))
     }
 
+    /// The spectral time pitch's own delay: a render's audio is this many frames further into the song than the tap's label
+    /// says (measured by matching rendered audio to the song, at rate 1 and with every output).
+    static let timePitchFrames = 4_096.0
+
+    /// Seconds of audio a deck has rendered past what it is playing now: the output's delay (a few ms on the speakers, a
+    /// tenth of a second and more over Bluetooth) plus the time pitch's. nil when the numbers make no sense (a head from
+    /// before a seek).
+    static func renderLead(head: Double, now: Double, rate: Double, sampleRate: Double) -> TimeInterval? {
+        guard rate > 0, sampleRate > 0 else { return nil }
+        let labelled = (head - now) / rate
+        // AirPlay is the longest delay there is, about two seconds.
+        guard labelled.isFinite, labelled > -0.1, labelled < 3 else { return nil }
+        return max(0, labelled + timePitchFrames / sampleRate)
+    }
+
+    private func renderLead(of deck: Deck) -> TimeInterval? {
+        guard deck.player.timeControlStatus == .playing, let head = deck.tap?.renderHead else { return nil }
+        return Self.renderLead(
+            head: head.itemTime, now: deck.player.currentTime().seconds, rate: Double(deck.player.rate), sampleRate: head.sampleRate)
+    }
+
+    /// Seconds of rendered audio from the flip to what is heard at the overlap's start. Negative when that has been rendered
+    /// already: a ramp meant for the overlap's start is then late, one meant for later is set that much sooner, so it
+    /// is heard on its beat. A deck that has not rendered yet starts with the overlap.
+    private func overlapOffset(of deck: Deck, gap: TimeInterval, unrendered: TimeInterval) -> TimeInterval {
+        renderLead(of: deck).map { gap - $0 } ?? unrendered
+    }
+
     /// Drives the lease bass channels of a beat plan with a swap: the outgoing deck holds the bass (1) and the incoming one
     /// has none (0) until `bassSwapAtSec` into the overlap, then the two hand over across `bassHandoverSec` with `gA + gB =
     /// 1`, so kicks that line up never add to more than one kick. Offsets are in rendered audio, which is wall time for
     /// both decks (the plan's overlap is outgoing seconds, and the incoming deck's rate only changes what it plays, not how
-    /// many frames it renders), counted by each lease from its own first frame of the fade, so a pause holds them both.
+    /// many frames it renders), counted by each lease from its own next frame, so a pause holds them both.
+    private func beginBassSwap(
+        outgoing: Deck, incoming: Deck, plan: TransitionPlan, fade: TimeInterval, gap: TimeInterval, outgoingKeepsBass: Bool = false
+    ) {
+        guard plan.mode == .beat, let swap = plan.bassSwapAtSec, swap.isFinite, swap > 0, swap < fade else { return }
+        let handover = min(max(plan.bassHandoverSec, 0.05), max(0.05, fade - swap))
+        let outgoingStart = overlapOffset(of: outgoing, gap: gap, unrendered: gap)
+        let incomingStart = overlapOffset(of: incoming, gap: gap, unrendered: 0)
+        // A filter sweep thins the outgoing lows with its high-pass, so only the incoming side has a bass channel.
+        if !outgoingKeepsBass { outgoing.tap?.beginBass(gain: 1) }
+        incoming.tap?.beginBass(gain: 0)
+        if !outgoingKeepsBass { outgoing.tap?.setBass(to: 0, over: handover, after: max(0, swap + outgoingStart)) }
+        incoming.tap?.setBass(to: 1, over: handover, after: max(0, swap + incomingStart))
+        bassSwapActive = true
+    }
+
     /// Seconds from the flip to the standby's first frame, clamped to [0, 0.25].
     static func startGap(scheduledHost: CMTime?, now: CMTime) -> TimeInterval {
         guard let host = scheduledHost, host.isValid, host.isNumeric else { return fadeLead }
@@ -1848,19 +1897,15 @@ final class AVPlaybackEngine: PlaybackEngine {
         return gap.isFinite ? min(max(gap, 0), 0.25) : fadeLead
     }
 
-    private func beginBassSwap(
-        outgoing: Deck, incoming: Deck, plan: TransitionPlan, fade: TimeInterval, gap: TimeInterval, outgoingKeepsBass: Bool = false
-    ) {
-        guard plan.mode == .beat, let swap = plan.bassSwapAtSec, swap.isFinite, swap > 0, swap < fade else { return }
-        let handover = min(max(plan.bassHandoverSec, 0.05), max(0.05, fade - swap))
-        // A filter sweep thins the outgoing lows with its high-pass, so only the incoming side has a bass channel.
-        if !outgoingKeepsBass { outgoing.tap?.beginBass(gain: 1) }
-        incoming.tap?.beginBass(gain: 0)
-        // Both decks render the same frames per wall second (the tap is downstream of time-pitch, measured), but the
-        // outgoing one started counting `gap` earlier.
-        if !outgoingKeepsBass { outgoing.tap?.setBass(to: 0, over: handover, after: swap + gap) }
-        incoming.tap?.setBass(to: 1, over: handover, after: swap)
-        bassSwapActive = true
+    /// Starts both decks' mid and high moves, heard on the seconds of the overlap they are planned for.
+    private func beginMixEQ(outgoing: Deck, incoming: Deck, plan: TransitionPlan, fade: TimeInterval, gap: TimeInterval) {
+        // A shortened fade has no room for the moves.
+        guard plan.mode == .beat, let eq = plan.mixEQ, fade >= plan.overlapSec - 0.25 else { return }
+        outgoing.tap?.beginMixEQ(
+            mid: eq.outgoingMid, high: eq.outgoingHigh, after: overlapOffset(of: outgoing, gap: gap, unrendered: gap), heard: true)
+        incoming.tap?.beginMixEQ(
+            mid: eq.incomingMid, high: [], after: overlapOffset(of: incoming, gap: gap, unrendered: 0), heard: false)
+        mixEQActive = true
     }
 
     /// The bass channels go back to the plain path on both decks (and a swap that was cut short is not left half done).
@@ -1921,6 +1966,12 @@ final class AVPlaybackEngine: PlaybackEngine {
         if sweepActive {
             sweepActive = false
             old.tap?.endSweep()
+        }
+        if mixEQActive {
+            mixEQActive = false
+            old.tap?.endMixEQ()
+            // Normally open long before this; a mix that was cut short opens the rest of the way.
+            active.tap?.releaseMixEQ(over: Self.mixEQRelease)
         }
         old.tearDown()
         old.player.automaticallyWaitsToMinimizeStalling = false
@@ -1988,6 +2039,7 @@ final class AVPlaybackEngine: PlaybackEngine {
                 old.tap?.setBass(to: 0, over: Self.quickDrain)
                 active.tap?.setBass(to: 1, over: Self.quickDrain)
             }
+            if mixEQActive { active.tap?.releaseMixEQ(over: Self.quickDrain) }
             old.tap?.drain(over: Self.quickDrain, curve: .linear)
             // An echo tail is faded with its own wet ramp, so ending it early leaves no step.
             if drainEchoing { old.tap?.releaseEcho(over: Self.quickDrain) }

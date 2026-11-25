@@ -167,7 +167,7 @@ struct MusicDropSwapPlanTests {
         #expect(B.filterSweepPlan(from: cut) == nil)
     }
 
-    @Test("a sweep hands the incoming lows over where its high-pass passes 80 Hz, from its own range, not at the middle")
+    @Test("a sweep hands the incoming lows over on the bar line nearest to where its high-pass passes 80 Hz, not at the middle")
     func sweepBassSwapFollowsTheRamp() throws {
         var i = BT.inputs()
         i.bassSwapAvailable = true
@@ -176,8 +176,10 @@ struct MusicDropSwapPlanTests {
         let sweep = try #require(B.filterSweepPlan(from: blend))
         let swap = try #require(sweep.bassSwapAtSec)
         let expected = sweep.overlapSec * log(80 / sweep.sweepFromHz) / log(sweep.sweepToHz / sweep.sweepFromHz)
-        #expect(abs(swap - expected) < 1e-9, "swap \(swap) expected \(expected)")
-        #expect(swap < blendSwap && abs(swap / sweep.overlapSec - 0.25) < 0.02)
+        let landed = swap + sweep.bassHandoverSec
+        let bar = sweep.overlapSec / Double(sweep.overlapBars)
+        #expect(abs(landed / bar - (landed / bar).rounded()) < 1e-9 && abs(landed - expected) <= bar / 2 + 1e-9, "full at \(landed), 80 Hz at \(expected)")
+        #expect(swap < blendSwap && abs(sweep.bassHandoverSec - bar / 4) < 1e-9)
         #expect(swap + sweep.bassHandoverSec <= sweep.overlapSec + 1e-9 && sweep.bassHandoverSec > 0)
         // Another range moves it: nothing is hard-coded to a quarter.
         let wide = B.sweepBassSwapSec(overlap: 10, fromHz: 20, toHz: 20_000)

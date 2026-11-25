@@ -268,11 +268,14 @@ struct AVPlaybackEngineBeatTests {
         #expect(incoming.initial == 0 && incoming.target == 1)
         let rate = engine.debugActiveTap?.debugLeaseRate ?? 0
         #expect(rate > 0)
-        // The incoming deck swaps 4 s after its first frame; the outgoing one has counted since the flip, a start gap
-        // (fadeLead, up to 0.25 s) earlier, so it waits that much longer and both swap at the same wall time.
-        #expect(incoming.delayFrames == Int((4 * rate).rounded()))
-        let extra = Double(outgoing.delayFrames - incoming.delayFrames) / rate
-        #expect(extra >= 0 && extra <= 0.25, "outgoing waits \(extra) s longer")
+        // Both swap 4 s into what is heard of the overlap: sooner in rendered audio by what each deck has rendered ahead
+        // (at least the time pitch's 4096 frames), later by the start gap (up to 0.25 s).
+        for (deck, delay) in [("outgoing", outgoing.delayFrames), ("incoming", incoming.delayFrames)] {
+            let seconds = Double(delay) / rate
+            #expect(seconds > 1 && seconds <= 4.25, "\(deck) waits \(seconds) s")
+        }
+        // The decks agree: the same start gap, and the same output in front of them, give or take a start gap of each.
+        #expect(abs(outgoing.delayFrames - incoming.delayFrames) <= Int(0.3 * rate))
         #expect(outgoing.rampFrames == Int((1 * rate).rounded()) && incoming.rampFrames == outgoing.rampFrames)
         engine.unload()
     }
@@ -365,6 +368,23 @@ struct AVPlaybackEngineBeatTests {
         #expect(abs(engine.avPlayer.rate - 1) < 0.001, "set up: the incoming deck runs at 1, whatever the plan says")
         #expect(abs(perSecond - 1) < 0.02, "measured \(perSecond): output frames per wall second are SR")
         engine.unload()
+    }
+
+    @Test("the render lead is the head past the clock plus the time pitch's delay, none when the head makes no sense")
+    func renderLeadMaths() throws {
+        let pitch = 4_096.0 / 44_100
+        let speakers = try #require(AVPlaybackEngine.renderLead(head: 60.02, now: 60, rate: 1, sampleRate: 44_100))
+        #expect(abs(speakers - 0.02 - pitch) < 1e-9)
+        let bluetooth = try #require(AVPlaybackEngine.renderLead(head: 60.14, now: 60, rate: 1, sampleRate: 44_100))
+        #expect(abs(bluetooth - 0.14 - pitch) < 1e-9)
+        // The clock can pass the label by a buffer, never the audio.
+        let behind = try #require(AVPlaybackEngine.renderLead(head: 59.95, now: 60, rate: 1, sampleRate: 48_000))
+        #expect(behind >= 0 && behind < 0.09)
+        #expect(AVPlaybackEngine.renderLead(head: 20, now: 60, rate: 1, sampleRate: 44_100) == nil, "a head from before a seek")
+        #expect(AVPlaybackEngine.renderLead(head: 90, now: 60, rate: 1, sampleRate: 44_100) == nil)
+        #expect(AVPlaybackEngine.renderLead(head: .nan, now: 60, rate: 1, sampleRate: 44_100) == nil)
+        #expect(AVPlaybackEngine.renderLead(head: 60, now: .nan, rate: 1, sampleRate: 44_100) == nil)
+        #expect(AVPlaybackEngine.renderLead(head: 60, now: 60, rate: 0, sampleRate: 44_100) == nil)
     }
 
     @Test("the start gap is the scheduled host less now, fadeLead without a schedule, clamped to [0, 0.25]")
@@ -553,7 +573,7 @@ struct AVPlaybackEngineBeatTests {
         let scheduled = await waitUntil(timeout: .seconds(40)) { engine.scheduledStartHost != nil }
         #expect(scheduled)
         #expect(engine.debugPlannedRate == 1, "planned \(engine.debugPlannedRate)")
-        #expect(engine.debugPlannedBeat)
+        #expect(await waitUntil(timeout: .seconds(10)) { engine.debugPlannedBeat })
         engine.unload()
     }
 
@@ -595,10 +615,64 @@ struct AVPlaybackEngineBeatTests {
         engine.unload()
     }
 
+    private func equalizedPlan() -> TransitionPlan {
+        var plan = beatPlan(rate: 1, mixIn: 2, mixOut: 5, overlap: 8, swapAt: 3.5, handover: 0.5)
+        plan.mixEQ = MusicMixEQPlan(
+            incomingMid: [.init(at: 1, gain: 0.35), .init(at: 4, gain: 1)],
+            outgoingMid: [.init(at: 3, gain: 1), .init(at: 5, gain: 0.5)],
+            outgoingHigh: [.init(at: 4, gain: 1), .init(at: 6, gain: 0.4)]
+        )
+        return plan
+    }
+
+    @Test("a plan's EQ moves start on both decks at the flip and are over, with the incoming deck open, after the drain")
+    func mixEQRunsWithTheOverlap() async throws {
+        let engine = try await preparedEngine(plan: equalizedPlan(), name: "eq")
+        #expect(await awaitFlip(engine))
+        #expect(engine.debugMixEQActive)
+        let incoming = try #require(engine.debugActiveTap?.debugMixEQ)
+        let outgoing = try #require(engine.debugDrainingTap?.debugMixEQ)
+        #expect(incoming.active && incoming.settings.mid.map(\.gain) == [0.35, 1] && incoming.settings.high.isEmpty)
+        #expect(outgoing.active && outgoing.settings.mid.map(\.gain) == [1, 0.5] && outgoing.settings.high.map(\.gain) == [1, 0.4])
+        // Each deck's moves are shifted whole, by what it has rendered ahead of what is heard.
+        let rate = try #require(engine.debugActiveTap?.debugLeaseRate)
+        let spread = Double(outgoing.settings.mid[1].frame - outgoing.settings.mid[0].frame) / rate
+        #expect(abs(spread - 2) < 0.01, "outgoing moves \(spread) s apart")
+        let first = Double(incoming.settings.mid[1].frame) / rate
+        #expect(first > 1 && first <= 4.01, "incoming's last move \(first) s on")
+        #expect(await awaitDrain(engine))
+        #expect(!engine.debugMixEQActive)
+        #expect(engine.debugActiveTap?.debugMixEQ?.releases == 1)
+        engine.unload()
+    }
+
+    @Test("a seek in the overlap opens the incoming deck's EQ within the quick drain")
+    func mixEQEndsWithASeek() async throws {
+        let engine = try await preparedEngine(plan: equalizedPlan(), name: "es")
+        #expect(await awaitFlip(engine))
+        try await Task.sleep(for: .milliseconds(400))
+        engine.seek(to: 10)
+        let released = await waitUntil(timeout: .seconds(5)) { (engine.debugActiveTap?.debugMixEQ?.releases ?? 0) >= 1 }
+        #expect(released)
+        #expect(await awaitDrain(engine))
+        #expect(!engine.debugMixEQActive)
+        engine.unload()
+    }
+
+    @Test("a plan given up by a seek into its end runs no EQ")
+    func mixEQNotOnAPlainFade() async throws {
+        let engine = try await preparedEngine(plan: equalizedPlan(), name: "ep")
+        engine.seek(to: 11.5)
+        #expect(await awaitFlip(engine))
+        #expect(!engine.debugMixEQActive && engine.debugActiveTap?.debugMixEQ?.active != true)
+        #expect(await awaitDrain(engine))
+        engine.unload()
+    }
+
     @Test("a near-1 plan (0.99998) keeps its overlap at rate 1: a shared-host resume, the swap, and no glide and no rate set after the drain")
     func flipKeepsNearOneBeatAtRateOne() async throws {
         let engine = try await preparedEngine(plan: beatPlan(rate: 0.99998, mixIn: 2, mixOut: 5, overlap: 8, swapAt: 4, handover: 1), name: "f1")
-        #expect(engine.debugPlannedBeat)
+        #expect(await waitUntil(timeout: .seconds(10)) { engine.debugPlannedBeat })
         #expect(engine.debugPlannedRate == 1)
         #expect(await awaitFlip(engine))
         let overlap = try #require(engine.debugBeatOverlap, "a beat overlap at rate 1 is still an overlap")
@@ -644,7 +718,7 @@ struct AVPlaybackEngineBeatTests {
     @Test("a beat plan given up after it was scheduled is rescheduled as a plain fade at rate 1: no overlap, no glide")
     func flipOfGivenUpPlanIsPlain() async throws {
         let engine = try await preparedEngine(plan: beatPlan(rate: 0.95, mixIn: 2, mixOut: 5, overlap: 8, swapAt: 4, handover: 1), name: "fg")
-        #expect(engine.debugPlannedBeat)
+        #expect(await waitUntil(timeout: .seconds(10)) { engine.debugPlannedBeat })
         engine.debugGiveUpBeat()
         // A changed setting makes the engine plan the start again, and it now sees the plan was given up.
         engine.crossfadeSeconds = 3

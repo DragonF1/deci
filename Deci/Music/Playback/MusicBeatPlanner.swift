@@ -49,6 +49,8 @@ enum MusicBeatPlanner {
     static let minIncomingRemainingSec = 20.0
     /// The bass hands over across this many outgoing beats.
     static let bassHandoverBeats = 2.0
+    /// A blend's bass swap takes the last beat before a downbeat: the new lows are full on the one.
+    static let swapHandoverBeats = 1.0
 
     // MARK: Tempo
 
@@ -254,8 +256,8 @@ enum MusicBeatPlanner {
                 plan.vocalBeforeSec = first
             }
             if inputs.bassSwapAvailable, bothPhrased, bars != 4 {
-                plan.bassSwapAtSec = overlap / 2
-                plan.bassHandoverSec = bassHandoverBeats * aGrid.periodSec / outRate
+                // Half of 8 or 16 bars is a bar line.
+                landBass(&plan, on: overlap / 2, beat: aGrid.periodSec / outRate)
             }
             if inputs.vocalGuardEnabled, let intervals = inputs.outgoing.vocalIntervals,
                MusicVocalGuard.cutsOutgoingSinger(intervals, endSec: mixOut + overlapItem) {
@@ -272,6 +274,21 @@ enum MusicBeatPlanner {
         }
         if driftSkipped > 0 { return refuse(.tempoClash) }
         return refuse(late ? .tooLate : .noPhraseRoom)
+    }
+
+    /// Puts the bass swap into the beat that ends on `downbeat` (seconds into the overlap, as is `beat`).
+    static func landBass(_ plan: inout TransitionPlan, on downbeat: Double, beat: Double) {
+        let handover = min(max(0.05, swapHandoverBeats * beat), max(0.05, downbeat / 2))
+        plan.bassSwapAtSec = downbeat - handover
+        plan.bassHandoverSec = handover
+    }
+
+    /// The multiple of `unit` nearest to `t`, at least one unit inside an overlap of `length`. nil when there is none.
+    static func nearestLine(to t: Double, unit: Double, length: Double) -> Double? {
+        guard unit.isFinite, unit > 0, t.isFinite, length.isFinite else { return nil }
+        let last = ((length - unit) / unit + 1e-6).rounded(.down)
+        guard last >= 1 else { return nil }
+        return min(max((t / unit).rounded(), 1), last) * unit
     }
 
     // MARK: Styled plans (Tier 4b)

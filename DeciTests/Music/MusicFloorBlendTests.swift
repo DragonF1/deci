@@ -18,7 +18,7 @@ struct MusicFloorBlendTests {
 
     // MARK: floorBlendPlan
 
-    @Test("a matched pair gets a long blend floor: 8 s, rate 1, bass swap at the middle, 2 s handover, from the smart start")
+    @Test("a matched pair gets a long blend floor: 8 s, rate 1, bass full on the downbeat in the middle, from the smart start")
     func matchedFloor() throws {
         let i = BT.inputs()
         let smart = Self.smart(i)
@@ -27,7 +27,8 @@ struct MusicFloorBlendTests {
         #expect(plan.incomingRate == 1 && plan.fadeSeconds == 8 && plan.overlapSec == 8 && plan.overlapBars == 0)
         // Snapped onto the beat grids: within a bar of the smart start, never before it.
         #expect(abs((plan.mixOutSec ?? 0) - (smart.fadeStartSec ?? 0)) <= 2.0 && abs((plan.mixInSec ?? 0) - smart.incomingStartSec) <= 2.0)
-        #expect(plan.bassSwapAtSec == 4 && plan.bassHandoverSec == 2)
+        // Bars of 2 s: the downbeat at 4 s, the swap over the beat before it.
+        #expect(plan.floorAligned && plan.bassSwapAtSec == 3.5 && plan.bassHandoverSec == 0.5)
         #expect(plan.outgoingEndSec == (plan.mixOutSec ?? 0) + 8)
     }
 
@@ -116,7 +117,8 @@ struct MusicFloorBlendTests {
         #expect(abs(shift) > 0.01 && abs(shift) <= B.maxBeatDriftSec)
         #expect(Self.barOffset(a, try #require(plan.mixOutSec)) < 0.001)
         #expect(abs(Self.barOffset(b, try #require(plan.mixInSec)) - abs(shift)) < 0.001)
-        #expect(plan.fadeSeconds >= 6 && plan.bassSwapAtSec == plan.fadeSeconds / 2)
+        let landed = try #require(plan.bassSwapAtSec) + plan.bassHandoverSec
+        #expect(plan.fadeSeconds >= 6 && Self.barOffset(a, (plan.mixOutSec ?? 0) + landed) < 0.001 && abs(landed - plan.fadeSeconds / 2) <= 1.001)
         #expect(plan.incomingStartSec == plan.mixInSec && plan.fadeStartSec == plan.mixOutSec)
         #expect(plan.mixInSec ?? -1 >= Self.smart(i).incomingStartSec - 1e-9)
     }

@@ -3611,6 +3611,7 @@ final class MusicService {
             log(MusicTransitionLog.beatPlanLine(
                 from: outgoing.videoId, to: incoming.videoId, plan: offered.plan, bpmA: bpmA, bpmB: bpmB
             ))
+            if let eq = MusicTransitionLog.eqLine(from: outgoing.videoId, to: incoming.videoId, plan: offered.plan) { log(eq) }
         } else if offered.inputs.beatMixEnabled, offered.inputs.crossfadeOn, let reason = offered.plan.fallbackReason {
             log(MusicTransitionLog.beatFallbackLine(
                 from: outgoing.videoId, to: incoming.videoId, reason: reason, bpmA: bpmA, bpmB: bpmB,

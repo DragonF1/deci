@@ -81,6 +81,18 @@ enum MusicTransitionLog {
             + (plan.stretchRate != 1 ? " stretch=\(fixed(plan.stretchRate, 4)) glide=\(plan.stretchGlideBars)" : "")
     }
 
+    /// transition_eq from=<id> to=<id> inMid=1.00:0.30,3.00:1.00 outMid=... outHigh=... carve=1.40
+    /// The mixer moves of a blend (seconds into the overlap : gain) and how long two singers are kept apart by one's mids. nil
+    /// without any.
+    static func eqLine(from: String, to: String, plan: TransitionPlan) -> String? {
+        guard let eq = plan.mixEQ else { return nil }
+        func text(_ moves: [MusicMixEQPlan.Move]) -> String {
+            moves.isEmpty ? "-" : moves.map { "\(fixed($0.at, 2)):\(fixed($0.gain, 2))" }.joined(separator: ",")
+        }
+        return "transition_eq from=\(from) to=\(to) inMid=\(text(eq.incomingMid)) outMid=\(text(eq.outgoingMid))"
+            + " outHigh=\(text(eq.outgoingHigh)) carve=\(fixed(eq.carvedSec, 2))"
+    }
+
     /// transition_vocal_guard from=<id> to=<id> action=shorten before=6.20 after=0.00 fade=5.00
     /// The structural vocal guard changed a plan (or found nothing clean): nil when the guard left the plan alone.
     static func vocalGuardLine(from: String, to: String, plan: TransitionPlan) -> String? {

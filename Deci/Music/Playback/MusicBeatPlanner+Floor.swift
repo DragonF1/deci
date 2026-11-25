@@ -192,6 +192,13 @@ extension MusicBeatPlanner {
             plan.bassSwapAtSec = fade / 2
             plan.bassHandoverSec = floorBassHandoverSec
         }
+        if plan.floorAligned, let alignment, let swap = plan.bassSwapAtSec {
+            // The mix-out is on a beat (a downbeat) of the outgoing song, so the lines after it are whole units away.
+            let beat = alignment.out.periodSec / outRate
+            if let line = nearestLine(to: swap, unit: (alignment.bars ? 4 : 1) * beat, length: fade) {
+                landBass(&plan, on: line, beat: beat)
+            }
+        }
         return plan
     }
 }

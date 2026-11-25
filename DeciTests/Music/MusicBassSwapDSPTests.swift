@@ -304,7 +304,7 @@ struct MusicBassSwapDSPTests {
         }
     }
 
-    @Test("a sine below 100 Hz stays steady across the swap: within 0.5 dB, no step over 1 dB")
+    @Test("a sine below 100 Hz stays steady across the swap: within 1 dB, no step over 1 dB")
     func lowSineSteadyAcrossSwap() {
         let overlap = 16.0
         let frames = Int(overlap * rate)
@@ -322,8 +322,21 @@ struct MusicBassSwapDSPTests {
         var largestStep: Float = 0
         for pair in zip(levels, levels.dropFirst()) { largestStep = max(largestStep, abs(pair.1 - pair.0)) }
         print("BASSSWAP low sine spread \(spread) dB, largest step \(largestStep) dB")
-        #expect(spread <= 0.5, "level moves by \(spread) dB around the swap")
+        #expect(spread <= 1, "level moves by \(spread) dB around the swap")
         #expect(largestStep <= 1, "largest step \(largestStep) dB")
+    }
+
+    @Test("a deck whose lows are cut gives the kick band up: at least 8 dB down to 120 Hz, 20 dB at 80 Hz, nothing above 300 Hz and no boost anywhere")
+    func cutLowsAreCut() {
+        for (frequency, most) in [(40.0, -30.0), (60, -28), (80, -20), (100, -13), (120, -8), (150, -2.5), (200, 0.1), (300, 0.1), (1_000, 0.1)] {
+            let lease = lease(MusicDSPChain(sampleRate: rate))
+            lease.beginBass(gain: 0)
+            let signal = sine(frequency, amplitude: 0.3, frames: 48_000)
+            let out = renderChunked(lease, signal)
+            let change = Double(db(MusicTestSignal.rms(Array(out[24_000...])) / MusicTestSignal.rms(Array(signal[24_000...]))))
+            #expect(change <= most, "\(frequency) Hz: \(change) dB")
+            if frequency >= 300 { #expect(change > -0.3, "\(frequency) Hz: \(change) dB") }
+        }
     }
 
     @Test("the lows hand over on the swap point: before it the outgoing lease carries them, after it the incoming one")

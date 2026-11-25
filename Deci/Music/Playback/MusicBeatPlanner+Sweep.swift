@@ -22,8 +22,14 @@ extension MusicBeatPlanner {
             // The outgoing high-pass thins the lows as it rises, so the incoming lows come in where it passes 80 Hz (about a
             // quarter of the overlap), not at the middle: otherwise both songs would have no bass for a stretch.
             let swap = sweepBassSwapSec(overlap: beat.overlapSec, fromHz: plan.sweepFromHz, toHz: plan.sweepToHz)
-            plan.bassSwapAtSec = swap
-            plan.bassHandoverSec = min(beat.bassHandoverSec, max(0.05, beat.overlapSec - swap))
+            let bar = beat.overlapBars > 0 ? beat.overlapSec / Double(beat.overlapBars) : 0
+            if let line = nearestLine(to: swap, unit: bar, length: beat.overlapSec) {
+                // On the bar line next to that point.
+                landBass(&plan, on: line, beat: bar / 4)
+            } else {
+                plan.bassSwapAtSec = swap
+                plan.bassHandoverSec = min(beat.bassHandoverSec, max(0.05, beat.overlapSec - swap))
+            }
         }
         return plan
     }

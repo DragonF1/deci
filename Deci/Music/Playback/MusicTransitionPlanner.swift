@@ -93,6 +93,9 @@ struct TransitionPlan: Equatable, Sendable {
     /// What the incoming song gets going with, when it starts past its intro.
     var djEntry: MusicDJEntry.Kind? = nil
 
+    /// The mid and high moves of both decks across the overlap. nil on every plan without a blend.
+    var mixEQ: MusicMixEQPlan? = nil
+
     /// Exactly the behaviour of tier 1 without a crossfade: no trims, no fade, no gains.
     static let tier1Gapless = TransitionPlan(
         mode: .gapless, incomingStartSec: 0, outgoingEndSec: nil, fadeStartSec: nil, fadeSeconds: 0,
@@ -222,9 +225,16 @@ enum MusicTransitionPlanner {
             var planned = enteredPlan(dj, smart: djSmart)
             guard MusicDJLength.leaves(planned, at: exit) else { continue }
             planned.djSection = exit.section
-            return planned
+            return equalized(planned, inputs)
         }
-        return normal
+        return equalized(normal, inputs)
+    }
+
+    /// The finished plan with its EQ moves.
+    private static func equalized(_ plan: TransitionPlan, _ inputs: MusicTransitionInputs) -> TransitionPlan {
+        var plan = plan
+        plan.mixEQ = MusicMixEQPlan.make(for: plan, inputs)
+        return plan
     }
 
     /// The plan with the incoming song brought in where it gets going (`MusicDJEntry`), or without an entry when there is none or

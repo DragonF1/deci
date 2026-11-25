@@ -214,6 +214,15 @@ final class MusicTapDeck: @unchecked Sendable {
         state.withLock { $0.lease?.endBass() }
     }
 
+    /// The item time the deck renders next, by the tap's label, and the rate its frames are counted at. nil until it has
+    /// rendered.
+    var renderHead: (itemTime: Double, sampleRate: Double)? {
+        state.withLock { state in
+            guard let lease = state.lease, let head = lease.renderHead else { return nil }
+            return (head, lease.processorSampleRate)
+        }
+    }
+
     #if DEBUG
     var debugBass: MusicRenderLease.DebugBass? { state.withLock { $0.lease?.debugBass } }
     var debugRenderedFrames: Int? { state.withLock { $0.lease?.renderedFrames } }
@@ -280,6 +289,37 @@ final class MusicTapDeck: @unchecked Sendable {
     func endSweep() {
         state.withLock { $0.lease?.endSweep() }
     }
+
+    /// Starts this deck's mid and high moves (see `MusicMixEQ`). Each move's time is counted in seconds of rendered audio from
+    /// now plus `after`; `heard` is whether this deck can be heard already.
+    func beginMixEQ(mid: [MusicMixEQPlan.Move], high: [MusicMixEQPlan.Move], after: Double, heard: Bool) {
+        state.withLock { state in
+            guard !state.retired, let lease = state.lease else { return }
+            func points(_ moves: [MusicMixEQPlan.Move]) -> [MusicMixEQPoint] {
+                MusicMixEQPlan.shifted(moves, by: after, heard: heard).map {
+                    MusicMixEQPoint(frame: lease.frames(forSeconds: $0.at), gain: Float($0.gain))
+                }
+            }
+            lease.mixEQ.begin(MusicMixEQSettings(mid: points(mid), high: points(high)))
+        }
+    }
+
+    /// Opens both bands again over `seconds`.
+    func releaseMixEQ(over seconds: Double) {
+        state.withLock { state in
+            guard let lease = state.lease else { return }
+            lease.mixEQ.release(frames: lease.frames(forSeconds: seconds))
+        }
+    }
+
+    /// The EQ is off (the lease is about to be released).
+    func endMixEQ() {
+        state.withLock { $0.lease?.mixEQ.end() }
+    }
+
+    #if DEBUG
+    var debugMixEQ: MusicMixEQ.DebugRequest? { state.withLock { $0.lease?.mixEQ.debugRequest } }
+    #endif
 
     /// Marks this deck as the incoming side of a crossfade until `endOverlap()`.
     func beginFadeIn() {
@@ -368,8 +408,10 @@ final class MusicTapContext: @unchecked Sendable {
     }
 
     /// Real-time safe: no allocation, locks or logging.
-    func render(_ list: UnsafeMutableAudioBufferListPointer, frames: Int, sourceStart: Double = .nan) {
-        lease?.render(list, frames: frames, sourceStart: sourceStart)
+    func render(
+        _ list: UnsafeMutableAudioBufferListPointer, frames: Int, sourceStart: Double = .nan, sourceEnd: Double = .nan
+    ) {
+        lease?.render(list, frames: frames, sourceStart: sourceStart, sourceEnd: sourceEnd)
     }
 }
 
@@ -400,5 +442,8 @@ private let tapProcess: MTAudioProcessingTapProcessCallback = { tap, numberFrame
         return
     }
     let context = Unmanaged<MusicTapContext>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
-    context.render(UnsafeMutableAudioBufferListPointer(bufferListInOut), frames: Int(numberFramesOut.pointee), sourceStart: range.start.seconds)
+    let start = range.start.seconds
+    context.render(
+        UnsafeMutableAudioBufferListPointer(bufferListInOut), frames: Int(numberFramesOut.pointee),
+        sourceStart: start, sourceEnd: start + range.duration.seconds)
 }

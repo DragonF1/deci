@@ -151,8 +151,9 @@ struct MusicBeatPlannerTests {
         #expect(plan.mode == .beat && plan.overlapBars == 16 && plan.overlapSec == 32)
         // The plan carries the smart start for an engine that has to give the beat plan up.
         #expect(plan.fallbackIncomingStartSec == MusicTransitionPlanner.smartPlan(inputs).incomingStartSec)
-        #expect(plan.bassSwapAtSec == 16)
-        #expect(plan.bassHandoverSec == 1)
+        // The last beat before the downbeat in the middle: the new lows are full on the one.
+        #expect(plan.bassSwapAtSec == 15.5)
+        #expect(plan.bassHandoverSec == 0.5)
         let mixOut = try #require(plan.mixOutSec)
         #expect(mixOut + 32 <= 236 + 1e-9)
     }
@@ -281,8 +282,9 @@ struct MusicBeatPlannerTests {
         let shorter = Self.plan(swap)
         #expect(shorter.mode == .beat && shorter.overlapBars == 8)
         #expect(try #require(shorter.mixOutSec) >= swap.earliestMixOutSec!)
-        // The 8-bar fallback still hands the bass over: at its own half way, across two beats.
-        #expect(shorter.bassSwapAtSec == shorter.overlapSec / 2, "swapAt \(String(describing: shorter.bassSwapAtSec))")
+        // The 8-bar fallback still hands the bass over: full on the downbeat at its own half way.
+        let landed = try #require(shorter.bassSwapAtSec) + shorter.bassHandoverSec
+        #expect(abs(landed - shorter.overlapSec / 2) < 1e-9, "full at \(landed)")
         #expect(shorter.bassHandoverSec > 0)
     }
 

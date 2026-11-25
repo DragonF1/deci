@@ -435,6 +435,7 @@ final class MusicDSPChain: @unchecked Sendable {
         if startGain == 0 && target == 0 {
             memset(samples, 0, sampleCount * MemoryLayout<Float>.size)
             if bass != nil { lease.resetSplit() }
+            lease.mixEQ.skip(frames)
             return
         }
         if metered { dsp.noteLevel(samples, count: sampleCount, scale: fade.meanValue(over: frames) * offset.meanValue(over: frames)) }
@@ -451,6 +452,8 @@ final class MusicDSPChain: @unchecked Sendable {
 
         // Tier 4b P2: the outgoing deck of a filter sweep is high-passed before the fade (a no-op when idle).
         if lease.beginSweepRender() { lease.sweep.process(samples, frames: frames) }
+        // The mids and highs of the mixer EQ, also before the fade (a no-op when idle).
+        lease.mixEQ.process(samples, frames: frames)
         // Tier 4b: an echo takes a copy of the signal before the fade, so cutting the dry never cuts the tail.
         let echoing = lease.beginEchoRender() && lease.echo.capture(input, frames: frames)
         if !lease.isEchoActive { lease.applyHistoryClear() }
@@ -589,8 +592,10 @@ final class MusicDSPChain: @unchecked Sendable {
         fade.apply(to: samples, frames: frames, channels: channels)
     }
 
-    /// The two-band output of a beat mix, stereo interleaved in place: `y = f * high + b * low`, which is `f * x + (b - f) *
-    /// low` with `high = x - low` and `low` the 150 Hz split. The highs follow the lease's fade, the lows its bass gain.
+    /// The two-band output of a beat mix, stereo interleaved in place: `y = f * x + (b - f) * low`, so the highs follow the
+    /// lease's fade and the lows its bass gain. `low` is the 150 Hz low-pass while the lows are held above the fade (b > f), and
+    /// what a 150 Hz high-pass takes away while they are cut below it (b < f): `x - lowpass` is no cut, it is louder than `x`
+    /// from 60 to 200 Hz, which is where a kick is. Both are the plain `f * x` where b = f, so nothing steps between them.
     /// While an equal-power ramp runs the rider holds the output to this lease's share of the summed ceiling (see
     /// `MusicFade.headroomShare`); after it the soft limiter and the release tail do what they do for one band.
     private static func bandedLimitAndFade(
@@ -606,10 +611,11 @@ final class MusicDSPChain: @unchecked Sendable {
                 let base = frame * 2
                 let xl = samples[base]
                 let xr = samples[base + 1]
-                let lowL = split.lowpass(xl, channel: 0)
-                let lowR = split.lowpass(xr, channel: 1)
-                var left = gh * (xl - lowL) + gl * lowL
-                var right = gh * (xr - lowR) + gl * lowR
+                let lowL = split.bands(xl, channel: 0)
+                let lowR = split.bands(xr, channel: 1)
+                let held = gl - gh
+                var left = gh * xl + held * (held < 0 ? lowL.cut : lowL.hold)
+                var right = gh * xr + held * (held < 0 ? lowR.cut : lowR.hold)
                 if frame < ramped {
                     let peak = max(abs(left), abs(right))
                     let ceiling = MusicFade.headroomShare(high: gh, low: gl)
@@ -664,9 +670,9 @@ final class MusicDSPChain: @unchecked Sendable {
     }
 }
 
-/// Tier 3b P4: the 150 Hz split of a beat mix. `low` is a 4th-order Butterworth low-pass (two biquads), `high` is `x -
-/// low`, so the two always add back to the input exactly. Stereo, one state per channel, in Double so a 150 Hz corner at
-/// 48 kHz does not drown in rounding; states below 1e-20 are flushed so a silent input never goes denormal.
+/// Tier 3b P4: the 150 Hz split of a beat mix: a 4th-order Butterworth low-pass (two biquads) for lows that are held up, and
+/// what the high-pass of the same order takes away for lows that are cut. Stereo, one state per channel, in Double so a 150
+/// Hz corner at 48 kHz does not drown in rounding; states below 1e-20 are flushed so a silent input never goes denormal.
 struct MusicBassSplit {
     static let cutoffHz = 150.0
     /// Q of the two sections of a 4th-order Butterworth: 1 / (2 cos(pi/8)) and 1 / (2 cos(3 pi/8)).
@@ -675,13 +681,13 @@ struct MusicBassSplit {
     private struct Section {
         var b0 = 0.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0
         init() {}
-        init(sampleRate: Double, q: Double) {
+        init(sampleRate: Double, q: Double, highpass: Bool = false) {
             let w = 2 * Double.pi * min(MusicBassSplit.cutoffHz, sampleRate / 4) / sampleRate
             let alpha = sin(w) / (2 * q)
             let c = cos(w)
             let a0 = 1 + alpha
-            b0 = (1 - c) / 2 / a0
-            b1 = (1 - c) / a0
+            b0 = (highpass ? 1 + c : 1 - c) / 2 / a0
+            b1 = highpass ? -2 * b0 : 2 * b0
             b2 = b0
             a1 = -2 * c / a0
             a2 = (1 - alpha) / a0
@@ -690,17 +696,40 @@ struct MusicBassSplit {
 
     private let first: Section
     private let second: Section
-    /// Per channel (2) and section (2): the two delay states.
+    private let firstHigh: Section
+    private let secondHigh: Section
+    /// Per channel (2) and section (2): the two delay states, of the low-pass and of the high-pass.
     private var state = SIMD8<Double>(repeating: 0)
+    private var highState = SIMD8<Double>(repeating: 0)
 
     init(sampleRate: Double) {
         let rate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 48_000
         first = Section(sampleRate: rate, q: Self.qualities.0)
         second = Section(sampleRate: rate, q: Self.qualities.1)
+        firstHigh = Section(sampleRate: rate, q: Self.qualities.0, highpass: true)
+        secondHigh = Section(sampleRate: rate, q: Self.qualities.1, highpass: true)
     }
 
     /// Back to silence: no ringing from an earlier stretch of audio.
-    mutating func reset() { state = SIMD8<Double>(repeating: 0) }
+    mutating func reset() {
+        state = SIMD8<Double>(repeating: 0)
+        highState = SIMD8<Double>(repeating: 0)
+    }
+
+    /// The two low bands of one sample of `channel` (0 or 1): what is held up (the low-pass) and what is cut (the sample less
+    /// its high-pass). Call it for every sample, so both filters stay warm.
+    mutating func bands(_ x: Float, channel: Int) -> (hold: Float, cut: Float) {
+        let hold = lowpass(x, channel: channel)
+        let offset = (channel & 1) * 4
+        let clean = x.isFinite ? Double(x) : 0
+        let mid = Self.step(clean, firstHigh, &highState, offset)
+        let high = Self.step(mid, secondHigh, &highState, offset + 2)
+        guard high.isFinite else {
+            for index in offset..<(offset + 4) { highState[index] = 0 }
+            return (hold, 0)
+        }
+        return (hold, Float(clean - high))
+    }
 
     /// The low band of one sample of `channel` (0 or 1).
     mutating func lowpass(_ x: Float, channel: Int) -> Float {
@@ -999,6 +1028,9 @@ final class MusicRenderLease: @unchecked Sendable {
     private nonisolated(unsafe) var sweepRan = false
     fileprivate let sweep: MusicFilterSweep
 
+    /// The mids and highs of a mix. It holds its own request and renderer state.
+    let mixEQ: MusicMixEQ
+
     // Tier 3b P4: the bass channel. `bassActiveFlag` is off outside a beat mix (every render then takes the old path).
     private let bassActiveFlag = Atomic<Bool>(false)
     private let bassInitialBits = Atomic<UInt32>(Float(1).bitPattern)
@@ -1012,6 +1044,12 @@ final class MusicRenderLease: @unchecked Sendable {
     private let renderedFrameCount = Atomic<Int>(0)
     var renderedFrames: Int { renderedFrameCount.load(ordering: .relaxed) }
     fileprivate func noteRendered(_ frames: Int) { renderedFrameCount.wrappingAdd(frames, ordering: .relaxed) }
+    /// The item time (a Double's bits) the next render starts at, by the tap's own label. NaN until it has rendered.
+    private let renderHeadBits = Atomic<UInt64>(Double.nan.bitPattern)
+    var renderHead: Double? {
+        let head = Double(bitPattern: renderHeadBits.load(ordering: .relaxed))
+        return head.isFinite ? head : nil
+    }
     private let bassEpoch = Atomic<Int>(0)
     private nonisolated(unsafe) var bassGain = MusicBassGain(value: 1)
     private nonisolated(unsafe) var seenBassGeneration = 0
@@ -1102,6 +1140,7 @@ final class MusicRenderLease: @unchecked Sendable {
         split = MusicBassSplit(sampleRate: rate)
         echo = MusicEchoDelay(sampleRate: rate, maxBlockFrames: max(4_096, maxFrames))
         sweep = MusicFilterSweep(sampleRate: rate)
+        mixEQ = MusicMixEQ(sampleRate: rate)
         currentGain = chain.targetGain
         seenSnapGeneration = chain.snapGeneration.load(ordering: .acquiring)
     }
@@ -1114,9 +1153,12 @@ final class MusicRenderLease: @unchecked Sendable {
         scratch.deallocate()
     }
 
-    /// Processes `frames` frames of the buffer list in place. Real-time safe. `sourceStart` is the item time of the
-    /// first frame (NaN when unknown); only the DEBUG recorder reads it.
-    func render(_ list: UnsafeMutableAudioBufferListPointer, frames: Int, sourceStart: Double = .nan) {
+    /// Processes `frames` frames of the buffer list in place. Real-time safe. `sourceStart` and `sourceEnd` are the item
+    /// times the frames start and end at (NaN when unknown): the end is the render head, the start is for the DEBUG recorder.
+    func render(
+        _ list: UnsafeMutableAudioBufferListPointer, frames: Int, sourceStart: Double = .nan, sourceEnd: Double = .nan
+    ) {
+        renderHeadBits.store(sourceEnd.bitPattern, ordering: .relaxed)
         chain.render(list, frames: frames, lease: self)
         #if DEBUG
         if let recorder = MusicRenderRecorder.current {
@@ -1484,8 +1526,8 @@ final class MusicRenderLease: @unchecked Sendable {
     /// Runs the split over a block without using its output.
     fileprivate func warmSplit(_ samples: UnsafePointer<Float>, frames: Int) {
         for frame in 0..<frames {
-            _ = split.lowpass(samples[frame * 2], channel: 0)
-            _ = split.lowpass(samples[frame * 2 + 1], channel: 1)
+            _ = split.bands(samples[frame * 2], channel: 0)
+            _ = split.bands(samples[frame * 2 + 1], channel: 1)
         }
     }
 
